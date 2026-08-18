@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "VipCode": {
+      "title": "VipCode",
+      "description": "Vip card redemption codes",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "duration": { "type": "number" },
+        "isRedeemed": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "redeemedAt": { "type": "string" },
+        "redeemedBy": { "type": "string" }
+      },
+      "required": ["code", "duration", "isRedeemed"]
+    },
+    "DriverUser": {
+      "title": "DriverUser",
+      "description": "Chauffeur driver user account registering their membership validity",
+      "type": "object",
+      "properties": {
+        "phoneNumber": { "type": "string" },
+        "vipExpiry": { "type": "string" },
+        "onlineOrdersEnabled": { "type": "boolean" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["phoneNumber", "vipExpiry"]
+    },
+    "OnlineApplication": {
+      "title": "OnlineApplication",
+      "description": "Application submitted by drivers to enable online dispatch orders",
+      "type": "object",
+      "properties": {
+        "driverPhone": { "type": "string" },
+        "driverName": { "type": "string" },
+        "driverGender": { "type": "string" },
+        "driverAge": { "type": "number" },
+        "emergencyPhone": { "type": "string" },
+        "drivingYears": { "type": "number" },
+        "idCardFront": { "type": "string" },
+        "idCardBack": { "type": "string" },
+        "driverLicenseFront": { "type": "string" },
+        "driverLicenseBack": { "type": "string" },
+        "status": { "type": "string" },
+        "rejectionReason": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["driverPhone", "driverName", "driverGender", "driverAge", "emergencyPhone", "drivingYears", "idCardFront", "idCardBack", "driverLicenseFront", "driverLicenseBack", "status"]
+    },
+    "TeamMember": {
+      "title": "TeamMember",
+      "description": "Staff and team roles mapped by mobile phone number",
+      "type": "object",
+      "properties": {
+        "phone": { "type": "string" },
+        "role": { "type": "string" },
+        "city": { "type": "string" },
+        "remark": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["phone", "role"]
+    }
+  },
+  "firestore": {
+    "/vip_codes/{codeId}": {
+      "schema": "VipCode",
+      "description": "Collection of VIP codes generated and redeemed"
+    },
+    "/driver_users/{phoneNumber}": {
+      "schema": "DriverUser",
+      "description": "Drivers mapped by phone number to track real-time membership duration"
+    },
+    "/online_applications/{phoneNumber}": {
+      "schema": "OnlineApplication",
+      "description": "Driver application details for online dispatch orders waitlisted for approval"
+    },
+    "/team_members/{phone}": {
+      "schema": "TeamMember",
+      "description": "Team members list with their administrative and operational hierarchy roles"
+    }
+  }
+}

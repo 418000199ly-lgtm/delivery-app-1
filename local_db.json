@@ -1,0 +1,31 @@
+{
+  "system_admins": {
+    "15509601222": {
+      "phone": "15509601222",
+      "role": "SUPER_DEVELOPER_ADMIN",
+      "name": "最高开发者",
+      "status": "ACTIVE",
+      "updatedAt": "2026-08-18T10:26:06.532Z"
+    }
+  },
+  "version_history": {
+    "V1.0": {
+      "version": "V1.0",
+      "forceUpgrade": false,
+      "upgradeUrl": "https://download.heiwan.com/max",
+      "updatedAt": "2026-06-15T10:00:00.000Z"
+    },
+    "V1.1": {
+      "version": "V1.1",
+      "forceUpgrade": false,
+      "upgradeUrl": "https://download.heiwan.com/max",
+      "updatedAt": "2026-06-25T14:30:00.000Z"
+    },
+    "V1.2": {
+      "version": "V1.2",
+      "forceUpgrade": true,
+      "upgradeUrl": "https://download.heiwan.com/max/v12",
+      "updatedAt": "2026-07-01T09:00:00.000Z"
+    }
+  }
+}

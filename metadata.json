@@ -1,0 +1,6 @@
+{
+  "name": "黑湾代驾MAX",
+  "description": "专为代驾司机设计的高效在线行程、动态计费及收款管理系统。支持里程计费自定义、多时段价格配比、行程路费垫付及自动结算生成收款码等功能。",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
