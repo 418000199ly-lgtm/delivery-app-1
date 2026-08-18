@@ -1,0 +1,15 @@
+{
+	"appId": "com.heiwan.daijia",
+	"appName": "黑湾代驾",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https",
+		"iosScheme": "https",
+		"hostname": "heiwan.daijia"
+	},
+	"packageClassList": [
+		"TextToSpeechPlugin",
+		"AppPlugin",
+		"LocalNotificationsPlugin"
+	]
+}
