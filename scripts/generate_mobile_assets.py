@@ -150,6 +150,16 @@ def generate_beian_rgba(width=20, height=20):
 def main():
     print("🚀 Starting Mobile App Icon & Asset Generation for iOS and Android...")
     
+    # Check if node + generate_mobile_assets.cjs is available
+    if os.path.exists("scripts/generate_mobile_assets.cjs"):
+        print("⚡ Using native lossless Node.js/Jimp image scaler from direct hwdjtb.png...")
+        ret = os.system("node scripts/generate_mobile_assets.cjs")
+        if ret == 0:
+            print("✨ Successfully scaled and synchronized all assets from user hwdjtb.png!")
+            return
+        else:
+            print("⚠️ Node script exited with error, falling back to Python generation...")
+
     # 1. Generate 1024x1024 Master Icon
     print("🎨 Rendering master lossless 1024x1024 binary PNG...")
     master_1024_rgba = generate_driver_icon_rgba(1024, 1024)

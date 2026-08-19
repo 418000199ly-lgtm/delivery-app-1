@@ -58,6 +58,7 @@ import { resolveAndSyncDuplicateNames } from '../utils/nameResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
 import wechatPayQrImg from '../assets/images/wechat_pay_qr_1782906451645.jpg';
+import { READY_DRIVER_BASE64, READY_DRIVER_PATH, VALET_CAR_BANNER_BASE64, VALET_CAR_BANNER_PATH } from '../assets/images/driverImageConstants';
 
 interface HomeViewProps {
   settings: ChauffeurSettings;
@@ -670,10 +671,18 @@ export default function HomeView({
 
         {/* Driver Identity Glimpse */}
         <div className="w-full relative rounded-2xl overflow-hidden h-40 mb-6 shadow-sm border border-[#dfc0af]/70">
-          <div 
-            className="absolute inset-0 bg-cover bg-center" 
-            style={{ backgroundImage: "url('https://lh3.googleusercontent.com/aida-public/AB6AXuBnkjo4Ycdl83VMSaF0VbeVqtlnBkrd2vhoui54P0U-jyvmnxE7JoG3gZCe6E3nqg9eh_qVrmkdkR2i9SygSuxeDQmKwp5T4ApCae8Fbdzr8NTZ3avaP27DfuHJi1SeIjunnSrahO2Kp71MgTQPl7ljplfnWDDgB23k0XoC5AHIj-fOa-L699dy88CKVjgF7CnOU24m3PsdZCmYsR_KdM36DsOlt7zsGDNGRjDKQORR3a2JxAAK9w_Uug')" }}
-          ></div>
+          <img 
+            alt="Driver Ready"
+            className="absolute inset-0 w-full h-full object-cover" 
+            src={READY_DRIVER_PATH}
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (target.src !== READY_DRIVER_BASE64) {
+                target.src = READY_DRIVER_BASE64;
+              }
+            }}
+            referrerPolicy="no-referrer"
+          />
           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent flex items-end p-4">
             <div className="text-white text-left">
               <p className="text-xs opacity-80 font-medium">当前状态</p>
@@ -3198,7 +3207,14 @@ export default function HomeView({
                   <img 
                     className="w-full h-full object-cover" 
                     alt="Driver Onboarding"
-                    src="https://lh3.googleusercontent.com/aida-public/AB6AXuDf-zhNex-S9MvgS1rZPBTNunpkdBBMfphxonE0HYOUgW45YBBVqTil1uv2gFe-gerlxI6Ug7nleI5SEWk6OPnbqHVtDQCTx-Rp0imbysi-CXBT9yythmNMcZ7LuLHmXipP4wdBmeHEXi9fe1zXlBcfBF0M4wiyvuZY6bLg0upbJ4l34ruQl5y1A_rx_ry2sEHBncYnxaeprOzM6-afVViwZJ8WtK1AqUJst0mOA8XOlmkrpdZ6bFmEfA"
+                    src={VALET_CAR_BANNER_PATH}
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (target.src !== VALET_CAR_BANNER_BASE64) {
+                        target.src = VALET_CAR_BANNER_BASE64;
+                      }
+                    }}
+                    referrerPolicy="no-referrer"
                   />
                 </div>
               </div>
@@ -3371,7 +3387,14 @@ export default function HomeView({
                     <img 
                       className="w-full h-full object-cover" 
                       alt="Driver Onboarding"
-                      src="https://lh3.googleusercontent.com/aida-public/AB6AXuDf-zhNex-S9MvgS1rZPBTNunpkdBBMfphxonE0HYOUgW45YBBVqTil1uv2gFe-gerlxI6Ug7nleI5SEWk6OPnbqHVtDQCTx-Rp0imbysi-CXBT9yythmNMcZ7LuLHmXipP4wdBmeHEXi9fe1zXlBcfBF0M4wiyvuZY6bLg0upbJ4l34ruQl5y1A_rx_ry2sEHBncYnxaeprOzM6-afVViwZJ8WtK1AqUJst0mOA8XOlmkrpdZ6bFmEfA"
+                      src={VALET_CAR_BANNER_PATH}
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (target.src !== VALET_CAR_BANNER_BASE64) {
+                          target.src = VALET_CAR_BANNER_BASE64;
+                        }
+                      }}
+                      referrerPolicy="no-referrer"
                     />
                   </div>
                 </div>

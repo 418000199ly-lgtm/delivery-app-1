@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import TencentMap from './TencentMap';
 import { db, doc, setDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import driverAvatar from '../assets/images/driver_cycling_helmet_avatar_1784017817358.jpg';
+import { DRIVER_AVATAR_BASE64, READY_DRIVER_BASE64, READY_DRIVER_PATH, WECHAT_CARD_BANNER_BASE64, WECHAT_CARD_BANNER_PATH } from '../assets/images/driverImageConstants';
 import { 
   Phone, 
   MapPin, 
@@ -1404,9 +1405,16 @@ Page({
                         <span className="text-[8px] text-slate-400">一键代叫，闪电触达</span>
                         <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center self-end mt-1 overflow-hidden">
                           <img 
-                            src="https://lh3.googleusercontent.com/aida-public/AB6AXuBvx-gaCL2Ncg-oi3pmRs2Xt86iHDN6c_D4mZ8bTa4LoWw-tlat9aWoGsAnR6RpTxcqm0H2zZ5KvDXxG8nEbfOelz3FIROOJrAg2_cL416zI4Sdx7O6GheuzY8dQc_UzRtUmjzYIRC16DoFWIL04BbxAZMkcoHE4bIa_NDkw3t32jUhtQ-_WqovL8R1PvyLRVHffm6o7lHP6F1y2LX0KVJRbwiB0x6yCk3nETT-oKM6HtLeKMcLdnZiMA" 
+                            src={WECHAT_CARD_BANNER_PATH} 
                             alt="Driver" 
                             className="w-full h-full object-cover"
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              if (target.src !== WECHAT_CARD_BANNER_BASE64) {
+                                target.src = WECHAT_CARD_BANNER_BASE64;
+                              }
+                            }}
+                            referrerPolicy="no-referrer"
                           />
                         </div>
                       </div>
@@ -1425,7 +1433,13 @@ Page({
                             alt="driver" 
                             className="w-full h-auto object-cover" 
                             referrerPolicy="no-referrer"
-                            src={driverAvatar}
+                            src={driverAvatar || '/driver_avatar.jpg'}
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              if (target.src !== DRIVER_AVATAR_BASE64) {
+                                target.src = DRIVER_AVATAR_BASE64;
+                              }
+                            }}
                           />
                         </div>
                       </div>
@@ -2266,7 +2280,13 @@ Page({
                             alt="Driver Illustration" 
                             className="object-contain max-h-full max-w-full mix-blend-multiply rounded-full" 
                             referrerPolicy="no-referrer"
-                            src={driverAvatar}
+                            src={driverAvatar || '/driver_avatar.jpg'}
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              if (target.src !== DRIVER_AVATAR_BASE64) {
+                                target.src = DRIVER_AVATAR_BASE64;
+                              }
+                            }}
                           />
                         </div>
                       </header>
@@ -2583,7 +2603,18 @@ Page({
 
                           {/* Driver Identity Glimpse */}
                           <div className="w-full relative rounded-lg overflow-hidden h-24 mb-2.5 shadow-xs border border-[#e2e2e2] shrink-0">
-                            <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: 'url("https://lh3.googleusercontent.com/aida-public/AB6AXuBnkjo4Ycdl83VMSaF0VbeVqtlnBkrd2vhoui54P0U-jyvmnxE7JoG3gZCe6E3nqg9eh_qVrmkdkR2i9SygSuxeDQmKwp5T4ApCae8Fbdzr8NTZ3avaP27DfuHJi1SeIjunnSrahO2Kp71MgTQPl7ljplfnWDDgB23k0XoC5AHIj-fOa-L699dy88CKVjgF7CnOU24m3PsdZCmYsR_KdM36DsOlt7zsGDNGRjDKQORR3a2JxAAK9w_Uug")' }}></div>
+                            <img 
+                              className="absolute inset-0 w-full h-full object-cover" 
+                              src={READY_DRIVER_PATH}
+                              alt="Ready Driver"
+                              onError={(e) => {
+                                const target = e.currentTarget;
+                                if (target.src !== READY_DRIVER_BASE64) {
+                                  target.src = READY_DRIVER_BASE64;
+                                }
+                              }}
+                              referrerPolicy="no-referrer"
+                            />
                             <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex items-end p-2.5">
                               <div className="text-white text-left">
                                 <p className="text-[8px] opacity-80 font-bold uppercase tracking-wider">当前状态</p>
@@ -2759,7 +2790,13 @@ Page({
                           <img 
                             alt="Driver Illustration" 
                             className="max-h-full max-w-full object-contain rounded-full mix-blend-multiply" 
-                            src={driverAvatar}
+                            src={driverAvatar || '/driver_avatar.jpg'}
+                            onError={(e) => {
+                              const target = e.currentTarget;
+                              if (target.src !== DRIVER_AVATAR_BASE64) {
+                                target.src = DRIVER_AVATAR_BASE64;
+                              }
+                            }}
                             referrerPolicy="no-referrer"
                           />
                         </div>

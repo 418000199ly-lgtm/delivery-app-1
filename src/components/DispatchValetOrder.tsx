@@ -40,6 +40,7 @@ import {
   Store
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
+import { DRIVER_AVATAR_BASE64 } from '../assets/images/driverImageConstants';
 
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -2277,9 +2278,15 @@ export default function DispatchValetOrder({
                 <img 
                   src={
                     (!adminProfile.avatar || adminProfile.avatar.includes('photo-1560250097-0b93528c311a')) 
-                      ? driverAvatar 
+                      ? (driverAvatar || '/driver_avatar.jpg') 
                       : adminProfile.avatar
                   } 
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (target.src !== DRIVER_AVATAR_BASE64) {
+                      target.src = DRIVER_AVATAR_BASE64;
+                    }
+                  }}
                   alt="代驾司机头像" 
                   className="w-full h-full object-cover"
                 />

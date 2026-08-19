@@ -1503,6 +1503,7 @@ export default function App() {
       }
     }
     setIsOnline(online);
+    localStorage.setItem('dd_is_online', online ? 'true' : 'false');
 
     // Voice announcement for online / offline toggle on gesture
     initAudioUnlock();
@@ -1514,13 +1515,40 @@ export default function App() {
       }
     }
     if (userPhone) {
-      const userDocRef = doc(db, 'driver_users', userPhone);
-      setDoc(userDocRef, {
+      const timestampIso = new Date().toISOString();
+      const onlinePayload = {
+        phone: userPhone,
+        driverName: (settings.driverName && settings.driverName !== '代驾司机' && settings.driverName !== '在线代驾司机') ? settings.driverName : '吴彦祖',
         isOnline: online,
-        lastOnlineTime: online ? new Date().toISOString() : null
-      }, { merge: true }).catch((e) => {
-        console.error("Failed to sync isOnline toggle to Firestore:", e);
+        onlineOrdersEnabled: online,
+        lastOnlineTime: online ? timestampIso : null,
+        lastUpdatedTime: timestampIso,
+        version: sysVersion || 'V2.0',
+        appVersion: sysVersion || 'V2.0'
+      };
+
+      setDoc(doc(db, 'driver_users', userPhone), onlinePayload, { merge: true }).catch((e) => {
+        console.error("Failed to sync isOnline toggle to Firestore driver_users:", e);
       });
+      setDoc(doc(db, 'squad_members', userPhone), onlinePayload, { merge: true }).catch(() => {});
+      setDoc(doc(db, 'driver_locations', userPhone), onlinePayload, { merge: true }).catch(() => {});
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: onlinePayload })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_locations', docId: userPhone, data: onlinePayload })
+      }).catch(() => {});
     }
   };
 

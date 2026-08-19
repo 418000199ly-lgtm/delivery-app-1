@@ -343,6 +343,272 @@ async function startServer() {
     });
   });
 
+  // =========================================================================
+  // UNIVERSAL DATABASE REST API ENDPOINTS (Supports MySQL & local_db.json)
+  // Ensures 100% reliable cross-device data sync, instant order dispatch popups
+  // =========================================================================
+
+  // 1. GET Single Document
+  // Supports: /api/db/get?col=passenger_links&id=15509601222 OR query params: collection, docId
+  app.get('/api/db/get', async (req, res) => {
+    try {
+      const col = String(req.query.col || req.query.collection || '').trim();
+      const docId = String(req.query.id || req.query.docId || '').trim();
+
+      if (!col || !docId) {
+        return res.status(400).json({ exists: false, error: 'Missing col or id parameter' });
+      }
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            [col, docId]
+          );
+          if (rows && rows.length > 0) {
+            const data = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+            return res.json({ exists: true, id: docId, data });
+          }
+          return res.json({ exists: false, id: docId, data: null });
+        } catch (mysqlErr: any) {
+          console.error('[DB Proxy GET MySQL Error]:', mysqlErr);
+        }
+      }
+
+      // JSON DB Fallback
+      const dbData = readLocalJsonDb();
+      const colData = dbData[col] || {};
+      const docData = colData[docId];
+      if (docData !== undefined) {
+        return res.json({ exists: true, id: docId, data: docData });
+      }
+      return res.json({ exists: false, id: docId, data: null });
+    } catch (err: any) {
+      console.error('[DB Proxy GET Exception]:', err);
+      res.status(500).json({ exists: false, error: err.message });
+    }
+  });
+
+  // 2. LIST Documents from Collection
+  // Supports: /api/db/list?col=merchant_orders&constraints=...
+  app.get('/api/db/list', async (req, res) => {
+    try {
+      const col = String(req.query.col || req.query.collection || '').trim();
+      if (!col) {
+        return res.status(400).json({ docs: [], error: 'Missing col parameter' });
+      }
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT 500',
+            [col]
+          );
+          const docs = (rows || []).map((r: any) => {
+            const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            return { id: r.doc_id, data };
+          });
+          return res.json({ docs });
+        } catch (mysqlErr: any) {
+          console.error('[DB Proxy LIST MySQL Error]:', mysqlErr);
+        }
+      }
+
+      // JSON DB Fallback
+      const dbData = readLocalJsonDb();
+      const colData = dbData[col] || {};
+      const docs = Object.keys(colData).map((k) => ({
+        id: k,
+        data: colData[k]
+      }));
+      return res.json({ docs });
+    } catch (err: any) {
+      console.error('[DB Proxy LIST Exception]:', err);
+      res.status(500).json({ docs: [], error: err.message });
+    }
+  });
+
+  // 3. SET Document (create or replace/merge)
+  app.post('/api/db/set', async (req, res) => {
+    try {
+      const col = String(req.body.col || req.body.collection || '').trim();
+      const docId = String(req.body.id || req.body.docId || '').trim();
+      const data = req.body.data;
+      const merge = Boolean(req.body.merge);
+
+      if (!col || !docId || data === undefined) {
+        return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
+      }
+
+      let finalData = data;
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          if (merge) {
+            const [rows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              [col, docId]
+            );
+            if (rows && rows.length > 0) {
+              const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+              finalData = { ...prev, ...data };
+            }
+          }
+          const dataStr = JSON.stringify(finalData);
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            [col, docId, dataStr]
+          );
+          return res.json({ success: true, id: docId });
+        } catch (mysqlErr: any) {
+          console.error('[DB Proxy SET MySQL Error]:', mysqlErr);
+        }
+      }
+
+      // JSON DB Fallback
+      const dbData = readLocalJsonDb();
+      if (!dbData[col]) dbData[col] = {};
+      if (merge && dbData[col][docId]) {
+        finalData = { ...dbData[col][docId], ...data };
+      }
+      dbData[col][docId] = finalData;
+      writeLocalJsonDb(dbData);
+
+      return res.json({ success: true, id: docId });
+    } catch (err: any) {
+      console.error('[DB Proxy SET Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 4. UPDATE Document (partial merge)
+  app.post('/api/db/update', async (req, res) => {
+    try {
+      const col = String(req.body.col || req.body.collection || '').trim();
+      const docId = String(req.body.id || req.body.docId || '').trim();
+      const data = req.body.data;
+
+      if (!col || !docId || data === undefined) {
+        return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
+      }
+
+      let finalData = data;
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            [col, docId]
+          );
+          if (rows && rows.length > 0) {
+            const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+            finalData = { ...prev, ...data };
+          }
+          const dataStr = JSON.stringify(finalData);
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            [col, docId, dataStr]
+          );
+          return res.json({ success: true, id: docId });
+        } catch (mysqlErr: any) {
+          console.error('[DB Proxy UPDATE MySQL Error]:', mysqlErr);
+        }
+      }
+
+      // JSON DB Fallback
+      const dbData = readLocalJsonDb();
+      if (!dbData[col]) dbData[col] = {};
+      const prev = dbData[col][docId] || {};
+      finalData = { ...prev, ...data };
+      dbData[col][docId] = finalData;
+      writeLocalJsonDb(dbData);
+
+      return res.json({ success: true, id: docId });
+    } catch (err: any) {
+      console.error('[DB Proxy UPDATE Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 5. DELETE Document
+  app.post('/api/db/delete', async (req, res) => {
+    try {
+      const col = String(req.body.col || req.body.collection || '').trim();
+      const docId = String(req.body.id || req.body.docId || '').trim();
+
+      if (!col || !docId) {
+        return res.status(400).json({ success: false, error: 'Missing col or id' });
+      }
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query(
+            'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            [col, docId]
+          );
+          return res.json({ success: true, id: docId });
+        } catch (mysqlErr: any) {
+          console.error('[DB Proxy DELETE MySQL Error]:', mysqlErr);
+        }
+      }
+
+      // JSON DB Fallback
+      const dbData = readLocalJsonDb();
+      if (dbData[col] && dbData[col][docId] !== undefined) {
+        delete dbData[col][docId];
+        writeLocalJsonDb(dbData);
+      }
+
+      return res.json({ success: true, id: docId });
+    } catch (err: any) {
+      console.error('[DB Proxy DELETE Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 6. ADD Document (auto-generated ID)
+  app.post('/api/db/add', async (req, res) => {
+    try {
+      const col = String(req.body.col || req.body.collection || '').trim();
+      const data = req.body.data;
+
+      if (!col || data === undefined) {
+        return res.status(400).json({ success: false, error: 'Missing col or data' });
+      }
+
+      const generatedId = 'doc_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+      const dataWithId = { ...data, id: data.id || generatedId };
+      const finalId = dataWithId.id;
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const dataStr = JSON.stringify(dataWithId);
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            [col, finalId, dataStr]
+          );
+          return res.json({ success: true, id: finalId });
+        } catch (mysqlErr: any) {
+          console.error('[DB Proxy ADD MySQL Error]:', mysqlErr);
+        }
+      }
+
+      // JSON DB Fallback
+      const dbData = readLocalJsonDb();
+      if (!dbData[col]) dbData[col] = {};
+      dbData[col][finalId] = dataWithId;
+      writeLocalJsonDb(dbData);
+
+      return res.json({ success: true, id: finalId });
+    } catch (err: any) {
+      console.error('[DB Proxy ADD Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // Standalone Privacy Policy Page served with complete content and beautiful styling
   app.get('/privacy', (req, res) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

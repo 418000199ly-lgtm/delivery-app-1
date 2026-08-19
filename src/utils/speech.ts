@@ -511,24 +511,26 @@ export async function speakText(text: string, onEnd?: () => void, playChime: boo
   lastSpokenText = cleanText;
   lastSpokenTime = now;
 
+  // Ensure Android / iOS hardware DAC channel is warm and ready
   initAudioUnlock();
-  stopSpeaking();
 
-  // Play embedded audio chime only if explicitly requested or for short notification alerts
-  if (playChime) {
+  // Play embedded audio tone for guaranteed audible feedback on Android APK / iOS
+  // (Always triggered on native platforms or if playChime is true, ensuring 100% sound even if Android has zero TTS engines)
+  if (playChime || Capacitor.isNativePlatform()) {
     playEmbeddedBusinessTone(cleanText);
   }
   if (typeof navigator !== 'undefined' && navigator.vibrate) {
     try { navigator.vibrate([100, 50, 100]); } catch (e) {}
   }
 
-  // LEVEL 1: Capacitor Native Android / iOS System TTS Engine with Dynamic Timeout Guard
+  // LEVEL 1: Capacitor Native Android / iOS System TTS Engine with Fast Timeout Guard (800ms)
+  // If Android emulator has NO TTS engine, fail fast (800ms) to fallback smoothly without blocking driver flow
   if (Capacitor.isNativePlatform()) {
     try {
       await TextToSpeech.stop().catch(() => {});
-      await new Promise(r => setTimeout(r, 60)); // Reset Android TTS channel focus
+      await new Promise(r => setTimeout(r, 40));
       
-      const nativeTimeoutMs = Math.max(6000, cleanText.length * 500);
+      const nativeTimeoutMs = Math.min(2500, Math.max(800, cleanText.length * 150));
       const nativeSuccess = await Promise.race([
         TextToSpeech.speak({
           text: cleanText,
@@ -544,14 +546,13 @@ export async function speakText(text: string, onEnd?: () => void, playChime: boo
         if (onEnd) onEnd();
         return;
       }
-      console.warn('[AudioEngine] Capacitor native TTS speak timed out or failed, falling back to Web SpeechSynthesis / MP3');
+      console.warn('[AudioEngine] Capacitor native TTS failed/timed out, switching to Web Speech & Streaming fallback');
     } catch (nativeErr) {
       console.warn('[AudioEngine] Capacitor native TTS exception:', nativeErr);
     }
   }
 
   // LEVEL 2: Browser / WebView Native SpeechSynthesis Engine
-  // (Works directly on Android 10 / Huawei EMUI with iFlytek / 讯飞语音引擎)
   const speechSuccess = await tryWebSpeechSynthesis(cleanText, onEnd);
   if (speechSuccess) {
     return;

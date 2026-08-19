@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-08-09T16:28:17.522Z"
+      "updatedAt": "2026-08-18T11:20:31.809Z"
     }
   },
   "version_history": {
@@ -13,7 +13,8 @@
       "version": "V1.0",
       "forceUpgrade": false,
       "upgradeUrl": "https://download.heiwan.com/max",
-      "updatedAt": "2026-06-15T10:00:00.000Z"
+      "xianyuUrl": "https://www.goofish.com",
+      "updatedAt": "2026-08-18T11:12:55.704Z"
     },
     "V1.1": {
       "version": "V1.1",
@@ -26,6 +27,70 @@
       "forceUpgrade": true,
       "upgradeUrl": "https://download.heiwan.com/max/v12",
       "updatedAt": "2026-07-01T09:00:00.000Z"
+    },
+    "V2.0": {
+      "version": "V2.0",
+      "forceUpgrade": false,
+      "upgradeUrl": "https://download.heiwan.com/max",
+      "xianyuUrl": "https://www.goofish.com",
+      "updatedAt": "2026-08-18T11:11:34.963Z"
+    }
+  },
+  "driver_users": {
+    "15509601222": {
+      "isOnline": true,
+      "onlineOrdersEnabled": true,
+      "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
+      "phone": "15509601222",
+      "driverName": "吴彦祖",
+      "lat": 38.475121,
+      "lng": 106.286642,
+      "isBusy": false,
+      "city": "银川市",
+      "version": "V1.0",
+      "appVersion": "V1.0",
+      "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
+    }
+  },
+  "squad_members": {
+    "15509601222": {
+      "isOnline": true,
+      "onlineOrdersEnabled": true,
+      "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
+      "phone": "15509601222",
+      "driverName": "吴彦祖",
+      "lat": 38.475121,
+      "lng": 106.286642,
+      "isBusy": false,
+      "city": "银川市",
+      "version": "V1.0",
+      "appVersion": "V1.0",
+      "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
+    }
+  },
+  "driver_locations": {
+    "15509601222": {
+      "phone": "15509601222",
+      "driverName": "吴彦祖",
+      "lat": 38.475121,
+      "lng": 106.286642,
+      "isOnline": true,
+      "onlineOrdersEnabled": true,
+      "isBusy": false,
+      "city": "银川市",
+      "version": "V1.0",
+      "appVersion": "V1.0",
+      "lastUpdatedBy": "Gaode AMap 20s Auto Reporter",
+      "lastUpdatedTime": "2026-08-18T11:28:48.973Z"
+    }
+  },
+  "config": {
+    "system_version": {
+      "version": "V1.0",
+      "forceUpgrade": false,
+      "upgradeUrl": "https://download.heiwan.com/max",
+      "xianyuUrl": "https://www.goofish.com",
+      "updatedAt": "2026-08-18T11:12:55.704Z"
     }
   }
 }

@@ -1,6 +1,5 @@
 import React from 'react';
-// @ts-ignore
-import driverMascot from '../assets/images/driver_mascot_1781782355270.jpg';
+import { DRIVER_MASCOT_BASE64 } from '../assets/images/driverImageConstants';
 
 interface Props {
   className?: string;
@@ -11,7 +10,14 @@ export default function DriverIllustration({ className = '', size = 180 }: Props
   return (
     <div className={`flex items-center justify-center ${className}`} id="driver-illustration-container">
       <img
-        src={driverMascot}
+        src="/t041a040bace9bbe659.jpg"
+        onError={(e) => {
+          // Robust fallback to local bundled Base64 if relative network fetch fails
+          const target = e.currentTarget;
+          if (target.src !== DRIVER_MASCOT_BASE64) {
+            target.src = DRIVER_MASCOT_BASE64;
+          }
+        }}
         alt="老板要代驾吗？"
         style={{ width: size, height: size }}
         className="rounded-2xl object-cover shadow-sm border border-slate-100 bg-white"

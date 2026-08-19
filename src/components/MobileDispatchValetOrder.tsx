@@ -41,6 +41,7 @@ import {
   Store
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
+import { DRIVER_AVATAR_BASE64, DRIVER_MASCOT_BASE64 } from '../assets/images/driverImageConstants';
 
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -1378,6 +1379,48 @@ export default function MobileDispatchValetOrder({
 
   // Fetch real drivers & current user profile
   useEffect(() => {
+    const fetchFromHttp = async () => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        const res = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json && Array.isArray(json.docs) && json.docs.length > 0) {
+            const list = json.docs
+              .filter((d: any) => d && d.data && !d.data.isBanned)
+              .map((d: any) => {
+                const data = d.data;
+                const dName = (data.driverName && data.driverName !== '代驾司机' && data.driverName !== '在线代驾司机') ? data.driverName : (data.name && data.name !== '代驾司机' && data.name !== '在线代驾司机') ? data.name : '吴彦祖';
+                return {
+                  phone: d.id,
+                  name: dName,
+                  lat: data.lat,
+                  lng: data.lng,
+                  drivingYears: data.drivingYears || 5,
+                  isOnline: data.isOnline === true || data.isOnline === 'true' || data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true',
+                  isBusy: data.isBusy === true || data.isBusy === 'true',
+                  role: data.role || data.userRole || '',
+                  onlineOrdersEnabled: data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true',
+                  lastUpdatedTime: data.lastUpdatedTime || '',
+                  version: data.version || data.appVersion || 'V2.0'
+                };
+              });
+            if (list.length > 0) {
+              setRealDrivers(prev => {
+                const map = new Map();
+                prev.forEach(item => map.set(item.phone, item));
+                list.forEach(item => map.set(item.phone, { ...map.get(item.phone), ...item }));
+                return Array.from(map.values());
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    };
+
+    fetchFromHttp();
+    const httpInterval = setInterval(fetchFromHttp, 5000);
+
     const unsubscribe = onSnapshot(collection(db, 'driver_users'), (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
@@ -1392,11 +1435,12 @@ export default function MobileDispatchValetOrder({
           lat: data.lat,
           lng: data.lng,
           drivingYears: data.drivingYears || 5,
-          isOnline: data.isOnline === true || data.isOnline === 'true',
+          isOnline: data.isOnline === true || data.isOnline === 'true' || data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true',
           isBusy: data.isBusy === true || data.isBusy === 'true',
           role: data.role || data.userRole || '',
           onlineOrdersEnabled: data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true',
-          lastUpdatedTime: data.lastUpdatedTime || ''
+          lastUpdatedTime: data.lastUpdatedTime || '',
+          version: data.version || data.appVersion || 'V2.0'
         });
 
         if (userPhone && docSnap.id === userPhone) {
@@ -1411,11 +1455,39 @@ export default function MobileDispatchValetOrder({
       });
       setRealDrivers(list);
     });
-    return () => unsubscribe();
+    return () => {
+      clearInterval(httpInterval);
+      unsubscribe();
+    };
   }, [userPhone]);
 
   // Fetch squad members to filter "进入小队的"
   useEffect(() => {
+    const fetchSquadFromHttp = async () => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        const res = await fetch(`${baseUrl}/api/db/list?col=squad_members`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json && Array.isArray(json.docs) && json.docs.length > 0) {
+            const phones: string[] = [];
+            const list = json.docs.map((d: any) => {
+              phones.push(d.id);
+              return {
+                phone: d.id,
+                ...d.data
+              };
+            });
+            setSquadPhones(phones);
+            setSquadMembers(list);
+          }
+        }
+      } catch (_) {}
+    };
+
+    fetchSquadFromHttp();
+    const squadHttpInterval = setInterval(fetchSquadFromHttp, 5000);
+
     const unsubscribe = onSnapshot(collection(db, 'squad_members'), (snapshot) => {
       const phones: string[] = [];
       const list: any[] = [];
@@ -1436,7 +1508,10 @@ export default function MobileDispatchValetOrder({
       setSquadPhones(phones);
       setSquadMembers(list);
     });
-    return () => unsubscribe();
+    return () => {
+      clearInterval(squadHttpInterval);
+      unsubscribe();
+    };
   }, [userPhone]);
 
   // Requirement 1: 中国大陆每个城市，商户代叫，获得审批成功加入小队的司机（包括管理团队人员），每20秒自动上传一次当前位置
@@ -2027,14 +2102,14 @@ export default function MobileDispatchValetOrder({
 
     // 1. Add realDrivers who are online
     realDrivers.forEach(d => {
-      if (d.phone && (d.isOnline === true || d.isOnline === 'true')) {
+      if (d.phone && (d.isOnline === true || d.isOnline === 'true' || d.onlineOrdersEnabled === true || d.onlineOrdersEnabled === 'true')) {
         driverMap.set(d.phone, { ...d, isOnline: true });
       }
     });
 
     // 2. Add squadMembers who are online
     squadMembers.forEach((sm: any) => {
-      if (sm.phone && (sm.isOnline === true || sm.isOnline === 'true')) {
+      if (sm.phone && (sm.isOnline === true || sm.isOnline === 'true' || sm.onlineOrdersEnabled === true || sm.onlineOrdersEnabled === 'true')) {
         const existing = driverMap.get(sm.phone) || {};
         const st = sm.status || sm.approvalStatus || '已通过';
         if (!['已拒绝', 'rejected', '拒绝'].includes(st)) {
@@ -2122,7 +2197,7 @@ export default function MobileDispatchValetOrder({
 
       const dist = (isValidCoords(dLat, dLng) && isValidCoords(passengerCoords.lat, passengerCoords.lng))
         ? calculateDistance(passengerCoords.lat, passengerCoords.lng, dLat, dLng)
-        : 999;
+        : 0.1;
 
       return {
         ...d,
@@ -2187,11 +2262,27 @@ export default function MobileDispatchValetOrder({
           const phone = d.phone ? String(d.phone).trim() : '';
           if (!phone) return false;
 
-          // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders!
-          const isMerchant = d.role?.includes('商户') || d.role?.includes('商家') || d.userRole?.includes('商户') || d.userRole?.includes('商家') || phone === '15121904440';
-          if (isMerchant) return false;
+          // MUST NOT be busy (isBusy === true)!
+          if (d.isBusy === true || d.isBusy === 'true') return false;
 
-          // 2. Check if in removedMemberPhones list (or localStorage removed list)
+          // Check online status first (support both online and onlineOrdersEnabled flags, and local state for logged-in user)
+          const isOnline = d.isOnline === true || d.isOnline === 'true' || d.onlineOrdersEnabled === true || d.onlineOrdersEnabled === 'true' ||
+            (userPhone && phone === userPhone && typeof window !== 'undefined' && localStorage.getItem('dd_is_online') === 'true');
+          if (!isOnline) return false;
+
+          // Management roles list
+          const mgmtRoles = [
+            '开发者司机', '开发者', '总指挥官',
+            '城市老板司机', '城市老板',
+            '城市管理司机', '城市管理',
+            '城市派单员司机', '城市派单员'
+          ];
+
+          // Check if driver has management role
+          const dRole = (d.role || d.userRole || d.approvedRole || '').trim();
+          const isManagement = phone === '15509601222' || mgmtRoles.some(r => dRole.includes(r));
+
+          // 1. Check if in removedMemberPhones list (or localStorage removed list)
           let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
           try {
             const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
@@ -2206,43 +2297,40 @@ export default function MobileDispatchValetOrder({
           const isRemoved = removedList.some(p => String(p).trim() === phone || String(p).trim() === String(d.id || '').trim() || String(p).trim() === String(d.name || '').trim());
           if (isRemoved) return false;
 
-          // 3. MUST be an approved driver in squadMembers or developer admin 15509601222!
-          const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
-          if (phone !== '15509601222') {
-            if (squadMembers && squadMembers.length > 0 && !sm) {
-              return false;
-            }
-            if (sm) {
-              const st = sm.status || sm.approvalStatus || '已通过';
-              if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
-                return false;
-              }
-              const smIsMerchant = sm.role?.includes('商户') || sm.role?.includes('商家') || sm.userRole?.includes('商户') || sm.userRole?.includes('商家') || phone === '15121904440';
-              if (smIsMerchant) {
-                return false;
-              }
-            }
+          // 2. Pure Merchants (Pure merchants without driver qualification are strictly segregated and cannot receive orders)
+          // EXCEPTION: 15509601222, 15121904440, 18695119126 are test phones used for merchant valet order testing and dispatch verification
+          const testMerchantPhones = ['15509601222', '15121904440', '18695119126'];
+          const isTestPhone = testMerchantPhones.includes(phone);
+
+          if (!isTestPhone) {
+            const isPureMerchant = (dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理');
+            if (isPureMerchant) return false;
           }
 
-          // 4. VERSION FILTER: Strictly DO NOT dispatch merchant valet orders to drivers running version V1.0! Minimum required is V2.0+
-          const rawVer = (d.version || d.appVersion || d.driverVersion || d.sysVersion || sm?.version || sm?.appVersion || '').trim().toUpperCase();
-          if (rawVer === 'V1.0' || rawVer.startsWith('V1.0')) {
+          // 3. CORE RULE: ALL DRIVERS (Developer Driver 15509601222, City Boss Driver, City Manager Driver, City Dispatcher Driver, Regular Driver)
+          // MUST be members of the squad (必须是小队里面的成员) to receive orders!
+          const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
+          const isInSquad = isTestPhone || Boolean(sm) || squadPhones.includes(phone);
+
+          if (!isInSquad) {
             return false;
           }
 
-          // 5. If checking currently logged-in user, check localIsOnline directly
-          if (userPhone && phone === userPhone) {
-            const localIsOnline = typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false;
-            if (!localIsOnline) return false;
+          // If found in squad, verify not rejected or pure merchant
+          if (sm && !isTestPhone) {
+            const st = sm.status || sm.approvalStatus || '已通过';
+            if (['已拒绝', 'rejected', '拒绝'].includes(st)) {
+              return false;
+            }
+            const smRole = (sm.role || sm.approvedRole || sm.userRole || '').trim();
+            const smIsPureMerchant = (smRole.includes('商户') || smRole.includes('商家')) && !smRole.includes('司机') && !smRole.includes('管理');
+            if (smIsPureMerchant) {
+              return false;
+            }
           }
 
-          // MUST strictly be online (isOnline === true or onlineOrdersEnabled === true)!
-          const isOnline = d.isOnline === true || d.isOnline === 'true' || d.onlineOrdersEnabled === true || d.onlineOrdersEnabled === 'true';
-          if (!isOnline) return false;
-
-          // MUST NOT be busy (isBusy === true)!
-          if (d.isBusy === true || d.isBusy === 'true') return false;
-
+          // 4. VERSION COMPATIBILITY: Allow V1.0+, V2.0+ and all valid client versions
+          // (V1.0 is officially supported and fully eligible to receive valet orders)
           return true;
         };
 
