@@ -1665,7 +1665,7 @@ export default function CreateOrderView({
         calculatedTotalFee: startingFeeApplied,
         weatherMultiplier: weatherMultiplier,
         isOnlineOrder: true,
-        orderType: isValet ? '后台指派订单' : '乘客下单'
+        orderType: isValet ? '商户代叫' : '二维码开单'
       };
       onStartTrip(newTrip);
       if (onClearOnlineOrder) onClearOnlineOrder();
@@ -1689,7 +1689,7 @@ export default function CreateOrderView({
       calculatedBaseFee: startingFeeApplied,
       calculatedTotalFee: startingFeeApplied,
       weatherMultiplier: weatherMultiplier,
-      orderType: scanSuccessMsg ? '二维码报单' : '报单'
+      orderType: scanSuccessMsg ? '二维码开单' : '报单'
     };
 
     onStartTrip(newTrip);
@@ -1925,18 +1925,18 @@ export default function CreateOrderView({
       {/* END: MapMarkerSection */}
 
       {/* BEGIN: OrderDetailsCard */}
-      <div className="bg-white rounded-t-3xl shadow-2xl z-20 px-6 pt-5 pb-6 shrink-0 border-t border-gray-100" data-purpose="order-form-container">
+      <div className="bg-white rounded-t-3xl shadow-2xl z-20 px-4 sm:px-6 pt-4 sm:pt-5 pb-[calc(1.5rem+max(env(safe-area-inset-bottom,0px),28px))] shrink-0 border-t border-gray-100 max-w-full overflow-hidden android-nav-safe-pb" data-purpose="order-form-container">
         {((scanSuccessMsg || (activeOnlineOrder && !isMerchantValetOrder)) && !scanBannerDismissed) && (
-          <div className="mb-4 bg-[#e8f8f2] border border-[#07c160]/30 rounded-2xl p-3.5 flex items-center justify-between animate-in slide-in-from-top-3 duration-200 shadow-xs">
-            <div className="flex items-center gap-2.5">
+          <div className="mb-4 bg-[#e8f8f2] border border-[#07c160]/30 rounded-2xl p-3 sm:p-3.5 flex items-center justify-between gap-2 animate-in slide-in-from-top-3 duration-200 shadow-xs max-w-full overflow-hidden">
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
               <div className="w-6 h-6 rounded-full bg-[#07c160] flex items-center justify-center shrink-0">
                 <CheckCircle2 className="w-4 h-4 text-white stroke-[2.5]" />
               </div>
-              <div className="flex flex-col">
-                <span className="text-sm font-black text-[#1a1c1c] leading-snug">
+              <div className="flex flex-col min-w-0 flex-1 overflow-hidden">
+                <span className="text-sm font-black text-[#1a1c1c] leading-snug truncate">
                   扫码成功并安全连线!
                 </span>
-                <span className="text-xs text-[#059669] font-medium leading-tight mt-0.5">
+                <span className="text-xs text-[#059669] font-medium leading-tight mt-0.5 truncate">
                   已接收乘客下单地址，点击下方「创建订单」即开启行驶计费
                 </span>
               </div>
@@ -1947,7 +1947,7 @@ export default function CreateOrderView({
                 setScanBannerDismissed(true);
                 setScanSuccessMsg(false);
               }}
-              className="text-gray-700 hover:text-black text-xs font-bold px-3 py-1.5 bg-white rounded-xl border border-gray-200/80 shadow-xs shrink-0 active:scale-95 transition-transform cursor-pointer"
+              className="text-gray-700 hover:text-black text-xs font-bold px-2.5 sm:px-3 py-1.5 bg-white rounded-xl border border-gray-200/80 shadow-xs shrink-0 active:scale-95 transition-transform cursor-pointer whitespace-nowrap"
             >
               知道了
             </button>
@@ -1955,14 +1955,14 @@ export default function CreateOrderView({
         )}
         
         {/* Pickup and Destination Inputs */}
-        <div className="space-y-3">
+        <div className="space-y-3 max-w-full overflow-hidden">
           
           {/* Pickup Point Row */}
-          <div className="flex items-center gap-3 py-2 border-b border-gray-100">
+          <div className="flex items-center gap-2 sm:gap-3 py-2 border-b border-gray-100 max-w-full overflow-hidden">
             <div className="w-2.5 h-2.5 bg-cyan-500 rounded-full shrink-0"></div>
-            <div className="flex-grow flex items-center justify-between overflow-hidden">
-              <span className="text-gray-400 text-xs shrink-0">出发地</span>
-              <div className="flex items-center text-cyan-700 font-bold ml-2 text-sm overflow-hidden select-text">
+            <div className="flex-grow flex items-center justify-between min-w-0 overflow-hidden">
+              <span className="text-gray-400 text-xs shrink-0 whitespace-nowrap">出发地</span>
+              <div className="flex items-center text-cyan-700 font-bold ml-2 text-sm min-w-0 overflow-hidden select-text">
                 <span className="truncate">{startLocation}</span>
                 <svg className="h-4 w-4 ml-1 text-gray-300 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
@@ -1982,14 +1982,14 @@ export default function CreateOrderView({
                 setShowDestinationSearch(true);
               }
             }}
-            className="flex items-center gap-3 bg-gray-50 hover:bg-white rounded-2xl px-4 py-2.5 border border-transparent hover:border-teal-500/20 active:scale-[0.99] transition-all cursor-pointer select-none"
+            className="flex items-center gap-2 sm:gap-3 bg-gray-50 hover:bg-white rounded-2xl px-3.5 sm:px-4 py-2.5 border border-transparent hover:border-teal-500/20 active:scale-[0.99] transition-all cursor-pointer select-none max-w-full overflow-hidden"
             id="destination-trigger"
           >
             <div className="w-2.5 h-2.5 bg-rose-500 rounded-full shrink-0"></div>
-            <div className="flex-grow flex items-center justify-between overflow-hidden">
+            <div className="flex-grow flex items-center justify-between min-w-0 overflow-hidden">
               {isMerchantValetOrder && !arrivedAtDeparture ? (
-                <div className="flex items-center gap-2 overflow-hidden flex-grow">
-                  <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/80 shrink-0">
+                <div className="flex items-center gap-2 min-w-0 overflow-hidden flex-grow">
+                  <span className="text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/80 shrink-0 whitespace-nowrap">
                     乘客出发地
                   </span>
                   <span className="text-sm font-bold text-gray-800 truncate">
@@ -2008,7 +2008,7 @@ export default function CreateOrderView({
           </div>
 
           {/* Phone Number Input Row */}
-          <div className="flex items-center gap-3 bg-gray-50 rounded-2xl px-4 py-2.5 border border-transparent focus-within:border-teal-500/30 focus-within:bg-white transition-all">
+          <div className="flex items-center gap-2 sm:gap-3 bg-gray-50 rounded-2xl px-3.5 sm:px-4 py-2 border border-transparent focus-within:border-teal-500/30 focus-within:bg-white transition-all max-w-full overflow-hidden">
             <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
             </svg>
@@ -2016,7 +2016,7 @@ export default function CreateOrderView({
               type="tel"
               value={phoneNumber}
               onChange={(e) => setPhoneNumber(e.target.value)}
-              className="bg-transparent border-none focus:ring-0 p-0 text-sm font-bold text-gray-800 flex-grow placeholder:text-gray-400 placeholder:font-normal focus:outline-hidden" 
+              className="bg-transparent border-none focus:ring-0 p-0 text-sm font-bold text-gray-800 flex-1 min-w-0 tracking-tight placeholder:text-gray-400 placeholder:font-normal focus:outline-hidden" 
               placeholder="客户手机号（选填）" 
             />
             {phoneNumber.trim() !== '' && (
@@ -2026,11 +2026,11 @@ export default function CreateOrderView({
                   e.stopPropagation();
                   window.location.href = `tel:${phoneNumber.trim()}`;
                 }}
-                className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-3 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all shrink-0 cursor-pointer"
+                className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-2.5 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all shrink-0 cursor-pointer whitespace-nowrap ml-auto"
                 title="一键拨打电话"
               >
-                <Phone className="w-3.5 h-3.5 fill-current" />
-                <span>一键拨打</span>
+                <Phone className="w-3.5 h-3.5 fill-current shrink-0" />
+                <span className="whitespace-nowrap">一键拨打</span>
               </a>
             )}
           </div>
@@ -2038,27 +2038,27 @@ export default function CreateOrderView({
         </div>
 
         {/* Price and Submit Action Row */}
-        <div className="mt-5 flex items-center justify-between">
-          <div data-purpose="price-estimation" className="text-left">
-            <div className="flex items-baseline leading-none">
-              <span className="text-gray-500 text-[11px] font-semibold mr-1.5">预估费用</span>
+        <div className="mt-4 sm:mt-5 flex items-center justify-between gap-2 max-w-full overflow-hidden">
+          <div data-purpose="price-estimation" className="text-left shrink-0 min-w-0">
+            <div className="flex items-baseline leading-none whitespace-nowrap shrink-0">
+              <span className="text-gray-500 text-[11px] font-semibold mr-1.5 whitespace-nowrap shrink-0">预估费用</span>
               {isMerchantValetOrder ? (
-                <span className="text-orange-500 font-black text-2xl tracking-tight ml-0.5">
+                <span className="text-orange-500 font-black text-xl sm:text-2xl tracking-tight ml-0.5 whitespace-nowrap">
                   自行协商
                 </span>
               ) : (
-                <>
+                <div className="flex items-baseline whitespace-nowrap">
                   <span className="text-orange-500 font-bold text-sm">¥</span>
-                  <span className="text-orange-500 font-black text-3xl ml-0.5 tracking-tight">
+                  <span className="text-orange-500 font-black text-2xl sm:text-3xl ml-0.5 tracking-tight">
                     {estimatedPrice.toFixed(2)}
                   </span>
-                </>
+                </div>
               )}
             </div>
             {!isMerchantValetOrder && (
-              <p className="text-gray-400 text-[10px] scale-95 origin-left mt-1 font-medium select-none">
+              <p className="text-gray-400 text-[10px] scale-95 origin-left mt-1 font-medium select-none truncate">
                 {routeDistance !== null && destination.trim() !== '' ? (
-                  <span className="text-teal-600 font-bold">
+                  <span className="text-teal-600 font-bold truncate">
                     预估里程: {routeDistance.toFixed(2)}公里 (起步含{activeSlot.includedDistance || 7}公里)
                   </span>
                 ) : destination.trim() !== '' ? (
@@ -2082,7 +2082,7 @@ export default function CreateOrderView({
               }
               handleCreateOrder();
             }}
-            className="bg-[#189F95] hover:bg-[#158C83] text-white px-8 py-3.5 rounded-xl font-bold text-base active:scale-95 shadow-md shadow-[#189F95]/25 transition-all font-sans cursor-pointer whitespace-nowrap shrink-0" 
+            className="bg-[#189F95] hover:bg-[#158C83] text-white px-4 sm:px-8 py-3.5 rounded-xl font-bold text-sm sm:text-base active:scale-95 shadow-md shadow-[#189F95]/25 transition-all font-sans cursor-pointer whitespace-nowrap shrink-0" 
             data-purpose="submit-order"
           >
             {isMerchantValetOrder ? (
@@ -2391,7 +2391,7 @@ export default function CreateOrderView({
           </div>
 
           {/* Bottom Action Footer */}
-          <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),16px))] border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
+          <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
             <button
               onClick={() => {
                 if (searchText.trim()) {

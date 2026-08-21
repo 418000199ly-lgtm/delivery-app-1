@@ -52,7 +52,7 @@ import {
 import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive } from '../types';
 import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
-import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc } from '../lib/dbProxy';
+import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveAndSyncDuplicateNames } from '../utils/nameResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
@@ -453,42 +453,65 @@ export default function HomeView({
     );
 
     try {
+      const orderPayload = {
+        passengerPhone: ord.passengerPhone || '商户代叫客户',
+        startLocation: ord.startLocation || '代叫起点',
+        destination: '由司机根据现场口头协商规划行程',
+        status: 'submitted',
+        timestamp: Date.now(),
+        isValetOrder: true,
+        isPlatformDispatch: true,
+        approxPrice: ord.approxPrice || '未知',
+        calculatedTotalFee: ord.calculatedTotalFee || 40.00,
+        estimatedPrice: ord.estimatedPrice || '40.00',
+        orderRemark: ord.orderRemark || '商户代叫',
+        needScooter: ord.needScooter,
+        scheduledTime: ord.scheduledTime || '现在（立即出发）',
+        passengerLat: finalLat,
+        passengerLng: finalLng,
+        distanceText: finalDistText,
+        orderId: ord.id || ord.orderId,
+        id: ord.id || ord.orderId,
+        dispatchedDriverPhone: userPhone || ''
+      };
+
       if (db) {
         await setDoc(doc(db, 'merchant_orders', ord.id), {
           status: 'claimed',
           dispatchedDriverPhone: userPhone || ''
-        }, { merge: true });
+        }, { merge: true }).catch(() => {});
       }
+
+      // Sync to HTTP server API (Baota / Aliyun backend)
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'merchant_orders', docId: ord.id, data: { status: 'claimed', dispatchedDriverPhone: userPhone || '' } })
+      }).catch(() => {});
 
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
         const updated = saved.filter((o: any) => o.id !== ord.id);
         localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+        window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
       } catch (_) {}
 
-      if (db && userPhone) {
-        await setDoc(doc(db, 'passenger_links', userPhone), {
-          passengerPhone: ord.passengerPhone,
-          startLocation: ord.startLocation,
-          destination: '由司机根据现场口头协商规划行程',
-          status: 'submitted',
-          timestamp: Date.now(),
-          isValetOrder: true,
-          isPlatformDispatch: true,
-          approxPrice: '未知',
-          calculatedTotalFee: 40.00,
-          estimatedPrice: '40.00',
-          orderRemark: ord.orderRemark || '商户代叫',
-          needScooter: ord.needScooter,
-          scheduledTime: ord.scheduledTime,
-          passengerLat: finalLat,
-          passengerLng: finalLng,
-          distanceText: finalDistText,
-          orderId: ord.id
-        });
+      if (userPhone) {
+        if (db) {
+          await setDoc(doc(db, 'passenger_links', userPhone), orderPayload).catch(() => {});
+        }
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'passenger_links', docId: userPhone, data: orderPayload })
+        }).catch(() => {});
       }
 
-      triggerToast('✓ 已成功接单！正为您弹出的新来单页面...');
+      // INSTANTLY trigger the full-screen Incoming Order Overlay modal on driver's screen!
+      window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
+
+      triggerToast('✓ 抢单成功！已为您弹出新来单确认界面');
     } catch (err: any) {
       alert('接单失败：' + err.message);
     }
@@ -696,7 +719,7 @@ export default function HomeView({
       </main>
 
       {/* Sticky Bottom Actions */}
-      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 py-4 border-t border-[#dfc0af]/60 flex flex-col gap-2 w-full max-w-md mx-auto">
+      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-[#dfc0af]/60 flex flex-col gap-2 w-full max-w-md mx-auto android-nav-safe-pb">
         <button 
           type="button"
           onClick={onCloseModal}
@@ -792,7 +815,7 @@ export default function HomeView({
       </main>
 
       {/* Sticky Footer */}
-      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 py-4 border-t border-[#dfc0af]/60 flex flex-col gap-3 w-full max-w-md mx-auto">
+      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-[#dfc0af]/60 flex flex-col gap-3 w-full max-w-md mx-auto android-nav-safe-pb">
         <button 
           type="button"
           onClick={() => setLocalAlert({
@@ -1637,7 +1660,7 @@ export default function HomeView({
 
       const minDistance = calculateDistance(finalCoords.lat, finalCoords.lng, closestDriver.lat, closestDriver.lng);
       
-      await setDoc(doc(db, 'passenger_links', closestDriver.phone), {
+      const orderPayload = {
         passengerPhone: dispatchPhone.trim() || '系统自主派单',
         startLocation: dispatchStartPlace,
         destination: '一键派单：由司机根据现场口头协商规划行程',
@@ -1648,7 +1671,22 @@ export default function HomeView({
         passengerLat: finalCoords.lat,
         passengerLng: finalCoords.lng,
         approxPrice: '未知'
-      });
+      };
+
+      if (db) {
+        await setDoc(doc(db, 'passenger_links', closestDriver.phone), orderPayload).catch(() => {});
+      }
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'passenger_links', docId: closestDriver.phone, data: orderPayload })
+      }).catch(() => {});
+
+      if (userPhone && (closestDriver.phone === userPhone || closestDriver.phone === '15509601222')) {
+        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
+      }
 
       alert(`🎉 派单成功！\n\n系统已自动为您寻找直线距离最近的司机：\n- 司机姓名: ${closestDriver.name}\n- 司机手机: ${closestDriver.phone}\n- 直线距离: ${minDistance.toFixed(2)} 公里\n\n不管距离多远，司机APP将立刻弹出语音播报及新来单界面！`);
       
@@ -2680,7 +2718,7 @@ export default function HomeView({
 
 
       {/* 5. Bottom System Controls (Matching Screen 4) */}
-      <div className="bg-white border-t border-gray-200/80 px-4 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),16px))] flex items-center justify-between gap-3 shadow-inner shrink-0 relative z-30 android-nav-safe-pb">
+      <div className="bg-white border-t border-gray-200/80 px-4 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] flex items-center justify-between gap-3 shadow-inner shrink-0 relative z-30 android-nav-safe-pb">
         
         {/* Settings button on left side */}
         <button
@@ -3074,7 +3112,7 @@ export default function HomeView({
             </header>
 
             {/* Main Content Canvas */}
-            <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-24">
+            <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-[calc(2.5rem+max(env(safe-area-inset-bottom,0px),28px))] android-nav-safe-pb">
               {/* Team Identity Hero Card */}
               <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 mb-6 shadow-xs overflow-hidden relative group border border-[#E0E0E0]">
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
@@ -3254,7 +3292,7 @@ export default function HomeView({
               </header>
 
               {/* Main Content Canvas */}
-              <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-24">
+              <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-[calc(2.5rem+max(env(safe-area-inset-bottom,0px),28px))] android-nav-safe-pb">
                 {/* Team Identity Hero Card */}
                 <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 mb-6 shadow-xs overflow-hidden relative group border border-[#E0E0E0]">
                   <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
@@ -3659,7 +3697,7 @@ export default function HomeView({
               </div>
 
               {/* Footer Action Area */}
-              <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2">
+              <div className="p-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
                 <button
                   onClick={() => {
                     setShowVipPurchaseModal(false);
@@ -3827,7 +3865,7 @@ export default function HomeView({
           </div>
 
           {/* Footer Action */}
-          <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2">
+          <div className="p-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
             <button
               onClick={() => {
                 setShowBuyPage(false);
@@ -3873,7 +3911,7 @@ export default function HomeView({
           </div>
 
           {/* Page Main Content area with relative scrolling */}
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          <div className="flex-1 overflow-y-auto px-4 pt-4 pb-[calc(2rem+max(env(safe-area-inset-bottom,0px),28px))] space-y-4 android-nav-safe-pb">
             
             {loadingApp ? (
               <div className="flex flex-col items-center justify-center py-20 space-y-3">
@@ -4735,7 +4773,17 @@ export default function HomeView({
                       {/* Tags */}
                       <div className="flex items-center justify-between pointer-events-none">
                         <span className="inline-block px-2.5 py-0.5 border border-slate-200 dark:border-zinc-700/80 rounded-md text-[10px] font-extrabold text-slate-500 dark:text-slate-400 bg-slate-50/50 dark:bg-zinc-900/50">
-                          {order.type === '企业单' ? '报单' : (order.type === '特惠代驾' ? '乘客下单' : (order.type === '后台指派订单' ? '商户代叫订单' : (order.type || '报单')))}
+                          {(() => {
+                            const t = (order.type || (order as any).orderType || '').trim();
+                            const r = ((order as any).orderRemark || (order as any).remark || '').trim();
+                            if (r === '商户代叫' || t === '商户代叫' || t === '商户代叫订单' || t === '后台指派订单' || (order as any).isMerchantValetOrder) {
+                              return '商户代叫';
+                            }
+                            if (t === '二维码开单' || t === '二维码创单' || t === '二维码报单' || t === '乘客下单' || t === '特惠代驾' || r === '二维码开单' || r === '乘客扫码创单' || (order as any).isOnlineOrder) {
+                              return '二维码开单';
+                            }
+                            return '报单';
+                          })()}
                         </span>
                       </div>
                     </div>

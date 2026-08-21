@@ -62,7 +62,33 @@
         window.addEventListener('resize', normalizeSystemFontScale);
         window.addEventListener('pageshow', normalizeSystemFontScale);
 
-        // 3. Disable multi-touch gesture zoom & double-tap zoom
+        // 3. Android System Navigation Bar Auto-Adapter Engine
+        function updateAndroidNavInsets() {
+          try {
+            var docEl = document.documentElement;
+            var screenHeight = window.screen ? window.screen.height : 0;
+            var windowHeight = window.innerHeight;
+            var navHeight = 0;
+            if (screenHeight > 0 && windowHeight > 0 && screenHeight > windowHeight) {
+              var diff = screenHeight - windowHeight;
+              if (diff >= 16 && diff <= 120) {
+                navHeight = diff;
+              }
+            }
+            docEl.style.setProperty('--android-nav-bar-height', navHeight + 'px');
+          } catch (e) {}
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', updateAndroidNavInsets);
+        } else {
+          updateAndroidNavInsets();
+        }
+        window.addEventListener('resize', updateAndroidNavInsets);
+        window.addEventListener('pageshow', updateAndroidNavInsets);
+        window.addEventListener('orientationchange', updateAndroidNavInsets);
+
+        // 4. Disable multi-touch gesture zoom & double-tap zoom
         document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false });
         document.addEventListener('gesturechange', function(e) { e.preventDefault(); }, { passive: false });
         document.addEventListener('gestureend', function(e) { e.preventDefault(); }, { passive: false });

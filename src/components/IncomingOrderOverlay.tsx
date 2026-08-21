@@ -252,7 +252,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       calculatedBaseFee: startPrice,
       calculatedTotalFee: startPrice,
       isOnlineOrder: true,
-      orderType: order.isValetOrder ? '后台指派订单' : '乘客下单',
+      orderType: order.isValetOrder ? '商户代叫' : '二维码开单',
     };
     onAccept(trip);
   };
@@ -264,7 +264,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative py-6 pb-20 shrink-0">
         <div className="w-full flex justify-between items-center mb-3">
           <span className="text-white/80 font-semibold text-xs tracking-wider">
-            {order.isValetOrder || order.isPlatformDispatch ? '⚠️ 商户代叫订单' : '⚡ 二维码开单'}
+            {order.isValetOrder || order.isPlatformDispatch ? '⚠️ 商户代叫' : '⚡ 二维码开单'}
           </span>
           <button 
             onClick={onDecline}
@@ -384,7 +384,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       </main>
 
       {/* STICKY FOOTER ACTIONS */}
-      <footer className="absolute bottom-0 left-0 right-0 pt-3 px-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),16px))] bg-white border-t border-gray-100 flex flex-col items-center z-50 android-nav-safe-pb">
+      <footer className="absolute bottom-0 left-0 right-0 pt-3 px-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white border-t border-gray-100 flex flex-col items-center z-50 android-nav-safe-pb">
         {/* Countdown message */}
         <div className="w-full flex justify-center items-center py-2.5 text-center">
           <span className="text-sm font-bold text-[#e61a1a] animate-pulse">

@@ -31,8 +31,8 @@ async function main() {
     fs.writeFileSync(t, png1024Buf);
   }
 
-  // Clean asset URL pointer
-  const b64 = `export const HWDJ_LOGO_DATA_URL = "/hwdjtb.png";\n`;
+  // ESM asset import pointer for Vite bundler compatibility across Web, Android APK, and iOS
+  const b64 = `import hwdjLogoPng from './images/hwdjtb.png';\n\nexport const HWDJ_LOGO_DATA_URL = hwdjLogoPng;\n`;
   fs.writeFileSync('src/assets/hwdjLogoBase64.ts', b64);
 
   // PWA sizes

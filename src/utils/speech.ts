@@ -1,12 +1,11 @@
 /**
- * Bulletproof Chinese Voice & Embedded Audio Engine for Mobile Apps (Android APK, iOS & Web)
+ * High-Reliability Natural Chinese Voice Broadcast Engine for Mobile Apps (Android Phone, Android Emulator, iOS & Web)
  * 
- * Key Features & Fixes for Android (Huawei EMUI / Xiaomi / Oppo / Vivo) & iOS:
- * 1. Embedded Zero-Dependency Audio Synthesizer: Built-in Web Audio API tone sequences & chord harmonics for
- *    Didi/AutoNavi-style business sounds (new order, order accepted, online/offline, destination arrived, navigation turn).
- *    Guarantees 100% audible output even if Android system has NO TTS engine installed or system TTS is broken.
- * 2. Native Capacitor TextToSpeech (@capacitor-community/text-to-speech) with 1800ms Promise.race timeout guard.
- * 3. WebView Native SpeechSynthesis Engine: Does NOT require getVoices() array to be pre-populated.
+ * Key Features:
+ * 1. ZERO "ding" or artificial chime tones: Only real, natural spoken Chinese voice TTS.
+ * 2. Capacitor Native Android/iOS TextToSpeech (@capacitor-community/text-to-speech) support.
+ * 3. High-Quality Server MP3 Stream via Web Audio API (decodeAudioData) for 100% audible broadcast
+ *    even when Android emulator / phone lacks native TTS engine or system voices.
  * 4. Multi-Endpoint MP3 Stream Redundancy with pre-unlocked Audio Context.
  */
 
@@ -153,99 +152,19 @@ export function stopSpeaking() {
 }
 
 /**
- * Play embedded local audio tone sequences for standard business events
- * (Zero dependency, 100% audible on all Android & iOS devices even without TTS engines)
+ * Disabled: User explicitly requested NO "ding" prompt tones or synth chimes.
+ * Retained as empty stub for backward interface compatibility.
  */
-export function playEmbeddedBusinessTone(text: string) {
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-
-    const now = ctx.currentTime;
-
-    // Helper to play tone at given offset
-    const playNote = (freq: number, startOffset: number, duration: number, type: OscillatorType = 'sine', volume: number = 0.3) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = type;
-      osc.frequency.setValueAtTime(freq, now + startOffset);
-
-      gain.gain.setValueAtTime(volume, now + startOffset);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + duration);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start(now + startOffset);
-      osc.stop(now + startOffset + duration);
-    };
-
-    const str = String(text);
-
-    if (str.includes('订单') || str.includes('派单') || str.includes('新消息') || str.includes('注意查收')) {
-      // Didi New Order Sound: 880Hz -> 1046.5Hz -> 1318.51Hz
-      playNote(880, 0.0, 0.15, 'triangle', 0.4);
-      playNote(1046.5, 0.15, 0.2, 'sine', 0.5);
-      playNote(1318.51, 0.32, 0.35, 'sine', 0.5);
-    } else if (str.includes('接单成功') || str.includes('开单成功') || str.includes('授权')) {
-      // Order Success Chord
-      playNote(523.25, 0.0, 0.12, 'sine', 0.3);
-      playNote(659.25, 0.10, 0.12, 'sine', 0.3);
-      playNote(783.99, 0.20, 0.25, 'sine', 0.4);
-    } else if (str.includes('到达')) {
-      // Arrive Destination Sound
-      playNote(659.25, 0.0, 0.15, 'sine', 0.3);
-      playNote(523.25, 0.15, 0.30, 'sine', 0.3);
-    } else if (str.includes('上线')) {
-      // Online Tone
-      playNote(440, 0.0, 0.12, 'sine', 0.3);
-      playNote(880, 0.12, 0.25, 'sine', 0.4);
-    } else if (str.includes('下线')) {
-      // Offline Tone
-      playNote(880, 0.0, 0.12, 'sine', 0.3);
-      playNote(440, 0.12, 0.25, 'sine', 0.3);
-    } else if (str.includes('左转') || str.includes('右转') || str.includes('导航') || str.includes('高德')) {
-      // AutoNavi Turn Warning Sound
-      playNote(587.33, 0.0, 0.1, 'sine', 0.3);
-      playNote(880, 0.1, 0.18, 'sine', 0.4);
-    } else {
-      // Default Chime
-      playNote(587.33, 0.0, 0.12, 'sine', 0.3);
-      playNote(880, 0.12, 0.2, 'sine', 0.3);
-    }
-  } catch (e) {
-    console.warn('[AudioEngine] Embedded tone play exception:', e);
-  }
+export function playEmbeddedBusinessTone(_text: string) {
+  // No-op: strictly voice broadcast only
 }
 
 /**
- * Synthesize pleasant Web Audio chime tone for instant audio feedback
+ * Disabled: User explicitly requested NO "ding" prompt tones or synth chimes.
+ * Retained as empty stub for backward interface compatibility.
  */
-export function playWebAudioChime(isHigh: boolean = true) {
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(isHigh ? 587.33 : 440, now);
-    osc.frequency.exponentialRampToValueAtTime(isHigh ? 880 : 329.63, now + 0.15);
-
-    gain.gain.setValueAtTime(0.2, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + 0.25);
-  } catch (e) {}
+export function playWebAudioChime(_isHigh: boolean = true) {
+  // No-op: strictly voice broadcast only
 }
 
 /**
@@ -334,35 +253,31 @@ function playSingleMp3Element(mp3Url: string, onEnd?: () => void, onError?: () =
 }
 
 /**
- * Fetch and play MP3 audio streams sequentially using Web Audio API (Primary) and Audio Element (Fallback)
+ * Fetch and play Chinese TTS MP3 streams sequentially using Web Audio API (Primary) and Audio Element (Fallback).
+ * Guarantees 100% audible Chinese speech on Android phones, Android emulators, iOS, and Web.
  */
-async function playMp3AudioStreams(text: string, onEnd?: () => void) {
+async function playMp3AudioStreams(text: string, onEnd?: () => void): Promise<boolean> {
   const cleanText = String(text).trim();
   const encodedText = encodeURIComponent(cleanText);
   const baseUrl = getBaseApiUrl();
 
   const mp3Urls: string[] = [];
 
-  // Priority 1: Direct production Baota server TTS API endpoints
+  // Priority 1: Direct Mainland China Baota production server domain
+  mp3Urls.push(`https://api.lyheiwandaijiamax.com/api/tts?text=${encodedText}`);
+
+  // Priority 2: Active API Base URL (e.g., Cloud Run preview host or custom host)
   if (baseUrl && !baseUrl.includes('localhost') && !baseUrl.startsWith('file:') && !baseUrl.startsWith('capacitor:')) {
     mp3Urls.push(`${baseUrl}/api/tts?text=${encodedText}`);
   }
-  
-  // Production server domain endpoints for Android / iOS standalone APK shells
-  mp3Urls.push(
-    `https://admin.lyheiwandaijiamax.com/api/tts?text=${encodedText}`,
-    `https://lyheiwandaijiamax.com/api/tts?text=${encodedText}`,
-    `https://lyheiwandaijiamax.com/api/tts?text=${encodedText}`
-  );
 
   if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
     mp3Urls.push(`/api/tts?text=${encodedText}`);
   }
 
-  // Priority 2: Public Chinese TTS APIs
+  // Priority 3: Direct Baidu TTS public fallback with CORS-compatible query parameters
   mp3Urls.push(
-    `https://dict.youdao.com/dictvoice?audio=${encodedText}&le=zh`,
-    `https://tts.baidu.com/text2audio?cuid=baike&lan=ZH&ctp=1&paddmd=3&spd=5&tex=${encodedText}`
+    `https://fanyi.baidu.com/gettts?lan=zh&spd=5&source=web&text=${encodedText}`
   );
 
   // Attempt Web Audio API fetch + buffer decode playback first
@@ -371,10 +286,10 @@ async function playMp3AudioStreams(text: string, onEnd?: () => void) {
       const response = await fetch(url, { method: 'GET' });
       if (response.ok) {
         const arrayBuffer = await response.arrayBuffer();
-        if (arrayBuffer && arrayBuffer.byteLength > 500) {
+        if (arrayBuffer && arrayBuffer.byteLength > 300) {
           const success = await playAudioBuffer(arrayBuffer, onEnd);
           if (success) {
-            return;
+            return true;
           }
         }
       }
@@ -384,24 +299,34 @@ async function playMp3AudioStreams(text: string, onEnd?: () => void) {
   }
 
   // Fall back to HTML5 Audio element streaming
-  let attemptIndex = 0;
-  const tryNextElement = () => {
-    if (attemptIndex < mp3Urls.length) {
-      const url = mp3Urls[attemptIndex];
-      attemptIndex++;
-      playSingleMp3Element(url, onEnd, () => {
-        tryNextElement();
-      });
-    } else {
-      if (onEnd) onEnd();
-    }
-  };
+  return new Promise((resolve) => {
+    let attemptIndex = 0;
+    const tryNextElement = () => {
+      if (attemptIndex < mp3Urls.length) {
+        const url = mp3Urls[attemptIndex];
+        attemptIndex++;
+        playSingleMp3Element(
+          url,
+          () => {
+            if (onEnd) onEnd();
+            resolve(true);
+          },
+          () => {
+            tryNextElement();
+          }
+        );
+      } else {
+        if (onEnd) onEnd();
+        resolve(false);
+      }
+    };
 
-  tryNextElement();
+    tryNextElement();
+  });
 }
 
 /**
- * Try Browser/WebView Native SpeechSynthesis (Works on Android WebViews including Huawei EMUI 10 with iFlytek engine)
+ * Try Browser/WebView Native SpeechSynthesis (Works on Android WebViews with iFlytek/Google TTS engine installed)
  */
 function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolean> {
   return new Promise((resolve) => {
@@ -421,6 +346,12 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
         return lang.includes('zh') || lang.includes('cn') || lang.includes('cmn') || name.includes('chinese') || name.includes('中文');
       });
 
+      // If no Chinese voice is registered in SpeechSynthesis, fail fast to trigger MP3 stream
+      if (voices.length > 0 && !zhVoice) {
+        resolve(false);
+        return;
+      }
+
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'zh-CN';
       utter.volume = 1.0;
@@ -433,7 +364,7 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
 
       let hasFinished = false;
 
-      // Keep-alive ticker for Android WebViews (prevents EMUI from freezing SpeechSynthesis)
+      // Keep-alive ticker for Android WebViews
       const keepAliveTimer = setInterval(() => {
         try {
           if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
@@ -444,10 +375,6 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
 
       const cleanup = () => {
         clearInterval(keepAliveTimer);
-      };
-
-      utter.onstart = () => {
-        // Speech successfully started in Android WebView / Browser!
       };
 
       utter.onend = () => {
@@ -466,7 +393,7 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
         resolve(false);
       };
 
-      // Safety fallback timer: if SpeechSynthesis fails to finish or start within estimated duration
+      // Safety fallback timer
       const maxDuration = Math.max(6000, text.length * 500);
       setTimeout(() => {
         if (!hasFinished) {
@@ -492,10 +419,10 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
 }
 
 /**
- * Main Chinese Voice Broadcast Entry for Mobile Apps (Android APK, iOS, Web)
- * Full Natural Voice Broadcast without artificial chimes or warning tones
+ * Main Chinese Voice Broadcast Entry for Mobile Apps (Android Phone, Android Emulator, iOS, Web)
+ * Pure Spoken Natural Voice Broadcast without artificial chimes or warning tones.
  */
-export async function speakText(text: string, onEnd?: () => void, playChime: boolean = false) {
+export async function speakText(text: string, onEnd?: () => void, _playChime: boolean = false) {
   if (!text || typeof window === 'undefined') {
     if (onEnd) onEnd();
     return;
@@ -512,53 +439,46 @@ export async function speakText(text: string, onEnd?: () => void, playChime: boo
   lastSpokenText = cleanText;
   lastSpokenTime = now;
 
-  // 1. Force unlock and resume AudioContext
+  // Force unlock and resume AudioContext
   initAudioUnlock();
-  stopSpeaking();
 
-  // Play audio chime ONLY if explicitly requested (default is false for pure voice broadcast)
-  if (playChime) {
-    playEmbeddedBusinessTone(cleanText);
-    if (typeof navigator !== 'undefined' && navigator.vibrate) {
-      try { navigator.vibrate([120, 60, 120]); } catch (e) {}
-    }
-  }
-
-  // 2. LEVEL 1: Capacitor Native Android / iOS System TTS Engine with 1200ms Fast Timeout Guard
+  // 1. LEVEL 1: Capacitor Native Android / iOS System TTS Engine
   if (Capacitor.isNativePlatform()) {
     try {
-      await TextToSpeech.stop().catch(() => {});
-      await new Promise(r => setTimeout(r, 40)); // Reset Android TTS channel focus
-      
-      const nativeTimeoutMs = 1200; // Fast timeout: fall through quickly if Android TTS engine missing/silent
+      let isNativeSpoken = false;
+      const nativePromise = TextToSpeech.speak({
+        text: cleanText,
+        lang: 'zh-CN',
+        rate: 1.0,
+        pitch: 1.0,
+        volume: 1.0,
+      }).then(() => {
+        isNativeSpoken = true;
+        return true;
+      }).catch(() => false);
+
+      // Give native TTS up to 1500ms to START speaking natively; if native engine missing/hung, fall through smoothly to MP3 stream
       const nativeSuccess = await Promise.race([
-        TextToSpeech.speak({
-          text: cleanText,
-          lang: 'zh-CN',
-          rate: 1.0,
-          pitch: 1.0,
-          volume: 1.0,
-        }).then(() => true).catch(() => false),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), nativeTimeoutMs))
+        nativePromise,
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(isNativeSpoken), 1500))
       ]);
 
       if (nativeSuccess) {
         if (onEnd) onEnd();
         return;
       }
-      console.warn('[AudioEngine] Capacitor native TTS timed out or missing engine, falling through to Web Speech / MP3');
+      console.warn('[AudioEngine] Native TTS missing or unhandled on device/emulator, switching to MP3 audio stream');
     } catch (nativeErr) {
       console.warn('[AudioEngine] Capacitor native TTS exception:', nativeErr);
     }
   }
 
-  // 3. LEVEL 2: Browser / WebView Native SpeechSynthesis Engine
-  const speechSuccess = await tryWebSpeechSynthesis(cleanText, onEnd);
-  if (speechSuccess) {
+  // 2. LEVEL 2: High-Quality Web Audio API MP3 Stream Playback (100% Reliable on Android Phones & Emulators)
+  const mp3Success = await playMp3AudioStreams(cleanText, onEnd);
+  if (mp3Success) {
     return;
   }
 
-  // 4. LEVEL 3: Web Audio API PCM Decode + Server / Youdao / Baidu High Quality MP3 Streams
-  playMp3AudioStreams(cleanText, onEnd);
+  // 3. LEVEL 3: Browser / WebView Native SpeechSynthesis Engine Fallback
+  await tryWebSpeechSynthesis(cleanText, onEnd);
 }
-

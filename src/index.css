@@ -53,7 +53,7 @@ button, input, select, textarea, a {
 }
 
 .pb-safe {
-  padding-bottom: calc(0.75rem + max(env(safe-area-inset-bottom, 0px), 12px)) !important;
+  padding-bottom: calc(0.75rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 24px)) !important;
 }
 
 .mt-safe {
@@ -69,11 +69,15 @@ button, input, select, textarea, a {
 }
 
 .footer-safe-pb {
-  padding-bottom: calc(0.875rem + max(env(safe-area-inset-bottom, 0px), 14px)) !important;
+  padding-bottom: calc(0.875rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 28px)) !important;
 }
 
 .android-nav-safe-pb {
-  padding-bottom: calc(0.875rem + max(env(safe-area-inset-bottom, 0px), 16px)) !important;
+  padding-bottom: calc(1rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 28px)) !important;
+}
+
+.bottom-sheet-safe-pb {
+  padding-bottom: calc(1.25rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 32px)) !important;
 }
 
 /* Custom scrollbar to resemble standard mobile app list views */

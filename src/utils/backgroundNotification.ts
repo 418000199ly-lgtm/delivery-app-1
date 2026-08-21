@@ -132,7 +132,7 @@ export async function triggerBackgroundOrderAlert(order: any) {
 
   // 1. Loud Voice TTS Alert ("注意，收到新代驾分配订单，起点：...")
   const speechText = `注意！收到新的代驾派单，起点：${startLoc}，请及时查看并确认接单！`;
-  speakText(speechText, undefined, true);
+  speakText(speechText);
 
   // 2. High-intensity vibration
   if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {

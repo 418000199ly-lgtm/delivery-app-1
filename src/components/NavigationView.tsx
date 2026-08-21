@@ -928,7 +928,7 @@ export default function NavigationView({
         </div>
 
         {/* RIGHT MIDDLE FLOATING CONTROLS: ↻, +, - (Matching q7.png) */}
-        <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),16px)+84px)] right-4 z-20 flex flex-col items-center gap-2">
+        <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px)+84px)] right-4 z-20 flex flex-col items-center gap-2">
           {/* Recalculate / Refresh Route Button ↻ */}
           <button
             onClick={() => {
@@ -975,7 +975,7 @@ export default function NavigationView({
         </div>
 
         {/* BOTTOM CENTER FLOATING MILEAGE & FEE BADGE (Synced live with trip) */}
-        <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),16px)+66px)] left-1/2 -translate-x-1/2 z-20">
+        <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px)+66px)] left-1/2 -translate-x-1/2 z-20">
           <div className="bg-black/95 text-white px-5 py-2.5 rounded-2xl shadow-2xl border border-slate-800 flex flex-col items-center justify-center">
             <div className="flex items-center gap-6 text-[11px] font-medium text-slate-400">
               <span>里程</span>
@@ -989,7 +989,7 @@ export default function NavigationView({
         </div>
 
         {/* BOTTOM LEFT MAP SCALE INDICATOR (Dynamically synchronized with zoom level) */}
-        <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),16px)+66px)] left-4 z-20 flex flex-col items-start select-none">
+        <div className="absolute bottom-[calc(max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px)+66px)] left-4 z-20 flex flex-col items-start select-none">
           <div className="text-[10px] font-bold text-slate-700 mb-0.5 ml-0.5">{scaleText}</div>
           <div 
             style={{ width: `${scaleBarWidth}px` }} 
@@ -1004,7 +1004,7 @@ export default function NavigationView({
         </div>
 
         {/* BOTTOM ACTION BAR ("退出 | 路线全览 / 恢复导航(25m)") (Adapted to Android bottom navigation bar / gesture bar) */}
-        <div className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-6 pt-3.5 pb-[calc(max(env(safe-area-inset-bottom,0px),16px)+12px)] shadow-2xl flex items-center justify-between">
+        <div className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-6 pt-3.5 pb-[calc(max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px)+12px)] shadow-2xl flex items-center justify-between android-nav-safe-pb">
           <button
             onClick={handleExit}
             className="text-slate-800 font-bold text-base hover:text-slate-900 px-3 py-1 active:scale-95 transition-transform"

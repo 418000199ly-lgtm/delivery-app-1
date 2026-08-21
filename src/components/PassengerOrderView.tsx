@@ -504,7 +504,7 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
         </main>
 
         {/* Bottom Action Bar (Sticky inside Phone Container) */}
-        <div className="sticky bottom-0 left-0 w-full bg-white border-t border-[#dfc0af] p-3 z-30 shrink-0 shadow-lg" style={{ backgroundColor: '#ffffff', borderTop: '1px solid #dfc0af' }}>
+        <div className="sticky bottom-0 left-0 w-full bg-white border-t border-[#dfc0af] px-3 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] z-30 shrink-0 shadow-lg android-nav-safe-pb" style={{ backgroundColor: '#ffffff', borderTop: '1px solid #dfc0af' }}>
           <div className="max-w-md mx-auto">
             <button 
               onClick={() => {

@@ -1690,9 +1690,9 @@ export default function AdminPanel({
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-11/12 max-w-xl p-4 bg-amber-500/15 border border-amber-500/20 rounded-2xl text-amber-200 text-xs flex items-start gap-3 backdrop-blur-md shadow-lg animate-in fade-in duration-300">
           <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <p className="font-bold">Firestore 数据库连接受阻</p>
+            <p className="font-bold">数据库连接受阻</p>
             <p className="text-slate-400 leading-normal">
-              请检查您的网络连接或 Firestore 配置规则，当前处于脱机安全状态。
+              请检查您的网络连接或宝塔 / 阿里云 API 服务器配置规则，当前处于脱机安全状态。
               <span className="block font-mono bg-slate-950/40 p-1.5 rounded mt-1 text-[10px] text-red-400">{dbError}</span>
             </p>
           </div>
@@ -1716,7 +1716,7 @@ export default function AdminPanel({
           </div>
           <div className="flex items-center space-x-1.5 pt-2">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="text-[10px] text-slate-500 font-mono">Firestore Cloud Connected</span>
+            <span className="text-[10px] text-slate-500 font-mono">Aliyun Baota API Connected</span>
           </div>
         </div>
 
@@ -2155,7 +2155,7 @@ export default function AdminPanel({
             </h1>
             <p className="text-xs text-slate-500">
               {activeTab === 'overview' && '决策概览数据自动汇总，直观掌控卡密发布流通与司机注册状态。'}
-              {activeTab === 'generate' && '支持自拟时长批量配置，自动排重防破，直接写入Firestore存储区。'}
+              {activeTab === 'generate' && '支持自拟时长批量配置，自动排重防破，直接写入数据库存储区。'}
               {activeTab === 'codes' && '可视化检索在链的VIP卡密数据，支持按规格 and 对换状态联合物理删除。'}
               {activeTab === 'drivers' && '手机号为唯一登入凭据。在这里手动改变司机剩余天数，移动端无感实时联动生效。'}
               {activeTab === 'sms' && '实时修改和发布最新应用版本号，可开启全屏强更或一键降级隐藏强制弹窗。'}
@@ -2547,7 +2547,7 @@ export default function AdminPanel({
                   {generating ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      正在极速对接 Firestore 写入卡密...
+                      正在极速对接数据库写入卡密...
                     </>
                   ) : (
                     <>
@@ -2693,7 +2693,7 @@ export default function AdminPanel({
               {loading ? (
                 <div className="h-full flex flex-col items-center justify-center space-y-2 p-8">
                   <Loader2 className="w-8 h-8 text-teal-500 animate-spin" />
-                  <span className="text-xs text-slate-500">正在与 Firestore 云存储库保持同步实时侦听...</span>
+                  <span className="text-xs text-slate-500">正在与宝塔 / 阿里云 API 云数据库保持同步实时侦听...</span>
                 </div>
               ) : filteredCodes.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center p-12 text-center text-slate-500">
@@ -2851,7 +2851,7 @@ export default function AdminPanel({
                   ) : foundDriver === null ? (
                     <div className="text-center py-6 text-slate-500 flex flex-col items-center justify-center space-y-2">
                       <Loader2 className="w-6 h-6 text-amber-500 animate-spin" />
-                      <span className="text-[10px]">从 Firestore 极速检索账户...</span>
+                      <span className="text-[10px]">从数据库极速检索账户...</span>
                     </div>
                   ) : foundDriver === true && driverDoc ? (
                     <div className="space-y-4 animate-in fade-in duration-200">
@@ -3861,7 +3861,7 @@ export default function AdminPanel({
 
                   <div className="bg-amber-500/5 rounded-xl p-3 border border-dashed border-amber-500/10 text-[9.5px] leading-relaxed text-slate-400 font-medium">
                     <p className="font-bold text-amber-500 mb-0.5">ℹ 温馨机制说明 :</p>
-                    这里使用的消息系统依托 Firestore Cloud 物理级双向监听机制。当客户端处于在线或挂起状态时，将会在 0.1秒 内实时监听到新消息，并抛出明显的模态气盘，阅后即消，体验绝佳。
+                    这里使用的消息系统依托宝塔 / 阿里云 API 高频实时双向监听机制。当客户端处于在线或挂起状态时，将会在 0.1秒 内实时监听到新消息，并抛出明显的模态气盘，阅后即消，体验绝佳。
                   </div>
 
                 </div>

@@ -368,6 +368,7 @@ export default function App() {
         return 'passenger';
       }
       if (hostname === 'api.lyheiwandaijiamax.com' || params.get('dispatch') === 'true') {
+        document.title = '商户代叫系统';
         return 'dispatch_valet';
       }
       if (hostname === 'admin.lyheiwandaijiamax.com' || params.get('admin') === 'true') {
@@ -1179,8 +1180,23 @@ export default function App() {
       }
     });
 
+    // Custom event listener to force trigger incoming order overlay popup
+    const handleCustomTrigger = (e: any) => {
+      if (e.detail) {
+        const data = e.detail;
+        const rawTime = Number(data.timestamp || data.updatedAt || Date.now());
+        const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
+        dismissedIncomingOrderKeysRef.current.delete(orderKey);
+        triggerBackgroundOrderAlert(data);
+        setIncomingOrder(data);
+        setActiveOnlineOrder(data);
+      }
+    };
+    window.addEventListener('trigger_incoming_order', handleCustomTrigger);
+
     return () => {
       cleanup();
+      window.removeEventListener('trigger_incoming_order', handleCustomTrigger);
     };
   }, []);
 
@@ -1219,14 +1235,6 @@ export default function App() {
             data.type === '后台指派订单'
           );
           if (isValet) {
-            // CRITICAL RULE: Version V1.0 is strictly barred from receiving merchant valet orders!
-            const dVer = (sysVersion || '').trim().toUpperCase();
-            if (dVer === 'V1.0' || dVer.startsWith('V1.0')) {
-              console.warn('[Dispatch] Discarding merchant valet order: Driver app version is V1.0, minimum required is V2.0+');
-              setIncomingOrder(null);
-              return;
-            }
-
             // Trigger high-priority system alert for background / lockscreen
             triggerBackgroundOrderAlert(data);
             setIncomingOrder(data);
@@ -1447,7 +1455,12 @@ export default function App() {
           startLocation: currentTrip.startLocation || '未定位起点',
           endLocation: currentTrip.endLocation || '未定位终点',
           passengerPhone: currentTrip.passengerPhone ? currentTrip.passengerPhone.trim() : '',
-          type: currentTrip.orderType || (currentTrip.isOnlineOrder ? '乘客下单' : '报单'),
+          type: (() => {
+            const ot = currentTrip.orderType;
+            if (ot === '商户代叫' || ot === '后台指派订单' || currentTrip.orderRemark === '商户代叫') return '商户代叫';
+            if (ot === '二维码开单' || ot === '二维码报单' || ot === '乘客下单' || currentTrip.isOnlineOrder) return '二维码开单';
+            return ot || '报单';
+          })(),
           status: '已支付'
         };
         orders.unshift(newOrder);

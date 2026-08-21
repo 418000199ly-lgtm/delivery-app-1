@@ -1948,11 +1948,8 @@ export default function DispatchValetOrder({
             }
           }
 
-          // 4. VERSION FILTER: Strictly DO NOT dispatch merchant valet orders to drivers running version V1.0! Minimum required is V2.0+
-          const rawVer = (d.version || d.appVersion || d.driverVersion || d.sysVersion || sm?.version || sm?.appVersion || '').trim().toUpperCase();
-          if (rawVer === 'V1.0' || rawVer.startsWith('V1.0')) {
-            return false;
-          }
+          // 4. VERSION FILTER: All driver app versions (V1.0+, V2.0+) are fully eligible for merchant valet orders
+          // (No restrictive version blocking)
 
           // 5. If checking currently logged-in user, check localIsOnline directly
           if (userPhone && phone === userPhone) {
@@ -2116,6 +2113,10 @@ export default function DispatchValetOrder({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ collection: 'passenger_links', docId: chosenDriver.phone, data: passengerLinkPayload })
           }).catch(() => {});
+
+          if (userPhone && (chosenDriver.phone === userPhone || chosenDriver.phone === '15509601222')) {
+            window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
+          }
 
           setIsDispatching(false);
           setButtonState('success');
@@ -2434,8 +2435,9 @@ export default function DispatchValetOrder({
                 <Phone className="w-4 h-4 absolute left-3 text-[#584235] shrink-0" />
                 <input
                   type="tel"
+                  maxLength={11}
                   value={passengerPhone}
-                  onChange={(e) => setPassengerPhone(e.target.value)}
+                  onChange={(e) => setPassengerPhone(e.target.value.replace(/\D/g, '').slice(0, 11))}
                   placeholder="请输入乘客手机号"
                   className="w-full h-11 pl-9 pr-4 bg-[#f3f3f3] border border-[#dfc0af] rounded-xl focus:ring-2 focus:ring-[#ff7d00]/30 focus:border-[#ff7d00] outline-none transition-all text-xs font-mono text-[#1a1c1c]"
                 />
@@ -2578,7 +2580,7 @@ export default function DispatchValetOrder({
       </main>
 
       {/* Bottom Action Bar */}
-      <footer className="sticky bottom-0 left-0 right-0 z-40 bg-white border-t border-[#e2e2e2] px-5 py-3 shadow-lg shrink-0 mt-auto">
+      <footer className="sticky bottom-0 left-0 right-0 z-40 bg-white border-t border-[#e2e2e2] px-5 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] shadow-lg shrink-0 mt-auto android-nav-safe-pb">
         <div className="max-w-xl mx-auto space-y-2">
           
           <div className="flex items-center justify-between">
@@ -2996,41 +2998,23 @@ export default function DispatchValetOrder({
         };
 
         const defaultMembers = [
-          adminMember,
-          {
-            id: 'm-1',
-            name: '王心凌',
-            role: '城市管理司机',
-            phone: '13912345678',
-            status: '已通过',
-            approvedBy: currentAdminName,
-            approvedRole: currentAdminRole,
-            avatarBg: 'bg-[#cce5ff] text-[#001e31]',
-          },
-          {
-            id: 'm-2',
-            name: '张一山',
-            role: '城市老板司机',
-            phone: '15509601223',
-            status: '已通过',
-            approvedBy: currentAdminName,
-            approvedRole: currentAdminRole,
-            avatarBg: 'bg-[#ffdbc8] text-[#311300]',
-          },
-          {
-            id: 'm-3',
-            name: '李小龙',
-            role: '普通司机',
-            phone: '15555556666',
-            status: '已通过',
-            approvedBy: currentAdminName,
-            approvedRole: currentAdminRole,
-            avatarBg: 'bg-[#e2e2e2] text-[#584235]',
-          }
+          adminMember
         ];
+
+        const isMockDriver = (item: any) => {
+          if (!item) return false;
+          const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
+          const mockNames = ['王心凌', '张一山', '李小龙'];
+          return Boolean(
+            (item.phone && mockPhones.includes(item.phone)) ||
+            (item.id && mockPhones.includes(item.id)) ||
+            (item.name && mockNames.some(mn => item.name.includes(mn)))
+          );
+        };
 
         const isRemovedItem = (item: any) => {
           if (!item) return true;
+          if (isMockDriver(item)) return true;
           return Boolean(
             (item.phone && removedMemberPhones.includes(item.phone)) ||
             (item.id && removedMemberPhones.includes(item.id)) ||
@@ -3937,16 +3921,16 @@ export default function DispatchValetOrder({
                     </div>
                   </div>
 
-                  <div className="p-3.5 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-[#ff7d00]/10 border border-[#ff7d00]/30 flex items-center justify-center text-[#ff7d00] font-bold text-sm">
+                  <div className="p-3.5 flex items-center justify-between gap-2 max-w-full overflow-hidden">
+                    <div className="flex items-center gap-3 min-w-0 flex-1 overflow-hidden">
+                      <div className="w-10 h-10 rounded-full bg-[#ff7d00]/10 border border-[#ff7d00]/30 flex items-center justify-center text-[#ff7d00] font-bold text-sm shrink-0">
                         {resolvedDriverName?.[0] || '司'}
                       </div>
-                      <div>
-                        <p className="font-bold text-sm text-[#1a1c1c]">
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <p className="font-bold text-sm text-[#1a1c1c] truncate">
                           接单司机：{resolvedDriverName}
                         </p>
-                        <p className="text-xs text-[#584235] font-mono">
+                        <p className="text-xs text-[#584235] font-mono truncate">
                           {cleanDriverPhone}
                         </p>
                       </div>
@@ -3955,9 +3939,9 @@ export default function DispatchValetOrder({
                     {rawDriverPhone && (
                       <a 
                         href={`tel:${cleanDriverPhone}`}
-                        className="flex items-center gap-1 px-3 py-1.5 bg-[#e8e8e8] rounded-full hover:bg-[#e2e2e2] transition-colors text-[#984800] font-bold text-xs"
+                        className="flex items-center gap-1 px-3 py-1.5 bg-[#e8e8e8] rounded-full hover:bg-[#e2e2e2] transition-colors text-[#984800] font-bold text-xs shrink-0 whitespace-nowrap"
                       >
-                        <Phone className="w-3.5 h-3.5 fill-current" />
+                        <Phone className="w-3.5 h-3.5 fill-current shrink-0" />
                         <span>一键拨打</span>
                       </a>
                     )}
@@ -3968,7 +3952,7 @@ export default function DispatchValetOrder({
           </main>
 
           {/* Footer Action */}
-          <footer className="sticky bottom-0 left-0 right-0 bg-white border-t border-[#e2e2e2] p-4 z-50 shrink-0">
+          <footer className="sticky bottom-0 left-0 right-0 bg-white border-t border-[#e2e2e2] px-4 pt-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] z-50 shrink-0 android-nav-safe-pb">
             <div className="max-w-md mx-auto flex gap-3">
               <button
                 type="button"

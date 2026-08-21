@@ -202,6 +202,12 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                 className="w-full h-full object-cover rounded-2xl"
                 loading="eager"
                 decoding="sync"
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (!target.src.endsWith('hwdjtb.png')) {
+                    target.src = './hwdjtb.png';
+                  }
+                }}
               />
             </div>
           </div>

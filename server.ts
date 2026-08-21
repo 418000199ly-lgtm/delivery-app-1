@@ -279,6 +279,52 @@ async function startServer() {
   // Run initial seed
   seedSuperAdminAccount();
 
+  // Purge simulated/mock driver data (王心凌, 张一山, 李小龙, 13912345678, 15509601223, 15555556666)
+  const purgeMockDriverData = async () => {
+    const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
+    const mockNames = ['王心凌', '张一山', '李小龙'];
+
+    try {
+      const dbData = readLocalJsonDb();
+      let modified = false;
+      ['driver_users', 'squad_members', 'online_applications'].forEach(col => {
+        if (dbData[col]) {
+          Object.keys(dbData[col]).forEach(docId => {
+            const doc = dbData[col][docId];
+            const name = doc?.name || doc?.driverName || '';
+            if (mockPhones.includes(docId) || mockNames.some(mn => name.includes(mn))) {
+              delete dbData[col][docId];
+              modified = true;
+            }
+          });
+        }
+      });
+      if (modified) {
+        writeLocalJsonDb(dbData);
+        console.log('✓ [Database] Purged mock drivers from local_db.json');
+      }
+    } catch (e) {
+      console.error('[Purge] Error purging mock drivers from local_db.json:', e);
+    }
+
+    if (isMySQLEnabled && mysqlPool) {
+      try {
+        const conn = await mysqlPool.getConnection();
+        await conn.query(
+          `DELETE FROM \`daijia_documents\` 
+           WHERE \`collection\` IN ('driver_users', 'squad_members', 'online_applications') 
+           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3') OR \`data\` LIKE '%王心凌%' OR \`data\` LIKE '%张一山%' OR \`data\` LIKE '%李小龙%')`
+        );
+        conn.release();
+        console.log('✓ [Database] Purged mock drivers from MySQL');
+      } catch (e) {
+        console.error('[Purge] Error purging mock drivers from MySQL:', e);
+      }
+    }
+  };
+
+  purgeMockDriverData();
+
   // Health check endpoint
   app.get('/api/health', (req, res) => {
     res.json({ status: 'healthy', timestamp: Date.now() });
@@ -286,30 +332,42 @@ async function startServer() {
 
   // High-reliability Chinese Text-To-Speech (TTS) Proxy Endpoint
   app.get('/api/tts', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+
     const text = String(req.query.text || '').trim();
     if (!text) {
       return res.status(400).send('Missing text parameter');
     }
 
     const encodedText = encodeURIComponent(text);
-    const ttsUrls = [
-      `https://tts.baidu.com/text2audio?cuid=baike&lan=ZH&ctp=1&paddmd=3&spd=5&tex=${encodedText}`,
-      `https://dict.youdao.com/dictvoice?audio=${encodedText}&le=zh`,
-      `https://fanyi.baidu.com/getvoice?lan=zh&spd=5&source=web&text=${encodedText}`
+    const ttsProviders = [
+      {
+        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=web`,
+        referer: 'https://fanyi.baidu.com/'
+      },
+      {
+        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=baidu`,
+        referer: 'https://fanyi.baidu.com/'
+      },
+      {
+        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=tsn`,
+        referer: 'https://fanyi.baidu.com/'
+      }
     ];
 
-    for (const url of ttsUrls) {
+    for (const item of ttsProviders) {
       try {
-        const response = await fetch(url, {
+        const response = await fetch(item.url, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://www.baidu.com/'
+            'Referer': item.referer
           }
         });
         if (response.ok) {
           const arrayBuffer = await response.arrayBuffer();
           const buffer = Buffer.from(arrayBuffer);
-          if (buffer.length > 500) {
+          if (buffer.length > 300) {
             res.setHeader('Content-Type', 'audio/mpeg');
             res.setHeader('Cache-Control', 'public, max-age=86400');
             return res.send(buffer);
@@ -842,25 +900,34 @@ async function startServer() {
       return res.status(400).send('Text parameter is required');
     }
     const encodedText = encodeURIComponent(text);
-    const urls = [
-      `https://dict.youdao.com/dictvoice?audio=${encodedText}&le=zh`,
-      `https://tts.baidu.com/text2audio?cuid=baike&lan=zh&ctp=1&padd=&spd=5&ptm=0&tex=${encodedText}`,
-      `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=web`
+    const ttsProviders = [
+      {
+        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=web`,
+        referer: 'https://fanyi.baidu.com/'
+      },
+      {
+        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=baidu`,
+        referer: 'https://fanyi.baidu.com/'
+      },
+      {
+        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=tsn`,
+        referer: 'https://fanyi.baidu.com/'
+      }
     ];
 
-    for (const ttsUrl of urls) {
+    for (const item of ttsProviders) {
       try {
-        const response = await fetch(ttsUrl, {
+        const response = await fetch(item.url, {
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'https://fanyi.baidu.com/'
+            'Referer': item.referer
           }
         });
         if (response.ok) {
           const contentType = response.headers.get('content-type') || 'audio/mpeg';
           const buffer = await response.arrayBuffer();
           if (buffer.byteLength > 300) {
-            res.setHeader('Content-Type', contentType);
+            res.setHeader('Content-Type', contentType.includes('audio') ? contentType : 'audio/mpeg');
             res.setHeader('Cache-Control', 'public, max-age=86400');
             return res.send(Buffer.from(buffer));
           }

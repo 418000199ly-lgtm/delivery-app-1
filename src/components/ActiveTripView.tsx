@@ -857,7 +857,7 @@ export default function ActiveTripView({
         {/* END: ActionButtons */}
 
         {/* BEGIN: FooterNote */}
-        <footer className="pt-2 pb-[calc(1.5rem+max(env(safe-area-inset-bottom,0px),16px))] android-nav-safe-pb">
+        <footer className="pt-2 pb-[calc(1.5rem+max(env(safe-area-inset-bottom,0px),28px))] android-nav-safe-pb">
           <p className="text-center text-slate-400 text-[10px] tracking-wide leading-relaxed">
             请确认行驶路线安全无误，结束工作后根据实际费率跟乘客结算费用
           </p>

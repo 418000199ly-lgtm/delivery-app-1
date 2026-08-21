@@ -849,7 +849,7 @@ export default function SettingsView({
       </div>
 
       {/* Settings list scrolling area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 pb-[calc(2rem+max(env(safe-area-inset-bottom,0px),28px))] space-y-4 android-nav-safe-pb">
         
         {/* Card 1: Billing and broadcast (Screenshot 5 first block) */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xs divide-y divide-gray-100 overflow-hidden">
@@ -1314,7 +1314,7 @@ export default function SettingsView({
                     className="absolute inset-0 bg-black/60 cursor-pointer animate-in fade-in duration-200" 
                   />
                   {/* Sheet panel */}
-                  <div className="relative bg-[#F4F4F4] rounded-t-3xl w-full py-4 px-1.5 animate-in slide-in-from-bottom duration-200 border-t border-gray-100 z-50 text-center font-sans tracking-wide">
+                  <div className="relative bg-[#F4F4F4] rounded-t-3xl w-full pt-4 px-1.5 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] animate-in slide-in-from-bottom duration-200 border-t border-gray-100 z-50 text-center font-sans tracking-wide android-nav-safe-pb">
                     <div className="bg-white rounded-2xl mx-2 shadow-xs overflow-hidden divide-y divide-gray-150">
                       <button 
                         onClick={() => {
