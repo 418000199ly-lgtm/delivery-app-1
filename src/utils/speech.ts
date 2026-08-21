@@ -493,6 +493,7 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
 
 /**
  * Main Chinese Voice Broadcast Entry for Mobile Apps (Android APK, iOS, Web)
+ * Full Natural Voice Broadcast without artificial chimes or warning tones
  */
 export async function speakText(text: string, onEnd?: () => void, playChime: boolean = false) {
   if (!text || typeof window === 'undefined') {
@@ -503,34 +504,33 @@ export async function speakText(text: string, onEnd?: () => void, playChime: boo
   const cleanText = String(text).trim();
   const now = Date.now();
 
-  // Deduplication Guard: Ignore identical speech requests within 1000ms
-  if (cleanText === lastSpokenText && (now - lastSpokenTime) < 1000) {
+  // Deduplication Guard: Ignore identical speech requests within 800ms
+  if (cleanText === lastSpokenText && (now - lastSpokenTime) < 800) {
     if (onEnd) onEnd();
     return;
   }
   lastSpokenText = cleanText;
   lastSpokenTime = now;
 
-  // Ensure Android / iOS hardware DAC channel is warm and ready
+  // 1. Force unlock and resume AudioContext
   initAudioUnlock();
+  stopSpeaking();
 
-  // Play embedded audio tone for guaranteed audible feedback on Android APK / iOS
-  // (Always triggered on native platforms or if playChime is true, ensuring 100% sound even if Android has zero TTS engines)
-  if (playChime || Capacitor.isNativePlatform()) {
+  // Play audio chime ONLY if explicitly requested (default is false for pure voice broadcast)
+  if (playChime) {
     playEmbeddedBusinessTone(cleanText);
-  }
-  if (typeof navigator !== 'undefined' && navigator.vibrate) {
-    try { navigator.vibrate([100, 50, 100]); } catch (e) {}
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      try { navigator.vibrate([120, 60, 120]); } catch (e) {}
+    }
   }
 
-  // LEVEL 1: Capacitor Native Android / iOS System TTS Engine with Fast Timeout Guard (800ms)
-  // If Android emulator has NO TTS engine, fail fast (800ms) to fallback smoothly without blocking driver flow
+  // 2. LEVEL 1: Capacitor Native Android / iOS System TTS Engine with 1200ms Fast Timeout Guard
   if (Capacitor.isNativePlatform()) {
     try {
       await TextToSpeech.stop().catch(() => {});
-      await new Promise(r => setTimeout(r, 40));
+      await new Promise(r => setTimeout(r, 40)); // Reset Android TTS channel focus
       
-      const nativeTimeoutMs = Math.min(2500, Math.max(800, cleanText.length * 150));
+      const nativeTimeoutMs = 1200; // Fast timeout: fall through quickly if Android TTS engine missing/silent
       const nativeSuccess = await Promise.race([
         TextToSpeech.speak({
           text: cleanText,
@@ -546,19 +546,19 @@ export async function speakText(text: string, onEnd?: () => void, playChime: boo
         if (onEnd) onEnd();
         return;
       }
-      console.warn('[AudioEngine] Capacitor native TTS failed/timed out, switching to Web Speech & Streaming fallback');
+      console.warn('[AudioEngine] Capacitor native TTS timed out or missing engine, falling through to Web Speech / MP3');
     } catch (nativeErr) {
       console.warn('[AudioEngine] Capacitor native TTS exception:', nativeErr);
     }
   }
 
-  // LEVEL 2: Browser / WebView Native SpeechSynthesis Engine
+  // 3. LEVEL 2: Browser / WebView Native SpeechSynthesis Engine
   const speechSuccess = await tryWebSpeechSynthesis(cleanText, onEnd);
   if (speechSuccess) {
     return;
   }
 
-  // LEVEL 3: Web Audio API PCM Decode + Baota / Youdao / Baidu High Quality MP3 Streams
+  // 4. LEVEL 3: Web Audio API PCM Decode + Server / Youdao / Baidu High Quality MP3 Streams
   playMp3AudioStreams(cleanText, onEnd);
 }
 

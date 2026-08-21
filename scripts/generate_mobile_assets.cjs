@@ -31,8 +31,8 @@ async function main() {
     fs.writeFileSync(t, png1024Buf);
   }
 
-  // Base64 helper
-  const b64 = `export const HWDJ_LOGO_DATA_URL = "data:image/png;base64,${png1024Buf.toString('base64')}";\n`;
+  // Clean asset URL pointer
+  const b64 = `export const HWDJ_LOGO_DATA_URL = "/hwdjtb.png";\n`;
   fs.writeFileSync('src/assets/hwdjLogoBase64.ts', b64);
 
   // PWA sizes
