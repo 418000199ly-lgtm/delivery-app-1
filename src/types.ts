@@ -39,6 +39,7 @@ export interface ChauffeurSettings {
   customAppName?: string;
   onlineOrdersEnabled?: boolean;
   city?: string;
+  phoneNumber?: string;
   isBanned?: boolean;
   role?: string;
 }
@@ -61,7 +62,20 @@ export interface TripState {
   calculatedTotalFee: number;
   weatherMultiplier?: number;
   isOnlineOrder?: boolean;
-  orderType?: '后台指派订单' | '报单' | '二维码报单' | '乘客下单';
+  orderType?: '后台指派订单' | '报单' | '二维码报单' | '乘客下单' | '商户代叫' | '二维码开单' | string;
+  orderId?: string;
+  dispatchedByPhone?: string;
+  adminPhone?: string;
+  dispatchedBy?: string;
+  dispatcherPhone?: string;
+  paymentQrCode?: string;
+  merchantPaymentQrCode?: string;
+  merchantPhone?: string;
+  dispatchedByName?: string;
+  adminName?: string;
+  isValetOrder?: boolean;
+  isPlatformDispatch?: boolean;
+  orderRemark?: string;
 }
 
 export interface DriverStats {
@@ -79,7 +93,7 @@ export const DEFAULT_SLOTS: TimeSlot[] = [
 ];
 
 export const DEFAULT_BILLING_RULES: BillingRules = {
-  templateName: '某滴代驾计费模版',
+  templateName: '滴滴代驾',
   slots: DEFAULT_SLOTS,
   returnFeeStartKm: 0,
   returnFeePerKm: 0,
@@ -92,7 +106,7 @@ export const DEFAULT_BILLING_RULES: BillingRules = {
 };
 
 export const DEFAULT_SETTINGS: ChauffeurSettings = {
-  billingTemplateName: '某滴代驾计费模版',
+  billingTemplateName: '滴滴代驾',
   voiceBroadcast: '开单语音播报',
   accountBalance: 0.00,
   startServiceSMS: false,

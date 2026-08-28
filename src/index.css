@@ -40,11 +40,19 @@ html, body {
   text-size-adjust: 100% !important;
 }
 
-/* Prevent double tap zoom on mobile UI controls */
+/* Prevent double tap zoom on mobile UI controls & disable default focus black outline */
 button, input, select, textarea, a {
   touch-action: manipulation;
   -webkit-text-size-adjust: 100% !important;
   text-size-adjust: 100% !important;
+}
+
+input:focus, input:focus-visible, input:active,
+textarea:focus, textarea:focus-visible, textarea:active,
+select:focus, select:focus-visible, select:active,
+button:focus, button:focus-visible, button:active {
+  outline: none !important;
+  outline-style: none !important;
 }
 
 /* Safe area padding utilities for Capacitor native mobile apps & Android navigation bars */
@@ -69,15 +77,15 @@ button, input, select, textarea, a {
 }
 
 .footer-safe-pb {
-  padding-bottom: calc(0.875rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 28px)) !important;
+  padding-bottom: calc(1rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 30px)) !important;
 }
 
 .android-nav-safe-pb {
-  padding-bottom: calc(1rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 28px)) !important;
+  padding-bottom: calc(1.5rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 34px)) !important;
 }
 
 .bottom-sheet-safe-pb {
-  padding-bottom: calc(1.25rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 32px)) !important;
+  padding-bottom: calc(1.75rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 36px)) !important;
 }
 
 /* Custom scrollbar to resemble standard mobile app list views */

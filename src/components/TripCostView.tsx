@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, Landmark, Car, HelpCircle, Flame, X } from 'lucide-react';
-import { TripState, BillingRules, ChauffeurSettings, checkVipActive } from '../types';
+import { TripState, BillingRules, ChauffeurSettings, checkVipActive, DEFAULT_SLOTS } from '../types';
 
 interface TripCostViewProps {
   trip: TripState;
@@ -26,6 +26,24 @@ export default function TripCostView({
   const [bridgeFeeStr, setBridgeFeeStr] = useState('');
   const [parkingFeeStr, setParkingFeeStr] = useState('');
   const [otherFeeStr, setOtherFeeStr] = useState('');
+
+  // Universal decimal input sanitizer for iOS / Android soft keyboards
+  const handleDecimalChange = (inputVal: string, setter: (val: string) => void) => {
+    // Convert Chinese/European commas to dot
+    let val = inputVal.replace(/,/g, '.');
+    // Keep only numbers and dots
+    val = val.replace(/[^0-9.]/g, '');
+    // Ensure at most one dot
+    const parts = val.split('.');
+    if (parts.length > 2) {
+      val = parts[0] + '.' + parts.slice(1).join('');
+    }
+    // Limit to max 2 decimal digits (e.g. 2.50)
+    if (parts[1] && parts[1].length > 2) {
+      val = parts[0] + '.' + parts[1].slice(0, 2);
+    }
+    setter(val);
+  };
 
   // Number converters
   const bridgeFee = isVip ? (Number(bridgeFeeStr) || 0) : 0;
@@ -116,15 +134,14 @@ export default function TripCostView({
               <div className={`flex items-center border border-gray-100 rounded-xl px-3 py-1.5 shadow-inner ${!isVip ? 'bg-slate-100' : 'bg-slate-50'}`}>
                 <input
                   type="text"
-                  pattern="[0-9]*"
+                  inputMode="decimal"
+                  pattern="[0-9.]*"
                   placeholder={isVip ? "请输入金额" : "🔒 仅限VIP"}
                   disabled={!isVip}
                   value={isVip ? bridgeFeeStr : ""}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/[^0-9.]/g, '');
-                    setBridgeFeeStr(val);
-                  }}
-                  className="w-24 text-right bg-transparent text-sm font-semibold focus:outline-hidden text-gray-900 placeholder-gray-400 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  onChange={(e) => handleDecimalChange(e.target.value, setBridgeFeeStr)}
+                  className="w-24 text-right bg-transparent text-sm font-semibold outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus:border-transparent text-gray-900 placeholder-gray-400 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  style={{ outline: 'none', boxShadow: 'none' }}
                 />
                 <span className="text-xs text-gray-400 ml-1.5 font-bold">元</span>
               </div>
@@ -143,15 +160,14 @@ export default function TripCostView({
               <div className={`flex items-center border border-gray-100 rounded-xl px-3 py-1.5 shadow-inner ${!isVip ? 'bg-slate-100' : 'bg-slate-50'}`}>
                 <input
                   type="text"
-                  pattern="[0-9]*"
+                  inputMode="decimal"
+                  pattern="[0-9.]*"
                   placeholder={isVip ? "请输入金额" : "🔒 仅限VIP"}
                   disabled={!isVip}
                   value={isVip ? parkingFeeStr : ""}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/[^0-9.]/g, '');
-                    setParkingFeeStr(val);
-                  }}
-                  className="w-24 text-right bg-transparent text-sm font-semibold focus:outline-hidden text-gray-900 placeholder-gray-400 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  onChange={(e) => handleDecimalChange(e.target.value, setParkingFeeStr)}
+                  className="w-24 text-right bg-transparent text-sm font-semibold outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus:border-transparent text-gray-900 placeholder-gray-400 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  style={{ outline: 'none', boxShadow: 'none' }}
                 />
                 <span className="text-xs text-gray-400 ml-1.5 font-bold">元</span>
               </div>
@@ -170,15 +186,14 @@ export default function TripCostView({
               <div className={`flex items-center border border-gray-100 rounded-xl px-3 py-1.5 shadow-inner ${!isVip ? 'bg-slate-100' : 'bg-slate-50'}`}>
                 <input
                   type="text"
-                  pattern="[0-9]*"
+                  inputMode="decimal"
+                  pattern="[0-9.]*"
                   placeholder={isVip ? "请输入金额" : "🔒 仅限VIP"}
                   disabled={!isVip}
                   value={isVip ? otherFeeStr : ""}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/[^0-9.]/g, '');
-                    setOtherFeeStr(val);
-                  }}
-                  className="w-24 text-right bg-transparent text-sm font-semibold focus:outline-hidden text-gray-900 placeholder-gray-400 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  onChange={(e) => handleDecimalChange(e.target.value, setOtherFeeStr)}
+                  className="w-24 text-right bg-transparent text-sm font-semibold outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus:border-transparent text-gray-900 placeholder-gray-400 disabled:text-gray-400 disabled:cursor-not-allowed"
+                  style={{ outline: 'none', boxShadow: 'none' }}
                 />
                 <span className="text-xs text-gray-400 ml-1.5 font-bold">元</span>
               </div>
@@ -202,10 +217,10 @@ export default function TripCostView({
       </div>
 
       {/* Action triggers button at bottom */}
-      <div className="p-4 bg-white border-t border-gray-200/60 shadow-lg select-none">
+      <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px))] bg-white border-t border-gray-200/60 shadow-lg select-none android-nav-safe-pb">
         <button
           onClick={handleProceed}
-          className="w-full py-4 bg-[#1da39b] hover:bg-teal-600 text-white font-bold rounded-2xl shadow-xl shadow-teal-500/20 active:scale-98 transition-all text-center text-sm flex items-center justify-center space-x-1"
+          className="w-full py-3.5 bg-[#1da39b] hover:bg-teal-600 text-white font-bold rounded-2xl shadow-xl shadow-teal-500/20 active:scale-98 transition-all text-center text-sm flex items-center justify-center space-x-1"
         >
           <span>去收款</span>
         </button>
@@ -236,7 +251,7 @@ export default function TripCostView({
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">当前时间段计费</span>
                 <ul className="space-y-1 bg-slate-50 p-2.5 rounded-lg border border-slate-100 leading-relaxed text-[11px]">
-                  {billingRules.slots.map((slot, index) => (
+                  {(billingRules?.slots || DEFAULT_SLOTS).map((slot, index) => (
                     <li key={index} className="flex justify-between">
                       <span>{slot.startTime}–{slot.endTime}</span>
                       <span className="font-bold text-slate-705">起步 ¥{slot.startingPrice} (含 {slot.includedDistance}km)</span>
@@ -248,9 +263,9 @@ export default function TripCostView({
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">公里运价</span>
                 {(() => {
-                  const firstSlot = billingRules.slots[0];
-                  const displayInterval = firstSlot.distanceInterval || 1;
-                  const displayIncrease = firstSlot.priceIncrease ?? firstSlot.unitPricePerKm ?? 5;
+                  const firstSlot = (billingRules?.slots && billingRules.slots[0]) || DEFAULT_SLOTS[0];
+                  const displayInterval = firstSlot?.distanceInterval || 1;
+                  const displayIncrease = firstSlot?.priceIncrease ?? firstSlot?.unitPricePerKm ?? 5;
                   return (
                     <p className="text-slate-500">
                       超出初始里程后，每增加 <span className="font-semibold text-slate-800">{displayInterval}</span> 公里需支付 <span className="font-bold text-teal-600">¥{displayIncrease} 元</span> 收款运价。

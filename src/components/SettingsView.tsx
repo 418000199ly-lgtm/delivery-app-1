@@ -420,6 +420,7 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
 
 interface SettingsViewProps {
   settings: ChauffeurSettings;
+  billingRules?: any;
   onUpdateSettings: (updated: ChauffeurSettings) => void;
   onClose: () => void;
   onNavigateToBilling: () => void;
@@ -429,12 +430,31 @@ interface SettingsViewProps {
 
 export default function SettingsView({
   settings,
+  billingRules,
   onUpdateSettings,
   onClose,
   onNavigateToBilling,
   onLogout,
   systemVersion = 'V2.0'
 }: SettingsViewProps) {
+  // Realtime active template name resolution matching MileageModeView
+  const activeRulesCache = typeof window !== 'undefined' ? (localStorage.getItem('dd_billing_rules') || (settings?.billingTemplateName ? null : null)) : null;
+  let cachedRuleName = '';
+  if (activeRulesCache) {
+    try {
+      const parsed = JSON.parse(activeRulesCache);
+      if (parsed && parsed.templateName) cachedRuleName = parsed.templateName;
+    } catch (_) {}
+  }
+
+  const displayTemplateName = billingRules?.templateName || cachedRuleName || settings.billingTemplateName || '滴滴代驾';
+
+  // Ensure settings.billingTemplateName stays synchronized with active rule name
+  React.useEffect(() => {
+    if (displayTemplateName && displayTemplateName !== settings.billingTemplateName) {
+      onUpdateSettings({ ...settings, billingTemplateName: displayTemplateName });
+    }
+  }, [displayTemplateName, settings.billingTemplateName]);
   // Local state for interactive settings overlays
   const [activeModal, setActiveModal] = useState<'none' | 'recharge' | 'sms_edit' | 'qr_upload' | 'deviation_slider' | 'deviation_wait_slider'>('none');
   const [activeDoc, setActiveDoc] = useState<'none' | 'disclaimer' | 'user_agreement' | 'legal_statement'>('none');
@@ -571,7 +591,7 @@ export default function SettingsView({
       matchedLocal.redeemedBy = localStorage.getItem('dd_user_phone') || settings.customAppName?.trim() || '模拟器测试终端';
       localStorage.setItem('local_vip_codes', JSON.stringify(localCodes));
 
-      // Attempt background firestore update to keep cloud database updated, but don't block user
+      // Attempt background database update to keep cloud database updated, but don't block user
       try {
         const docRef = doc(db, 'vip_codes', trimmed);
         updateDoc(docRef, {
@@ -861,7 +881,7 @@ export default function SettingsView({
           >
             <span className="text-sm font-semibold text-gray-700">计费规则</span>
             <div className="flex items-center space-x-1 text-gray-400">
-              <span className="text-xs text-gray-500 font-mono font-bold mr-0.5">{settings.billingTemplateName}</span>
+              <span className="text-xs text-gray-500 font-mono font-bold mr-0.5">{displayTemplateName}</span>
               <ChevronRight className="w-4 h-4 text-gray-300" />
             </div>
           </button>
@@ -874,7 +894,7 @@ export default function SettingsView({
                 type="button"
                 onClick={() => {
                   initAudioUnlock();
-                  speakText('语音播报测试正常！黑湾代驾为您保驾护航。');
+                  speakText('语音播报测试正常！');
                 }}
                 className="flex items-center space-x-1 text-xs text-blue-600 bg-blue-50 font-bold py-1 px-2.5 rounded-lg border border-blue-100 active:scale-95 transition-all cursor-pointer"
               >
@@ -974,7 +994,7 @@ export default function SettingsView({
             >
               <div className="flex flex-col">
                 <span className="text-sm font-semibold text-gray-700">每次纠偏的等候时间</span>
-                <span className="text-[11px] text-amber-500 font-medium mt-0.5">温馨提示：建议设置0-3秒</span>
+                <span className="text-[11px] text-amber-500 font-medium mt-0.5">温馨提示：建议设置60秒</span>
               </div>
               <div className="flex items-center space-x-1 text-gray-500 font-semibold text-xs font-mono">
                 <span>每次{settings.deviationWaitSec}秒</span>
@@ -1552,7 +1572,7 @@ export default function SettingsView({
                 </div>
                 <div className="text-center pt-2">
                   <span className="text-[11px] text-amber-500 font-medium bg-amber-50 px-2.5 py-1 rounded-full border border-amber-100 inline-block animate-pulse">
-                    温馨提示：建议设置 0-3 秒
+                    温馨提示：建议设置60秒
                   </span>
                 </div>
               </div>

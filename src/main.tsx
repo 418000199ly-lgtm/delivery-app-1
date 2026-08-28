@@ -1,6 +1,7 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import AppErrorBoundary from './components/AppErrorBoundary';
 import './index.css';
 
 // Intercept and gracefully ignore third-party script errors (e.g., from Gaode AMap inside the sandboxed iframe)
@@ -65,16 +66,20 @@ if (typeof window !== 'undefined') {
       dummy.style.cssText = 'font-size:16px!important;width:1rem!important;height:1px!important;position:absolute!important;left:-9999px!important;top:-9999px!important;visibility:hidden!important;pointer-events:none!important;';
       (document.body || docEl).appendChild(dummy);
       const computedSize = parseFloat(window.getComputedStyle(dummy).fontSize || '16');
-      (document.body || docEl).removeChild(dummy);
+      if (dummy.parentNode) dummy.parentNode.removeChild(dummy);
 
-      if (computedSize && Math.abs(computedSize - 16) > 0.05) {
+      if (computedSize && !isNaN(computedSize) && isFinite(computedSize) && computedSize > 5 && computedSize < 40 && Math.abs(computedSize - 16) > 0.05) {
         const scaleFactor = 16 / computedSize;
-        docEl.style.setProperty('font-size', `${16 * scaleFactor}px`, 'important');
-      } else {
-        docEl.style.setProperty('font-size', '16px', 'important');
+        if (isFinite(scaleFactor) && scaleFactor >= 0.5 && scaleFactor <= 2.0) {
+          docEl.style.setProperty('font-size', `${16 * scaleFactor}px`, 'important');
+          return;
+        }
       }
+      docEl.style.setProperty('font-size', '16px', 'important');
     } catch (e) {
-      // safe fallback
+      try {
+        document.documentElement.style.setProperty('font-size', '16px', 'important');
+      } catch (_) {}
     }
   };
 
@@ -91,7 +96,10 @@ if (typeof window !== 'undefined') {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   </StrictMode>,
 );
+
 

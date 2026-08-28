@@ -1,3 +1,5 @@
+import { safeSetItem } from '../utils/safeStorage';
+
 // Mock DB reference object for native Firestore API interface compatibility
 const dbPlaceholder = { _isProxy: true };
 
@@ -127,7 +129,7 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     if (result.exists && result.data) {
       try {
         const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
-        localStorage.setItem(cacheKey, JSON.stringify(result.data));
+        safeSetItem(cacheKey, JSON.stringify(result.data));
       } catch (_) {}
     }
     return new ProxyDocumentSnapshot(cleanId, result.data, result.exists);
@@ -154,9 +156,9 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
     if (options?.merge) {
       const existing = localStorage.getItem(cacheKey);
       const parsed = existing ? JSON.parse(existing) : {};
-      localStorage.setItem(cacheKey, JSON.stringify({ ...parsed, ...data }));
+      safeSetItem(cacheKey, JSON.stringify({ ...parsed, ...data }));
     } else {
-      localStorage.setItem(cacheKey, JSON.stringify(data));
+      safeSetItem(cacheKey, JSON.stringify(data));
     }
   } catch (_) {}
 
@@ -192,7 +194,7 @@ export async function updateDoc(docRef: any, data: any) {
     const current = localStorage.getItem(cacheKey);
     const parsed = current ? JSON.parse(current) : {};
     const merged = { ...parsed, ...data };
-    localStorage.setItem(cacheKey, JSON.stringify(merged));
+    safeSetItem(cacheKey, JSON.stringify(merged));
   } catch (_) {}
 
   try {

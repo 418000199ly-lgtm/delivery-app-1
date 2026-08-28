@@ -184,12 +184,19 @@ export default function MileageModeView({
   // 1. Maintain a list of templates in state, synchronized with localStorage
   const [rulesList, setRulesList] = useState<BillingRules[]>(() => {
     const cached = localStorage.getItem('dd_rules_list');
-    if (cached) return JSON.parse(cached);
+    if (cached) {
+      try {
+        const parsed: BillingRules[] = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map(r => r.templateName === '某滴代驾计费模版' ? { ...r, templateName: '滴滴代驾' } : r);
+        }
+      } catch (_) {}
+    }
     
     // Default initial templates matching user's html:
     return [
       {
-        templateName: '某滴代驾计费模版',
+        templateName: '滴滴代驾',
         slots: [
           { id: '1', startTime: '06:00', endTime: '18:59', startingPrice: 40, includedDistance: 7, unitPricePerKm: 5, distanceInterval: 1, priceIncrease: 5 },
           { id: '2', startTime: '19:00', endTime: '23:59', startingPrice: 40, includedDistance: 7, unitPricePerKm: 5, distanceInterval: 1, priceIncrease: 5 },

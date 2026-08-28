@@ -3049,7 +3049,7 @@ export default function AdminPanel({
                               ⚠️ 已封停 (账号受限无法接单)
                             </span>
                           ) : (
-                            <span className="text-emerald-450 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-550/20 flex items-center gap-1">
+                            <span className="text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1">
                               🟢 经营状态正常
                             </span>
                           )}

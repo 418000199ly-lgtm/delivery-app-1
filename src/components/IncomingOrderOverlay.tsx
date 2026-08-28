@@ -56,7 +56,10 @@ export function getTTSBroadcastText(
   destination: string,
   distanceText: string
 ): string {
-  if (order.isPlatformDispatch) {
+  if (order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单') {
+    return `您有新的报单转单系统派单，直线距离 ${distanceText}，请及时处理！`;
+  }
+  if (order?.isPlatformDispatch) {
     return `您有新的系统派单，直线距离 ${distanceText}，请及时处理！`;
   }
   const priceStr = (approxPrice === '未知' || !approxPrice) ? '48' : `${approxPrice}`;
@@ -153,14 +156,72 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   }, [onlineBillingRules]);
 
   const distanceText = React.useMemo(() => {
+    const isReportTransfer = order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单';
+    
+    // Retrieve logged-in driver phone from all possible localStorage keys
+    const savedPhone = typeof window !== 'undefined' ? (
+      localStorage.getItem('dd_user_phone') ||
+      localStorage.getItem('dd_driver_phone') ||
+      localStorage.getItem('driver_register_phone') ||
+      localStorage.getItem('dd_dispatch_user_phone') ||
+      ''
+    ) : '';
+
+    const cleanUserPhone = savedPhone.replace(/\D/g, '').trim();
+
+    const merchantP = ((order as any)?.merchantPhone || '').toString().replace(/\D/g, '').trim();
+    const reporterP = ((order as any)?.reporterPhone || '').toString().replace(/\D/g, '').trim();
+    const userP = ((order as any)?.userPhone || '').toString().replace(/\D/g, '').trim();
+    const createdP = ((order as any)?.createdUserPhone || '').toString().replace(/\D/g, '').trim();
+    const dispatchedP = ((order as any)?.dispatchedDriverPhone || (order as any)?.driverPhone || '').toString().replace(/\D/g, '').trim();
+
+    const isIssuerOrAssignedDriver = Boolean(
+      cleanUserPhone && (
+        (merchantP && merchantP === cleanUserPhone) ||
+        (reporterP && reporterP === cleanUserPhone) ||
+        (userP && userP === cleanUserPhone) ||
+        (createdP && createdP === cleanUserPhone) ||
+        (dispatchedP && dispatchedP === cleanUserPhone)
+      )
+    );
+
+    if (isReportTransfer && isIssuerOrAssignedDriver) {
+      return '0公里';
+    }
+
+    if (order.distanceText) {
+      return order.distanceText;
+    }
+
+    const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
+    const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+    const currentCoords = (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng))
+      ? driverCoords
+      : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
+
     const { displayDistText } = calculateOrderDriverDistance(
       order.startLocation,
       order.passengerLat,
       order.passengerLng,
-      driverCoords
+      currentCoords
     );
     return displayDistText;
-  }, [order.passengerLat, order.passengerLng, order.startLocation, order.distanceText, driverCoords]);
+  }, [
+    order.passengerLat,
+    order.passengerLng,
+    order.startLocation,
+    order.distanceText,
+    order?.orderType,
+    order?.orderRemark,
+    order?.type,
+    (order as any)?.merchantPhone,
+    (order as any)?.reporterPhone,
+    (order as any)?.userPhone,
+    (order as any)?.createdUserPhone,
+    (order as any)?.dispatchedDriverPhone,
+    (order as any)?.driverPhone,
+    driverCoords
+  ]);
 
   // Display fields for scheduled time and scooter
   const displayScheduledTime = React.useMemo(() => {
@@ -264,7 +325,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative py-6 pb-20 shrink-0">
         <div className="w-full flex justify-between items-center mb-3">
           <span className="text-white/80 font-semibold text-xs tracking-wider">
-            {order.isValetOrder || order.isPlatformDispatch ? '⚠️ 商户代叫' : '⚡ 二维码开单'}
+            {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'
+              ? '⚠️ 报单转单'
+              : (order.isValetOrder || order.isPlatformDispatch ? '⚠️ 商户代叫' : '⚡ 二维码开单')}
           </span>
           <button 
             onClick={onDecline}
@@ -295,7 +358,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
         {/* Service Badge */}
         <div className="border border-white/40 rounded-full py-1.5 px-6 font-medium text-sm mt-3 bg-white/5 backdrop-blur-xs tracking-wide">
-          {order.isPlatformDispatch || order.isValetOrder ? "商户代叫订单" : (onlineBillingRules?.templateName?.trim() ? onlineBillingRules.templateName : "滴滴代驾")}
+          {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'
+            ? "报单转单订单"
+            : ((order.isPlatformDispatch || order.isValetOrder) ? "商户代叫订单" : (onlineBillingRules?.templateName?.trim() ? onlineBillingRules.templateName : "滴滴代驾"))}
         </div>
       </header>
 

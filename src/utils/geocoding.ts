@@ -8,8 +8,18 @@ export interface Coords {
   lng: number;
 }
 
+// Default Yinchuan city center coordinates (Yunxiang Residential Quarter / Xinhua Commercial Center)
+export const DEFAULT_YINCHUAN_COORDS: Coords = {
+  lat: 38.4830,
+  lng: 106.2350
+};
+
 // Known POI dictionary for Yinchuan and major regional landmarks
 const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
+  {
+    keywords: ['运祥小区', '运祥', '运祥小区南门', '运祥小区北门'],
+    coords: DEFAULT_YINCHUAN_COORDS
+  },
   {
     keywords: ['金凤万达', '金凤万达广场', '银川金凤万达广场', '金凤区万达', '万达广场'],
     coords: { lat: 38.5085, lng: 106.2160 } // 金凤区亲水北大街/万达广场 ~ 2.7 - 3.2km from city center
@@ -91,12 +101,6 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.3220, lng: 106.3920 } // ~ 23km
   }
 ];
-
-// Default Yinchuan city center coordinates (Yunxiang Residential Quarter / Xinhua Commercial Center)
-export const DEFAULT_YINCHUAN_COORDS: Coords = {
-  lat: 38.4830,
-  lng: 106.2350
-};
 
 /**
  * Validates if coordinates are within standard valid China geography range
@@ -198,7 +202,7 @@ export function formatDistance(distInKm: number): string {
 
 /**
  * Calculates the exact straight-line distance between order start location and current driver position.
- * Guarantees accurate distance sync and handles local POIs like '北京东路铂金大厦'.
+ * Guarantees accurate distance sync and handles local POIs like '运祥小区'.
  */
 export function calculateOrderDriverDistance(
   orderStartLocation?: string,
@@ -228,15 +232,8 @@ export function calculateOrderDriverDistance(
   let oLat = Number(orderLat);
   let oLng = Number(orderLng);
 
-  // Check if order coordinates are missing or equal to static default fallbacks (~38.487167, 106.23091)
-  const isDefaultStaticOrderCoords = (
-    !isValidCoords(oLat, oLng) ||
-    (Math.abs(oLat - 38.487167) < 0.0001 && Math.abs(oLng - 106.23091) < 0.0001) ||
-    (Math.abs(oLat - 38.487193) < 0.0001 && Math.abs(oLng - 106.230912) < 0.0001)
-  );
-
-  // Only fallback to geocoding if order coordinates are invalid or static fallbacks
-  if (isDefaultStaticOrderCoords) {
+  // If order coordinates are missing or invalid, resolve via geocodeAddress
+  if (!isValidCoords(oLat, oLng)) {
     if (orderStartLocation && typeof orderStartLocation === 'string' && orderStartLocation.trim()) {
       const geocodedPOI = geocodeAddress(orderStartLocation, { lat: dLat, lng: dLng });
       oLat = geocodedPOI.lat;
@@ -249,17 +246,10 @@ export function calculateOrderDriverDistance(
 
   // 3. Calculate exact straight line Haversine distance between real driver GPS and real order GPS
   const distKm = calculateHaversineDistanceKm(dLat, dLng, oLat, oLng);
-  const displayDistText = formatDistance(distKm);
+  const displayDistText = distKm < 0.05 ? '0米' : formatDistance(distKm);
 
   return {
-    distKm,
-    displayDistText,
-    resolvedLat: oLat,
-    resolvedLng: oLng
-  };
-
-  return {
-    distKm,
+    distKm: distKm < 0.05 ? 0 : distKm,
     displayDistText,
     resolvedLat: oLat,
     resolvedLng: oLng

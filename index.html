@@ -41,17 +41,24 @@
             dummy.style.cssText = 'font-size:16px!important;width:1rem!important;height:1px!important;position:absolute!important;left:-9999px!important;top:-9999px!important;visibility:hidden!important;pointer-events:none!important;';
             (document.body || docEl).appendChild(dummy);
             var computedSize = parseFloat(window.getComputedStyle(dummy).fontSize || '16');
-            (document.body || docEl).removeChild(dummy);
+            if (dummy.parentNode) dummy.parentNode.removeChild(dummy);
 
-            if (computedSize && Math.abs(computedSize - 16) > 0.05) {
+            if (computedSize && !isNaN(computedSize) && isFinite(computedSize) && computedSize > 5 && computedSize < 40 && Math.abs(computedSize - 16) > 0.05) {
               var scaleFactor = 16 / computedSize;
-              docEl.style.setProperty('font-size', (16 * scaleFactor) + 'px', 'important');
-              docEl.style.setProperty('--system-font-scale', scaleFactor, 'important');
-            } else {
-              docEl.style.setProperty('font-size', '16px', 'important');
-              docEl.style.setProperty('--system-font-scale', '1', 'important');
+              if (isFinite(scaleFactor) && scaleFactor >= 0.5 && scaleFactor <= 2.0) {
+                docEl.style.setProperty('font-size', (16 * scaleFactor) + 'px', 'important');
+                docEl.style.setProperty('--system-font-scale', scaleFactor, 'important');
+                return;
+              }
             }
-          } catch (e) {}
+            docEl.style.setProperty('font-size', '16px', 'important');
+            docEl.style.setProperty('--system-font-scale', '1', 'important');
+          } catch (e) {
+            try {
+              document.documentElement.style.setProperty('font-size', '16px', 'important');
+              document.documentElement.style.setProperty('--system-font-scale', '1', 'important');
+            } catch (_) {}
+          }
         }
 
         if (document.readyState === 'loading') {

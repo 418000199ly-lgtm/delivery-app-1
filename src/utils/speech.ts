@@ -16,6 +16,98 @@ import { getBaseApiUrl } from '../lib/dbProxy';
 // Silent 0.1s MP3 base64 to unlock mobile device audio channels
 const SILENT_MP3 = 'data:audio/mp3;base64,SUQ3BAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABCAAdER0eHyAnLC8yNDc5Ozw/QEJERUZISkxNT1FSUlVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/4xAEOAAAAAAAAAAAAAABOT3RlAAAAAEFydGlzdAAAAGxpc3RlbAAnREVDUwAAAENyZWF0ZWQgd2l0aCBMQU1FIDMuMTAwAABMSU1FAAAAMy4xMDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//OEAAAAA3wAAAAAAAAAAA0AANAAA0AAB4AAAAAAAAA0AANAAAE//OEAAAAAAAAAAAAAAAANAAA0AANAAAeAAAAAAAAANAAA0AAA==';
 
+// Local packaged MP3 audio asset files for instant offline voice broadcast (Bypasses System TTS)
+const LOCAL_AUDIO_MAP: Record<string, string> = {
+  '您已上线': '/audio/online.mp3',
+  '您已下线': '/audio/offline.mp3',
+  '接单成功，请前往接驾地点': '/audio/accept_order.mp3',
+  '接单成功': '/audio/accept_order.mp3',
+  '已开始代驾计费，祝您行程愉快！': '/audio/voice_on.mp3',
+  '已开始代驾计费，祝您行程愉快': '/audio/voice_on.mp3',
+  '已开始计费，祝您行程愉快！': '/audio/voice_on.mp3',
+  '已开始代驾计费': '/audio/voice_on.mp3',
+  '已开始计费': '/audio/voice_on.mp3',
+  '订单已创建，开始计费': '/audio/voice_on.mp3',
+  '已创建订单，开始计费': '/audio/voice_on.mp3',
+  '已到达目的地，行程结束': '/audio/end_trip.mp3',
+  '已到达目的地，请与乘客核对账单': '/audio/end_trip.mp3',
+  '已到达目的地': '/audio/end_trip.mp3',
+  '选单大厅有新订单了': '/audio/hall_new_order.mp3',
+  '乘客已授权，扫码开单成功！': '/audio/scan_success.mp3',
+  '乘客已授权，扫码开单成功': '/audio/scan_success.mp3',
+  '您有新的消息，注意查收！': '/audio/new_msg.mp3',
+  '您有新的消息，注意查收': '/audio/new_msg.mp3',
+  '已开启开单语音播报': '/audio/voice_on.mp3',
+  '语音播报测试正常！': '/audio/voice_test.mp3',
+  '语音播报测试正常': '/audio/voice_test.mp3',
+  '语音播报测试正常！黑湾代驾为您保驾护航。': '/audio/voice_test.mp3',
+  '您有新的报单转单系统派单，请及时处理！': '/audio/report_transfer.mp3',
+  '您有新的报单转单系统派单': '/audio/report_transfer.mp3',
+  '您有新的系统派单，请及时处理！': '/audio/system_dispatch.mp3',
+  '您有新的系统派单': '/audio/system_dispatch.mp3',
+  '注意！收到新的代驾派单，请及时查看并确认接单！': '/audio/background_alert.mp3',
+  '注意！收到新的代驾派单': '/audio/background_alert.mp3',
+};
+
+function normalizeTextKey(text: string): string {
+  return text.replace(/[！!。，,？?\s]/g, '').trim();
+}
+
+function getLocalAudioPath(text: string): string | null {
+  const clean = String(text).trim();
+  if (LOCAL_AUDIO_MAP[clean]) {
+    return LOCAL_AUDIO_MAP[clean];
+  }
+  const normalizedInput = normalizeTextKey(clean);
+  for (const [key, path] of Object.entries(LOCAL_AUDIO_MAP)) {
+    if (normalizeTextKey(key) === normalizedInput) {
+      return path;
+    }
+  }
+  return null;
+}
+
+/**
+ * Play local bundled MP3 audio file via Web Audio API or HTML5 Audio
+ */
+async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<boolean> {
+  stopSpeaking();
+  
+  // Try Web Audio API decode arrayBuffer from local asset
+  try {
+    const ctx = getAudioContext();
+    if (ctx) {
+      if (ctx.state === 'suspended') {
+        await ctx.resume().catch(() => {});
+      }
+      const response = await fetch(audioPath, { method: 'GET' });
+      if (response.ok) {
+        const arrayBuffer = await response.arrayBuffer();
+        if (arrayBuffer && arrayBuffer.byteLength > 300) {
+          const success = await playAudioBuffer(arrayBuffer, onEnd);
+          if (success) return true;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[AudioEngine] Web Audio local MP3 fetch/decode failed, trying Audio element fallback:', e);
+  }
+
+  // Fallback to HTML5 Audio element
+  return new Promise((resolve) => {
+    playSingleMp3Element(
+      audioPath,
+      () => {
+        if (onEnd) onEnd();
+        resolve(true);
+      },
+      () => {
+        resolve(false);
+      }
+    );
+  });
+}
+
 let audioContext: AudioContext | null = null;
 let globalAudioElement: HTMLAudioElement | null = null;
 let currentBufferSource: AudioBufferSourceNode | null = null;
@@ -263,27 +355,31 @@ async function playMp3AudioStreams(text: string, onEnd?: () => void): Promise<bo
 
   const mp3Urls: string[] = [];
 
-  // Priority 1: Direct Mainland China Baota production server domain
-  mp3Urls.push(`https://api.lyheiwandaijiamax.com/api/tts?text=${encodedText}`);
-
-  // Priority 2: Active API Base URL (e.g., Cloud Run preview host or custom host)
-  if (baseUrl && !baseUrl.includes('localhost') && !baseUrl.startsWith('file:') && !baseUrl.startsWith('capacitor:')) {
-    mp3Urls.push(`${baseUrl}/api/tts?text=${encodedText}`);
-  }
-
+  // Priority 1: Local server relative path (Zero cross-origin latency on web preview)
   if (typeof window !== 'undefined' && window.location.protocol.startsWith('http')) {
     mp3Urls.push(`/api/tts?text=${encodedText}`);
   }
 
-  // Priority 3: Direct Baidu TTS public fallback with CORS-compatible query parameters
+  // Priority 2: Active API Base URL
+  if (baseUrl && !baseUrl.includes('localhost') && !baseUrl.startsWith('file:') && !baseUrl.startsWith('capacitor:')) {
+    mp3Urls.push(`${baseUrl}/api/tts?text=${encodedText}`);
+  }
+
+  // Priority 3: Direct Mainland China Baota production server domain
+  mp3Urls.push(`https://api.lyheiwandaijiamax.com/api/tts?text=${encodedText}`);
+
+  // Priority 4: Direct Baidu TTS public fallback
   mp3Urls.push(
     `https://fanyi.baidu.com/gettts?lan=zh&spd=5&source=web&text=${encodedText}`
   );
 
-  // Attempt Web Audio API fetch + buffer decode playback first
+  // Attempt Web Audio API fetch + buffer decode playback first with tight 1200ms timeout
   for (const url of mp3Urls) {
     try {
-      const response = await fetch(url, { method: 'GET' });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
+      const response = await fetch(url, { method: 'GET', signal: controller.signal });
+      clearTimeout(timeoutId);
       if (response.ok) {
         const arrayBuffer = await response.arrayBuffer();
         if (arrayBuffer && arrayBuffer.byteLength > 300) {
@@ -442,7 +538,22 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
   // Force unlock and resume AudioContext
   initAudioUnlock();
 
-  // 1. LEVEL 1: Capacitor Native Android / iOS System TTS Engine
+  // LEVEL 1: Local Packaged MP3 Audio Asset Files (100% Offline, Zero-Latency, Bypasses System TTS)
+  const localAudioPath = getLocalAudioPath(cleanText);
+  if (localAudioPath) {
+    const localPlayed = await playLocalMp3File(localAudioPath, onEnd);
+    if (localPlayed) {
+      return;
+    }
+  }
+
+  // LEVEL 2: High-Quality Web Audio API / HTTP MP3 Stream Playback for dynamic/custom texts
+  const mp3Success = await playMp3AudioStreams(cleanText, onEnd);
+  if (mp3Success) {
+    return;
+  }
+
+  // LEVEL 3: Capacitor Native Android / iOS System TTS Engine
   if (Capacitor.isNativePlatform()) {
     try {
       let isNativeSpoken = false;
@@ -473,12 +584,6 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
     }
   }
 
-  // 2. LEVEL 2: High-Quality Web Audio API MP3 Stream Playback (100% Reliable on Android Phones & Emulators)
-  const mp3Success = await playMp3AudioStreams(cleanText, onEnd);
-  if (mp3Success) {
-    return;
-  }
-
-  // 3. LEVEL 3: Browser / WebView Native SpeechSynthesis Engine Fallback
+  // LEVEL 4: Browser / WebView Native SpeechSynthesis Engine Fallback
   await tryWebSpeechSynthesis(cleanText, onEnd);
 }

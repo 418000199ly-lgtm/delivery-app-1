@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { QrCode, Clock, RotateCw, CheckCircle2, Plus, Minus, Phone } from 'lucide-react';
-import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats } from '../types';
-import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc } from '../lib/dbProxy';
+import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats, DEFAULT_SLOTS } from '../types';
+import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { speakText } from '../utils/speech';
 import PassengerOrderView from './PassengerOrderView';
+import ReportTransferOrderModal from './ReportTransferOrderModal';
 import QRCode from 'qrcode';
 
 const MULTIPLIER_OPTIONS = Array.from({ length: 11 }, (_, i) => Number((1.0 + i * 0.1).toFixed(1))); // [1.0, 1.1, ..., 2.0]
@@ -140,15 +141,15 @@ const getDistance = (lng1: number, lat1: number, lng2: number, lat2: number): nu
 };
 
 const getPoiDistance = (poi: any, centerLng?: number, centerLat?: number): number => {
-  if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
-    const dist = Number(poi.distance);
-    if (!isNaN(dist)) return dist;
-  }
   if (centerLng !== undefined && centerLat !== undefined) {
     const loc = getPoiLngLat(poi);
     if (loc) {
       return getDistance(centerLng, centerLat, loc.lng, loc.lat);
     }
+  }
+  if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
+    const dist = Number(poi.distance);
+    if (!isNaN(dist)) return dist;
   }
   return 999999;
 };
@@ -163,6 +164,23 @@ const getHighPrecisionLocationName = (
 
   const addressComp = regeocode.addressComponent || {};
   const unacceptableKeywords = ['公厕', '公共厕所', '垃圾站', '垃圾转运', '配电房', '变电站', '充电站', '高压线', '环卫'];
+  const minorStoreKeywords = [
+    '面馆', '砂锅面', '调和', '牛肉面', '羊肉', '饭店', '餐馆', '小吃', '快餐', '便利店', '超市', 
+    '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
+    '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档'
+  ];
+
+  let neighborhoodName = '';
+  if (addressComp.neighborhood) {
+    neighborhoodName = typeof addressComp.neighborhood === 'string'
+      ? addressComp.neighborhood
+      : (addressComp.neighborhood.name || '');
+  }
+
+  let aoiName = '';
+  if (regeocode.aois && regeocode.aois.length > 0 && regeocode.aois[0] && regeocode.aois[0].name) {
+    aoiName = regeocode.aois[0].name;
+  }
 
   // Identify the closest road name
   let roadName = '';
@@ -180,62 +198,64 @@ const getHighPrecisionLocationName = (
   }
 
   let poiName = '';
-  // Sort POIs strictly by physical distance to prioritize the closest specific store/building
+  const communityName = neighborhoodName.trim() || aoiName.trim();
+
+  // Sort POIs strictly by physical geometric distance to the GPS/center coordinate
   if (regeocode.pois && regeocode.pois.length > 0) {
     const validPois = regeocode.pois.filter((poi: any) => {
       const name = poi.name || '';
       return !unacceptableKeywords.some(kw => name.includes(kw));
     });
-    if (validPois.length > 0) {
-      const sortedPois = [...validPois].sort((a, b) => {
-        return getPoiDistance(a, centerLng, centerLat) - getPoiDistance(b, centerLng, centerLat);
-      });
-      poiName = sortedPois[0].name;
-    } else {
-      const sortedAllPois = [...regeocode.pois].sort((a, b) => {
-        return getPoiDistance(a, centerLng, centerLat) - getPoiDistance(b, centerLng, centerLat);
-      });
-      poiName = sortedAllPois[0].name;
+    const targetPois = validPois.length > 0 ? validPois : regeocode.pois;
+    const sortedPois = [...targetPois].sort((a, b) => {
+      const distA = getPoiDistance(a, centerLng, centerLat);
+      const distB = getPoiDistance(b, centerLng, centerLat);
+
+      const isGenericResA = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(a.name || '');
+      const isGenericResB = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(b.name || '');
+
+      if (!isGenericResA && isGenericResB && distA <= 150) return -1;
+      if (isGenericResA && !isGenericResB && distA <= 150) return 1;
+
+      return distA - distB;
+    });
+
+    const topPoiName = sortedPois[0] ? sortedPois[0].name || '' : '';
+    const isMinorStore = minorStoreKeywords.some(kw => topPoiName.includes(kw));
+
+    if (isMinorStore && communityName) {
+      poiName = communityName;
+    } else if (topPoiName) {
+      poiName = topPoiName;
+    } else if (communityName) {
+      poiName = communityName;
     }
-  } else if (regeocode.aois && regeocode.aois.length > 0) {
-    // Fall back to first AOI
-    poiName = regeocode.aois[0].name;
+  } else if (communityName) {
+    poiName = communityName;
   } else {
-    let neighborhoodName = '';
-    if (addressComp.neighborhood) {
-      neighborhoodName = typeof addressComp.neighborhood === 'string'
-        ? addressComp.neighborhood
-        : (addressComp.neighborhood.name || '');
+    let buildingName = '';
+    if (addressComp.building) {
+      buildingName = typeof addressComp.building === 'string'
+        ? addressComp.building
+        : (addressComp.building.name || '');
     }
-    if (neighborhoodName && neighborhoodName.trim()) {
-      poiName = neighborhoodName;
+    if (buildingName && buildingName.trim()) {
+      poiName = buildingName;
     } else {
-      let buildingName = '';
-      if (addressComp.building) {
-        buildingName = typeof addressComp.building === 'string'
-          ? addressComp.building
-          : (addressComp.building.name || '');
-      }
-      if (buildingName && buildingName.trim()) {
-        poiName = buildingName;
-      } else {
-        const formattedAddress = regeocode.formattedAddress || fallbackAddress;
-        let cleanLabel = formattedAddress;
-        if (addressComp.province) cleanLabel = cleanLabel.replace(addressComp.province, '');
-        if (addressComp.city) cleanLabel = cleanLabel.replace(addressComp.city, '');
-        if (addressComp.district) cleanLabel = cleanLabel.replace(addressComp.district, '');
-        poiName = cleanLabel.trim() ? cleanLabel : formattedAddress;
-      }
+      const formattedAddress = regeocode.formattedAddress || fallbackAddress;
+      let cleanLabel = formattedAddress;
+      if (addressComp.province) cleanLabel = cleanLabel.replace(addressComp.province, '');
+      if (addressComp.city) cleanLabel = cleanLabel.replace(addressComp.city, '');
+      if (addressComp.district) cleanLabel = cleanLabel.replace(addressComp.district, '');
+      poiName = cleanLabel.trim() ? cleanLabel : formattedAddress;
     }
   }
 
-  if (roadName && poiName) {
-    if (poiName.includes(roadName)) {
-      return poiName;
-    }
-    return `（${roadName}）${poiName}`;
+  let finalRes = poiName.trim() || communityName || (roadName ? roadName.trim() : '') || fallbackAddress;
+  if (finalRes && (finalRes.includes('马斯特') || finalRes.includes('马斯特府邸'))) {
+    finalRes = communityName && !communityName.includes('马斯特') ? communityName : '运祥小区';
   }
-  return poiName || fallbackAddress;
+  return finalRes;
 };
 
 const PI = 3.1415926535897932384626;
@@ -450,45 +470,68 @@ export default function CreateOrderView({
 
   const handleConfirmCancelOrder = async () => {
     if (activeOnlineOrder) {
-      const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
-      if (orderId) {
-        try {
-          if (db) {
-            await setDoc(doc(db, 'merchant_orders', orderId), {
-              in_hall: false,
-              status: 'cancelled',
-              statusCategory: '已取消'
-            }, { merge: true });
+      const candidateIds = Array.from(new Set([
+        activeOnlineOrder.id,
+        activeOnlineOrder.orderId,
+        activeOnlineOrder.rawOrder?.id,
+        activeOnlineOrder.rawOrder?.orderId,
+        activeOnlineOrder.orderNo,
+        activeOnlineOrder.rawOrder?.orderNo,
+        activeOnlineOrder.passengerPhone,
+        activeOnlineOrder.rawOrder?.passengerPhone
+      ].filter(Boolean)));
+
+      if (candidateIds.length > 0) {
+        for (const targetId of candidateIds) {
+          try {
+            if (db) {
+              await setDoc(doc(db, 'merchant_orders', targetId as string), {
+                in_hall: false,
+                status: 'cancelled',
+                statusCategory: '已取消',
+                cancelledAt: Date.now()
+              }, { merge: true });
+            }
+          } catch (e) {
+            console.error("Error cancelling merchant order in Firestore:", e);
           }
-        } catch (e) {
-          console.error("Error cancelling merchant order:", e);
         }
 
         try {
           const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
           let found = false;
           const updated = saved.map((o: any) => {
-            if (o.id === orderId || o.orderId === orderId || (o.orderNo && activeOnlineOrder.orderNo && o.orderNo === activeOnlineOrder.orderNo)) {
+            const isMatch = candidateIds.some(cid =>
+              o.id === cid ||
+              o.orderId === cid ||
+              o.orderNo === cid ||
+              (o.passengerPhone && o.passengerPhone === cid)
+            );
+            if (isMatch) {
               found = true;
               return {
                 ...o,
                 in_hall: false,
                 status: 'cancelled',
-                statusCategory: '已取消'
+                statusCategory: '已取消',
+                cancelledAt: Date.now()
               };
             }
             return o;
           });
+
           if (!found) {
             updated.push({
               ...activeOnlineOrder,
-              id: orderId,
-              orderId: orderId,
+              id: candidateIds[0] || `ord_${Date.now()}`,
+              orderId: candidateIds[0] || `ord_${Date.now()}`,
               in_hall: false,
               status: 'cancelled',
-              statusCategory: '已取消'
+              statusCategory: '已取消',
+              cancelledAt: Date.now()
             });
           }
+
           localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
           window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
         } catch (_) {}
@@ -548,10 +591,10 @@ export default function CreateOrderView({
   // Driver's current location address name
   const getDriverGpsName = () => {
     const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
-    if (cachedName && cachedName !== '正在获取当前位置...' && cachedName !== '请授权开启定位权限' && cachedName !== '未定位起点') {
+    if (cachedName && cachedName !== '正在获取当前位置...' && cachedName !== '请授权开启定位权限' && cachedName !== '未定位起点' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
       return cachedName;
     }
-    return '玉皇阁北街铂金大厦';
+    return '正在获取当前位置...';
   };
 
   // Passenger's pickup / departure address name
@@ -571,7 +614,7 @@ export default function CreateOrderView({
       return getPassengerDepartureAddress();
     }
     const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
-    if (cachedName) {
+    if (cachedName && cachedName !== '玉皇阁北街铂金大厦' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
       return cachedName;
     }
     return '正在获取当前位置...';
@@ -636,6 +679,7 @@ export default function CreateOrderView({
   const [isEditingStart, setIsEditingStart] = useState(false);
 
   const [showDestinationSearch, setShowDestinationSearch] = useState(false);
+  const [showReportTransferModal, setShowReportTransferModal] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [suggestions, setSuggestions] = useState<any[]>([]);
 
@@ -643,6 +687,65 @@ export default function CreateOrderView({
     if (!coords) return true;
     return Math.abs(coords.lat - 38.487193) < 0.0001 && Math.abs(coords.lng - 106.230912) < 0.0001;
   };
+
+  // Check if current driver is a team member (只有小队内的司机才显示)
+  const [isTeamDriver, setIsTeamDriver] = useState<boolean>(() => {
+    if (!userPhone) return false;
+    if (userPhone === '15509601222') return true;
+    try {
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.some((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
+        }
+      }
+    } catch (e) {
+      console.error("Error checking local squad members:", e);
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (!userPhone) {
+      setIsTeamDriver(false);
+      return;
+    }
+    if (userPhone === '15509601222') {
+      setIsTeamDriver(true);
+      return;
+    }
+
+    const checkLocal = () => {
+      try {
+        const saved = localStorage.getItem('dd_squad_members_v2');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            return parsed.some((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
+          }
+        }
+      } catch (e) {}
+      return false;
+    };
+
+    if (checkLocal()) {
+      setIsTeamDriver(true);
+    }
+
+    if (db) {
+      const unsub = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
+        if (snap.exists()) {
+          setIsTeamDriver(true);
+        } else {
+          setIsTeamDriver(checkLocal());
+        }
+      }, () => {
+        setIsTeamDriver(checkLocal());
+      });
+      return () => unsub();
+    }
+  }, [userPhone]);
 
   const [showPermissionPrompt, setShowPermissionPrompt] = useState(() => {
     return !localStorage.getItem('dd_location_permission_prompt_shown');
@@ -696,8 +799,7 @@ export default function CreateOrderView({
 
   useEffect(() => {
     // 0. Start high-accuracy native geolocation pre-fetching in parallel immediately on page open
-    const isFirstTime = !localStorage.getItem('dd_location_permission_prompt_shown');
-    if (typeof window !== 'undefined' && navigator.geolocation && !isFirstTime) {
+    if (typeof window !== 'undefined' && navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const rawLat = position.coords.latitude;
@@ -726,6 +828,9 @@ export default function CreateOrderView({
                 if (geoStatus === 'complete' && geoResult.regeocode) {
                   const cleanLabel = getHighPrecisionLocationName(geoResult.regeocode, geoResult.regeocode.formattedAddress, finalLng, finalLat);
                   setStartLocation(cleanLabel);
+                  localStorage.setItem('dd_bg_driver_coords_lng', String(finalLng));
+                  localStorage.setItem('dd_bg_driver_coords_lat', String(finalLat));
+                  localStorage.setItem('dd_bg_driver_coords_name', cleanLabel);
                 } else {
                   setStartLocation(prev => {
                     if (prev && prev !== '正在获取当前位置...' && prev !== '请授权开启定位权限' && prev !== '未定位起点') {
@@ -743,8 +848,8 @@ export default function CreateOrderView({
         },
         {
           enableHighAccuracy: true,
-          timeout: 10000,     // Increase timeout to 10 seconds to allow standard satellite acquisition
-          maximumAge: 300000 // use cached position up to 5 minutes old for ultra-instant lookup!
+          timeout: 10000,
+          maximumAge: 0 // force fresh location request
         }
       );
     }
@@ -773,7 +878,7 @@ export default function CreateOrderView({
           : (hasCached ? [Number(cachedLng), Number(cachedLat)] : (prefetchedCoordsRef.current ? (() => {
               const converted = wgs84ToGcj02(prefetchedCoordsRef.current.lng, prefetchedCoordsRef.current.lat);
               return [converted.lng, converted.lat];
-            })() : [106.230912, 38.487193]));
+            })() : [106.2350, 38.4830]));
 
         // Initialize AMap strictly in 2D mode, with disabled manual rotatability/pitching
         const map = new AMap.Map(mapContainerRef.current, {
@@ -807,6 +912,9 @@ export default function CreateOrderView({
               if (geoStatus === 'complete' && geoResult.regeocode) {
                 const cleanLabel = getHighPrecisionLocationName(geoResult.regeocode, geoResult.regeocode.formattedAddress, lng, lat);
                 setStartLocation(cleanLabel);
+                localStorage.setItem('dd_bg_driver_coords_lng', String(lng));
+                localStorage.setItem('dd_bg_driver_coords_lat', String(lat));
+                localStorage.setItem('dd_bg_driver_coords_name', cleanLabel);
               } else {
                 setStartLocation(prev => {
                   if (prev && prev !== '正在获取当前位置...' && prev !== '请授权开启定位权限' && prev !== '未定位起点') {
@@ -1207,7 +1315,7 @@ export default function CreateOrderView({
                 }
                 const driverKeyword = (startLocation && startLocation !== '我的当前位置' && startLocation !== '正在获取当前位置...')
                   ? startLocation
-                  : '玉皇阁北街铂金大厦';
+                  : (registeredCity ? `${registeredCity}中心` : '银川市兴庆区');
 
                 const placeSearch = new AMap.PlaceSearch({ city: registeredCity || '银川市', pageSize: 1 });
                 placeSearch.search(driverKeyword, (status: string, result: any) => {
@@ -1572,12 +1680,13 @@ export default function CreateOrderView({
 
   // Find active time slot for the current time
   const getActiveTimeSlot = () => {
+    const slots = (billingRules && Array.isArray(billingRules.slots) && billingRules.slots.length > 0) ? billingRules.slots : DEFAULT_SLOTS;
     const nowObj = new Date();
     const activeHour = nowObj.getHours();
-    let activeSlot = billingRules.slots[0];
+    let activeSlot = slots[0] || DEFAULT_SLOTS[0];
     
-    for (const slot of billingRules.slots) {
-      if (!slot.startTime || !slot.endTime) continue;
+    for (const slot of slots) {
+      if (!slot || !slot.startTime || !slot.endTime) continue;
       const [startH] = slot.startTime.split(':').map(Number);
       const [endH] = slot.endTime.split(':').map(Number);
       
@@ -1632,28 +1741,89 @@ export default function CreateOrderView({
       return;
     }
 
-    // Generate new robust trip state
-    const userEnteredDest = destination.trim();
-    const targetDestination = userEnteredDest || '请填写目的地（选填）';
-    const targetPhone = phoneNumber.trim();
-    const startingFeeApplied = Number((baseStartingPrice * weatherMultiplier).toFixed(2));
-    const finalEstimatedBaseFee = routeDistance !== null ? Number((estimatedPriceSubtotal * weatherMultiplier).toFixed(2)) : startingFeeApplied;
-    
-    // Non-blocking warning instead of blocking order creation so checking order creation always works seamlessly.
-    if (registeredCity && !startLocation.includes(registeredCity)) {
-      console.warn(`出发地（当前输入：${startLocation}）不在线上认证的听单开通城市（${registeredCity}）范围内。但因属于线下自助报单，已放行创建订单。`);
-    }
-    
-    if (activeOnlineOrder) {
-      const isValet = activeOnlineOrder.isValetOrder || activeOnlineOrder.isPlatformDispatch;
+    try {
+      // Generate new robust trip state with fallback guards
+      const userEnteredDest = (destination || '').trim();
+      const targetDestination = userEnteredDest || '请填写目的地（选填）';
+      const targetPhone = (phoneNumber || '').trim();
+      const startingFeeApplied = Number(((baseStartingPrice || 59) * (weatherMultiplier || 1.0)).toFixed(2));
+      
+      if (registeredCity && startLocation && typeof startLocation === 'string' && !startLocation.includes(registeredCity)) {
+        console.warn(`出发地（当前输入：${startLocation}）不在线上认证的听单开通城市（${registeredCity}）范围内。但因属于线下自助报单，已放行创建订单。`);
+      }
+      
+      if (activeOnlineOrder) {
+        const isValet = Boolean(activeOnlineOrder.isValetOrder || activeOnlineOrder.isPlatformDispatch || activeOnlineOrder.orderRemark === '商户代叫' || activeOnlineOrder.orderType === '商户代叫');
+        const isReportTransfer = Boolean(
+          activeOnlineOrder.orderType === '报单转单' ||
+          activeOnlineOrder.orderRemark === '报单转单' ||
+          activeOnlineOrder.type === '报单转单' ||
+          activeOnlineOrder.isReportTransferOrder ||
+          activeOnlineOrder.isReportTransfer
+        );
+        const orderIdVal = activeOnlineOrder.orderId || activeOnlineOrder.id || activeOnlineOrder.orderNo || ('DD' + Date.now().toString().slice(-8));
+        
+        const newTrip: TripState = {
+          id: 'OL' + Date.now().toString().slice(-6) + Math.floor(Math.random() * 9000 + 1000),
+          orderNumber: orderIdVal,
+          orderId: orderIdVal,
+          passengerName: isReportTransfer ? '报单转单乘客' : (isValet ? '商户代叫乘客' : '线上自助预约乘客'),
+          passengerPhone: targetPhone || activeOnlineOrder.passengerPhone || '',
+          startLocation: activeOnlineOrder.startLocation || activeOnlineOrder.originName || startLocation || '银川市',
+          endLocation: userEnteredDest || activeOnlineOrder.destination || activeOnlineOrder.endLocation || targetDestination,
+          startTimestamp: Date.now(),
+          currentDistance: 0.0,
+          currentWaitingTime: 0,
+          currentStatus: 'serving',
+          extraBridgeFee: 0,
+          extraParkingFee: 0,
+          extraOtherFee: 0,
+          calculatedBaseFee: startingFeeApplied,
+          calculatedTotalFee: startingFeeApplied,
+          weatherMultiplier: weatherMultiplier || 1.0,
+          isOnlineOrder: true,
+          orderType: isReportTransfer ? '报单转单' : (isValet ? '商户代叫' : '二维码开单'),
+          orderRemark: isReportTransfer ? '报单转单' : (activeOnlineOrder.orderRemark || (isValet ? '商户代叫' : '')),
+          dispatchedByPhone: activeOnlineOrder.dispatchedByPhone || activeOnlineOrder.adminPhone || activeOnlineOrder.dispatchedBy || activeOnlineOrder.merchantPhone || '',
+          adminPhone: activeOnlineOrder.adminPhone || activeOnlineOrder.dispatchedByPhone || '',
+          dispatchedBy: activeOnlineOrder.dispatchedBy || activeOnlineOrder.dispatchedByPhone || '',
+          dispatcherPhone: activeOnlineOrder.dispatchedByPhone || activeOnlineOrder.adminPhone || activeOnlineOrder.dispatchedBy || '',
+          paymentQrCode: activeOnlineOrder.paymentQrCode || activeOnlineOrder.merchantPaymentQrCode || '',
+          merchantPaymentQrCode: activeOnlineOrder.paymentQrCode || activeOnlineOrder.merchantPaymentQrCode || '',
+          merchantPhone: activeOnlineOrder.merchantPhone || activeOnlineOrder.dispatchedByPhone || '',
+          dispatchedByName: activeOnlineOrder.dispatchedByName || activeOnlineOrder.adminName || '',
+          adminName: activeOnlineOrder.adminName || activeOnlineOrder.dispatchedByName || '',
+          isValetOrder: isValet,
+          isPlatformDispatch: activeOnlineOrder.isPlatformDispatch
+        };
+
+        onStartTrip(newTrip);
+        if (onClearOnlineOrder) onClearOnlineOrder();
+
+        const cleanPhone = (userPhone || '').replace(/\s+/g, '').trim();
+        if (cleanPhone) {
+          if (db) {
+            deleteDoc(doc(db, 'passenger_links', cleanPhone)).catch(() => {});
+          }
+          try {
+            const baseUrl = getBaseApiUrl();
+            fetch(`${baseUrl}/api/db/delete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: 'passenger_links', docId: cleanPhone })
+            }).catch(() => {});
+          } catch (_) {}
+        }
+        return;
+      }
+
       const newTrip: TripState = {
-        id: 'OL' + Math.floor(Math.random() * 900000 + 100000),
-        orderNumber: activeOnlineOrder.id || ('DD' + Date.now().toString().slice(-8)),
-        passengerName: isValet ? '商户代叫乘客' : '线上自助预约乘客',
+        id: 'Z' + Date.now().toString().slice(-6) + Math.floor(Math.random() * 9000 + 1000),
+        orderNumber: 'DD' + Date.now().toString().slice(-8),
+        passengerName: '线下自助代驾客户',
         passengerPhone: targetPhone,
-        // The actual trip is from the passenger's pickup location to the passenger's end location
-        startLocation: activeOnlineOrder.startLocation || startLocation,
-        endLocation: userEnteredDest || activeOnlineOrder.destination || targetDestination,
+        startLocation: startLocation || '银川市',
+        endLocation: targetDestination,
         startTimestamp: Date.now(),
         currentDistance: 0.0,
         currentWaitingTime: 0,
@@ -1663,36 +1833,35 @@ export default function CreateOrderView({
         extraOtherFee: 0,
         calculatedBaseFee: startingFeeApplied,
         calculatedTotalFee: startingFeeApplied,
-        weatherMultiplier: weatherMultiplier,
-        isOnlineOrder: true,
-        orderType: isValet ? '商户代叫' : '二维码开单'
+        weatherMultiplier: weatherMultiplier || 1.0,
+        orderType: scanSuccessMsg ? '二维码开单' : '报单'
       };
+
       onStartTrip(newTrip);
+    } catch (err) {
+      console.error("Error creating trip inside handleCreateOrder:", err);
+      const fallbackTrip: TripState = {
+        id: 'OL' + Date.now().toString().slice(-6),
+        orderNumber: 'DD' + Date.now().toString().slice(-8),
+        passengerName: '商户代叫乘客',
+        passengerPhone: '',
+        startLocation: startLocation || '银川市',
+        endLocation: '请填写目的地（选填）',
+        startTimestamp: Date.now(),
+        currentDistance: 0.0,
+        currentWaitingTime: 0,
+        currentStatus: 'serving',
+        extraBridgeFee: 0,
+        extraParkingFee: 0,
+        extraOtherFee: 0,
+        calculatedBaseFee: 59,
+        calculatedTotalFee: 59,
+        weatherMultiplier: 1.0,
+        isOnlineOrder: true
+      };
+      onStartTrip(fallbackTrip);
       if (onClearOnlineOrder) onClearOnlineOrder();
-      return;
     }
-
-    const newTrip: TripState = {
-      id: 'Z' + Math.floor(Math.random() * 900000 + 100000),
-      orderNumber: 'DD' + Date.now().toString().slice(-8),
-      passengerName: '线下自助代驾客户',
-      passengerPhone: targetPhone,
-      startLocation: startLocation,
-      endLocation: targetDestination,
-      startTimestamp: Date.now(),
-      currentDistance: 0.0,
-      currentWaitingTime: 0,
-      currentStatus: 'serving',
-      extraBridgeFee: 0,
-      extraParkingFee: 0,
-      extraOtherFee: 0,
-      calculatedBaseFee: startingFeeApplied,
-      calculatedTotalFee: startingFeeApplied,
-      weatherMultiplier: weatherMultiplier,
-      orderType: scanSuccessMsg ? '二维码开单' : '报单'
-    };
-
-    onStartTrip(newTrip);
   };
 
   return (
@@ -1770,14 +1939,14 @@ export default function CreateOrderView({
           </svg>
         </button>
         {activeOnlineOrder ? (
-          <div className="bg-teal-600 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-1.5 border border-teal-500/10 pointer-events-auto animate-pulse">
-            <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
-            <span className="text-xs font-black">
-              {isMerchantValetOrder
-                ? (!arrivedAtDeparture ? "接单骑行：前往乘客出发地" : "已到达出发地：点击下方创建订单")
-                : "接单骑行：前往乘客起点"}
-            </span>
-          </div>
+          isMerchantValetOrder ? (
+            <div className="bg-teal-600 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-1.5 border border-teal-500/10 pointer-events-auto animate-pulse">
+              <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
+              <span className="text-xs font-black">
+                {!arrivedAtDeparture ? "接单骑行：前往乘客出发地" : "已到达出发地：点击下方创建订单"}
+              </span>
+            </div>
+          ) : null
         ) : (
           <div 
             onClick={() => {
@@ -1803,26 +1972,12 @@ export default function CreateOrderView({
         {/* Center Map Marker (Pulsing blue circle representing user's current/pushed location) */}
         {!activeOnlineOrder && !routeDistance && (
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none z-10 pb-5" data-purpose="pickup-location-marker">
-            {/* Speech bubble showing current high-precision location address name */}
-            <div className="bg-white/95 backdrop-blur-xs px-3.5 py-1.5 rounded-lg shadow-xl border border-blue-100 mb-2.5 whitespace-nowrap flex items-center gap-1.5 animate-bounce pointer-events-auto transition-all duration-200">
+            {/* Speech bubble showing current high-precision location address name (read-only, non-clickable) */}
+            <div className="bg-white/95 backdrop-blur-xs px-3.5 py-1.5 rounded-lg shadow-xl border border-blue-100 mb-2.5 whitespace-nowrap flex items-center gap-1.5 animate-bounce pointer-events-none transition-all duration-200">
               <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-              {isEditingStart ? (
-                <input
-                  type="text"
-                  value={startLocation}
-                  onChange={(e) => setStartLocation(e.target.value)}
-                  onBlur={() => setIsEditingStart(false)}
-                  autoFocus
-                  className="text-xs font-bold text-gray-800 bg-transparent border-b border-gray-300 focus:outline-hidden p-0 max-w-[140px] pointer-events-auto"
-                />
-              ) : (
-                <span 
-                  onClick={() => setIsEditingStart(true)}
-                  className="text-xs font-black text-gray-800 cursor-pointer hover:underline pointer-events-auto"
-                >
-                  {startLocation}
-                </span>
-              )}
+              <span className="text-xs font-black text-gray-800 select-none">
+                {startLocation}
+              </span>
             </div>
             
             {/* Pulsing blue circle component */}
@@ -1844,15 +1999,12 @@ export default function CreateOrderView({
 
         {/* Map Action Buttons (Floating above the bottom sheet) */}
         <div className="w-full px-4 mb-4 flex justify-between items-end gap-2 pointer-events-none" data-purpose="map-tools">
-          <div className="flex gap-2 pointer-events-auto">
+          <div className="flex flex-col gap-2 items-start pointer-events-auto">
             <button 
               onClick={() => alert(`当前代驾规则模板：${billingRules.templateName}`)}
               className="bg-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-md flex items-center gap-1 active:scale-95 transition-transform text-gray-800"
             >
               <span>{billingRules.templateName}</span>
-              <svg className="h-3 w-3 text-[#4dbfb3]" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
-              </svg>
             </button>
             <button 
               id="weather-multiplier-trigger-button"
@@ -1868,6 +2020,16 @@ export default function CreateOrderView({
                 <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
               </svg>
             </button>
+            {isTeamDriver && (
+              <button 
+                id="report-transfer-order-trigger-button"
+                type="button"
+                onClick={() => setShowReportTransferModal(true)}
+                className="bg-[#189F95] hover:bg-[#158C83] text-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-md shadow-[#189F95]/20 flex items-center gap-1 active:scale-95 transition-transform cursor-pointer border border-[#189F95]"
+              >
+                <span>报单转单（赚取代叫费用）</span>
+              </button>
+            )}
           </div>
           <div className="flex flex-col items-center gap-2 pointer-events-auto">
             {/* Zoom Controls Panel stacked vertically above the re-center button */}
@@ -1925,9 +2087,9 @@ export default function CreateOrderView({
       {/* END: MapMarkerSection */}
 
       {/* BEGIN: OrderDetailsCard */}
-      <div className="bg-white rounded-t-3xl shadow-2xl z-20 px-4 sm:px-6 pt-4 sm:pt-5 pb-[calc(1.5rem+max(env(safe-area-inset-bottom,0px),28px))] shrink-0 border-t border-gray-100 max-w-full overflow-hidden android-nav-safe-pb" data-purpose="order-form-container">
+      <div className="bg-white rounded-t-3xl shadow-2xl z-20 px-4 sm:px-6 pt-3 sm:pt-3.5 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px))] shrink-0 border-t border-gray-100 max-w-full overflow-hidden android-nav-safe-pb" data-purpose="order-form-container">
         {((scanSuccessMsg || (activeOnlineOrder && !isMerchantValetOrder)) && !scanBannerDismissed) && (
-          <div className="mb-4 bg-[#e8f8f2] border border-[#07c160]/30 rounded-2xl p-3 sm:p-3.5 flex items-center justify-between gap-2 animate-in slide-in-from-top-3 duration-200 shadow-xs max-w-full overflow-hidden">
+          <div className="mb-2.5 bg-[#e8f8f2] border border-[#07c160]/30 rounded-2xl p-2.5 sm:p-3 flex items-center justify-between gap-2 animate-in slide-in-from-top-3 duration-200 shadow-xs max-w-full overflow-hidden">
             <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
               <div className="w-6 h-6 rounded-full bg-[#07c160] flex items-center justify-center shrink-0">
                 <CheckCircle2 className="w-4 h-4 text-white stroke-[2.5]" />
@@ -1955,10 +2117,10 @@ export default function CreateOrderView({
         )}
         
         {/* Pickup and Destination Inputs */}
-        <div className="space-y-3 max-w-full overflow-hidden">
+        <div className="space-y-2 max-w-full overflow-hidden">
           
           {/* Pickup Point Row */}
-          <div className="flex items-center gap-2 sm:gap-3 py-2 border-b border-gray-100 max-w-full overflow-hidden">
+          <div className="flex items-center gap-2 sm:gap-3 py-1 border-b border-gray-100 max-w-full overflow-hidden">
             <div className="w-2.5 h-2.5 bg-cyan-500 rounded-full shrink-0"></div>
             <div className="flex-grow flex items-center justify-between min-w-0 overflow-hidden">
               <span className="text-gray-400 text-xs shrink-0 whitespace-nowrap">出发地</span>
@@ -1982,7 +2144,7 @@ export default function CreateOrderView({
                 setShowDestinationSearch(true);
               }
             }}
-            className="flex items-center gap-2 sm:gap-3 bg-gray-50 hover:bg-white rounded-2xl px-3.5 sm:px-4 py-2.5 border border-transparent hover:border-teal-500/20 active:scale-[0.99] transition-all cursor-pointer select-none max-w-full overflow-hidden"
+            className="flex items-center gap-2 sm:gap-3 bg-gray-50 hover:bg-white rounded-2xl px-3.5 sm:px-4 py-1.5 border border-transparent hover:border-teal-500/20 active:scale-[0.99] transition-all cursor-pointer select-none max-w-full overflow-hidden"
             id="destination-trigger"
           >
             <div className="w-2.5 h-2.5 bg-rose-500 rounded-full shrink-0"></div>
@@ -2008,16 +2170,22 @@ export default function CreateOrderView({
           </div>
 
           {/* Phone Number Input Row */}
-          <div className="flex items-center gap-2 sm:gap-3 bg-gray-50 rounded-2xl px-3.5 sm:px-4 py-2 border border-transparent focus-within:border-teal-500/30 focus-within:bg-white transition-all max-w-full overflow-hidden">
+          <div className="flex items-center gap-2 sm:gap-3 bg-gray-50 rounded-2xl px-3.5 sm:px-4 py-1 border border-transparent focus-within:border-teal-500/30 focus-within:bg-white transition-all max-w-full overflow-hidden">
             <svg className="h-4 w-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
               <path d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
             </svg>
             <input 
               type="tel"
+              inputMode="numeric"
+              maxLength={11}
               value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              className="bg-transparent border-none focus:ring-0 p-0 text-sm font-bold text-gray-800 flex-1 min-w-0 tracking-tight placeholder:text-gray-400 placeholder:font-normal focus:outline-hidden" 
+              onChange={(e) => {
+                const cleaned = e.target.value.replace(/\D/g, '').slice(0, 11);
+                setPhoneNumber(cleaned);
+              }}
+              className="bg-transparent border-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 p-0 text-sm font-bold text-gray-800 flex-1 min-w-0 tracking-tight placeholder:text-gray-400 placeholder:font-normal" 
               placeholder="客户手机号（选填）" 
+              style={{ outline: 'none', boxShadow: 'none' }}
             />
             {phoneNumber.trim() !== '' && (
               <a
@@ -2026,7 +2194,7 @@ export default function CreateOrderView({
                   e.stopPropagation();
                   window.location.href = `tel:${phoneNumber.trim()}`;
                 }}
-                className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-2.5 py-1.5 rounded-xl text-xs font-bold shadow-xs transition-all shrink-0 cursor-pointer whitespace-nowrap ml-auto"
+                className="flex items-center gap-1 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white px-2.5 py-1 rounded-xl text-xs font-bold shadow-xs transition-all shrink-0 cursor-pointer whitespace-nowrap ml-auto"
                 title="一键拨打电话"
               >
                 <Phone className="w-3.5 h-3.5 fill-current shrink-0" />
@@ -2038,7 +2206,7 @@ export default function CreateOrderView({
         </div>
 
         {/* Price and Submit Action Row */}
-        <div className="mt-4 sm:mt-5 flex items-center justify-between gap-2 max-w-full overflow-hidden">
+        <div className="mt-2.5 mb-0.5 flex items-center justify-between gap-2 max-w-full overflow-hidden">
           <div data-purpose="price-estimation" className="text-left shrink-0 min-w-0">
             <div className="flex items-baseline leading-none whitespace-nowrap shrink-0">
               <span className="text-gray-500 text-[11px] font-semibold mr-1.5 whitespace-nowrap shrink-0">预估费用</span>
@@ -2069,7 +2237,7 @@ export default function CreateOrderView({
           </div>
           
           <button 
-            onClick={() => {
+            onClick={async () => {
               if (isMerchantValetOrder && !arrivedAtDeparture) {
                 setArrivedAtDeparture(true);
                 const passStart = activeOnlineOrder?.startLocation || activeOnlineOrder?.originName || '出发地';
@@ -2078,17 +2246,87 @@ export default function CreateOrderView({
                   : '';
                 setStartLocation(passStart);
                 setDestination(passDest);
+
+                // Update merchant order status to '司机到达'
+                if (activeOnlineOrder) {
+                  const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
+                  if (orderId) {
+                    try {
+                      if (db) {
+                        await setDoc(doc(db, 'merchant_orders', orderId), {
+                          status: 'arrived',
+                          statusCategory: '司机到达',
+                          arrivedAt: Date.now()
+                        }, { merge: true });
+                      }
+                    } catch (e) {
+                      console.error("Error updating merchant order to arrived:", e);
+                    }
+
+                    try {
+                      const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+                      const updated = saved.map((o: any) => {
+                        if (o.id === orderId || o.orderId === orderId || (o.orderNo && activeOnlineOrder?.orderNo && o.orderNo === activeOnlineOrder?.orderNo)) {
+                          return {
+                            ...o,
+                            status: 'arrived',
+                            statusCategory: '司机到达',
+                            arrivedAt: Date.now()
+                          };
+                        }
+                        return o;
+                      });
+                      localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+                      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+                    } catch (_) {}
+                  }
+                }
                 return;
               }
+
+              // Update merchant order status to '服务中' when creating order
+              if (activeOnlineOrder) {
+                const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
+                if (orderId) {
+                  // Run Firestore sync asynchronously without blocking UI transition
+                  if (db) {
+                    setDoc(doc(db, 'merchant_orders', orderId), {
+                      status: 'serving',
+                      statusCategory: '服务中',
+                      servingAt: Date.now()
+                    }, { merge: true }).catch(e => {
+                      console.error("Error updating merchant order to serving:", e);
+                    });
+                  }
+
+                  try {
+                    const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+                    const updated = saved.map((o: any) => {
+                      if (o.id === orderId || o.orderId === orderId || (o.orderNo && activeOnlineOrder?.orderNo && o.orderNo === activeOnlineOrder?.orderNo)) {
+                        return {
+                          ...o,
+                          status: 'serving',
+                          statusCategory: '服务中',
+                          servingAt: Date.now()
+                        };
+                      }
+                      return o;
+                    });
+                    localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+                    window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+                  } catch (_) {}
+                }
+              }
+
               handleCreateOrder();
             }}
-            className="bg-[#189F95] hover:bg-[#158C83] text-white px-4 sm:px-8 py-3.5 rounded-xl font-bold text-sm sm:text-base active:scale-95 shadow-md shadow-[#189F95]/25 transition-all font-sans cursor-pointer whitespace-nowrap shrink-0" 
+            className="bg-[#189F95] hover:bg-[#158C83] text-white px-4 sm:px-7 py-2.5 sm:py-3 rounded-xl font-bold text-sm sm:text-base active:scale-95 shadow-md shadow-[#189F95]/25 transition-all font-sans cursor-pointer whitespace-nowrap shrink-0" 
             data-purpose="submit-order"
           >
             {isMerchantValetOrder ? (
-              !arrivedAtDeparture ? "到达出发地" : "创建订单（开始计费）"
+              !arrivedAtDeparture ? "到达出发地" : "创建订单"
             ) : (
-              activeOnlineOrder ? "创建订单 (开始计费)" : "创建订单"
+              "创建订单"
             )}
           </button>
         </div>
@@ -2290,7 +2528,8 @@ export default function CreateOrderView({
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
                 placeholder="搜索目的地 / 输入具体地址"
-                className="bg-transparent border-none focus:outline-hidden p-0 text-sm font-bold text-gray-800 flex-grow placeholder:text-gray-400 placeholder:font-normal focus:ring-0"
+                className="bg-transparent border-none outline-none focus:outline-none focus-visible:outline-none focus:ring-0 p-0 text-sm font-bold text-gray-800 flex-grow placeholder:text-gray-400 placeholder:font-normal"
+                style={{ outline: 'none', boxShadow: 'none' }}
                 autoFocus
               />
               {searchText && (
@@ -2474,6 +2713,15 @@ export default function CreateOrderView({
          </div>
        )}
 
-    </div>
+    
+        {/* Report Transfer Order Modal */}
+        <ReportTransferOrderModal 
+          isOpen={showReportTransferModal}
+          onClose={() => setShowReportTransferModal(false)}
+          userPhone={userPhone}
+          defaultPickup={startLocation || '运祥小区'}
+        />
+
+</div>
   );
 }

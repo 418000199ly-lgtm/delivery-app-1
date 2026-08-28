@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MapPin, Navigation, ChevronRight, Clock, ShieldCheck, X, PlusCircle, MinusCircle, CheckCircle, Phone } from 'lucide-react';
-import { TripState, ChauffeurSettings, BillingRules, checkVipActive } from '../types';
+import { TripState, ChauffeurSettings, BillingRules, DEFAULT_SLOTS, checkVipActive } from '../types';
 import NavigationView from './NavigationView';
 
 const SUGGESTED_DESTINATIONS = [
@@ -51,23 +51,45 @@ export default function ActiveTripView({
   onUpdateTrip,
   onEndTrip
 }: ActiveTripViewProps) {
+  const safeSettings = settings || { city: '银川市', deviationKm: 1.0, deviationWaitSec: 30, deviationMitigation: true } as any;
+  const safeBillingRules = billingRules || { templateName: '标准计费', slots: DEFAULT_SLOTS, freeWaitingTime: 15, returnFeeStartKm: 0 } as any;
+  const safeTrip: TripState = (trip && typeof trip === 'object') ? trip : {
+    id: 'OL_DEFAULT',
+    orderNumber: 'DD' + Date.now().toString().slice(-8),
+    passengerName: '乘客',
+    passengerPhone: '',
+    startLocation: '银川大悦城',
+    endLocation: '请填写目的地（选填）',
+    startTimestamp: Date.now(),
+    currentDistance: 0.0,
+    currentWaitingTime: 0,
+    currentStatus: 'serving',
+    extraBridgeFee: 0,
+    extraParkingFee: 0,
+    extraOtherFee: 0,
+    calculatedBaseFee: 59,
+    calculatedTotalFee: 59,
+    weatherMultiplier: 1.0,
+    isOnlineOrder: true
+  };
+
   // 1. Durations states (driving duration & waiting duration)
   const [drivingSeconds, setDrivingSeconds] = useState(0);
-  const [waitingSeconds, setWaitingSeconds] = useState(() => (trip.currentWaitingTime || 0) * 60);
+  const [waitingSeconds, setWaitingSeconds] = useState(() => (safeTrip.currentWaitingTime || 0) * 60);
   const [isWaiting, setIsWaiting] = useState(false);
 
   // Refs to avoid stale closures and infinite loop triggers in useEffect
-  const tripRef = useRef(trip);
-  const billingRulesRef = useRef(billingRules);
+  const tripRef = useRef(safeTrip);
+  const billingRulesRef = useRef(safeBillingRules);
   const onUpdateTripRef = useRef(onUpdateTrip);
 
   useEffect(() => {
-    tripRef.current = trip;
-  }, [trip]);
+    tripRef.current = safeTrip;
+  }, [safeTrip]);
 
   useEffect(() => {
-    billingRulesRef.current = billingRules;
-  }, [billingRules]);
+    billingRulesRef.current = safeBillingRules;
+  }, [safeBillingRules]);
 
   useEffect(() => {
     onUpdateTripRef.current = onUpdateTrip;
@@ -77,7 +99,7 @@ export default function ActiveTripView({
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [showDestModal, setShowDestModal] = useState(false);
   const [showNavigationView, setShowNavigationView] = useState(false);
-  const [tempDest, setTempDest] = useState(trip.endLocation || '');
+  const [tempDest, setTempDest] = useState(safeTrip.endLocation || '');
   const [showSystemToast, setShowSystemToast] = useState(false);
   const [toastText, setToastText] = useState('');
 
@@ -124,12 +146,14 @@ export default function ActiveTripView({
 
   // 2. Mathematical cost calculation helper
   const calculateCost = (dist: number, waitMinutes: number, rules: BillingRules) => {
+    const slots = (rules && Array.isArray(rules.slots) && rules.slots.length > 0) ? rules.slots : DEFAULT_SLOTS;
     const nowObj = new Date();
     const activeHour = nowObj.getHours();
     
     // Choose active slot based on hours
-    let activeSlot = rules.slots[0];
-    for (const slot of rules.slots) {
+    let activeSlot = slots[0] || DEFAULT_SLOTS[0];
+    for (const slot of slots) {
+      if (!slot || !slot.startTime || !slot.endTime) continue;
       const [startH] = slot.startTime.split(':').map(Number);
       const [endH] = slot.endTime.split(':').map(Number);
       
@@ -144,10 +168,10 @@ export default function ActiveTripView({
       }
     }
 
-    const base = activeSlot.startingPrice;
-    const freeKm = activeSlot.includedDistance;
-    const interval = activeSlot.distanceInterval || 1;
-    const increase = activeSlot.priceIncrease ?? activeSlot.unitPricePerKm ?? 5;
+    const base = activeSlot?.startingPrice ?? 40;
+    const freeKm = activeSlot?.includedDistance ?? 7;
+    const interval = activeSlot?.distanceInterval || 1;
+    const increase = activeSlot?.priceIncrease ?? activeSlot?.unitPricePerKm ?? 5;
 
     let distanceCost = 0;
     if (dist > freeKm) {
@@ -170,7 +194,7 @@ export default function ActiveTripView({
       waitingFee = Math.ceil((waitMinutes - rules.freeWaitingTime) / wInterval) * wIncrease;
     }
 
-    const wMultiplier = trip.weatherMultiplier || 1.0;
+    const wMultiplier = safeTrip.weatherMultiplier || 1.0;
     const totalCalculated = (base + distanceCost + returnFee + waitingFee) * wMultiplier;
     return {
       base: Number((base * wMultiplier).toFixed(2)),
@@ -179,7 +203,7 @@ export default function ActiveTripView({
   };
 
   // 3. Keep real-time counter ticking and advancing trip metrics (using absolute timestamps to survive background & lock screen)
-  const tripStartMsRef = useRef<number>(trip.startTimestamp || Date.now());
+  const tripStartMsRef = useRef<number>(safeTrip.startTimestamp || Date.now());
   const waitingStartMsRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -236,12 +260,12 @@ export default function ActiveTripView({
 
   // Real-time GPS high-precision tracking & AMap mileage calculation
   const lastCoordsRef = useRef<{ lng: number; lat: number; timestamp: number } | null>(null);
-  const preciseDistanceRef = useRef<number>(trip.currentDistance);
+  const preciseDistanceRef = useRef<number>(safeTrip.currentDistance || 0);
 
   // Restore saved active trip GPS state on mount if present
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(`active_trip_gps_${trip.id}`);
+      const saved = localStorage.getItem(`active_trip_gps_${safeTrip.id}`);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.lastCoords && typeof parsed.lastCoords.lng === 'number') {
@@ -252,14 +276,14 @@ export default function ActiveTripView({
         }
       }
     } catch (e) {}
-  }, [trip.id]);
+  }, [safeTrip.id]);
 
   // Synchronize precise distance ref if trip currentDistance is adjusted from outside/manually (e.g., manual corrections)
   useEffect(() => {
-    if (Math.abs(preciseDistanceRef.current - trip.currentDistance) > 0.05) {
-      preciseDistanceRef.current = trip.currentDistance;
+    if (Math.abs(preciseDistanceRef.current - (safeTrip.currentDistance || 0)) > 0.05) {
+      preciseDistanceRef.current = safeTrip.currentDistance || 0;
     }
-  }, [trip.currentDistance]);
+  }, [safeTrip.currentDistance]);
 
   // Ref for position updater to avoid closure capture issues
   const handlePositionUpdateRef = useRef<(lng: number, lat: number, accuracy: number, speed: number | null) => void>(() => {});
@@ -476,7 +500,7 @@ export default function ActiveTripView({
   // Save updated destination location from popup dialog
   const handleSaveDestination = () => {
     onUpdateTrip({
-      ...trip,
+      ...safeTrip,
       endLocation: tempDest.trim() || '未完成安全目的地设定'
     });
     setShowDestModal(false);
@@ -486,7 +510,7 @@ export default function ActiveTripView({
   // Navigation click trigger
   const handleSimulateNavigation = (e?: React.MouseEvent | React.TouchEvent) => {
     if (e) e.stopPropagation();
-    const dest = trip.endLocation ? trip.endLocation.trim() : '';
+    const dest = safeTrip.endLocation ? safeTrip.endLocation.trim() : '';
     const isDestEmpty = !dest || 
                         dest === '待指定安全目的地' || 
                         dest === '未完成安全目的地设定' || 
@@ -501,7 +525,7 @@ export default function ActiveTripView({
   // Handle dial phone action
   const handleMakePhoneCall = (e: React.MouseEvent | React.TouchEvent) => {
     e.stopPropagation();
-    const phone = trip.passengerPhone ? trip.passengerPhone.trim() : '';
+    const phone = safeTrip.passengerPhone ? safeTrip.passengerPhone.trim() : '';
     if (phone && phone !== '' && phone !== '13900000000') {
       window.location.href = `tel:${phone}`;
       triggerToast(`正在拨打乘客电话: ${phone}`);
@@ -531,7 +555,7 @@ export default function ActiveTripView({
     if (pos >= maxDrag * 0.88) {
       setIsSliding(false);
       setSliderPos(0);
-      onEndTrip(trip.calculatedTotalFee);
+      onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59);
     }
   };
 
@@ -552,7 +576,7 @@ export default function ActiveTripView({
       if (pos >= maxDrag * 0.88) {
         setIsSliding(false);
         setSliderPos(0);
-        onEndTrip(trip.calculatedTotalFee);
+        onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59);
       }
     };
 
@@ -571,25 +595,26 @@ export default function ActiveTripView({
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
-  }, [isSliding, trip.calculatedTotalFee]);
+  }, [isSliding, safeTrip.calculatedTotalFee]);
 
-  const stepKm = settings.deviationKm ?? 1.0;
-  const stepWaitSec = settings.deviationWaitSec ?? 30;
+  const stepKm = safeSettings.deviationKm ?? 1.0;
+  const stepWaitSec = safeSettings.deviationWaitSec ?? 30;
 
   // Adjust distance manually (deviation helper to adjust on simulated app preview)
   const handleAdjustDistance = (amount: number) => {
-    if (!checkVipActive(settings.vipExpiry)) {
+    if (!checkVipActive(safeSettings.vipExpiry)) {
       triggerToast('🔒 提示：纠偏功能为VIP会员专属特权！请先激活VIP。');
       return;
     }
-    if (!settings.deviationMitigation) {
+    if (!safeSettings.deviationMitigation) {
       triggerToast('纠偏功能已设定为禁用，请进入设置页开启它');
       return;
     }
-    const nextDist = Math.max(0, Number((trip.currentDistance + amount).toFixed(2)));
-    const cost = calculateCost(nextDist, trip.currentWaitingTime, billingRules);
+    const currentDistVal = typeof safeTrip?.currentDistance === 'number' ? safeTrip.currentDistance : 0;
+    const nextDist = Math.max(0, Number((currentDistVal + amount).toFixed(2)));
+    const cost = calculateCost(nextDist, safeTrip?.currentWaitingTime || 0, safeBillingRules);
     onUpdateTrip({
-      ...trip,
+      ...safeTrip,
       currentDistance: nextDist,
       calculatedBaseFee: cost.base,
       calculatedTotalFee: cost.total
@@ -599,11 +624,11 @@ export default function ActiveTripView({
 
   // Adjust waiting time manually (deviation helper to adjust waiting duration in seconds)
   const handleAdjustWaitingTime = (amountSecs: number) => {
-    if (!checkVipActive(settings.vipExpiry)) {
+    if (!checkVipActive(safeSettings.vipExpiry)) {
       triggerToast('🔒 提示：纠偏功能为VIP会员专属特权！请先激活VIP。');
       return;
     }
-    if (!settings.deviationMitigation) {
+    if (!safeSettings.deviationMitigation) {
       triggerToast('纠偏功能已设定为禁用，请进入设置页开启它');
       return;
     }
@@ -611,9 +636,9 @@ export default function ActiveTripView({
     setWaitingSeconds(nextSec);
 
     const nextWaitingTime = Math.floor(nextSec / 60);
-    const cost = calculateCost(trip.currentDistance, nextWaitingTime, billingRules);
+    const cost = calculateCost(safeTrip?.currentDistance || 0, nextWaitingTime, safeBillingRules);
     onUpdateTrip({
-      ...trip,
+      ...safeTrip,
       currentWaitingTime: nextWaitingTime,
       calculatedBaseFee: cost.base,
       calculatedTotalFee: cost.total
@@ -648,29 +673,29 @@ export default function ActiveTripView({
       {/* END: MainHeader */}
 
       {/* BEGIN: MainContent Scroll Area */}
-      <main className="flex-1 overflow-y-auto p-4 space-y-4">
+      <main className="flex-1 overflow-y-auto p-3.5 sm:p-4 space-y-3.5 android-nav-safe-pb">
         
         {/* BEGIN: DestinationCard */}
         <section 
           onClick={() => {
-            const currentDest = (!trip.endLocation || trip.endLocation === '待指定安全目的地' || trip.endLocation === '未完成安全目的地设定' || trip.endLocation === '请填写目的地（选填）') ? '' : trip.endLocation;
+            const currentDest = (!safeTrip.endLocation || safeTrip.endLocation === '待指定安全目的地' || safeTrip.endLocation === '未完成安全目的地设定' || safeTrip.endLocation === '请填写目的地（选填）') ? '' : safeTrip.endLocation;
             setSearchText(currentDest);
             setShowDestinationSearch(true);
           }}
-          className="bg-white rounded-xl p-4 shadow-xs border border-gray-100 flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors" 
+          className="bg-white rounded-xl p-3.5 shadow-xs border border-gray-100 flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors" 
           data-purpose="destination-selector"
         >
           <div className="flex items-center space-x-2.5 overflow-hidden">
             <MapPin className="h-4.5 w-4.5 text-[#26a69a] shrink-0" />
             <div className="text-left overflow-hidden">
               <div className="text-gray-400 text-[10px] uppercase font-bold tracking-wider leading-none mb-0.5">目的地</div>
-              <span className={`text-sm font-bold truncate block ${(!trip.endLocation || trip.endLocation === '待指定安全目的地' || trip.endLocation === '未完成安全目的地设定' || trip.endLocation === '请填写目的地（选填）') ? 'text-gray-400 font-medium' : 'text-gray-800'}`}>
-                {(!trip.endLocation || trip.endLocation === '待指定安全目的地' || trip.endLocation === '未完成安全目的地设定' || trip.endLocation === '请填写目的地（选填）') ? '请填写目的地（选填）' : trip.endLocation}
+              <span className={`text-sm font-bold truncate block ${(!safeTrip.endLocation || safeTrip.endLocation === '待指定安全目的地' || safeTrip.endLocation === '未完成安全目的地设定' || safeTrip.endLocation === '请填写目的地（选填）') ? 'text-gray-400 font-medium' : 'text-gray-800'}`}>
+                {(!safeTrip.endLocation || safeTrip.endLocation === '待指定安全目的地' || safeTrip.endLocation === '未完成安全目的地设定' || safeTrip.endLocation === '请填写目的地（选填）') ? '请填写目的地（选填）' : safeTrip.endLocation}
               </span>
             </div>
           </div>
           <div className="flex items-center text-gray-400 shrink-0 select-none">
-            {(!trip.endLocation || trip.endLocation === '待指定安全目的地' || trip.endLocation === '未完成安全目的地设定' || trip.endLocation === '请填写目的地（选填）') ? (
+            {(!safeTrip.endLocation || safeTrip.endLocation === '待指定安全目的地' || safeTrip.endLocation === '未完成安全目的地设定' || safeTrip.endLocation === '请填写目的地（选填）') ? (
               <span className="text-xs text-slate-400 mr-1 font-medium">点击设置</span>
             ) : null}
             <ChevronRight className="h-4 w-4 text-slate-300" />
@@ -680,7 +705,7 @@ export default function ActiveTripView({
 
         {/* BEGIN: MainBillingCard */}
         <section 
-          className="bg-gradient-to-br from-[#4db6ac] to-[#26a69a] relative rounded-xl p-6 text-white overflow-hidden shadow-lg shadow-teal-100/40" 
+          className="bg-gradient-to-br from-[#4db6ac] to-[#26a69a] relative rounded-xl p-5 sm:p-6 text-white overflow-hidden shadow-lg shadow-teal-100/40" 
           data-purpose="billing-status-display"
         >
           {/* Large watermark-like Yen symbol */}
@@ -711,15 +736,15 @@ export default function ActiveTripView({
           </button>
 
           {/* Price & Duration Info Display */}
-          <div className="text-center relative z-10 py-2">
+          <div className="text-center relative z-10 py-1 sm:py-2">
             <div className="text-5xl font-black tracking-tight mb-1 animate-pulse font-mono">
-              {trip.calculatedTotalFee.toFixed(2)}
+              {(safeTrip?.calculatedTotalFee ?? safeTrip?.calculatedBaseFee ?? 0).toFixed(2)}
             </div>
-            <div className="text-[11px] opacity-90 mb-5 font-medium tracking-wide">
+            <div className="text-[11px] opacity-90 mb-4 font-medium tracking-wide">
               实时计费(元)
             </div>
             
-            <div className="h-[1px] bg-white opacity-20 w-28 mx-auto mb-4"></div>
+            <div className="h-[1px] bg-white opacity-20 w-28 mx-auto mb-3"></div>
             
             <div className="flex items-center justify-center space-x-1.5 text-xs text-white/95">
               <span className="opacity-90 font-medium">开车时长:</span>
@@ -756,7 +781,7 @@ export default function ActiveTripView({
             {/* Centered Overlay Badge: Show current distance value and status label */}
             <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none select-none z-10 flex flex-col items-center justify-center min-w-[100px] ${!settings.deviationMitigation ? 'opacity-80' : ''}`}>
               <div className="text-2xl font-black text-[#26a69a] font-mono leading-none mb-1">
-                {trip.currentDistance.toFixed(2)}
+                {(safeTrip?.currentDistance ?? 0).toFixed(2)}
               </div>
               <div className="text-[10px] text-gray-500 font-bold tracking-wider leading-none whitespace-nowrap uppercase">
                 已行程(公里)
@@ -796,14 +821,14 @@ export default function ActiveTripView({
         {/* END: SecondaryStatsRow */}
 
         {/* BEGIN: ActionButtons */}
-        <div className="pt-3 space-y-3.5">
+        <div className="pt-2 space-y-2.5">
           {/* Waiting State Trigger Button */}
           <button 
             onClick={() => {
               const nextWaiting = !isWaiting;
               setIsWaiting(nextWaiting);
             }}
-            className={`w-full py-3.5 font-bold rounded-xl shadow-xs transition-all active:scale-98 flex items-center justify-center gap-2 border text-sm ${
+            className={`w-full py-3 font-bold rounded-xl shadow-xs transition-all active:scale-98 flex items-center justify-center gap-2 border text-sm ${
               isWaiting 
                 ? 'bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100/70' 
                 : 'bg-white border-[#26a69a] text-[#26a69a] hover:bg-teal-50/40'
@@ -823,7 +848,7 @@ export default function ActiveTripView({
             onMouseMove={isSliding ? handleTouchMove : undefined}
             onTouchEnd={handleTouchEnd}
             onMouseUp={handleTouchEnd}
-            className="relative w-full h-[58px] bg-[#26a69a] select-none rounded-xl flex items-center justify-center overflow-hidden active:opacity-95 transition-all cursor-grab active:cursor-grabbing shadow-md shadow-teal-500/10 border border-teal-600/10" 
+            className="relative w-full h-[54px] bg-[#26a69a] select-none rounded-xl flex items-center justify-center overflow-hidden active:opacity-95 transition-all cursor-grab active:cursor-grabbing shadow-md shadow-teal-500/10 border border-teal-600/10" 
             data-purpose="action-finish-slider"
           >
             {/* Sliding background fill */}
@@ -837,7 +862,7 @@ export default function ActiveTripView({
               className="absolute bg-white text-[#26a69a] rounded-xl flex items-center justify-center shadow-lg transition-transform duration-75 select-none pointer-events-none"
               style={{ 
                 transform: `translateX(${sliderPos}px)`,
-                left: '4px',
+                left: '3px',
                 width: '48px',
                 height: '48px'
               }}
@@ -857,7 +882,7 @@ export default function ActiveTripView({
         {/* END: ActionButtons */}
 
         {/* BEGIN: FooterNote */}
-        <footer className="pt-2 pb-[calc(1.5rem+max(env(safe-area-inset-bottom,0px),28px))] android-nav-safe-pb">
+        <footer className="pt-2 pb-[calc(2.5rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),36px))] android-nav-safe-pb">
           <p className="text-center text-slate-400 text-[10px] tracking-wide leading-relaxed">
             请确认行驶路线安全无误，结束工作后根据实际费率跟乘客结算费用
           </p>
@@ -890,7 +915,7 @@ export default function ActiveTripView({
             <button 
               onClick={() => {
                 onUpdateTrip({
-                  ...trip,
+                  ...safeTrip,
                   endLocation: '请填写目的地（选填）'
                 });
                 setSearchText('');
@@ -993,7 +1018,7 @@ export default function ActiveTripView({
               onClick={() => {
                 const finalDest = searchText.trim();
                 onUpdateTrip({
-                  ...trip,
+                  ...safeTrip,
                   endLocation: finalDest || '请填写目的地（选填）'
                 });
                 setShowDestinationSearch(false);
@@ -1028,14 +1053,14 @@ export default function ActiveTripView({
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">模版名称</span>
                 <p className="bg-teal-50 text-teal-800 rounded-md py-1 px-2.5 inline-block font-semibold">
-                  {billingRules.templateName}
+                  {safeBillingRules.templateName || '标准默认计费'}
                 </p>
               </div>
 
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">当前时间段计费</span>
                 <ul className="space-y-1 bg-slate-50 p-2.5 rounded-lg border border-slate-100 leading-relaxed text-[11px]">
-                  {billingRules.slots.map((slot, index) => (
+                  {(safeBillingRules?.slots || DEFAULT_SLOTS).map((slot: any, index: number) => (
                     <li key={index} className="flex justify-between">
                       <span>{slot.startTime}–{slot.endTime}</span>
                       <span className="font-bold text-slate-705">起步 ¥{slot.startingPrice} (含 {slot.includedDistance}km)</span>
@@ -1047,9 +1072,9 @@ export default function ActiveTripView({
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">公里运价</span>
                 {(() => {
-                  const firstSlot = billingRules.slots[0];
-                  const displayInterval = firstSlot.distanceInterval || 1;
-                  const displayIncrease = firstSlot.priceIncrease ?? firstSlot.unitPricePerKm ?? 5;
+                  const firstSlot = (safeBillingRules?.slots && safeBillingRules.slots[0]) || DEFAULT_SLOTS[0];
+                  const displayInterval = firstSlot?.distanceInterval || 1;
+                  const displayIncrease = firstSlot?.priceIncrease ?? firstSlot?.unitPricePerKm ?? 5;
                   return (
                     <p className="text-slate-500">
                       超出初始里程后，每增加 <span className="font-semibold text-slate-800">{displayInterval}</span> 公里需支付 <span className="font-bold text-teal-600">¥{displayIncrease} 元</span> 收款运价。
@@ -1061,16 +1086,16 @@ export default function ActiveTripView({
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">等候计时计费</span>
                 <p className="text-slate-500">
-                  乘客前 <span className="font-bold text-teal-600">{billingRules.freeWaitingTime} 分钟</span> 免费等待。
-                  超出后每过 <span className="font-semibold text-slate-800">{billingRules.waitingIntervalMin ?? 1}</span> 分钟加收 <span className="font-bold text-teal-600">¥{billingRules.waitingIncreaseYuan ?? billingRules.waitingChargePerMin} 元</span>。
+                  乘客前 <span className="font-bold text-teal-600">{safeBillingRules.freeWaitingTime ?? 15} 分钟</span> 免费等待。
+                  超出后每过 <span className="font-semibold text-slate-800">{safeBillingRules.waitingIntervalMin ?? 1}</span> 分钟加收 <span className="font-bold text-teal-600">¥{safeBillingRules.waitingIncreaseYuan ?? safeBillingRules.waitingChargePerMin ?? 5} 元</span>。
                 </p>
               </div>
 
               <div>
                 <span className="font-bold text-slate-800 block mb-0.5">返程收费准则</span>
-                {billingRules.returnFeeStartKm > 0 ? (
+                {(safeBillingRules.returnFeeStartKm ?? 0) > 0 ? (
                   <p className="text-slate-500">
-                    行程里程超过 <span className="font-bold text-slate-800">{billingRules.returnFeeStartKm} 公里</span> 时，超公里部分每增加 <span className="font-bold text-teal-600">{billingRules.returnFeeIntervalKm || 1} 公里</span> 加收 <span className="font-bold text-teal-600">¥{(billingRules.returnFeeIncreaseYuan ?? billingRules.returnFeePerKm ?? 0)} 元</span>。
+                    行程里程超过 <span className="font-bold text-slate-800">{safeBillingRules.returnFeeStartKm} 公里</span> 时，超公里部分每增加 <span className="font-bold text-teal-600">{safeBillingRules.returnFeeIntervalKm || 1} 公里</span> 加收 <span className="font-bold text-teal-600">¥{(safeBillingRules.returnFeeIncreaseYuan ?? safeBillingRules.returnFeePerKm ?? 0)} 元</span>。
                   </p>
                 ) : (
                   <p className="text-slate-500">无返程加收费用。</p>
@@ -1091,12 +1116,12 @@ export default function ActiveTripView({
       {/* FULLSCREEN GAODE DRIVING NAVIGATION VIEW */}
       {showNavigationView && (
         <NavigationView
-          destination={(!trip.endLocation || trip.endLocation === '待指定安全目的地' || trip.endLocation === '未完成安全目的地设定' || trip.endLocation === '请填写目的地（选填）') ? '银川火车站' : trip.endLocation}
-          startLocation={trip.startLocation}
+          destination={(!safeTrip.endLocation || safeTrip.endLocation === '待指定安全目的地' || safeTrip.endLocation === '未完成安全目的地设定' || safeTrip.endLocation === '请填写目的地（选填）') ? '银川火车站' : safeTrip.endLocation}
+          startLocation={safeTrip.startLocation}
           driverCoords={driverCoords || (lastCoordsRef.current ? { lng: lastCoordsRef.current.lng, lat: lastCoordsRef.current.lat } : null)}
-          registeredCity={settings.city || '银川市'}
-          currentDistance={trip.currentDistance || 0}
-          calculatedTotalFee={trip.calculatedTotalFee || trip.calculatedBaseFee || 59}
+          registeredCity={safeSettings.city || '银川市'}
+          currentDistance={safeTrip.currentDistance || 0}
+          calculatedTotalFee={safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59}
           onClose={() => setShowNavigationView(false)}
         />
       )}

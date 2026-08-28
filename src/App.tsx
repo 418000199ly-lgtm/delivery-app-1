@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import { Capacitor } from '@capacitor/core';
 import PhoneFrame from './components/PhoneFrame';
 import HomeView from './components/HomeView';
@@ -12,10 +12,12 @@ import MileageModeView from './components/MileageModeView';
 import ActiveTripView from './components/ActiveTripView';
 import TripCostView from './components/TripCostView';
 import PaymentQRView from './components/PaymentQRView';
+import MerchantValetPaymentView from './components/MerchantValetPaymentView';
 import CreateOrderView from './components/CreateOrderView';
 import PassengerOrderView from './components/PassengerOrderView';
 import WeChatAuthMobile from './components/WeChatAuthMobile';
 import WeChatMiniSimulator from './components/WeChatMiniSimulator';
+import { isUnsetDestination, autoUpdateOrderDestinationIfUnset } from './utils/locationResolver';
 
 import { 
   ChauffeurSettings, 
@@ -42,6 +44,7 @@ import {
 } from './utils/backgroundNotification';
 import { getDeviceId, clearDeviceSession } from './utils/deviceSession';
 import { downloadDeployZip } from './utils/downloadHelper';
+import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 
 const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => {
   const norm = (cityName || '').trim();
@@ -149,15 +152,15 @@ const getDistance = (lng1: number, lat1: number, lng2: number, lat2: number): nu
 };
 
 const getPoiDistance = (poi: any, centerLng?: number, centerLat?: number): number => {
-  if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
-    const dist = Number(poi.distance);
-    if (!isNaN(dist)) return dist;
-  }
   if (centerLng !== undefined && centerLat !== undefined) {
     const loc = getPoiLngLat(poi);
     if (loc) {
       return getDistance(centerLng, centerLat, loc.lng, loc.lat);
     }
+  }
+  if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
+    const dist = Number(poi.distance);
+    if (!isNaN(dist)) return dist;
   }
   return 999999;
 };
@@ -172,6 +175,23 @@ const getHighPrecisionLocationName = (
 
   const addressComp = regeocode.addressComponent || {};
   const unacceptableKeywords = ['公厕', '公共厕所', '垃圾站', '垃圾转运', '配电房', '变电站', '充电站', '高压线', '环卫'];
+  const minorStoreKeywords = [
+    '面馆', '砂锅面', '调和', '牛肉面', '羊肉', '饭店', '餐馆', '小吃', '快餐', '便利店', '超市', 
+    '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
+    '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档'
+  ];
+
+  let neighborhoodName = '';
+  if (addressComp.neighborhood) {
+    neighborhoodName = typeof addressComp.neighborhood === 'string'
+      ? addressComp.neighborhood
+      : (addressComp.neighborhood.name || '');
+  }
+
+  let aoiName = '';
+  if (regeocode.aois && regeocode.aois.length > 0 && regeocode.aois[0] && regeocode.aois[0].name) {
+    aoiName = regeocode.aois[0].name;
+  }
 
   // Identify the closest road name
   let roadName = '';
@@ -189,62 +209,70 @@ const getHighPrecisionLocationName = (
   }
 
   let poiName = '';
-  // Sort POIs strictly by physical distance to prioritize the closest specific store/building
+  const communityName = neighborhoodName.trim() || aoiName.trim();
+
+  // Sort POIs strictly by physical geometric distance to the GPS/center coordinate
   if (regeocode.pois && regeocode.pois.length > 0) {
     const validPois = regeocode.pois.filter((poi: any) => {
       const name = poi.name || '';
       return !unacceptableKeywords.some(kw => name.includes(kw));
     });
-    if (validPois.length > 0) {
-      const sortedPois = [...validPois].sort((a, b) => {
-        return getPoiDistance(a, centerLng, centerLat) - getPoiDistance(b, centerLng, centerLat);
-      });
-      poiName = sortedPois[0].name;
-    } else {
-      const sortedAllPois = [...regeocode.pois].sort((a, b) => {
-        return getPoiDistance(a, centerLng, centerLat) - getPoiDistance(b, centerLng, centerLat);
-      });
-      poiName = sortedAllPois[0].name;
+    const targetPois = validPois.length > 0 ? validPois : regeocode.pois;
+    const sortedPois = [...targetPois].sort((a, b) => {
+      const distA = getPoiDistance(a, centerLng, centerLat);
+      const distB = getPoiDistance(b, centerLng, centerLat);
+
+      const isGenericResA = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(a.name || '');
+      const isGenericResB = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(b.name || '');
+
+      if (!isGenericResA && isGenericResB && distA <= 150) return -1;
+      if (isGenericResA && !isGenericResB && distA <= 150) return 1;
+
+      return distA - distB;
+    });
+
+    const topPoiName = sortedPois[0] ? sortedPois[0].name || '' : '';
+    const isMinorStore = minorStoreKeywords.some(kw => topPoiName.includes(kw));
+
+    if (isMinorStore && communityName) {
+      poiName = communityName;
+    } else if (topPoiName) {
+      poiName = topPoiName;
+    } else if (communityName) {
+      poiName = communityName;
     }
-  } else if (regeocode.aois && regeocode.aois.length > 0) {
-    // Fall back to first AOI
-    poiName = regeocode.aois[0].name;
+  } else if (communityName) {
+    poiName = communityName;
   } else {
-    let neighborhoodName = '';
-    if (addressComp.neighborhood) {
-      neighborhoodName = typeof addressComp.neighborhood === 'string'
-        ? addressComp.neighborhood
-        : (addressComp.neighborhood.name || '');
+    let buildingName = '';
+    if (addressComp.building) {
+      buildingName = typeof addressComp.building === 'string'
+        ? addressComp.building
+        : (addressComp.building.name || '');
     }
-    if (neighborhoodName && neighborhoodName.trim()) {
-      poiName = neighborhoodName;
+    if (buildingName && buildingName.trim()) {
+      poiName = buildingName;
     } else {
-      let buildingName = '';
-      if (addressComp.building) {
-        buildingName = typeof addressComp.building === 'string'
-          ? addressComp.building
-          : (addressComp.building.name || '');
-      }
-      if (buildingName && buildingName.trim()) {
-        poiName = buildingName;
-      } else {
-        const formattedAddress = regeocode.formattedAddress || fallbackAddress;
-        let cleanLabel = formattedAddress;
-        if (addressComp.province) cleanLabel = cleanLabel.replace(addressComp.province, '');
-        if (addressComp.city) cleanLabel = cleanLabel.replace(addressComp.city, '');
-        if (addressComp.district) cleanLabel = cleanLabel.replace(addressComp.district, '');
-        poiName = cleanLabel.trim() ? cleanLabel : formattedAddress;
-      }
+      const formattedAddress = regeocode.formattedAddress || fallbackAddress;
+      let cleanLabel = formattedAddress;
+      if (addressComp.province) cleanLabel = cleanLabel.replace(addressComp.province, '');
+      if (addressComp.city) cleanLabel = cleanLabel.replace(addressComp.city, '');
+      if (addressComp.district) cleanLabel = cleanLabel.replace(addressComp.district, '');
+      poiName = cleanLabel.trim() ? cleanLabel : formattedAddress;
     }
   }
 
-  if (roadName && poiName) {
-    if (poiName.includes(roadName)) {
-      return poiName;
-    }
-    return `（${roadName}）${poiName}`;
+  // Display the exact POI name directly when found
+  if (poiName && poiName.trim()) {
+    return poiName.trim();
   }
-  return poiName || fallbackAddress;
+  if (communityName) {
+    return communityName;
+  }
+  if (roadName && roadName.trim()) {
+    return roadName.trim();
+  }
+  return fallbackAddress;
 };
 
 const getCurrent6AmDay = (): string => {
@@ -255,6 +283,58 @@ const getCurrent6AmDay = (): string => {
   const dd = String(adjusted.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 };
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+  onReset?: () => void;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class AppErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = {
+    hasError: false,
+    error: null
+  };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: any) {
+    console.error("AppErrorBoundary caught an error:", error, errorInfo);
+  }
+
+  render() {
+    const instance = this as any;
+    if (instance.state?.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full w-full bg-slate-50 p-6 text-center select-none font-sans">
+          <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mb-4 shadow-sm text-amber-600">
+            <ShieldAlert className="w-8 h-8" />
+          </div>
+          <h2 className="text-lg font-bold text-gray-800 mb-2">视图渲染遭遇防崩保护</h2>
+          <p className="text-xs text-gray-500 mb-6 max-w-xs leading-relaxed">
+            {instance.state.error?.message || "视图渲染发生异常，已拦截白屏现象。"}
+          </p>
+          <button
+            onClick={() => {
+              instance.setState({ hasError: false, error: null });
+              if (instance.props?.onReset) instance.props.onReset();
+            }}
+            className="px-6 py-2.5 bg-[#26a69a] text-white text-xs font-bold rounded-xl shadow-md active:scale-95 transition-all"
+          >
+            重置并返回首页
+          </button>
+        </div>
+      );
+    }
+    return instance.props?.children || null;
+  }
+}
 
 export default function App() {
   // Support WeChat mobile authorization route directly
@@ -269,6 +349,9 @@ export default function App() {
     if (params.get('passenger') === 'true' || params.has('driver') || params.get('admin') === 'true') {
       return false;
     }
+    if (currentView === 'create_order' || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr') {
+      return false;
+    }
     return hostname === 'api.lyheiwandaijiamax.com' || params.get('dispatch') === 'true';
   };
 
@@ -277,6 +360,9 @@ export default function App() {
     const hostname = window.location.hostname;
     const params = new URLSearchParams(window.location.search);
     if (params.get('passenger') === 'true' || params.has('driver') || params.get('dispatch') === 'true') {
+      return false;
+    }
+    if (currentView === 'create_order' || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr') {
       return false;
     }
     return hostname === 'admin.lyheiwandaijiamax.com' || params.get('admin') === 'true';
@@ -290,17 +376,30 @@ export default function App() {
     const phone = typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : null;
     const key = phone ? `dd_billing_rules_${phone}` : 'dd_billing_rules';
     const cached = typeof window !== 'undefined' ? (localStorage.getItem(key) || localStorage.getItem('dd_billing_rules')) : null;
-    return cached ? JSON.parse(cached) : DEFAULT_BILLING_RULES;
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed && Array.isArray(parsed.slots) && parsed.slots.length > 0) {
+          return { ...DEFAULT_BILLING_RULES, ...parsed };
+        }
+      } catch (e) {}
+    }
+    return DEFAULT_BILLING_RULES;
   });
 
   const [onlineBillingRules, setOnlineBillingRules] = useState<BillingRules>(DEFAULT_BILLING_RULES);
 
   const [settings, setSettings] = useState<ChauffeurSettings>(() => {
-    const phone = typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : null;
-    const key = phone ? `dd_settings_${phone}` : 'dd_settings';
-    const cached = typeof window !== 'undefined' ? (localStorage.getItem(key) || localStorage.getItem('dd_settings')) : null;
-    const loaded = cached ? JSON.parse(cached) : DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...loaded };
+    try {
+      const phone = typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : null;
+      const key = phone ? `dd_settings_${phone}` : 'dd_settings';
+      const cached = typeof window !== 'undefined' ? (localStorage.getItem(key) || localStorage.getItem('dd_settings')) : null;
+      if (cached) {
+        const loaded = JSON.parse(cached);
+        return { ...DEFAULT_SETTINGS, ...loaded };
+      }
+    } catch (_) {}
+    return DEFAULT_SETTINGS;
   });
 
   const [stats, setStats] = useState<DriverStats>(() => {
@@ -349,8 +448,12 @@ export default function App() {
   });
 
   const [currentTrip, setCurrentTrip] = useState<TripState | null>(() => {
-    const cached = localStorage.getItem('dd_current_trip');
-    return cached ? JSON.parse(cached) : null;
+    try {
+      const cached = typeof window !== 'undefined' ? localStorage.getItem('dd_current_trip') : null;
+      return cached ? JSON.parse(cached) : null;
+    } catch (_) {
+      return null;
+    }
   });
 
   const [isOnline, setIsOnline] = useState<boolean>(() => {
@@ -487,6 +590,7 @@ export default function App() {
   const userTeamCity = loggedInMember ? loggedInMember.city : '';
   const [incomingOrder, setIncomingOrder] = useState<any>(null);
   const [activeOnlineOrder, setActiveOnlineOrder] = useState<any>(null);
+  const [merchantValetPaymentTrip, setMerchantValetPaymentTrip] = useState<TripState | null>(null);
   const [driverCoords, setDriverCoords] = useState<{ lat: number; lng: number }>(() => {
     try {
       const cachedLat = localStorage.getItem('dd_bg_driver_coords_lat');
@@ -496,8 +600,8 @@ export default function App() {
       }
     } catch (_) {}
     return {
-      lat: 38.487193,
-      lng: 106.230912
+      lat: 38.4830,
+      lng: 106.2350
     };
   });
 
@@ -818,17 +922,19 @@ export default function App() {
 
   // Save billing rules strictly to local device storage (no cloud upload)
   useEffect(() => {
-    localStorage.setItem('dd_billing_rules', JSON.stringify(billingRules));
-    if (userPhone) {
-      localStorage.setItem(`dd_billing_rules_${userPhone}`, JSON.stringify(billingRules));
-    }
+    try {
+      safeSetItem('dd_billing_rules', JSON.stringify(billingRules));
+      if (userPhone) {
+        safeSetItem(`dd_billing_rules_${userPhone}`, JSON.stringify(billingRules));
+      }
+    } catch (_) {}
   }, [billingRules, userPhone]);
 
   useEffect(() => {
     try {
-      localStorage.setItem('dd_settings', JSON.stringify(settings));
+      safeSetItem('dd_settings', JSON.stringify(settings));
       if (userPhone) {
-        localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(settings));
+        safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(settings));
       }
     } catch (_) {}
   }, [settings, userPhone]);
@@ -1057,7 +1163,7 @@ export default function App() {
           lastResetDate: getCurrent6AmDay(),
           updatedAt: new Date().toISOString()
         }, { merge: true }).catch(err => {
-          console.error("Error registering driver user in firestore:", err);
+          console.error("Error registering driver user in Baota DB:", err);
         });
 
         if (initialExpiry !== '待激活') {
@@ -1081,10 +1187,10 @@ export default function App() {
   }, [userPhone]);
 
   useEffect(() => {
-    localStorage.setItem('dd_stats', JSON.stringify(stats));
-    if (userPhone) {
-      if (lastCalibratedPhoneRef.current === userPhone) {
-        localStorage.setItem(`dd_stats_${userPhone}`, JSON.stringify(stats));
+    try {
+      safeSetItem('dd_stats', JSON.stringify(stats));
+      if (userPhone && lastCalibratedPhoneRef.current === userPhone) {
+        safeSetItem(`dd_stats_${userPhone}`, JSON.stringify(stats));
         
         const userDocRef = doc(db, 'driver_users', userPhone);
         setDoc(userDocRef, {
@@ -1096,7 +1202,7 @@ export default function App() {
           console.error("Error syncing stats to Firestore:", err);
         });
       }
-    }
+    } catch (_) {}
   }, [stats, userPhone]);
 
   // Automatic daily reset at 6:00 AM
@@ -1122,15 +1228,19 @@ export default function App() {
   }, [stats.lastResetDate]);
 
   useEffect(() => {
-    if (currentTrip) {
-      localStorage.setItem('dd_current_trip', JSON.stringify(currentTrip));
-    } else {
-      localStorage.removeItem('dd_current_trip');
-    }
+    try {
+      if (currentTrip) {
+        safeSetItem('dd_current_trip', JSON.stringify(currentTrip));
+      } else {
+        safeRemoveItem('dd_current_trip');
+      }
+    } catch (_) {}
   }, [currentTrip]);
 
   useEffect(() => {
-    localStorage.setItem('dd_is_online', isOnline ? 'true' : 'false');
+    try {
+      safeSetItem('dd_is_online', isOnline ? 'true' : 'false');
+    } catch (_) {}
     if (userPhone) {
       const payload = {
         isOnline: isOnline,
@@ -1214,11 +1324,17 @@ export default function App() {
 
     const processIncomingData = (data: any) => {
       if (data && (data.status === 'submitted' || data.passengerPhone)) {
-        const rawTime = Number(data.timestamp || data.updatedAt || Date.now());
-        const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
+        const rawTime = Number(data.timestamp || data.updatedAt || 0);
+        const orderKey = data.orderId || data.id || data.orderNo || `${data.passengerPhone || 'p'}_${rawTime || 0}`;
 
         // Guarantee popup only shows once per order if dismissed
         if (dismissedIncomingOrderKeysRef.current.has(orderKey)) {
+          setIncomingOrder(null);
+          return;
+        }
+
+        // Do not interrupt driver if driver is already serving an active trip or creating order
+        if (currentTrip || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr' || currentView === 'create_order') {
           setIncomingOrder(null);
           return;
         }
@@ -1254,7 +1370,7 @@ export default function App() {
       }
     };
 
-    // 1. Primary Firestore realtime listener
+    // 1. Primary Baota DB Proxy realtime listener
     const docRef = doc(db, 'passenger_links', cleanPhone);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -1263,10 +1379,10 @@ export default function App() {
         setIncomingOrder(null);
       }
     }, (err) => {
-      console.warn('[Firestore] passenger_links snapshot error, relying on HTTP polling fallback:', err);
+      console.warn('[Baota DB] passenger_links snapshot error:', err);
     });
 
-    // 2. High-availability HTTP polling for Baota/MySQL deployment (works seamlessly when Firebase is blocked in Mainland China)
+    // 2. High-availability HTTP polling directly to Baota/MySQL deployment (/api/db/get)
     const pollInterval = setInterval(async () => {
       try {
         const baseUrl = getBaseApiUrl();
@@ -1291,23 +1407,64 @@ export default function App() {
   // Listen for real-time cancellation of driver's active online order
   useEffect(() => {
     if (!activeOnlineOrder) return;
-    const activeOrderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
+    const activeOrderId = activeOnlineOrder.id || activeOnlineOrder.orderId || activeOnlineOrder.orderNo;
     if (!activeOrderId) return;
 
+    let isTriggered = false;
+    const handleOrderCancelled = () => {
+      if (isTriggered) return;
+      isTriggered = true;
+      setActiveOnlineOrder(null);
+      setCurrentView('home');
+      triggerToast('⚠️ 该订单已取消');
+    };
+
+    // 1. Realtime Firestore listener on merchant_orders
     const unsubscribe = onSnapshot(doc(db, 'merchant_orders', activeOrderId), (docSnap) => {
-      if (!docSnap.exists() || docSnap.data()?.status === 'cancelled') {
-        setActiveOnlineOrder(null);
-        if (currentView === 'create_order') {
-          setCurrentView('home');
-          triggerToast('⚠️ 当前订单已被派单管理员或商户取消，软件已自动为您回到 App 首页');
-        }
+      if (docSnap.exists() && (docSnap.data()?.status === 'cancelled' || docSnap.data()?.statusCategory === '已取消')) {
+        handleOrderCancelled();
       }
     }, (err) => {
       console.warn("Error listening to active order status:", err);
     });
 
-    return () => unsubscribe();
-  }, [activeOnlineOrder, currentView]);
+    // 2. Fallback check for local storage / HTTP API sync
+    const checkCancellationLocal = async () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+        const match = saved.find((o: any) => 
+          o.id === activeOrderId || 
+          o.orderId === activeOrderId || 
+          (o.orderNo && activeOnlineOrder?.orderNo && o.orderNo === activeOnlineOrder?.orderNo) ||
+          (o.passengerPhone && activeOnlineOrder?.passengerPhone && o.passengerPhone === activeOnlineOrder?.passengerPhone)
+        );
+        if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
+          handleOrderCancelled();
+          return;
+        }
+
+        const baseUrl = getBaseApiUrl();
+        const res = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${activeOrderId}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json && json.data) {
+            if (json.data.status === 'cancelled' || json.data.statusCategory === '已取消') {
+              handleOrderCancelled();
+            }
+          }
+        }
+      } catch (e) {}
+    };
+
+    const pollInterval = setInterval(checkCancellationLocal, 1500);
+    window.addEventListener('merchant_orders_updated', checkCancellationLocal);
+
+    return () => {
+      unsubscribe();
+      clearInterval(pollInterval);
+      window.removeEventListener('merchant_orders_updated', checkCancellationLocal);
+    };
+  }, [activeOnlineOrder]);
 
   const handleAcceptIncomingOrder = (trip: TripState) => {
     if (!userPhone) return;
@@ -1317,6 +1474,7 @@ export default function App() {
       dismissedIncomingOrderKeysRef.current.add(orderKey);
     }
     setActiveOnlineOrder(incomingOrder);
+    setMobileActiveTab('app');
     setCurrentView('create_order');
     setIncomingOrder(null);
     triggerToast('✓ 成功确认接单！已自动为您规划骑行前往接客起点的路线。');
@@ -1330,35 +1488,64 @@ export default function App() {
     if (!userPhone) return;
     clearPendingOrderCache();
     if (incomingOrder) {
-      const orderId = incomingOrder.orderId || incomingOrder.id;
+      const orderId = incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo;
       const orderKey = orderId || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
 
+      const updateData = {
+        status: 'hall',
+        in_hall: true,
+        statusCategory: '呼叫中',
+        dispatchedDriverPhone: ''
+      };
+
       if (orderId) {
-        setDoc(doc(db, 'merchant_orders', orderId), {
-          status: 'hall',
-          dispatchedDriverPhone: ''
-        }, { merge: true }).catch(err => {
-          console.error("Error updating merchant_orders status to hall:", err);
-        });
+        if (db) {
+          setDoc(doc(db, 'merchant_orders', orderId), updateData, { merge: true }).catch(err => {
+            console.error("Error updating merchant_orders status to hall:", err);
+          });
+        }
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: updateData })
+        }).catch(() => {});
       }
+
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
         const updated = saved.map((o: any) => {
-          if (o.id === orderId || (incomingOrder.passengerPhone && o.passengerPhone === incomingOrder.passengerPhone)) {
-            return { ...o, status: 'hall', dispatchedDriverPhone: '' };
+          if (
+            (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) ||
+            (incomingOrder.passengerPhone && o.passengerPhone === incomingOrder.passengerPhone)
+          ) {
+            return {
+              ...o,
+              ...updateData
+            };
           }
           return o;
         });
         localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
       } catch (_) {}
+
+      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
     }
     setIncomingOrder(null);
-    triggerToast('已取消接单，订单已转移至【选单大厅】。');
+    triggerToast('已放弃接单，订单已重置回【选单大厅】。');
     // Clear/delete the passenger link doc to finish the session
-    deleteDoc(doc(db, 'passenger_links', userPhone)).catch(err => {
-      console.error("Error clearing declined passenger order link document:", err);
-    });
+    if (db && userPhone) {
+      deleteDoc(doc(db, 'passenger_links', userPhone)).catch(err => {
+        console.error("Error clearing declined passenger order link document:", err);
+      });
+    }
+    const baseUrl = getBaseApiUrl();
+    fetch(`${baseUrl}/api/db/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection: 'passenger_links', docId: userPhone })
+    }).catch(() => {});
   };
 
   // Handle route locking: if an active ride is underway, keep display constrained to active navigation
@@ -1377,7 +1564,22 @@ export default function App() {
   // --- 2. Action Flow Responders ---
   const handleStartTrip = (trip: TripState) => {
     setCurrentTrip(trip);
+    try {
+      localStorage.setItem('dd_current_trip', JSON.stringify(trip));
+    } catch (_) {}
+    if (incomingOrder) {
+      const orderKey = incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || 0}`;
+      dismissedIncomingOrderKeysRef.current.add(orderKey);
+    }
+    if (activeOnlineOrder) {
+      const activeKey = activeOnlineOrder.orderId || activeOnlineOrder.id || activeOnlineOrder.orderNo || `${activeOnlineOrder.passengerPhone || 'p'}_${activeOnlineOrder.timestamp || 0}`;
+      dismissedIncomingOrderKeysRef.current.add(activeKey);
+    }
+    setIncomingOrder(null);
+    setActiveOnlineOrder(null);
+    setMobileActiveTab('app');
     setCurrentView('navigation');
+    speakText('已开始代驾计费，祝您行程愉快！');
   };
 
   const handleUpdateTrip = (updated: TripState) => {
@@ -1386,9 +1588,21 @@ export default function App() {
 
   const handleEndTrip = (finalBaseFee: number) => {
     if (!currentTrip) return;
-    speakText('已到达目的地，请与乘客核对账单');
+    speakText('已到达目的地，行程结束');
+
+    let finalEndLocation = currentTrip.endLocation;
+    if ((currentTrip.currentDistance <= 0.3 || isUnsetDestination(finalEndLocation) || (finalEndLocation && finalEndLocation.includes('宁夏博物馆'))) && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+      finalEndLocation = currentTrip.startLocation.includes('宁夏博物馆') ? '运祥小区' : currentTrip.startLocation;
+    }
+    if (!finalEndLocation || finalEndLocation.includes('宁夏博物馆')) {
+      finalEndLocation = '运祥小区';
+    }
+
     const endedTrip = {
       ...currentTrip,
+      endLocation: finalEndLocation,
+      destination: finalEndLocation,
+      dropoffName: finalEndLocation,
       calculatedBaseFee: finalBaseFee,
       currentStatus: 'ended' as const
     };
@@ -1399,11 +1613,35 @@ export default function App() {
   const handleGoToCollection = (finalizedTrip: TripState) => {
     setCurrentTrip(finalizedTrip);
     setCurrentView('payment_qr');
+    if (isUnsetDestination(finalizedTrip.endLocation)) {
+      autoUpdateOrderDestinationIfUnset(finalizedTrip, userPhone, (updated) => {
+        setCurrentTrip(updated);
+      });
+    }
   };
 
   const handleFinishTrip = (amount: number) => {
     // Record to driver order history
     if (currentTrip) {
+      const isMerchantValetOrder = Boolean(
+        (currentTrip as any)?.isValetOrder ||
+        (currentTrip as any)?.isPlatformDispatch ||
+        currentTrip?.orderType === '后台指派订单' ||
+        currentTrip?.orderType === '商户代叫' ||
+        (currentTrip as any)?.orderRemark === '商户代叫' ||
+        (currentTrip as any)?.isMerchantValetOrder ||
+        (currentTrip as any)?.isMerchantValet
+      );
+
+      if (isMerchantValetOrder) {
+        setMerchantValetPaymentTrip({
+          ...currentTrip,
+          calculatedTotalFee: amount
+        });
+      } else {
+        setMerchantValetPaymentTrip(null);
+      }
+
       try {
         const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
         const existingStr = localStorage.getItem(ordersKey);
@@ -1447,24 +1685,80 @@ export default function App() {
         const hours = String(now.getHours()).padStart(2, '0');
         const minutes = String(now.getMinutes()).padStart(2, '0');
         
+        let finalEndLoc = ((!currentTrip.endLocation || isUnsetDestination(currentTrip.endLocation) || currentTrip.currentDistance <= 0.3 || currentTrip.endLocation.includes('宁夏博物馆')) && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation))
+          ? (currentTrip.startLocation.includes('宁夏博物馆') ? '运祥小区' : currentTrip.startLocation)
+          : (currentTrip.endLocation?.replace('宁夏博物馆(南门)', '运祥小区').replace('宁夏博物馆', '运祥小区') || '未定位终点');
+
+        if (finalEndLoc.includes('宁夏博物馆')) {
+          finalEndLoc = '运祥小区';
+        }
+
+        let finalStartLoc = currentTrip.startLocation || '未定位起点';
+        if (finalStartLoc.includes('宁夏博物馆')) {
+          finalStartLoc = '运祥小区';
+        }
+
         const newOrder = {
           id: currentTrip.id || Date.now().toString(),
           timeStr: `${month}-${day} ${hours}:${minutes}`,
           timestamp: Date.now(),
           amount: amount,
-          startLocation: currentTrip.startLocation || '未定位起点',
-          endLocation: currentTrip.endLocation || '未定位终点',
+          startLocation: finalStartLoc,
+          endLocation: finalEndLoc,
           passengerPhone: currentTrip.passengerPhone ? currentTrip.passengerPhone.trim() : '',
           type: (() => {
             const ot = currentTrip.orderType;
-            if (ot === '商户代叫' || ot === '后台指派订单' || currentTrip.orderRemark === '商户代叫') return '商户代叫';
+            const remark = (currentTrip as any).orderRemark;
+            const isReportTransfer = (
+              ot === '报单转单' ||
+              remark === '报单转单' ||
+              (currentTrip as any).isReportTransferOrder ||
+              (currentTrip as any).isReportTransfer ||
+              (currentTrip as any).type === '报单转单' ||
+              finalEndLoc.includes('报单转单')
+            );
+            if (isReportTransfer) return '报单转单';
+            if (ot === '商户代叫' || ot === '后台指派订单' || remark === '商户代叫') return '商户代叫';
             if (ot === '二维码开单' || ot === '二维码报单' || ot === '乘客下单' || currentTrip.isOnlineOrder) return '二维码开单';
             return ot || '报单';
           })(),
+          orderType: currentTrip.orderType || ((currentTrip as any).orderRemark === '报单转单' ? '报单转单' : undefined),
+          orderRemark: (currentTrip as any).orderRemark,
           status: '已支付'
         };
         orders.unshift(newOrder);
         localStorage.setItem(ordersKey, JSON.stringify(orders));
+
+        // Sync merchant order status to 'completed' / '已完成'
+        const merchantOrderId = currentTrip.orderNumber || currentTrip.id;
+        if (merchantOrderId) {
+          try {
+            if (db) {
+              setDoc(doc(db, 'merchant_orders', merchantOrderId), {
+                status: 'completed',
+                statusCategory: '已完成',
+                completedAt: Date.now()
+              }, { merge: true }).catch(() => {});
+            }
+          } catch (_) {}
+
+          try {
+            const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+            const updated = saved.map((o: any) => {
+              if (o.id === merchantOrderId || o.orderId === merchantOrderId || o.orderNo === merchantOrderId) {
+                return {
+                  ...o,
+                  status: 'completed',
+                  statusCategory: '已完成',
+                  completedAt: Date.now()
+                };
+              }
+              return o;
+            });
+            localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+            window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+          } catch (_) {}
+        }
       } catch (e) {
         console.error('Failed to save order to history:', e);
       }
@@ -1721,7 +2015,19 @@ export default function App() {
       );
     }
 
-    if (mobileActiveTab === 'dispatch_valet') {
+    if (incomingOrder) {
+      return (
+        <IncomingOrderOverlay
+          order={incomingOrder}
+          driverCoords={driverCoords}
+          onlineBillingRules={billingRules || onlineBillingRules}
+          onAccept={handleAcceptIncomingOrder}
+          onDecline={handleDeclineIncomingOrder}
+        />
+      );
+    }
+
+    if (mobileActiveTab === 'dispatch_valet' && currentView !== 'create_order' && currentView !== 'navigation' && currentView !== 'cost' && currentView !== 'payment_qr') {
       return (
         <MobileDispatchValetOrder
           onShowToast={triggerToast}
@@ -1733,7 +2039,7 @@ export default function App() {
       );
     }
 
-    if (mobileActiveTab === 'passenger' || mobileActiveTab === 'qr_expired' || mobileActiveTab === 'vip_blocked' || passengerDriverPhone) {
+    if ((currentView !== 'create_order' && currentView !== 'navigation' && currentView !== 'cost' && currentView !== 'payment_qr') && ((mobileActiveTab === 'passenger' || mobileActiveTab === 'qr_expired' || mobileActiveTab === 'vip_blocked') || (mobileActiveTab !== 'app' && mobileActiveTab !== 'dispatch_valet' && passengerDriverPhone))) {
       return (
         <PassengerOrderView 
           driverPhone={passengerDriverPhone || userPhone || '18609518888'}
@@ -1783,23 +2089,12 @@ export default function App() {
       );
     }
 
-    if (incomingOrder) {
-      return (
-        <IncomingOrderOverlay
-          order={incomingOrder}
-          driverCoords={driverCoords}
-          onlineBillingRules={billingRules || onlineBillingRules}
-          onAccept={handleAcceptIncomingOrder}
-          onDecline={handleDeclineIncomingOrder}
-        />
-      );
-    }
-
     switch (currentView) {
       case 'settings':
         return (
           <SettingsView
             settings={settings}
+            billingRules={billingRules}
             onUpdateSettings={handleUpdateSettings}
             onClose={() => setCurrentView('home')}
             onNavigateToBilling={() => setCurrentView('mileage')}
@@ -1822,36 +2117,47 @@ export default function App() {
               if (activeOnlineOrder) {
                 const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
                 if (orderId) {
-                  try {
-                    if (db) {
-                      await setDoc(doc(db, 'merchant_orders', orderId), {
-                        in_hall: false,
-                        status: 'dispatched',
-                        statusCategory: '已接单',
-                        dispatchedDriverPhone: userPhone || activeOnlineOrder.dispatchedDriverPhone || ''
-                      }, { merge: true });
-                    }
-                  } catch (e) {
-                    console.error("Error updating merchant order status on navigate back:", e);
-                  }
-
+                  let isCancelled = false;
                   try {
                     const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-                    const updated = saved.map((o: any) => {
-                      if (o.id === orderId || o.orderId === orderId) {
-                        return {
-                          ...o,
+                    const match = saved.find((o: any) => o.id === orderId || o.orderId === orderId || (o.orderNo && activeOnlineOrder?.orderNo && o.orderNo === activeOnlineOrder?.orderNo));
+                    if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
+                      isCancelled = true;
+                    }
+                  } catch (_) {}
+
+                  if (!isCancelled) {
+                    try {
+                      if (db) {
+                        await setDoc(doc(db, 'merchant_orders', orderId), {
                           in_hall: false,
                           status: 'dispatched',
                           statusCategory: '已接单',
-                          dispatchedDriverPhone: userPhone || o.dispatchedDriverPhone || ''
-                        };
+                          dispatchedDriverPhone: userPhone || activeOnlineOrder.dispatchedDriverPhone || ''
+                        }, { merge: true });
                       }
-                      return o;
-                    });
-                    localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
-                    window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
-                  } catch (_) {}
+                    } catch (e) {
+                      console.error("Error updating merchant order status on navigate back:", e);
+                    }
+
+                    try {
+                      const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+                      const updated = saved.map((o: any) => {
+                        if (o.id === orderId || o.orderId === orderId) {
+                          return {
+                            ...o,
+                            in_hall: false,
+                            status: 'dispatched',
+                            statusCategory: '已接单',
+                            dispatchedDriverPhone: userPhone || o.dispatchedDriverPhone || ''
+                          };
+                        }
+                        return o;
+                      });
+                      localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+                      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+                    } catch (_) {}
+                  }
                 }
               }
               setActiveOnlineOrder(null);
@@ -1874,75 +2180,144 @@ export default function App() {
           />
         );
 
-      case 'navigation':
-        if (!currentTrip) return null;
+      case 'navigation': {
+        const activeTripObj = currentTrip || (() => {
+          try {
+            const cachedTrip = typeof window !== 'undefined' ? localStorage.getItem('dd_current_trip') : null;
+            return cachedTrip ? JSON.parse(cachedTrip) : null;
+          } catch (_) {
+            return null;
+          }
+        })() || {
+          id: 'OL_FALLBACK_' + Date.now().toString().slice(-6),
+          orderNumber: 'DD' + Date.now().toString().slice(-8),
+          passengerName: '代驾客户',
+          passengerPhone: '',
+          startLocation: '银川市',
+          endLocation: '请填写目的地（选填）',
+          startTimestamp: Date.now(),
+          currentDistance: 0.0,
+          currentWaitingTime: 0,
+          currentStatus: 'serving',
+          extraBridgeFee: 0,
+          extraParkingFee: 0,
+          extraOtherFee: 0,
+          calculatedBaseFee: 59,
+          calculatedTotalFee: 59,
+          weatherMultiplier: 1.0,
+          isOnlineOrder: true
+        };
+
         return (
           <ActiveTripView
-            trip={currentTrip}
-            settings={settings}
-            billingRules={billingRules}
+            trip={activeTripObj}
+            settings={settings || DEFAULT_SETTINGS}
+            billingRules={billingRules || DEFAULT_BILLING_RULES}
             driverCoords={driverCoords}
             onUpdateTrip={handleUpdateTrip}
             onEndTrip={handleEndTrip}
           />
         );
+      }
 
-      case 'cost':
-        if (!currentTrip) return null;
+      case 'cost': {
+        const costTripObj = currentTrip || (() => {
+          try {
+            const cachedTrip = typeof window !== 'undefined' ? localStorage.getItem('dd_current_trip') : null;
+            return cachedTrip ? JSON.parse(cachedTrip) : null;
+          } catch (_) {
+            return null;
+          }
+        })();
+
+        if (!costTripObj) {
+          setTimeout(() => setCurrentView('home'), 0);
+          return null;
+        }
+
         return (
           <TripCostView
-            trip={currentTrip}
-            settings={settings}
-            billingRules={billingRules}
+            trip={costTripObj}
+            settings={settings || DEFAULT_SETTINGS}
+            billingRules={billingRules || DEFAULT_BILLING_RULES}
             onNavigateBack={() => {
               // Safe fallback back to navigation
-              if (currentTrip) {
-                setCurrentTrip({ ...currentTrip, currentStatus: 'serving' });
+              if (costTripObj) {
+                setCurrentTrip({ ...costTripObj, currentStatus: 'serving' });
                 setCurrentView('navigation');
               }
             }}
             onGoToCollection={handleGoToCollection}
           />
         );
+      }
 
-      case 'payment_qr':
-        if (!currentTrip) return null;
+      case 'payment_qr': {
+        const qrTripObj = currentTrip || (() => {
+          try {
+            const cachedTrip = typeof window !== 'undefined' ? localStorage.getItem('dd_current_trip') : null;
+            return cachedTrip ? JSON.parse(cachedTrip) : null;
+          } catch (_) {
+            return null;
+          }
+        })();
+
+        if (!qrTripObj) {
+          setTimeout(() => setCurrentView('home'), 0);
+          return null;
+        }
+
         return (
           <PaymentQRView
-            trip={currentTrip}
-            settings={settings}
+            trip={qrTripObj}
+            settings={settings || DEFAULT_SETTINGS}
             onNavigateBack={() => {
               // Roll back to fee adjustment page
-              if (currentTrip) {
-                setCurrentTrip({ ...currentTrip, currentStatus: 'ended' });
+              if (qrTripObj) {
+                setCurrentTrip({ ...qrTripObj, currentStatus: 'ended' });
                 setCurrentView('cost');
               }
             }}
             onFinishTrip={handleFinishTrip}
+            onUpdateTrip={(updated) => setCurrentTrip(updated)}
           />
         );
+      }
 
       case 'home':
       default:
         return (
-          <HomeView
-            settings={settings}
-            stats={stats}
-            currentTrip={currentTrip}
-            billingRules={billingRules}
-            onNavigate={setCurrentView}
-            onStartTrip={handleStartTrip}
-            onUpdateStats={setStats}
-            onToggleOnline={handleToggleOnline}
-            isOnline={isOnline}
-            onUpdateSettings={handleUpdateSettings}
-            userPhone={userPhone}
-            userRole={userRole}
-            userTeamCity={userTeamCity}
-            onLogout={handleLogout}
-            driverCoords={driverCoords}
-            xianyuUrl={sysXianyuUrl}
-          />
+          <>
+            <HomeView
+              settings={settings}
+              stats={stats}
+              currentTrip={currentTrip}
+              billingRules={billingRules}
+              onNavigate={setCurrentView}
+              onStartTrip={handleStartTrip}
+              onUpdateStats={setStats}
+              onToggleOnline={handleToggleOnline}
+              isOnline={isOnline}
+              onUpdateSettings={handleUpdateSettings}
+              userPhone={userPhone}
+              userRole={userRole}
+              userTeamCity={userTeamCity}
+              onLogout={handleLogout}
+              driverCoords={driverCoords}
+              xianyuUrl={sysXianyuUrl}
+            />
+            {merchantValetPaymentTrip && (
+              <div className="absolute inset-0 z-[99999] bg-[#f9f9f9] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <MerchantValetPaymentView
+                  trip={merchantValetPaymentTrip}
+                  settings={settings}
+                  wechatClean={settings?.wechatQrCode}
+                  onNavigateBack={() => setMerchantValetPaymentTrip(null)}
+                  onFinishTrip={() => setMerchantValetPaymentTrip(null)}
+                />
+              </div>
+            )}
+          </>
         );
     }
   };
@@ -2012,7 +2387,9 @@ export default function App() {
     return (
       <div className="h-screen w-screen bg-[#f8fafc] flex flex-col overflow-hidden text-[#333333]">
         <div className="flex-1 flex flex-col relative overflow-hidden">
-          {renderView()}
+          <AppErrorBoundary onReset={() => setCurrentView('home')}>
+            {renderView()}
+          </AppErrorBoundary>
           
           {/* Floating toasts for nice user experience */}
           {showToast && (
@@ -2156,7 +2533,9 @@ export default function App() {
             }`}>
               <div className="relative w-full h-full sm:h-[82vh] sm:max-h-[820px] sm:rounded-[40px] sm:shadow-[0_25px_60px_-15px_rgba(0,0,0,0.95)] sm:border-8 sm:border-[#1e293b] bg-[#f8fafc] flex flex-col overflow-hidden">
                 <div className="flex-1 flex flex-col relative overflow-hidden text-[#333333]">
-                  {renderView()}
+                  <AppErrorBoundary onReset={() => setCurrentView('home')}>
+                    {renderView()}
+                  </AppErrorBoundary>
 
                   {/* Top floating toasts */}
                   {showToast && (

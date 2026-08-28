@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
 import { geocodeAddress, isValidCoords, calculateOrderDriverDistance } from '../utils/geocoding';
+import { safeSetItem, safeGetItem } from '../utils/safeStorage';
+import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { 
   MapPin, 
   Phone, 
@@ -315,11 +317,22 @@ export default function DispatchValetOrder({
           setIsLocatingGPS(false);
           
           const AMap = (window as any).AMap;
+          const applyFallback = () => {
+            const fallbackLat = 38.4830;
+            const fallbackLng = 106.2350;
+            setPassengerCoords({ lat: fallbackLat, lng: fallbackLng });
+            setPassengerAddress(prev => (prev && prev !== '正在获取当前位置...' && prev !== '定位中...') ? prev : '银川市运祥小区');
+            if (!silent) {
+              onShowToast('📍 已自动定位至银川城区推荐中心点');
+            }
+          };
+
           if (AMap) {
             AMap.plugin('AMap.Geolocation', () => {
               const geolocation = new AMap.Geolocation({
                 enableHighAccuracy: true,
-                timeout: 8000
+                timeout: 3000,
+                noIpLocate: 0
               });
               geolocation.getCurrentPosition((status: string, result: any) => {
                 if (status === 'complete' && result?.formattedAddress) {
@@ -327,22 +340,28 @@ export default function DispatchValetOrder({
                   if (result.position) {
                     setPassengerCoords({ lat: result.position.lat, lng: result.position.lng });
                   }
-                  onShowToast(`📍 高精度定位成功：${result.formattedAddress}`);
-                } else if (!silent) {
-                  onShowToast('📍 GPS定位超时，请手动点击商家推荐或搜索起点');
+                  if (!silent) {
+                    onShowToast(`📍 高精度定位成功：${result.formattedAddress}`);
+                  }
+                } else {
+                  applyFallback();
                 }
               });
             });
-          } else if (!silent) {
-            onShowToast('📍 GPS定位超时，请手动点击商家推荐或搜索起点');
+          } else {
+            applyFallback();
           }
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 3500, maximumAge: 300000 }
       );
     } else {
       setIsLocatingGPS(false);
+      const fallbackLat = 38.4830;
+      const fallbackLng = 106.2350;
+      setPassengerCoords({ lat: fallbackLat, lng: fallbackLng });
+      setPassengerAddress(prev => (prev && prev !== '正在获取当前位置...' && prev !== '定位中...') ? prev : '银川市运祥小区');
       if (!silent) {
-        onShowToast('⚠️ 当前设备或浏览器不支持获取手机GPS定位');
+        onShowToast('📍 已自动定位至银川城区推荐中心点');
       }
     }
   };
@@ -410,30 +429,60 @@ export default function DispatchValetOrder({
   const [needScooter, setNeedScooter] = useState(true);
   const [wechatQrUrl, setWechatQrUrl] = useState<string>('');
 
-  // Real-time listener for current dispatcher's WeChat QR code from Firestore
+  // Real-time asynchronous parallel resolver for current dispatcher's WeChat QR code via Baota Server
   useEffect(() => {
     if (!userPhone) {
-      setWechatQrUrl('');
+      setWechatQrUrl(MOCK_ALBUM_PHOTOS[0]?.dataUrl || '');
       return;
     }
-    const userKey = `dd_dispatch_wechat_qr_${userPhone}`;
-    const localSaved = localStorage.getItem(userKey);
+    const userKey1 = `dd_dispatch_wechat_qr_${userPhone}`;
+    const userKey2 = `dd_dispatch_fee_qr_${userPhone}`;
+    const userKey3 = `dd_merchant_user_qr_${userPhone}`;
+
+    // 1. Instant check local storage for zero-latency initial render
+    const localSaved = safeGetItem(userKey1) || safeGetItem(userKey2) || safeGetItem(userKey3);
     if (localSaved) {
       setWechatQrUrl(localSaved);
     } else {
-      setWechatQrUrl(''); // Reset if none exists for this user
+      setWechatQrUrl(MOCK_ALBUM_PHOTOS[0]?.dataUrl || ''); // Instant default fallback
     }
 
-    if (db) {
-      const unsub = onSnapshot(doc(db, 'dispatch_qrs', userPhone), (snap) => {
-        if (snap.exists() && snap.data()?.qrCode) {
-          const remoteQr = snap.data().qrCode;
-          setWechatQrUrl(remoteQr);
-          localStorage.setItem(userKey, remoteQr);
-        }
+    // 2. Parallel background fetch from Baota Node DB API with silent auto-refresh
+    let isMounted = true;
+    const fetchBaotaQr = () => {
+      const baseUrl = getBaseApiUrl();
+      const timeToken = Date.now();
+      const cols = ['dispatch_qrs', 'dispatch_qrcodes', 'merchant_users'];
+
+      cols.forEach(colName => {
+        fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(userPhone)}&_t=${timeToken}`, { cache: 'no-store' })
+          .then(res => res.ok ? res.json() : null)
+          .then(json => {
+            if (isMounted && json && json.data) {
+              const qr = json.data.qrCode || json.data.wechatQrCode;
+              if (qr) {
+                setWechatQrUrl(prev => {
+                  if (prev !== qr) {
+                    safeSetItem(userKey1, qr);
+                    safeSetItem(userKey2, qr);
+                    return qr;
+                  }
+                  return prev;
+                });
+              }
+            }
+          })
+          .catch(() => {});
       });
-      return () => unsub();
-    }
+    };
+
+    fetchBaotaQr();
+    const intervalId = setInterval(fetchBaotaQr, 3000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(intervalId);
+    };
   }, [userPhone]);
 
   // Modals & UI states
@@ -764,6 +813,7 @@ export default function DispatchValetOrder({
   const [filterMonth, setFilterMonth] = useState('07');
   const [filterDay, setFilterDay] = useState('31');
   const [selectedOrderDetail, setSelectedOrderDetail] = useState<any>(null);
+  const [showCancelDispatchModal, setShowCancelDispatchModal] = useState(false);
 
   // Full-page Start Location Search state
   const [showStartLocationSearch, setShowStartLocationSearch] = useState(false);
@@ -845,6 +895,147 @@ export default function DispatchValetOrder({
       if (onClose) {
         onClose();
       }
+    }
+  };
+
+  const handleConfirmCancelDispatch = async () => {
+    setShowCancelDispatchModal(false);
+    if (!selectedOrderDetail) return;
+
+    const currentStatus = String(selectedOrderDetail.status || selectedOrderDetail.rawOrder?.status || '').toLowerCase();
+    const currentCategory = String(selectedOrderDetail.statusCategory || selectedOrderDetail.rawOrder?.statusCategory || '');
+
+    const isServingOrCompleted = 
+      currentStatus === 'serving' || 
+      currentStatus === 'completed' || 
+      currentCategory === '服务中' || 
+      currentCategory === '已完成';
+
+    if (isServingOrCompleted) {
+      const msg = '该订单服务中，无法取消派单。';
+      if (onShowToast) {
+        onShowToast(msg);
+      } else {
+        alert(msg);
+      }
+      return;
+    }
+
+    const targetOrderNo = selectedOrderDetail.orderNo || selectedOrderDetail.id || '此订单';
+    const candidateIds = Array.from(new Set([
+      selectedOrderDetail.id,
+      selectedOrderDetail.orderId,
+      selectedOrderDetail.rawOrder?.id,
+      selectedOrderDetail.rawOrder?.orderId,
+      selectedOrderDetail.orderNo,
+      selectedOrderDetail.rawOrder?.orderNo,
+      selectedOrderDetail.passengerPhone,
+      selectedOrderDetail.rawOrder?.passengerPhone
+    ].filter(Boolean)));
+
+    const driverPhone = selectedOrderDetail.dispatchedDriverPhone || selectedOrderDetail.driverPhone || selectedOrderDetail.rawOrder?.driverPhone || selectedOrderDetail.rawOrder?.dispatchedDriverPhone;
+
+    const baseUrl = getBaseApiUrl();
+
+    // 1. Update Firestore & Node DB merchant_orders to cancelled
+    for (const cid of candidateIds) {
+      try {
+        if (db) {
+          await setDoc(doc(db, 'merchant_orders', cid as string), {
+            in_hall: false,
+            status: 'cancelled',
+            statusCategory: '已取消',
+            cancelledAt: Date.now(),
+            cancelReason: '商户派单管理员取消派单'
+          }, { merge: true });
+        }
+        fetch(`${baseUrl}/api/db/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'merchant_orders', docId: cid })
+        }).catch(() => {});
+      } catch (e) {
+        console.error("Error setting merchant order to cancelled:", e);
+      }
+    }
+
+    // 2. Clear from passenger_links & active_orders so driver App triggers cancellation toast "该订单已取消"
+    if (driverPhone) {
+      try {
+        await deleteDoc(doc(db, 'passenger_links', driverPhone));
+      } catch (_) {}
+      try {
+        await deleteDoc(doc(db, 'active_orders', driverPhone));
+      } catch (_) {}
+    }
+
+    // Also write cancelled marker in active_orders for candidate IDs
+    for (const cid of candidateIds) {
+      try {
+        if (db) {
+          await setDoc(doc(db, 'active_orders', cid as string), {
+            status: 'cancelled',
+            statusCategory: '已取消',
+            cancelledAt: Date.now()
+          }, { merge: true });
+        }
+      } catch (_) {}
+    }
+
+    // 3. Clean and mark cancelled in local storage dd_merchant_orders_v2
+    try {
+      const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+      const updated = saved.map((o: any) => {
+        const isMatch = candidateIds.some(cid =>
+          o.id === cid ||
+          o.orderId === cid ||
+          o.orderNo === cid ||
+          (o.passengerPhone && o.passengerPhone === cid)
+        );
+        if (isMatch) {
+          return {
+            ...o,
+            in_hall: false,
+            status: 'cancelled',
+            statusCategory: '已取消',
+            cancelledAt: Date.now()
+          };
+        }
+        return o;
+      });
+      localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+    } catch (_) {}
+
+    // 4. Update local state & trigger event for immediate UI update
+    setSelectedOrderDetail((prev: any) => prev ? {
+      ...prev,
+      in_hall: false,
+      status: 'cancelled',
+      statusCategory: '已取消'
+    } : null);
+
+    setAllDispatchedOrders((prev) => prev.map((o: any) => {
+      const isMatch = candidateIds.some(cid =>
+        o.id === cid ||
+        o.orderId === cid ||
+        o.orderNo === cid ||
+        (o.passengerPhone && o.passengerPhone === cid)
+      );
+      if (isMatch) {
+        return {
+          ...o,
+          in_hall: false,
+          status: 'cancelled',
+          statusCategory: '已取消'
+        };
+      }
+      return o;
+    }));
+
+    window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+
+    if (onShowToast) {
+      onShowToast(`❌ 订单【${targetOrderNo}】已成功取消派单，且已同步从选单大厅及司机端清理`);
     }
   };
   
@@ -1723,22 +1914,137 @@ export default function DispatchValetOrder({
       return;
     }
 
+    if (!userPhone || !userPhone.trim()) {
+      onShowToast('❌ 请先设置或登录商户手机号码后再上传收款码！');
+      return;
+    }
+
+    const activePhone = userPhone.trim();
+    const userKey = `dd_dispatch_wechat_qr_${activePhone}`;
+
     try {
       const pngDataUrl = await compressAndConvertToPng(file);
-      setWechatQrUrl(pngDataUrl);
 
-      const userKey = userPhone ? `dd_dispatch_wechat_qr_${userPhone}` : 'dd_dispatch_wechat_qr';
-      localStorage.setItem(userKey, pngDataUrl);
+      // Upload to Aliyun Server (Baota)
+      try {
+        const baseUrl = getBaseApiUrl();
+        const uploadRes = await fetch(`${baseUrl}/api/upload-wechat-qr`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ phone: activePhone, imageBase64: pngDataUrl })
+        });
 
-      if (db && userPhone) {
-        await setDoc(doc(db, 'dispatch_qrs', userPhone), {
-          qrCode: pngDataUrl,
-          dispatchedByPhone: userPhone,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
+        let uploadData: any = null;
+        if (uploadRes.ok && uploadRes.headers.get('content-type')?.includes('application/json')) {
+          uploadData = await uploadRes.json();
+        } else {
+          const text = await uploadRes.text();
+          console.warn('Aliyun QR upload returned non-JSON response:', uploadRes.status, text.slice(0, 100));
+        }
+
+        if (uploadData && uploadData.success && uploadData.url) {
+          setWechatQrUrl(uploadData.url);
+          localStorage.setItem(userKey, uploadData.url);
+
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              col: 'dispatch_qrs',
+              id: activePhone,
+              data: {
+                qrCode: uploadData.url,
+                dispatchedByPhone: activePhone,
+                updatedAt: new Date().toISOString()
+              }
+            })
+          }).catch(() => {});
+
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              col: 'dispatch_qrcodes',
+              id: activePhone,
+              data: {
+                qrCode: uploadData.url,
+                dispatchedByPhone: activePhone,
+                updatedAt: new Date().toISOString()
+              }
+            })
+          }).catch(() => {});
+
+          if (db) {
+            try {
+              await setDoc(doc(db, 'dispatch_qrs', activePhone), {
+                qrCode: uploadData.url,
+                dispatchedByPhone: activePhone,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+              await setDoc(doc(db, 'dispatch_qrcodes', activePhone), {
+                qrCode: uploadData.url,
+                dispatchedByPhone: activePhone,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            } catch (_) {}
+          }
+          onShowToast('✓ 代叫费微信收款码已保存（格式PNG）');
+          return;
+        }
+      } catch (uploadErr) {
+        console.warn('Failed to upload QR to Aliyun server, falling back to local storage:', uploadErr);
       }
 
-      onShowToast('✓ 代叫费微信收款码已压缩并存入服务器(PNG)');
+      setWechatQrUrl(pngDataUrl);
+      localStorage.setItem(userKey, pngDataUrl);
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          col: 'dispatch_qrs',
+          id: activePhone,
+          data: {
+            qrCode: pngDataUrl,
+            dispatchedByPhone: activePhone,
+            updatedAt: new Date().toISOString()
+          }
+        })
+      }).catch(() => {});
+
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          col: 'dispatch_qrcodes',
+          id: activePhone,
+          data: {
+            qrCode: pngDataUrl,
+            dispatchedByPhone: activePhone,
+            updatedAt: new Date().toISOString()
+          }
+        })
+      }).catch(() => {});
+
+      if (db) {
+        try {
+          await setDoc(doc(db, 'dispatch_qrs', activePhone), {
+            qrCode: pngDataUrl,
+            dispatchedByPhone: activePhone,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+          await setDoc(doc(db, 'dispatch_qrcodes', activePhone), {
+            qrCode: pngDataUrl,
+            dispatchedByPhone: activePhone,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        } catch (_) {}
+      }
+
+      onShowToast('✓ 代叫费微信收款码已保存（格式PNG）');
     } catch (err) {
       console.error('Failed to compress QR image:', err);
       alert('图片处理失败，请重试');
@@ -1882,276 +2188,273 @@ export default function DispatchValetOrder({
     setButtonState('processing');
     setDispatchResult(null);
 
-    const finalPhone = passengerPhone.trim() || '未填写 (匿名代开单)';
-    const ts = Date.now();
-    const dt = new Date(ts);
-    const yyyy = dt.getFullYear();
-    const mm = String(dt.getMonth() + 1).padStart(2, '0');
-    const dd = String(dt.getDate()).padStart(2, '0');
-    const hh = String(dt.getHours()).padStart(2, '0');
-    const min = String(dt.getMinutes()).padStart(2, '0');
+    // Safety fallback timer: guarantee state reset after 4s max so UI can never freeze!
+    const safetyTimer = setTimeout(() => {
+      setIsDispatching(false);
+      setButtonState(prev => prev === 'processing' ? 'idle' : prev);
+    }, 4000);
 
-    const dateKey = `${yyyy}${mm}${dd}`;
-    const storageKey = `dd_merchant_order_seq_${dateKey}`;
-    let seq = 1;
     try {
-      const savedSeq = parseInt(localStorage.getItem(storageKey) || '0', 10);
-      seq = savedSeq + 1;
-      localStorage.setItem(storageKey, String(seq));
-    } catch (_) {}
+      const finalPhone = passengerPhone.trim() || '未填写 (匿名代开单)';
+      const ts = Date.now();
+      const dt = new Date(ts);
+      const yyyy = dt.getFullYear();
+      const mm = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      const hh = String(dt.getHours()).padStart(2, '0');
+      const min = String(dt.getMinutes()).padStart(2, '0');
 
-    const seqStr = String(seq).padStart(5, '0');
-    const formattedOrderNo = `YC${yyyy}${mm}${dd}${hh}${min}${seqStr}`;
-    const orderId = 'MO_' + ts;
-
-    setTimeout(async () => {
+      const dateKey = `${yyyy}${mm}${dd}`;
+      const storageKey = `dd_merchant_order_seq_${dateKey}`;
+      let seq = 1;
       try {
-        // Helper to verify driver eligibility for orders
-        const isDriverEligible = (d: any) => {
-          const phone = d.phone ? String(d.phone).trim() : '';
-          if (!phone) return false;
+        const savedSeq = parseInt(safeGetItem(storageKey) || '0', 10);
+        seq = savedSeq + 1;
+        safeSetItem(storageKey, String(seq));
+      } catch (_) {}
 
-          // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders!
-          const isMerchant = d.role?.includes('商户') || d.role?.includes('商家') || d.userRole?.includes('商户') || d.userRole?.includes('商家') || phone === '15121904440';
-          if (isMerchant) return false;
+      const seqStr = String(seq).padStart(5, '0');
+      const formattedOrderNo = `YC${yyyy}${mm}${dd}${hh}${min}${seqStr}`;
+      const orderId = 'MO_' + ts;
 
-          // 2. Check if in removedMemberPhones list (or localStorage removed list)
-          let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
-          try {
-            const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
-            if (savedRemoved) {
-              const parsed = JSON.parse(savedRemoved);
-              if (Array.isArray(parsed)) {
-                removedList = Array.from(new Set([...removedList, ...parsed]));
-              }
-            }
-          } catch (_) {}
+      // Helper to verify driver eligibility for orders
+      const isDriverEligible = (d: any) => {
+        const phone = d.phone ? String(d.phone).trim() : '';
+        if (!phone) return false;
 
-          const isRemoved = removedList.some(p => String(p).trim() === phone || String(p).trim() === String(d.id || '').trim() || String(p).trim() === String(d.name || '').trim());
-          if (isRemoved) return false;
+        // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders!
+        const isMerchant = d.role?.includes('商户') || d.role?.includes('商家') || d.userRole?.includes('商户') || d.userRole?.includes('商家') || phone === '15121904440';
+        if (isMerchant) return false;
 
-          // 3. MUST be an approved driver in squadMembers or developer admin 15509601222!
-          const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
-          if (phone !== '15509601222') {
-            if (squadMembers && squadMembers.length > 0 && !sm) {
-              return false;
-            }
-            if (sm) {
-              const st = sm.status || sm.approvalStatus || '已通过';
-              if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
-                return false;
-              }
-              const smIsMerchant = sm.role?.includes('商户') || sm.role?.includes('商家') || sm.userRole?.includes('商户') || sm.userRole?.includes('商家') || phone === '15121904440';
-              if (smIsMerchant) {
-                return false;
-              }
-            }
-          }
-
-          // 4. VERSION FILTER: All driver app versions (V1.0+, V2.0+) are fully eligible for merchant valet orders
-          // (No restrictive version blocking)
-
-          // 5. If checking currently logged-in user, check localIsOnline directly
-          if (userPhone && phone === userPhone) {
-            const localIsOnline = typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false;
-            if (!localIsOnline) return false;
-          }
-
-          // MUST strictly be online (isOnline === true or onlineOrdersEnabled === true)!
-          const isOnline = d.isOnline === true || d.isOnline === 'true' || d.onlineOrdersEnabled === true || d.onlineOrdersEnabled === 'true';
-          if (!isOnline) return false;
-
-          // MUST NOT be busy (isBusy === true)!
-          if (d.isBusy === true || d.isBusy === 'true') return false;
-
-          return true;
-        };
-
-        const geocodedStart = geocodeAddress(passengerAddress);
-        const isDefaultCoords = (
-          !passengerCoords ||
-          (Math.abs(passengerCoords.lat - 38.487167) < 0.0001 && Math.abs(passengerCoords.lng - 106.23091) < 0.0001) ||
-          (Math.abs(passengerCoords.lat - 38.487193) < 0.0001 && Math.abs(passengerCoords.lng - 106.230912) < 0.0001)
-        );
-        const finalLat = (!isDefaultCoords && isValidCoords(passengerCoords.lat, passengerCoords.lng))
-          ? passengerCoords.lat
-          : geocodedStart.lat;
-        const finalLng = (!isDefaultCoords && isValidCoords(passengerCoords.lat, passengerCoords.lng))
-          ? passengerCoords.lng
-          : geocodedStart.lng;
-
-        // Recalculate distance for all online drivers using exact finalLat & finalLng
-        const allCandidateDrivers = getCombinedDrivers().map(d => {
-          let dLat = d.lat;
-          let dLng = d.lng;
-          if (!isValidCoords(dLat, dLng)) {
-            const sm = squadMembers.find((m: any) => String(m.phone).trim() === String(d.phone).trim());
-            if (sm && isValidCoords(sm.lat, sm.lng)) {
-              dLat = sm.lat;
-              dLng = sm.lng;
-            } else {
-              // Fallback to passenger/order location so online driver in city is not assigned distance 999
-              dLat = finalLat;
-              dLng = finalLng;
-            }
-          }
-          const dist = (isValidCoords(dLat, dLng) && isValidCoords(finalLat, finalLng))
-            ? calculateDistance(finalLat, finalLng, dLat, dLng)
-            : 0.1;
-          return { ...d, lat: dLat, lng: dLng, distance: dist };
-        });
-
-        // Find online free drivers who are eligible
-        const eligibleDrivers = allCandidateDrivers.filter(d => {
-          const isFree = !d.isBusy && d.isBusy !== 'true';
-          const isEligible = isDriverEligible(d);
-          return isFree && isEligible;
-        });
-
-        // Filter drivers within 3km (3000m)
-        const driversWithin3km = eligibleDrivers.filter(d => {
-          const distMeters = (d.distance || 0) * 1000;
-          return distMeters <= 3000;
-        });
-
-        let chosenDriver: any = null;
-
-        if (driversWithin3km.length > 0) {
-          // Find minimum distance within 3km
-          const minDist = Math.min(...driversWithin3km.map(d => d.distance || 0));
-          const closestTied = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
-          chosenDriver = closestTied[Math.floor(Math.random() * closestTied.length)];
-        } else if (eligibleDrivers.length > 0) {
-          // Fallback: If no driver strictly within 3km, pick closest eligible online free driver in city
-          const driversWithin10km = eligibleDrivers.filter(d => (d.distance || 0) <= 10);
-          const pool = driversWithin10km.length > 0 ? driversWithin10km : eligibleDrivers;
-          const minDist = Math.min(...pool.map(d => d.distance || 0));
-          const closestTied = pool.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
-          chosenDriver = closestTied[Math.floor(Math.random() * closestTied.length)];
-        }
-
-        const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
-          ? scheduledTime.trim()
-          : '现在（立即出发）';
-        const finalNeedScooter = needScooter !== false;
-
-        const phoneLast4 = userPhone && userPhone.length >= 4 ? userPhone.slice(-4) : '5552';
-        const isRealPerson = adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' && !adminProfile.name.startsWith('网页商户商家');
-        const merchantDispatcherName = isRealPerson ? adminProfile.name : `商户商家${phoneLast4}`;
-        const mgmtRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'];
-        let currentAdminRole = '商户、商家';
-        if (userPhone !== '15121904440') {
-          if (adminProfile?.role && mgmtRoles.includes(adminProfile.role)) {
-            currentAdminRole = adminProfile.role;
-          } else if (userRole && mgmtRoles.includes(userRole)) {
-            currentAdminRole = userRole;
-          }
-        }
-
-        const newOrderData = {
-          id: orderId,
-          orderNo: formattedOrderNo,
-          seqNumber: seq,
-          passengerPhone: finalPhone,
-          startLocation: passengerAddress,
-          passengerLat: finalLat,
-          passengerLng: finalLng,
-          approxPrice: '未知',
-          calculatedTotalFee: 40.00,
-          estimatedPrice: '40.00',
-          price: '¥40.00',
-          orderRemark: orderRemark.trim() || '商户代叫',
-          needScooter: finalNeedScooter,
-          scheduledTime: finalScheduledTime,
-          bookingTime: finalScheduledTime,
-          paymentQrCode: wechatQrUrl,
-          dispatchedByPhone: userPhone || '18795165552',
-          adminPhone: userPhone || '18795165552',
-          adminName: merchantDispatcherName,
-          dispatchedByName: merchantDispatcherName,
-          adminRole: currentAdminRole,
-          dispatcherRole: currentAdminRole,
-          teamName: teamName,
-          timestamp: ts,
-          isValetOrder: true,
-          isPlatformDispatch: true,
-          status: chosenDriver ? 'dispatched' : 'hall',
-          in_hall: chosenDriver ? false : true,
-          statusCategory: chosenDriver ? '已指派' : '呼叫中',
-          dispatchedDriverPhone: chosenDriver ? chosenDriver.phone : ''
-        };
-
-        // Save active order ID
-        setActiveOrderId(orderId);
-
-        // 1. Always save order to shared merchant_orders collection for global hall sync
-        await setDoc(doc(db, 'merchant_orders', orderId), newOrderData);
-        const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: newOrderData })
-        }).catch(() => {});
-
-        // 2. Sync to localStorage for local fallback
+        // 2. Check if in removedMemberPhones list
+        let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
         try {
-          const savedLocal = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-          savedLocal.unshift(newOrderData);
-          localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(savedLocal.slice(0, 50)));
+          const savedRemoved = safeGetItem('dd_removed_squad_phones_v2');
+          if (savedRemoved) {
+            const parsed = JSON.parse(savedRemoved);
+            if (Array.isArray(parsed)) {
+              removedList = Array.from(new Set([...removedList, ...parsed]));
+            }
+          }
         } catch (_) {}
 
-        if (chosenDriver) {
-          // Dispatch directly to closest free driver within 3km
-          const passengerLinkPayload = {
-            ...newOrderData,
-            status: 'submitted',
-            orderId: orderId
-          };
-          await setDoc(doc(db, 'passenger_links', chosenDriver.phone), passengerLinkPayload);
+        const isRemoved = removedList.some(p => String(p).trim() === phone || String(p).trim() === String(d.id || '').trim() || String(p).trim() === String(d.name || '').trim());
+        if (isRemoved) return false;
+
+        // 3. MUST be an approved driver in squadMembers or developer admin 15509601222!
+        const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
+        if (phone !== '15509601222') {
+          if (squadMembers && squadMembers.length > 0 && !sm) {
+            return false;
+          }
+          if (sm) {
+            const st = sm.status || sm.approvalStatus || '已通过';
+            if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
+              return false;
+            }
+            const smIsMerchant = sm.role?.includes('商户') || sm.role?.includes('商家') || sm.userRole?.includes('商户') || sm.userRole?.includes('商家') || phone === '15121904440';
+            if (smIsMerchant) {
+              return false;
+            }
+          }
+        }
+
+        // 4. Online check
+        if (userPhone && phone === userPhone) {
+          const localIsOnline = typeof window !== 'undefined' ? safeGetItem('dd_is_online') === 'true' : false;
+          if (!localIsOnline) return false;
+        }
+
+        const isOnline = d.isOnline === true || d.isOnline === 'true' || d.onlineOrdersEnabled === true || d.onlineOrdersEnabled === 'true';
+        if (!isOnline) return false;
+
+        if (d.isBusy === true || d.isBusy === 'true') return false;
+
+        return true;
+      };
+
+      const geocodedStart = geocodeAddress(passengerAddress);
+      const isDefaultCoords = (
+        !passengerCoords ||
+        (Math.abs(passengerCoords.lat - 38.487167) < 0.0001 && Math.abs(passengerCoords.lng - 106.23091) < 0.0001) ||
+        (Math.abs(passengerCoords.lat - 38.487193) < 0.0001 && Math.abs(passengerCoords.lng - 106.230912) < 0.0001)
+      );
+      const finalLat = (!isDefaultCoords && isValidCoords(passengerCoords.lat, passengerCoords.lng))
+        ? passengerCoords.lat
+        : geocodedStart.lat;
+      const finalLng = (!isDefaultCoords && isValidCoords(passengerCoords.lat, passengerCoords.lng))
+        ? passengerCoords.lng
+        : geocodedStart.lng;
+
+      // Recalculate distance for all online drivers using exact finalLat & finalLng
+      const allCandidateDrivers = getCombinedDrivers().map(d => {
+        let dLat = d.lat;
+        let dLng = d.lng;
+        if (!isValidCoords(dLat, dLng)) {
+          const sm = squadMembers.find((m: any) => String(m.phone).trim() === String(d.phone).trim());
+          if (sm && isValidCoords(sm.lat, sm.lng)) {
+            dLat = sm.lat;
+            dLng = sm.lng;
+          }
+        }
+        const dist = (isValidCoords(dLat, dLng) && isValidCoords(finalLat, finalLng))
+          ? calculateDistance(finalLat, finalLng, dLat, dLng)
+          : 999;
+        return { ...d, lat: dLat, lng: dLng, distance: dist };
+      });
+
+      // Find online free drivers who are eligible
+      const eligibleDrivers = allCandidateDrivers.filter(d => {
+        const isFree = !d.isBusy && d.isBusy !== 'true';
+        const isEligible = isDriverEligible(d);
+        return isFree && isEligible;
+      });
+
+      // Filter drivers within 3km (3000m)
+      const driversWithin3km = eligibleDrivers.filter(d => {
+        const distMeters = (d.distance || 0) * 1000;
+        return distMeters <= 3000;
+      });
+
+      let chosenDriver: any = null;
+
+      if (driversWithin3km.length > 0) {
+        const minDist = Math.min(...driversWithin3km.map(d => d.distance || 0));
+        const closestTied = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
+        chosenDriver = closestTied[Math.floor(Math.random() * closestTied.length)];
+      }
+
+      const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
+        ? scheduledTime.trim()
+        : '现在（立即出发）';
+      const finalNeedScooter = needScooter !== false;
+
+      const currentPhone = userPhone || '';
+      const phoneLast4 = currentPhone.length >= 4 ? currentPhone.slice(-4) : '5552';
+      const isRealPerson = adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' && !adminProfile.name.startsWith('网页商户商家');
+      const merchantDispatcherName = isRealPerson ? adminProfile.name : `商户商家${phoneLast4}`;
+      const mgmtRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'];
+      let currentAdminRole = '商户、商家';
+      if (currentPhone !== '15121904440') {
+        if (adminProfile?.role && mgmtRoles.includes(adminProfile.role)) {
+          currentAdminRole = adminProfile.role;
+        } else if (userRole && mgmtRoles.includes(userRole)) {
+          currentAdminRole = userRole;
+        }
+      }
+
+      const effectiveQr = wechatQrUrl || MOCK_ALBUM_PHOTOS[0]?.dataUrl || '';
+
+      const newOrderData = {
+        id: orderId,
+        orderNo: formattedOrderNo,
+        seqNumber: seq,
+        passengerPhone: finalPhone,
+        startLocation: passengerAddress,
+        passengerLat: finalLat,
+        passengerLng: finalLng,
+        approxPrice: '未知',
+        calculatedTotalFee: 40.00,
+        estimatedPrice: '40.00',
+        price: '¥40.00',
+        orderRemark: orderRemark.trim() || '商户代叫',
+        needScooter: finalNeedScooter,
+        scheduledTime: finalScheduledTime,
+        bookingTime: finalScheduledTime,
+        paymentQrCode: effectiveQr,
+        dispatchedByPhone: currentPhone,
+        adminPhone: currentPhone,
+        adminName: merchantDispatcherName,
+        dispatchedByName: merchantDispatcherName,
+        adminRole: currentAdminRole,
+        dispatcherRole: currentAdminRole,
+        teamName: teamName,
+        timestamp: ts,
+        isValetOrder: true,
+        isPlatformDispatch: true,
+        status: chosenDriver ? 'dispatched' : 'hall',
+        in_hall: chosenDriver ? false : true,
+        statusCategory: chosenDriver ? '已指派' : '呼叫中',
+        dispatchedDriverPhone: chosenDriver ? chosenDriver.phone : ''
+      };
+
+      // Save active order ID
+      setActiveOrderId(orderId);
+
+      // 1. Instant local persistence & UI update
+      try {
+        const savedLocal = JSON.parse(safeGetItem('dd_merchant_orders_v2') || '[]');
+        savedLocal.unshift(newOrderData);
+        safeSetItem('dd_merchant_orders_v2', JSON.stringify(savedLocal.slice(0, 50)));
+      } catch (_) {}
+
+      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+
+      if (chosenDriver && currentPhone && (chosenDriver.phone === currentPhone || chosenDriver.phone === '15509601222')) {
+        const passengerLinkPayload = { ...newOrderData, status: 'submitted', orderId };
+        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
+      }
+
+      // 2. Non-blocking background sync with 2.5s max timeout
+      const syncRemote = async () => {
+        const baseUrl = getBaseApiUrl();
+        try {
+          await Promise.race([
+            setDoc(doc(db, 'merchant_orders', orderId), newOrderData),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2500))
+          ]);
+        } catch (_) {}
+
+        try {
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'passenger_links', docId: chosenDriver.phone, data: passengerLinkPayload })
+            body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: newOrderData })
           }).catch(() => {});
+        } catch (_) {}
 
-          if (userPhone && (chosenDriver.phone === userPhone || chosenDriver.phone === '15509601222')) {
-            window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
-          }
-
-          setIsDispatching(false);
-          setButtonState('success');
-          setDispatchResult({
-            driver: chosenDriver,
-            passengerPhone: finalPhone,
-            startLocation: passengerAddress,
-            distance: chosenDriver.distance
-          });
-
-          onShowToast(`订单已发送`);
-        } else {
-          // No free driver within 3km -> Order enters Order Selection Hall
-          setIsDispatching(false);
-          setButtonState('success');
-          setDispatchResult({
-            driver: { name: '选单大厅 (开放抢单)' },
-            passengerPhone: finalPhone,
-            startLocation: passengerAddress,
-            distance: 0
-          });
-
-          onShowToast(`订单已发送`);
+        if (chosenDriver) {
+          const passengerLinkPayload = { ...newOrderData, status: 'submitted', orderId };
+          try {
+            await Promise.race([
+              setDoc(doc(db, 'passenger_links', chosenDriver.phone), passengerLinkPayload),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2500))
+            ]);
+          } catch (_) {}
+          try {
+            fetch(`${baseUrl}/api/db/set`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: 'passenger_links', docId: chosenDriver.phone, data: passengerLinkPayload })
+            }).catch(() => {});
+          } catch (_) {}
         }
+      };
+      syncRemote();
 
-        setTimeout(() => {
-          setButtonState('idle');
-        }, 2500);
+      // 3. Update UI state to success immediately
+      clearTimeout(safetyTimer);
+      setIsDispatching(false);
+      setButtonState('success');
+      setDispatchResult({
+        driver: chosenDriver || { name: '选单大厅 (开放抢单)' },
+        passengerPhone: finalPhone,
+        startLocation: passengerAddress,
+        distance: chosenDriver ? chosenDriver.distance : 0
+      });
 
-      } catch (err: any) {
-        setIsDispatching(false);
+      onShowToast('订单已发送');
+
+      setTimeout(() => {
         setButtonState('idle');
-        alert("线上派单委派通道异常，原因: " + err.message);
-      }
-    }, 1200);
+      }, 2500);
+
+    } catch (err: any) {
+      clearTimeout(safetyTimer);
+      setIsDispatching(false);
+      setButtonState('idle');
+      onShowToast('❌ 下单发生异常：' + (err?.message || '请重试'));
+    }
   };
 
   const currentQrUrl = wechatQrUrl;
@@ -2924,7 +3227,7 @@ export default function DispatchValetOrder({
 
                     return (
                       <div 
-                        key={order.id || order.orderNo || idx}
+                        key={`d-ord-${order.id || order.orderNo || ''}-${idx}`}
                         onClick={() => setSelectedOrderDetail(order)}
                         className="bg-white p-4 rounded-2xl border border-[#dfc0af] shadow-2xs hover:border-[#ff7d00] transition-all cursor-pointer space-y-3 active:scale-[0.99]"
                       >
@@ -3145,17 +3448,17 @@ export default function DispatchValetOrder({
             </div>
 
             {/* Centered Member Application & Merchant Management Buttons */}
-            <div className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center gap-2">
+            <div className="flex items-center justify-end gap-1.5 shrink-0 ml-auto">
               <button 
                 type="button"
                 onClick={() => setShowApplicantApprovalModal(true)}
-                className="relative flex items-center gap-1.5 px-3 py-1.5 bg-[#ffdbc8] text-[#311300] hover:bg-[#ffbfa3] rounded-full text-xs font-bold shadow-xs active:scale-95 transition-all border border-[#ff7d00]/20"
+                className="relative flex items-center gap-1 px-2.5 py-1 bg-[#ffdbc8] text-[#311300] hover:bg-[#ffbfa3] rounded-full text-xs font-bold shadow-xs active:scale-95 transition-all border border-[#ff7d00]/20 whitespace-nowrap shrink-0"
                 title="成员申请"
               >
-                <UserPlus className="w-4 h-4 text-[#984800]" />
-                <span>成员申请</span>
+                <UserPlus className="w-3.5 h-3.5 text-[#984800] shrink-0" />
+                <span className="whitespace-nowrap">成员申请</span>
                 {pendingApplicantCount > 0 && (
-                  <span className="flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#ba1a1a] text-[10px] font-bold text-white leading-none">
+                  <span className="flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#ba1a1a] text-[10px] font-bold text-white leading-none shrink-0">
                     {pendingApplicantCount}
                   </span>
                 )}
@@ -3165,26 +3468,26 @@ export default function DispatchValetOrder({
                 type="button"
                 onClick={() => {
                   setMemberCategoryTab('商户、商家');
-                  onShowToast('🏢 已为您切换至【商户、商家】管理页面');
+                  onShowToast('🏢 已为您切换至【商户管理】页面');
                 }}
-                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold shadow-xs active:scale-95 transition-all border ${
+                className={`relative flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold shadow-xs active:scale-95 transition-all border whitespace-nowrap shrink-0 ${
                   memberCategoryTab === '商户、商家'
                     ? 'bg-[#ff7d00] text-white border-[#ff7d00]'
                     : 'bg-[#ffdbc8] text-[#311300] hover:bg-[#ffbfa3] border-[#ff7d00]/20'
                 }`}
-                title="商户、商家管理"
+                title="商户管理"
               >
-                <Store className="w-4 h-4 text-[#984800]" />
-                <span>商户、商家管理</span>
+                <Store className="w-3.5 h-3.5 text-[#984800] shrink-0" />
+                <span className="whitespace-nowrap">商户管理</span>
                 {merchantCount > 0 && (
-                  <span className="flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#027a48] text-[10px] font-bold text-white leading-none">
+                  <span className="flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#027a48] text-[10px] font-bold text-white leading-none shrink-0">
                     {merchantCount}
                   </span>
                 )}
               </button>
             </div>
 
-            <div className="w-10"></div>
+            <div className="w-2"></div>
           </header>
 
           <main className="flex-1 px-5 py-4 overflow-y-auto space-y-4 pb-28">
@@ -3259,20 +3562,20 @@ export default function DispatchValetOrder({
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2.5 shrink-0">
                     <div className="text-right">
-                      <span className="text-xs font-bold text-[#584235] block">小队总人数</span>
-                      <span className="text-2xl font-bold text-[#ff7d00]">
+                      <span className="text-xs font-bold text-[#584235] block whitespace-nowrap">小队人数</span>
+                      <span className="text-xl sm:text-2xl font-bold text-[#ff7d00] whitespace-nowrap">
                         {driverCount}
-                        <span className="text-sm font-normal text-[#584235] ml-0.5">人</span>
+                        <span className="text-xs sm:text-sm font-normal text-[#584235] ml-0.5">人</span>
                       </span>
                     </div>
                     <div className="w-[1px] h-8 bg-[#dfc0af]/40" />
                     <div className="text-right">
-                      <span className="text-xs font-bold text-[#584235] block">商户、商家</span>
-                      <span className="text-2xl font-bold text-[#027a48]">
+                      <span className="text-xs font-bold text-[#584235] block whitespace-nowrap">商户</span>
+                      <span className="text-xl sm:text-2xl font-bold text-[#027a48] whitespace-nowrap">
                         {merchantCount}
-                        <span className="text-sm font-normal text-[#584235] ml-0.5">家</span>
+                        <span className="text-xs sm:text-sm font-normal text-[#584235] ml-0.5">家</span>
                       </span>
                     </div>
                   </div>
@@ -3643,12 +3946,44 @@ export default function DispatchValetOrder({
             </div>
             <button 
               type="button" 
-              onClick={() => onShowToast('更多操作选项')}
-              className="p-1.5 rounded-full hover:bg-black/5 transition-colors flex items-center justify-center"
+              onClick={() => setShowCancelDispatchModal(true)}
+              className="px-2.5 py-1 text-xs sm:text-sm font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 active:scale-95 transition-all cursor-pointer"
             >
-              <MoreVertical className="w-5 h-5 text-[#984800]" />
+              取消派单
             </button>
           </header>
+
+          {/* 取消派单确认弹窗 */}
+          {showCancelDispatchModal && (
+            <div className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-4 animate-in fade-in duration-200">
+              <div className="bg-white rounded-3xl max-w-xs sm:max-w-sm w-full p-6 shadow-2xl flex flex-col items-center text-center space-y-4 relative z-[10000]">
+                <div className="w-12 h-12 bg-rose-100 rounded-full flex items-center justify-center text-rose-600 mb-1">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                  </svg>
+                </div>
+                <h3 className="text-base font-extrabold text-gray-900 leading-snug">
+                  是否确认取消此订单的派单？
+                </h3>
+                <div className="flex items-center gap-3 w-full pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowCancelDispatchModal(false)}
+                    className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-sm rounded-xl transition-all active:scale-95 cursor-pointer"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmCancelDispatch}
+                    className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm rounded-xl transition-all shadow-md shadow-rose-600/30 active:scale-95 cursor-pointer"
+                  >
+                    确认
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <main className="flex-1 p-5 overflow-y-auto space-y-4 pb-28">
             {/* Order Status Header Card */}
@@ -3665,7 +4000,7 @@ export default function DispatchValetOrder({
                 if (c === '已完成' || s === 'completed' || s === 'finished') return 5;
                 if (c === '服务中' || c === '计费中' || c === '进行中' || s === 'serving' || s === 'started' || s === 'in_service') return 4;
                 if (c === '司机到达' || c === '已到达' || s === 'arrived') return 3;
-                if (c === '司机接单' || c === '已接单' || c === '已抢单' || s === 'claimed' || s === 'accepted' || s === 'taken') return 2;
+                if (c === '司机接单' || c === '已接单' || c === '已指派' || c === '已抢单' || s === 'claimed' || s === 'accepted' || s === 'taken' || s === 'dispatched') return 2;
                 return 1;
               };
 
@@ -3673,7 +4008,7 @@ export default function DispatchValetOrder({
 
               let displayStatusText = '呼叫中';
               if (isCancelled) {
-                displayStatusText = '订单已取消';
+                displayStatusText = '该订单已取消';
               } else if (activeIndex === 5) {
                 displayStatusText = '已完成';
               } else if (activeIndex === 4) {
@@ -3711,9 +4046,9 @@ export default function DispatchValetOrder({
                   </div>
 
                   {isCancelled ? (
-                    /* Hides 5-step tracker when cancelled, directly displays '订单已取消' banner */
+                    /* Hides 5-step tracker when cancelled, directly displays '该订单已取消' banner */
                     <div className="bg-rose-50 border border-rose-200/80 rounded-xl p-3.5 flex items-center justify-center gap-2">
-                      <span className="text-sm font-extrabold text-rose-600">订单已取消</span>
+                      <span className="text-sm font-extrabold text-rose-600">该订单已取消</span>
                     </div>
                   ) : (
                     /* Step Tracker */
@@ -3950,98 +4285,6 @@ export default function DispatchValetOrder({
               );
             })()}
           </main>
-
-          {/* Footer Action */}
-          <footer className="sticky bottom-0 left-0 right-0 bg-white border-t border-[#e2e2e2] px-4 pt-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] z-50 shrink-0 android-nav-safe-pb">
-            <div className="max-w-md mx-auto flex gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  onShowToast('📩 订单申诉已提交，客服人员将在10分钟内联系您');
-                }}
-                className="flex-1 py-2.5 bg-[#e8e8e8] text-[#584235] font-bold text-xs rounded-lg hover:bg-[#e2e2e2] active:scale-95 transition-all"
-              >
-                订单申诉
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  const targetOrderNo = selectedOrderDetail.orderNo || selectedOrderDetail.id || '此订单';
-                  if (confirm(`确定要取消订单【${targetOrderNo}】吗？`)) {
-                    const orderId = selectedOrderDetail.id || selectedOrderDetail.orderId || selectedOrderDetail.rawOrder?.id || selectedOrderDetail.rawOrder?.orderId;
-                    const driverPhone = selectedOrderDetail.dispatchedDriverPhone || selectedOrderDetail.driverPhone || selectedOrderDetail.rawOrder?.driverPhone || selectedOrderDetail.rawOrder?.dispatchedDriverPhone;
-                    const passengerPhone = selectedOrderDetail.passengerPhone || selectedOrderDetail.rawOrder?.passengerPhone;
-
-                    // 1. Delete from Firestore merchant_orders
-                    if (orderId) {
-                      try {
-                        await deleteDoc(doc(db, 'merchant_orders', orderId));
-                      } catch (err) {
-                        console.error("Error deleting from merchant_orders:", err);
-                      }
-                    }
-
-                    // 2. Also search merchant_orders by passengerPhone if orderId missing
-                    if (!orderId && passengerPhone) {
-                      try {
-                        await deleteDoc(doc(db, 'merchant_orders', passengerPhone));
-                      } catch (_) {}
-                    }
-
-                    // 3. Clear from passenger_links (if dispatched to a specific driver phone)
-                    if (driverPhone) {
-                      try {
-                        await deleteDoc(doc(db, 'passenger_links', driverPhone));
-                      } catch (err) {}
-                    }
-
-                    // 4. Clear from active_orders if present
-                    if (driverPhone) {
-                      try {
-                        await deleteDoc(doc(db, 'active_orders', driverPhone));
-                      } catch (err) {}
-                    }
-                    if (orderId) {
-                      try {
-                        await deleteDoc(doc(db, 'active_orders', orderId));
-                      } catch (err) {}
-                    }
-
-                    // 5. Clean local storage dd_merchant_orders_v2
-                    try {
-                      const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-                      const updated = saved.filter((o: any) => {
-                        if (orderId && (o.id === orderId || o.orderId === orderId)) return false;
-                        if (passengerPhone && o.passengerPhone === passengerPhone) return false;
-                        if (targetOrderNo && o.orderNo === targetOrderNo) return false;
-                        return true;
-                      });
-                      localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
-                    } catch (_) {}
-
-                    // 6. Update local state and trigger global event for immediate UI update
-                    setAllDispatchedOrders((prev) => prev.filter((o: any) => {
-                      if (orderId && (o.id === orderId || o.orderId === orderId)) return false;
-                      if (passengerPhone && o.passengerPhone === passengerPhone) return false;
-                      if (targetOrderNo && o.orderNo === targetOrderNo) return false;
-                      return true;
-                    }));
-                    window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
-
-                    onShowToast(`❌ 订单【${targetOrderNo}】已取消，已同步从选单大厅及系统清理`);
-                    setSelectedOrderDetail(null);
-
-                    if (onClose) {
-                      onClose();
-                    }
-                  }
-                }}
-                className="flex-[2] py-2.5 border-2 border-[#ba1a1a] text-[#ba1a1a] font-bold text-xs rounded-lg hover:bg-rose-50 active:scale-95 transition-all text-center cursor-pointer"
-              >
-                取消订单
-              </button>
-            </div>
-          </footer>
         </div>
       )}
 

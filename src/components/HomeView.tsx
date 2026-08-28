@@ -79,52 +79,89 @@ interface HomeViewProps {
   xianyuUrl?: string;
 }
 
+const minorStoreKeywords = [
+  '面馆', '砂锅面', '调和', '牛肉面', '羊肉', '饭店', '餐馆', '小吃', '快餐', '便利店', '超市', 
+  '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
+  '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档'
+];
+
+const sanitizeOrderLocations = (order: any) => {
+  if (!order) return order;
+  let sLoc = (order.startLocation || '').toString().trim();
+  let eLoc = (order.endLocation || '').toString().trim();
+
+  // If start or end contains "金花羊肉", "宁夏博物馆", or minor restaurant names
+  if (sLoc.includes('金花羊肉') || sLoc.includes('宁夏博物馆') || minorStoreKeywords.some(kw => sLoc.includes(kw))) {
+    if (eLoc && !eLoc.includes('宁夏博物馆') && !minorStoreKeywords.some(kw => eLoc.includes(kw)) && eLoc !== '未定位终点') {
+      sLoc = eLoc;
+    } else {
+      sLoc = '运祥小区';
+    }
+  }
+
+  if (eLoc.includes('金花羊肉') || eLoc.includes('宁夏博物馆') || minorStoreKeywords.some(kw => eLoc.includes(kw))) {
+    if (sLoc && !sLoc.includes('宁夏博物馆') && !minorStoreKeywords.some(kw => sLoc.includes(kw)) && sLoc !== '未定位起点') {
+      eLoc = sLoc;
+    } else {
+      eLoc = '运祥小区';
+    }
+  }
+
+  return {
+    ...order,
+    startLocation: sLoc,
+    endLocation: eLoc
+  };
+};
+
 const filterOrdersWithinSixMonths = (orders: any[]): any[] => {
   if (!Array.isArray(orders)) return [];
   const now = new Date();
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(now.getMonth() - 6);
 
-  return orders.filter(order => {
-    if (!order) return false;
+  return orders
+    .filter(order => {
+      if (!order) return false;
 
-    // Filter out old mock orders requested to be removed
-    if (order.id && typeof order.id === 'string' && order.id.startsWith('mock')) return false;
-    const startLoc = (order.startLocation || '').toString();
-    if (
-      startLoc.includes('融媒体中心') ||
-      startLoc.includes('湖滨东街支行') ||
-      startLoc.includes('公园华府')
-    ) {
-      return false;
-    }
-
-    if (order.timestamp) {
-      return new Date(order.timestamp) >= sixMonthsAgo;
-    }
-    if (order.id && !isNaN(Number(order.id))) {
-      const ts = Number(order.id);
-      if (ts > 1500000000000) {
-        return new Date(ts) >= sixMonthsAgo;
+      // Filter out old mock orders requested to be removed
+      if (order.id && typeof order.id === 'string' && order.id.startsWith('mock')) return false;
+      const startLoc = (order.startLocation || '').toString();
+      if (
+        startLoc.includes('融媒体中心') ||
+        startLoc.includes('湖滨东街支行') ||
+        startLoc.includes('公园华府')
+      ) {
+        return false;
       }
-    }
-    if (order.timeStr && typeof order.timeStr === 'string') {
-      const parts = order.timeStr.match(/(\d+)-(\d+)\s+(\d+):(\d+)/);
-      if (parts) {
-        const month = parseInt(parts[1], 10) - 1;
-        const day = parseInt(parts[2], 10);
-        const hour = parseInt(parts[3], 10);
-        const min = parseInt(parts[4], 10);
-        
-        const orderDate = new Date(now.getFullYear(), month, day, hour, min);
-        if (orderDate > now) {
-          orderDate.setFullYear(now.getFullYear() - 1);
+
+      if (order.timestamp) {
+        return new Date(order.timestamp) >= sixMonthsAgo;
+      }
+      if (order.id && !isNaN(Number(order.id))) {
+        const ts = Number(order.id);
+        if (ts > 1500000000000) {
+          return new Date(ts) >= sixMonthsAgo;
         }
-        return orderDate >= sixMonthsAgo;
       }
-    }
-    return true;
-  });
+      if (order.timeStr && typeof order.timeStr === 'string') {
+        const parts = order.timeStr.match(/(\d+)-(\d+)\s+(\d+):(\d+)/);
+        if (parts) {
+          const month = parseInt(parts[1], 10) - 1;
+          const day = parseInt(parts[2], 10);
+          const hour = parseInt(parts[3], 10);
+          const min = parseInt(parts[4], 10);
+          
+          const orderDate = new Date(now.getFullYear(), month, day, hour, min);
+          if (orderDate > now) {
+            orderDate.setFullYear(now.getFullYear() - 1);
+          }
+          return orderDate >= sixMonthsAgo;
+        }
+      }
+      return true;
+    })
+    .map(sanitizeOrderLocations);
 };
 
 const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
@@ -454,6 +491,7 @@ export default function HomeView({
 
     try {
       const orderPayload = {
+        ...ord,
         passengerPhone: ord.passengerPhone || '商户代叫客户',
         startLocation: ord.startLocation || '代叫起点',
         destination: '由司机根据现场口头协商规划行程',
@@ -472,7 +510,15 @@ export default function HomeView({
         distanceText: finalDistText,
         orderId: ord.id || ord.orderId,
         id: ord.id || ord.orderId,
-        dispatchedDriverPhone: userPhone || ''
+        dispatchedDriverPhone: userPhone || '',
+        dispatchedByPhone: ord.dispatchedByPhone || ord.adminPhone || ord.dispatchedBy || ord.merchantPhone || '',
+        adminPhone: ord.adminPhone || ord.dispatchedByPhone || '',
+        dispatchedBy: ord.dispatchedBy || ord.dispatchedByPhone || '',
+        paymentQrCode: ord.paymentQrCode || ord.merchantPaymentQrCode || '',
+        merchantPaymentQrCode: ord.paymentQrCode || ord.merchantPaymentQrCode || '',
+        merchantPhone: ord.merchantPhone || ord.dispatchedByPhone || '',
+        dispatchedByName: ord.dispatchedByName || ord.adminName || '',
+        adminName: ord.adminName || ord.dispatchedByName || ''
       };
 
       if (db) {
@@ -2538,7 +2584,7 @@ export default function HomeView({
               (settings.onlineOrdersEnabled && isCityDispatchEnabled === false)
                 ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-60'
                 : settings.onlineOrdersEnabled 
-                  ? 'bg-emerald-550 text-white shadow-xs border border-emerald-600' 
+                  ? 'bg-emerald-500 text-white shadow-xs border border-emerald-600' 
                   : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
             }`}>
               {(settings.onlineOrdersEnabled && isCityDispatchEnabled === false) ? <Lock className="w-4 h-4 text-slate-400" /> : <Globe className="w-5 h-5" />}
@@ -2652,12 +2698,22 @@ export default function HomeView({
 
             return (
               <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
-                {visibleHallOrders.map((ord: any) => {
+                {visibleHallOrders.map((ord: any, idx: number) => {
                   const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
                   const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
                   const currentDriverCoords = (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng))
                     ? driverCoords
                     : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
+
+                  const isReportTransfer = ord.orderType === '报单转单' || ord.orderRemark === '报单转单' || ord.type === '报单转单';
+                  const isIssuerDriver = Boolean(
+                    userPhone && (
+                      ord.merchantPhone === userPhone ||
+                      ord.reporterPhone === userPhone ||
+                      ord.userPhone === userPhone ||
+                      ord.createdUserPhone === userPhone
+                    )
+                  );
 
                   const { displayDistText, resolvedLat, resolvedLng } = calculateOrderDriverDistance(
                     ord.startLocation,
@@ -2666,21 +2722,27 @@ export default function HomeView({
                     currentDriverCoords
                   );
 
+                  const finalDistText = isIssuerDriver ? '0公里' : displayDistText;
+
                   // Attach resolved coords and distance text to order object
                   ord.resolvedLat = resolvedLat;
                   ord.resolvedLng = resolvedLng;
-                  ord.distanceText = displayDistText;
+                  ord.distanceText = finalDistText;
 
                   return (
                     <div 
-                      key={ord.id}
+                      key={`hall-${ord.id || ''}-${idx}`}
                       className="bg-slate-50/90 border border-slate-200/90 hover:border-amber-400 rounded-xl p-2.5 flex items-center justify-between gap-2 shadow-2xs transition-all"
                     >
                       {/* Horizontal details */}
                       <div className="flex-1 min-w-0 flex flex-col gap-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="px-1.5 py-0.5 rounded-md bg-orange-100 text-[#ff7d00] text-[10px] font-black border border-orange-200 shrink-0">
-                            【商户代叫】
+                          <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black border shrink-0 ${
+                            isReportTransfer 
+                              ? 'bg-amber-100 text-amber-800 border-amber-300' 
+                              : 'bg-orange-100 text-[#ff7d00] border-orange-200'
+                          }`}>
+                            {isReportTransfer ? '【报单转单】' : '【商户代叫】'}
                           </span>
                           <span className="text-xs font-black text-slate-800 tracking-wider">
                             起点：****
@@ -2690,7 +2752,7 @@ export default function HomeView({
                         <div className="flex items-center gap-2 text-[10.5px] text-slate-600 font-medium flex-wrap">
                           <span>代步车: <strong className={ord.needScooter ? 'text-teal-600' : 'text-slate-500'}>{ord.needScooter ? '需要' : '不需要'}</strong></span>
                           <span>出发时间: <strong className="text-slate-800">{ord.scheduledTime || '即刻出发'}</strong></span>
-                          <span>距离: <strong className="text-[#ff7d00] font-mono font-bold">{displayDistText}</strong></span>
+                          <span>距离: <strong className="text-[#ff7d00] font-mono font-bold">{finalDistText}</strong></span>
                         </div>
                       </div>
 
@@ -2972,11 +3034,11 @@ export default function HomeView({
               </div>
             ) : (
               <div className="space-y-3.5 max-w-md mx-auto">
-                {userMessages.map((msg) => {
+                {userMessages.map((msg, idx) => {
                   const isNew = !viewedMessageIds.includes(msg.id);
                   return (
                     <div 
-                      key={msg.id} 
+                      key={`msg-${msg.id || ''}-${idx}`} 
                       onClick={() => handleMarkSingleRead(msg.id)}
                       className={`p-4 rounded-2xl border transition-all text-left relative cursor-pointer shadow-xs ${
                         isNew 
@@ -4684,7 +4746,7 @@ export default function HomeView({
 
                 return (
                   <div 
-                    key={order.id || idx} 
+                    key={`order-${order.id || ''}-${idx}`} 
                     className="relative overflow-hidden rounded-2xl bg-red-600 dark:bg-red-700/80"
                   >
                     {/* Absolute Delete Button behind */}
@@ -4772,10 +4834,43 @@ export default function HomeView({
 
                       {/* Tags */}
                       <div className="flex items-center justify-between pointer-events-none">
-                        <span className="inline-block px-2.5 py-0.5 border border-slate-200 dark:border-zinc-700/80 rounded-md text-[10px] font-extrabold text-slate-500 dark:text-slate-400 bg-slate-50/50 dark:bg-zinc-900/50">
+                        <span className={`inline-block px-2.5 py-0.5 border rounded-md text-[10px] font-extrabold ${
+                          (() => {
+                            const t = (order.type || (order as any).orderType || '').trim();
+                            const r = ((order as any).orderRemark || (order as any).remark || '').trim();
+                            const m = ((order as any).merchantName || (order as any).source || '').trim();
+                            const dest = ((order as any).endLocation || (order as any).destination || '').trim();
+                            const isReportTransfer = (
+                              t === '报单转单' ||
+                              r === '报单转单' ||
+                              m === '报单转单' ||
+                              dest.includes('报单转单') ||
+                              (order as any).isReportTransferOrder ||
+                              (order as any).isReportTransfer ||
+                              (order as any).isReportTransferValet
+                            );
+                            return isReportTransfer
+                              ? 'bg-amber-50/80 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60'
+                              : 'bg-slate-50/50 dark:bg-zinc-900/50 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-zinc-700/80';
+                          })()
+                        }`}>
                           {(() => {
                             const t = (order.type || (order as any).orderType || '').trim();
                             const r = ((order as any).orderRemark || (order as any).remark || '').trim();
+                            const m = ((order as any).merchantName || (order as any).source || '').trim();
+                            const dest = ((order as any).endLocation || (order as any).destination || '').trim();
+                            const isReportTransfer = (
+                              t === '报单转单' ||
+                              r === '报单转单' ||
+                              m === '报单转单' ||
+                              dest.includes('报单转单') ||
+                              (order as any).isReportTransferOrder ||
+                              (order as any).isReportTransfer ||
+                              (order as any).isReportTransferValet
+                            );
+                            if (isReportTransfer) {
+                              return '报单转单';
+                            }
                             if (r === '商户代叫' || t === '商户代叫' || t === '商户代叫订单' || t === '后台指派订单' || (order as any).isMerchantValetOrder) {
                               return '商户代叫';
                             }

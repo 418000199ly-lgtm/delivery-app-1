@@ -5,6 +5,7 @@ import { TripState, ChauffeurSettings } from '../types';
 import DriverIllustration from './DriverIllustration';
 import MerchantValetPaymentView from './MerchantValetPaymentView';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
+import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
 
 function cleanAndRegenerate(dataUrl: string, type: 'wechat' | 'alipay'): Promise<string> {
   return new Promise((resolve) => {
@@ -63,19 +64,39 @@ interface PaymentQRViewProps {
   settings?: ChauffeurSettings;
   onNavigateBack: () => void;
   onFinishTrip: (amount: number) => void;
+  onUpdateTrip?: (updated: TripState) => void;
 }
 
 export default function PaymentQRView({
   trip,
   settings,
   onNavigateBack,
-  onFinishTrip
+  onFinishTrip,
+  onUpdateTrip
 }: PaymentQRViewProps) {
   const [isWechat, setIsWechat] = useState(true);
   const [wechatClean, setWechatClean] = useState<string>('');
   const [alipayClean, setAlipayClean] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(true);
   const [showValetFeePayment, setShowValetFeePayment] = useState<boolean>(false);
+  const [currentTripState, setCurrentTripState] = useState<TripState>(trip);
+
+  useEffect(() => {
+    setCurrentTripState(trip);
+  }, [trip]);
+
+  // Auto-resolve destination if unset upon reaching payment confirmation screen (w3)
+  useEffect(() => {
+    const activeDest = currentTripState.endLocation || (currentTripState as any).destination || (currentTripState as any).dropoffName;
+    if (isUnsetDestination(activeDest)) {
+      autoUpdateOrderDestinationIfUnset(currentTripState, settings?.phoneNumber, (updated) => {
+        setCurrentTripState(updated);
+        if (onUpdateTrip) {
+          onUpdateTrip(updated);
+        }
+      });
+    }
+  }, [currentTripState.id]);
 
   const isMerchantValetOrder = Boolean(
     (trip as any)?.isValetOrder ||
@@ -288,26 +309,15 @@ export default function PaymentQRView({
       </div>
 
       {/* FOOTER */}
-      <footer className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white sm:bg-transparent shrink-0 android-nav-safe-pb">
-        {isMerchantValetOrder ? (
-          <button 
-            type="button"
-            onClick={() => setShowValetFeePayment(true)}
-            className="w-full py-3 bg-[#ff7d00] hover:bg-[#e06d00] text-white text-base font-bold rounded-xl shadow-md active:scale-[0.99] transition-all cursor-pointer" 
-            data-purpose="confirm-payment-button"
-          >
-            已收款，点击发送代叫费用
-          </button>
-        ) : (
-          <button 
-            type="button"
-            onClick={handleConfirmPayment}
-            className="w-full py-3 bg-[#3B4257] text-white text-base font-medium rounded-lg shadow-md active:bg-[#2D3344] hover:bg-[#2D3344] transition-all cursor-pointer" 
-            data-purpose="confirm-payment-button"
-          >
-            我已收款，返回首页
-          </button>
-        )}
+      <footer className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px))] bg-white sm:bg-transparent shrink-0 android-nav-safe-pb">
+        <button 
+          type="button"
+          onClick={handleConfirmPayment}
+          className="w-full py-3 bg-[#3B4257] text-white text-base font-medium rounded-lg shadow-md active:bg-[#2D3344] hover:bg-[#2D3344] transition-all cursor-pointer" 
+          data-purpose="confirm-payment-button"
+        >
+          我已收款，返回首页
+        </button>
       </footer>
     </div>
   );
