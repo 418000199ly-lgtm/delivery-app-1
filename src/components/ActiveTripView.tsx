@@ -1013,7 +1013,7 @@ export default function ActiveTripView({
           </div>
 
           {/* Bottom Action Footer */}
-          <div className="p-4 border-t border-gray-100 bg-white shrink-0">
+          <div className="px-4 pt-3.5 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),34px))] border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
             <button
               onClick={() => {
                 const finalDest = searchText.trim();

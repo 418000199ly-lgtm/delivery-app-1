@@ -31,9 +31,31 @@ async function main() {
     fs.writeFileSync(t, png1024Buf);
   }
 
-  // ESM asset import pointer for Vite bundler compatibility across Web, Android APK, and iOS
-  const b64 = `import hwdjLogoPng from './images/hwdjtb.png';\n\nexport const HWDJ_LOGO_DATA_URL = hwdjLogoPng;\n`;
+  // ESM asset import pointer and inline Base64 data URL for 100% offline/APK/iOS/Web compatibility
+  const img256 = image.clone().resize({ w: 256, h: 256 });
+  const png256Buf = await img256.getBuffer('image/png');
+  const b64DataUrl = `data:image/png;base64,${png256Buf.toString('base64')}`;
+
+  const b64 = `import hwdjLogoPng from './images/hwdjtb.png';\n\nexport const HWDJ_LOGO_BASE64 = ${JSON.stringify(b64DataUrl)};\nexport const HWDJ_LOGO_DATA_URL = HWDJ_LOGO_BASE64 || hwdjLogoPng;\n`;
   fs.writeFileSync('src/assets/hwdjLogoBase64.ts', b64);
+
+  // Bundled MP3 voice broadcast data for 100% offline Android APK & iOS compatibility
+  const audioDir = 'public/audio';
+  if (fs.existsSync(audioDir)) {
+    const audioFiles = fs.readdirSync(audioDir).filter(f => f.endsWith('.mp3'));
+    const audioMap = {};
+    for (const f of audioFiles) {
+      const buf = fs.readFileSync(path.join(audioDir, f));
+      audioMap[f] = 'data:audio/mp3;base64,' + buf.toString('base64');
+    }
+    const audioOutDir = 'src/assets/audio';
+    if (!fs.existsSync(audioOutDir)) fs.mkdirSync(audioOutDir, { recursive: true });
+    const audioContent = `// Auto-generated Base64 MP3 voice broadcast data for 100% offline Android APK & iOS
+export const BUNDLED_AUDIO_BASE64: Record<string, string> = ${JSON.stringify(audioMap, null, 2)};
+`;
+    fs.writeFileSync(path.join(audioOutDir, 'localAudioBase64.ts'), audioContent);
+    console.log('✨ Bundled', Object.keys(audioMap).length, 'offline voice MP3 assets into src/assets/audio/localAudioBase64.ts');
+  }
 
   // PWA sizes
   const pwaSizes = [72, 96, 128, 144, 152, 192, 384, 512];

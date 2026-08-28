@@ -721,7 +721,7 @@ export default function WeChatMiniSimulator({ currentDriverPhone, onTriggerToast
     <!-- 附加天气配置 -->
     <view class="options-area" bindtap="toggleRainWeather">
       <view class="option-icon-box {{isRainy ? 'option-active' : ''}}">
-        <image class="option-icon" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC3qlNF0-oQybxBb1aQi-uvXG07BUVSaWUfq28B1oS1gSdmIz_y0YC_Ezk0KQaDPr3lOGD784PjZHxxuys8P9Jf7ThNw7FzrBk5G6Ge10g1IrI7LpccZthnv7uPqaiXEjaWnWUH1lWl_WMJWireu-aOsDmBE63MOysfacCGZ6tumaRxPutEyeIpD105lprJpfXLBMEaiTPuB16uHb-UwZpIPwz6AYQohkR-eTk72PyIBlch6y0a5VMCZQ" mode="aspectFill" />
+        <image class="option-icon" src="/wechat_card_banner.jpg" mode="aspectFill" />
         <text class="option-label">雨雪天气 {{isRainy ? '(加急)' : ''}}</text>
       </view>
     </view>
@@ -742,7 +742,7 @@ export default function WeChatMiniSimulator({ currentDriverPhone, onTriggerToast
         <text class="recruit-desc">海量订单·多劳多得</text>
         <button class="join-btn">期待你的加入!</button>
       </view>
-      <image class="recruit-img" src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1UaTuiY0V-FR2lFLrMoA6sIiC6WqFYGJHxc4IH3p9PZ8dFm0tWKKL0Pyuo235CZglC5ZRy7lTZv3l8_33kiesqKC6fLp7jht-S5aOlkqHtdLygzsERGE_jYSaWAQU-C4sn8j1EAtqLgruvLFAMdJYNrAH4UcgvK9Q0Hek33BX1Nf7Kte0vTX2fEROJPD1xjMSehRTRRNWnbUlTpUije4iSLMUAm0Dtc8wqZcMvr2A1E5HIl91MsxS5Q" mode="aspectFill" />
+      <image class="recruit-img" src="/ready_driver.jpg" mode="aspectFill" />
     </view>
   </view>
 </scroll-view>`;

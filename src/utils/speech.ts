@@ -12,41 +12,42 @@
 import { Capacitor } from '@capacitor/core';
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { getBaseApiUrl } from '../lib/dbProxy';
+import { BUNDLED_AUDIO_BASE64 } from '../assets/audio/localAudioBase64';
 
 // Silent 0.1s MP3 base64 to unlock mobile device audio channels
 const SILENT_MP3 = 'data:audio/mp3;base64,SUQ3BAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OEAAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABCAAdER0eHyAnLC8yNDc5Ozw/QEJERUZISkxNT1FSUlVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/4xAEOAAAAAAAAAAAAAABOT3RlAAAAAEFydGlzdAAAAGxpc3RlbAAnREVDUwAAAENyZWF0ZWQgd2l0aCBMQU1FIDMuMTAwAABMSU1FAAAAMy4xMDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//OEAAAAA3wAAAAAAAAAAA0AANAAA0AAB4AAAAAAAAA0AANAAAE//OEAAAAAAAAAAAAAAAANAAA0AANAAAeAAAAAAAAANAAA0AAA==';
 
 // Local packaged MP3 audio asset files for instant offline voice broadcast (Bypasses System TTS)
 const LOCAL_AUDIO_MAP: Record<string, string> = {
-  '您已上线': '/audio/online.mp3',
-  '您已下线': '/audio/offline.mp3',
-  '接单成功，请前往接驾地点': '/audio/accept_order.mp3',
-  '接单成功': '/audio/accept_order.mp3',
-  '已开始代驾计费，祝您行程愉快！': '/audio/voice_on.mp3',
-  '已开始代驾计费，祝您行程愉快': '/audio/voice_on.mp3',
-  '已开始计费，祝您行程愉快！': '/audio/voice_on.mp3',
-  '已开始代驾计费': '/audio/voice_on.mp3',
-  '已开始计费': '/audio/voice_on.mp3',
-  '订单已创建，开始计费': '/audio/voice_on.mp3',
-  '已创建订单，开始计费': '/audio/voice_on.mp3',
-  '已到达目的地，行程结束': '/audio/end_trip.mp3',
-  '已到达目的地，请与乘客核对账单': '/audio/end_trip.mp3',
-  '已到达目的地': '/audio/end_trip.mp3',
-  '选单大厅有新订单了': '/audio/hall_new_order.mp3',
-  '乘客已授权，扫码开单成功！': '/audio/scan_success.mp3',
-  '乘客已授权，扫码开单成功': '/audio/scan_success.mp3',
-  '您有新的消息，注意查收！': '/audio/new_msg.mp3',
-  '您有新的消息，注意查收': '/audio/new_msg.mp3',
-  '已开启开单语音播报': '/audio/voice_on.mp3',
-  '语音播报测试正常！': '/audio/voice_test.mp3',
-  '语音播报测试正常': '/audio/voice_test.mp3',
-  '语音播报测试正常！黑湾代驾为您保驾护航。': '/audio/voice_test.mp3',
-  '您有新的报单转单系统派单，请及时处理！': '/audio/report_transfer.mp3',
-  '您有新的报单转单系统派单': '/audio/report_transfer.mp3',
-  '您有新的系统派单，请及时处理！': '/audio/system_dispatch.mp3',
-  '您有新的系统派单': '/audio/system_dispatch.mp3',
-  '注意！收到新的代驾派单，请及时查看并确认接单！': '/audio/background_alert.mp3',
-  '注意！收到新的代驾派单': '/audio/background_alert.mp3',
+  '您已上线': 'online.mp3',
+  '您已下线': 'offline.mp3',
+  '接单成功，请前往接驾地点': 'accept_order.mp3',
+  '接单成功': 'accept_order.mp3',
+  '已开始代驾计费，祝您行程愉快！': 'voice_on.mp3',
+  '已开始代驾计费，祝您行程愉快': 'voice_on.mp3',
+  '已开始计费，祝您行程愉快！': 'voice_on.mp3',
+  '已开始代驾计费': 'voice_on.mp3',
+  '已开始计费': 'voice_on.mp3',
+  '订单已创建，开始计费': 'voice_on.mp3',
+  '已创建订单，开始计费': 'voice_on.mp3',
+  '已到达目的地，行程结束': 'end_trip.mp3',
+  '已到达目的地，请与乘客核对账单': 'end_trip.mp3',
+  '已到达目的地': 'end_trip.mp3',
+  '选单大厅有新订单了': 'hall_new_order.mp3',
+  '乘客已授权，扫码开单成功！': 'scan_success.mp3',
+  '乘客已授权，扫码开单成功': 'scan_success.mp3',
+  '您有新的消息，注意查收！': 'new_msg.mp3',
+  '您有新的消息，注意查收': 'new_msg.mp3',
+  '已开启开单语音播报': 'voice_on.mp3',
+  '语音播报测试正常！': 'voice_test.mp3',
+  '语音播报测试正常': 'voice_test.mp3',
+  '语音播报测试正常！黑湾代驾为您保驾护航。': 'voice_test.mp3',
+  '您有新的报单转单系统派单，请及时处理！': 'report_transfer.mp3',
+  '您有新的报单转单系统派单': 'report_transfer.mp3',
+  '您有新的系统派单，请及时处理！': 'system_dispatch.mp3',
+  '您有新的系统派单': 'system_dispatch.mp3',
+  '注意！收到新的代驾派单，请及时查看并确认接单！': 'background_alert.mp3',
+  '注意！收到新的代驾派单': 'background_alert.mp3',
 };
 
 function normalizeTextKey(text: string): string {
@@ -64,7 +65,42 @@ function getLocalAudioPath(text: string): string | null {
       return path;
     }
   }
+
+  // Keyword fuzzy matching for dynamic voice phrases when offline or on Android emulator
+  if (clean.includes('报单转单')) return 'report_transfer.mp3';
+  if (clean.includes('系统派单')) return 'system_dispatch.mp3';
+  if (clean.includes('新订单') || clean.includes('代驾派单') || clean.includes('收到新订单')) return 'background_alert.mp3';
+  if (clean.includes('上线')) return 'online.mp3';
+  if (clean.includes('下线')) return 'offline.mp3';
+  if (clean.includes('接单')) return 'accept_order.mp3';
+  if (clean.includes('计费') || clean.includes('开单')) return 'voice_on.mp3';
+  if (clean.includes('目的地') || clean.includes('结束') || clean.includes('到达')) return 'end_trip.mp3';
+  if (clean.includes('扫码') || clean.includes('授权')) return 'scan_success.mp3';
+  if (clean.includes('消息')) return 'new_msg.mp3';
+  if (clean.includes('测试')) return 'voice_test.mp3';
+
   return null;
+}
+
+/**
+ * Convert Base64 data URL string to binary ArrayBuffer in memory
+ */
+function base64DataUrlToArrayBuffer(dataUrl: string): ArrayBuffer | null {
+  try {
+    const base64Index = dataUrl.indexOf(';base64,');
+    if (base64Index === -1) return null;
+    const base64Str = dataUrl.substring(base64Index + 8);
+    const binaryString = window.atob(base64Str);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (e) {
+    console.warn('[AudioEngine] Base64 array buffer conversion error:', e);
+    return null;
+  }
 }
 
 /**
@@ -72,8 +108,45 @@ function getLocalAudioPath(text: string): string | null {
  */
 async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<boolean> {
   stopSpeaking();
-  
-  // Try Web Audio API decode arrayBuffer from local asset
+
+  const fileName = audioPath.split('/').pop() || audioPath;
+  const bundledBase64 = BUNDLED_AUDIO_BASE64[fileName] || BUNDLED_AUDIO_BASE64[audioPath];
+
+  // LEVEL 0: High-Speed Memory Base64 Playback (100% Offline, ZERO fetch, ZERO CORS/file:// error)
+  if (bundledBase64) {
+    // 1. Try Web Audio API decode from ArrayBuffer first
+    try {
+      const ctx = getAudioContext();
+      if (ctx) {
+        if (ctx.state === 'suspended') {
+          await ctx.resume().catch(() => {});
+        }
+        const arrayBuffer = base64DataUrlToArrayBuffer(bundledBase64);
+        if (arrayBuffer && arrayBuffer.byteLength > 300) {
+          const success = await playAudioBuffer(arrayBuffer, onEnd);
+          if (success) return true;
+        }
+      }
+    } catch (e) {
+      console.warn('[AudioEngine] Memory Base64 Web Audio play failed, falling back to HTML5 Audio:', e);
+    }
+
+    // 2. Fallback to HTML5 Audio element with direct Base64 Data URL
+    return new Promise((resolve) => {
+      playSingleMp3Element(
+        bundledBase64,
+        () => {
+          if (onEnd) onEnd();
+          resolve(true);
+        },
+        () => {
+          resolve(false);
+        }
+      );
+    });
+  }
+
+  // Fallback for non-bundled relative audio file paths
   try {
     const ctx = getAudioContext();
     if (ctx) {

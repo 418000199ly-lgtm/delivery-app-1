@@ -3,6 +3,9 @@ import { ArrowLeft, MapPin, Phone, Info, CheckCircle2 } from 'lucide-react';
 import { db, doc, setDoc, getDocs, collection, getBaseApiUrl } from '../lib/dbProxy';
 import { geocodeAddress, calculateHaversineDistanceKm, formatDistance, DEFAULT_YINCHUAN_COORDS, isValidCoords } from '../utils/geocoding';
 import { speakText } from '../utils/speech';
+import readyDriverImg from '../assets/images/ready_driver.jpg';
+import valetCarBannerImg from '../assets/images/valet_car_banner.jpg';
+import { READY_DRIVER_BASE64, VALET_CAR_BANNER_BASE64 } from '../assets/images/driverImageConstants';
 
 interface ReportTransferOrderModalProps {
   isOpen: boolean;
@@ -331,13 +334,19 @@ export default function ReportTransferOrderModal({
         
         {/* Top Content Group: Full Driver Illustration */}
         <div className="flex flex-col items-center text-center shrink-0">
-          <div className="w-full h-[180px] sm:h-[200px] rounded-2xl overflow-hidden mb-3 flex items-center justify-center bg-gradient-to-b from-[#f3f3f3] to-[#f9f9f9] border border-[#e2e2e2] shadow-sm">
+          <div className="w-full h-[180px] sm:h-[200px] rounded-2xl overflow-hidden mb-3 flex items-center justify-center bg-gradient-to-b from-[#f3f3f3] to-[#f9f9f9] border border-[#e2e2e2] shadow-sm relative">
             <img 
               className="w-full h-full object-cover object-top" 
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuBVW-SPu0Hka2ulxdNTpXegg7i0k4TtLpLI336RtyCWMHauFWLFE2Z8kUUZJ11yZTBTftYHLo2sfg1ksCdtFR0lPbBz9eOyQ375MhZRC2vTch6ve3z_eytZik2K0wm00B4kh93uyMW8sxKhSHtJgkyFgYL1sa4wlYlDLMemHcIUX15yvf3WCgeLPHYHEQQ2QgVEWDfKJeY5mP6V2WLU2f3WBZc-ktnLW6AV5jLDaS3BMxaGX6pkUVs5zQ" 
+              src={READY_DRIVER_BASE64 || readyDriverImg || VALET_CAR_BANNER_BASE64 || valetCarBannerImg || '/ready_driver.jpg'} 
               alt="报单转单代叫司机"
+              loading="eager"
               onError={(e) => {
-                (e.target as HTMLElement).style.display = 'none';
+                const target = e.currentTarget;
+                if (valetCarBannerImg && target.src !== valetCarBannerImg) {
+                  target.src = valetCarBannerImg;
+                } else if (!target.src.endsWith('ready_driver.jpg')) {
+                  target.src = '/ready_driver.jpg';
+                }
               }}
             />
           </div>

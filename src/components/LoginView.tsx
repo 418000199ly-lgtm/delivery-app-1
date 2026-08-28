@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getBaseApiUrl } from '../lib/dbProxy';
-import { HWDJ_LOGO_DATA_URL } from '../assets/hwdjLogoBase64';
+import { HWDJ_LOGO_DATA_URL, HWDJ_LOGO_BASE64 } from '../assets/hwdjLogoBase64';
 import { 
   Smartphone, 
   ShieldCheck, 
@@ -195,16 +195,20 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
           
           {/* Brand Area with hwdjtb logo */}
           <div className="flex flex-col items-center justify-center pt-3 pb-1 shrink-0">
-            <div className="w-28 h-28 rounded-2xl overflow-hidden shadow-2xl border border-slate-800/80 transition-all duration-300 hover:scale-105 bg-slate-900 flex items-center justify-center">
+            <div className="w-28 h-28 rounded-2xl overflow-hidden shadow-2xl border border-slate-800/80 transition-all duration-300 hover:scale-105 bg-slate-900 flex items-center justify-center relative">
               <img 
-                src={HWDJ_LOGO_DATA_URL} 
+                src={HWDJ_LOGO_BASE64 || HWDJ_LOGO_DATA_URL || '/hwdjtb.png'} 
                 alt="黑湾代驾" 
                 className="w-full h-full object-cover rounded-2xl"
                 loading="eager"
                 decoding="sync"
                 onError={(e) => {
                   const target = e.currentTarget;
-                  if (!target.src.endsWith('hwdjtb.png')) {
+                  if (HWDJ_LOGO_BASE64 && target.src !== HWDJ_LOGO_BASE64) {
+                    target.src = HWDJ_LOGO_BASE64;
+                  } else if (HWDJ_LOGO_DATA_URL && target.src !== HWDJ_LOGO_DATA_URL) {
+                    target.src = HWDJ_LOGO_DATA_URL;
+                  } else if (!target.src.endsWith('hwdjtb.png')) {
                     target.src = './hwdjtb.png';
                   }
                 }}
@@ -315,7 +319,7 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                 </>
               ) : (
                 <>
-                  <span>立即安全登录进入系统 ➔</span>
+                  <span>点击注册/登录</span>
                 </>
               )}
             </button>
