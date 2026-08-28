@@ -1,4 +1,4 @@
-name: 🚀 黑湾代驾MAX 手机司机端构建 (Android APK & iOS IPA)
+name: 🚀 黑湾代驾MAX 手机司机端双端构建 (Android APK & iOS IPA) # Trigger: 2026-08-28
 
 on:
   push:
