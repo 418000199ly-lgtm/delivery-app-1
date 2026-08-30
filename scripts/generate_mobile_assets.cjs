@@ -285,6 +285,7 @@ export const BUNDLED_AUDIO_BASE64: Record<string, string> = ${JSON.stringify(aud
   }
 
   console.log('✨ All mobile app icon and splash assets generated & verified directly from hwdjtb.png!');
+  process.exit(0);
 }
 
 main().catch(err => {
