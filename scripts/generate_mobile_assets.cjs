@@ -163,11 +163,14 @@ async function main() {
   const audioOutDir = 'src/assets/audio';
   if (!fs.existsSync(audioOutDir)) fs.mkdirSync(audioOutDir, { recursive: true });
 
+  fs.writeFileSync(path.join(audioOutDir, 'audioData.json'), JSON.stringify(audioMap, null, 2));
+
   const audioContent = `// Auto-generated Base64 WAV voice broadcast data for 100% offline Android APK & iOS
-export const BUNDLED_AUDIO_BASE64: Record<string, string> = ${JSON.stringify(audioMap, null, 2)};
+import audioData from './audioData.json';
+export const BUNDLED_AUDIO_BASE64: Record<string, string> = audioData;
 `;
   fs.writeFileSync(path.join(audioOutDir, 'localAudioBase64.ts'), audioContent);
-  console.log('✨ Bundled', Object.keys(audioConfigs).length, 'clean offline voice audio assets into src/assets/audio/localAudioBase64.ts');
+  console.log('✨ Bundled', Object.keys(audioConfigs).length, 'clean offline voice audio assets into audioData.json & localAudioBase64.ts');
 
   // PWA sizes
   const pwaSizes = [72, 96, 128, 144, 152, 192, 384, 512];
