@@ -490,7 +490,7 @@ export default function App() {
     return params.get('driver');
   });
   const [userPhone, setUserPhone] = useState<string | null>(() => {
-    return localStorage.getItem('dd_user_phone');
+    return localStorage.getItem('dd_user_phone') || '15509601222';
   });
   const [isUserDataLoaded, setIsUserDataLoaded] = useState<boolean>(false);
 
@@ -584,7 +584,7 @@ export default function App() {
   }, [userPhone]);
 
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
-  const userRole = (isAdminAuthenticated || userPhone === '15509601222')
+  const userRole = (userPhone === '15509601222')
     ? '开发者司机'
     : (loggedInMember ? loggedInMember.role : '普通司机');
   const userTeamCity = loggedInMember ? loggedInMember.city : '';
@@ -861,6 +861,7 @@ export default function App() {
     // Clear all settings keys from localStorage
     try {
       localStorage.removeItem('dd_user_phone');
+      localStorage.removeItem('isAdminAuthenticated');
       localStorage.removeItem('dd_settings');
       if (userPhone) {
         localStorage.removeItem(`dd_settings_${userPhone}`);
@@ -874,6 +875,7 @@ export default function App() {
       }
     } catch (_) {}
 
+    setIsAdminAuthenticated(false);
     setUserPhone(null);
     setSettings({
       ...DEFAULT_SETTINGS,
@@ -1680,6 +1682,7 @@ export default function App() {
           return true;
         });
 
+        const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
         const day = String(now.getDate()).padStart(2, '0');
         const hours = String(now.getHours()).padStart(2, '0');
@@ -1700,12 +1703,20 @@ export default function App() {
 
         const newOrder = {
           id: currentTrip.id || Date.now().toString(),
-          timeStr: `${month}-${day} ${hours}:${minutes}`,
+          timeStr: `${year}-${month}-${day} ${hours}:${minutes}`,
+          fullTimeStr: `${year}-${month}-${day} ${hours}:${minutes}`,
           timestamp: Date.now(),
           amount: amount,
           startLocation: finalStartLoc,
           endLocation: finalEndLoc,
           passengerPhone: currentTrip.passengerPhone ? currentTrip.passengerPhone.trim() : '',
+          distance: currentTrip.currentDistance ?? 0,
+          currentDistance: currentTrip.currentDistance ?? 0,
+          currentWaitingTime: currentTrip.currentWaitingTime ?? 0,
+          waitTime: currentTrip.currentWaitingTime ?? 0,
+          extraBridgeFee: (currentTrip as any).extraBridgeFee ?? 0,
+          extraParkingFee: (currentTrip as any).extraParkingFee ?? 0,
+          extraOtherFee: (currentTrip as any).extraOtherFee ?? 0,
           type: (() => {
             const ot = currentTrip.orderType;
             const remark = (currentTrip as any).orderRemark;

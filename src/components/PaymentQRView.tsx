@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { TripState, ChauffeurSettings } from '../types';
 import DriverIllustration from './DriverIllustration';
 import MerchantValetPaymentView from './MerchantValetPaymentView';
+import OrderDetailModal from './OrderDetailModal';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
 
@@ -79,6 +80,7 @@ export default function PaymentQRView({
   const [alipayClean, setAlipayClean] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(true);
   const [showValetFeePayment, setShowValetFeePayment] = useState<boolean>(false);
+  const [showOrderDetailModal, setShowOrderDetailModal] = useState<boolean>(false);
   const [currentTripState, setCurrentTripState] = useState<TripState>(trip);
 
   useEffect(() => {
@@ -170,23 +172,13 @@ export default function PaymentQRView({
     <div className="flex-1 flex flex-col justify-between h-full bg-[#F8FAFC] text-[#333333] select-none font-sans overflow-hidden">
       {/* HEADER */}
       <header className="bg-[#3B4257] text-white px-4 header-safe-pt pb-2.5 flex items-center justify-between sticky top-0 z-50 shrink-0">
-        <div className="flex items-center">
+        <div className="w-16"></div>
+        <h1 className="text-base font-medium flex-1 text-center">确认收费方式</h1>
+        <div className="text-xs font-light opacity-90 w-16 text-right">
           <button 
             type="button"
-            onClick={onNavigateBack}
-            aria-label="返回" 
-            className="p-1 active:opacity-75 transition-opacity"
-          >
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path d="M15 19l-7-7 7-7" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
-            </svg>
-          </button>
-        </div>
-        <h1 className="text-base font-medium">确认收费方式</h1>
-        <div className="text-xs font-light opacity-90">
-          <button 
-            onClick={onNavigateBack}
-            className="active:opacity-70 transition-opacity"
+            onClick={() => setShowOrderDetailModal(true)}
+            className="active:opacity-70 transition-opacity cursor-pointer"
           >
             订单详情
           </button>
@@ -319,6 +311,15 @@ export default function PaymentQRView({
           我已收款，返回首页
         </button>
       </footer>
+
+      {/* 订单详情 Modal */}
+      {showOrderDetailModal && (
+        <OrderDetailModal
+          order={currentTripState}
+          billingRules={settings?.billingRules}
+          onClose={() => setShowOrderDetailModal(false)}
+        />
+      )}
     </div>
   );
 }

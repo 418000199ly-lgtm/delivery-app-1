@@ -766,6 +766,112 @@ export default function MobileDispatchValetOrder({
     } catch (_) {}
   }, [applicants]);
 
+  // Realtime synchronization of squad applications across all devices via Baota Panel Cloud Database HTTP REST API
+  useEffect(() => {
+    let unsubApps = () => {};
+
+    const fetchAppsHttp = async () => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        const map = new Map<string, any>();
+
+        const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store' });
+        if (resApps.ok) {
+          const jsonApps = await resApps.json();
+          let rawApps: any[] = [];
+          if (Array.isArray(jsonApps)) {
+            rawApps = jsonApps.map((item: any) => (item?.data ? { id: item.id, phone: item.id, ...item.data } : item)).filter(Boolean);
+          } else if (jsonApps && Array.isArray(jsonApps.docs)) {
+            rawApps = jsonApps.docs.map((d: any) => (d ? { id: d.id, phone: d.id, ...(d.data || {}) } : null)).filter(Boolean);
+          }
+          rawApps.forEach((item: any) => {
+            if (item && (item.phone || item.id)) {
+              const key = item.phone || item.id;
+              map.set(key, item);
+            }
+          });
+        }
+
+        const resMembers = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+        if (resMembers.ok) {
+          const jsonMembers = await resMembers.json();
+          let rawMembers: any[] = [];
+          if (Array.isArray(jsonMembers)) {
+            rawMembers = jsonMembers.map((item: any) => (item?.data ? { id: item.id, phone: item.id, ...item.data } : item)).filter(Boolean);
+          } else if (jsonMembers && Array.isArray(jsonMembers.docs)) {
+            rawMembers = jsonMembers.docs.map((d: any) => (d ? { id: d.id, phone: d.id, ...(d.data || {}) } : null)).filter(Boolean);
+          }
+          rawMembers.forEach((item: any) => {
+            if (item && (item.phone || item.id) && item.status === '待审核') {
+              const key = item.phone || item.id;
+              if (!map.has(key)) {
+                map.set(key, {
+                  id: item.id || `app-${key}`,
+                  name: item.name || `司机${key.slice(-4)}`,
+                  phone: key,
+                  status: '待审核',
+                  note: item.note || '申请加入小队！',
+                  createdAt: item.createdAt || new Date().toLocaleString()
+                });
+              }
+            }
+          });
+        }
+
+        const mergedList = Array.from(map.values()).filter((a: any) => a && (a.phone || a.id) && !['app-1', 'app-2', 'app-3'].includes(a.id));
+        if (mergedList.length > 0) {
+          setApplicants(prev => {
+            const combineMap = new Map<string, any>();
+            (prev || []).forEach(item => {
+              if (item && (item.phone || item.id)) {
+                combineMap.set(item.phone || item.id, item);
+              }
+            });
+            mergedList.forEach(item => {
+              const key = item.phone || item.id;
+              combineMap.set(key, { ...(combineMap.get(key) || {}), ...item });
+            });
+            return Array.from(combineMap.values()).filter((a: any) => !['app-1', 'app-2', 'app-3'].includes(a.id));
+          });
+        }
+      } catch (_) {}
+    };
+
+    fetchAppsHttp();
+    const appHttpInterval = setInterval(fetchAppsHttp, 3000);
+
+    if (db) {
+      unsubApps = onSnapshot(collection(db, 'squad_applications'), (snapshot) => {
+        const list: any[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({
+            id: docSnap.id,
+            phone: docSnap.id,
+            ...docSnap.data()
+          });
+        });
+        if (list.length > 0) {
+          setApplicants(prev => {
+            const map = new Map<string, any>();
+            prev.forEach(item => map.set(item.phone || item.id, item));
+            list.forEach(item => {
+              const key = item.phone || item.id;
+              if (key) {
+                map.set(key, { ...map.get(key), ...item });
+              }
+            });
+            return Array.from(map.values()).filter((a: any) => !['app-1', 'app-2', 'app-3'].includes(a.id));
+          });
+        }
+      });
+    }
+
+    return () => {
+      clearInterval(appHttpInterval);
+      unsubApps();
+    };
+  }, []);
+
   // Real-time synchronization of team name with Firestore city_configs & team_config
   useEffect(() => {
     const updateTeamNameFromConfigs = () => {
@@ -889,26 +995,69 @@ export default function MobileDispatchValetOrder({
       ];
     });
 
-    // 3. Save to Firestore
+    // 3. Save to Firestore & HTTP API Backend
     if (targetPhone) {
-      setDoc(doc(db, 'squad_members', targetPhone), {
-        name,
-        phone: targetPhone,
-        role: '普通司机',
-        status: '已通过',
-        approvedBy: currentAdminName,
-        approvedRole: currentAdminRole,
-        note: applicantObj?.note || '',
-        lastUpdatedTime: new Date().toLocaleString()
-      }, { merge: true }).catch(() => {});
+      if (db) {
+        setDoc(doc(db, 'squad_applications', targetPhone), {
+          status: '已通过',
+          approvedBy: currentAdminName,
+          approvedRole: currentAdminRole,
+          approvalTime: new Date().toLocaleString()
+        }, { merge: true }).catch(() => {});
 
-      setDoc(doc(db, 'driver_users', targetPhone), {
-        driverName: name,
-        userRole: '普通司机',
-        role: '普通司机',
-        status: '已通过',
-        lastUpdatedTime: new Date().toLocaleString()
-      }, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'squad_members', targetPhone), {
+          name,
+          phone: targetPhone,
+          role: '普通司机',
+          status: '已通过',
+          approvedBy: currentAdminName,
+          approvedRole: currentAdminRole,
+          note: applicantObj?.note || '',
+          lastUpdatedTime: new Date().toLocaleString()
+        }, { merge: true }).catch(() => {});
+
+        setDoc(doc(db, 'driver_users', targetPhone), {
+          driverName: name,
+          userRole: '普通司机',
+          role: '普通司机',
+          status: '已通过',
+          lastUpdatedTime: new Date().toLocaleString()
+        }, { merge: true }).catch(() => {});
+      }
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection: 'squad_applications',
+          docId: targetPhone,
+          data: {
+            status: '已通过',
+            approvedBy: currentAdminName,
+            approvedRole: currentAdminRole,
+            approvalTime: new Date().toLocaleString()
+          }
+        })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection: 'squad_members',
+          docId: targetPhone,
+          data: {
+            name,
+            phone: targetPhone,
+            role: '普通司机',
+            status: '已通过',
+            approvedBy: currentAdminName,
+            approvedRole: currentAdminRole,
+            note: applicantObj?.note || '',
+            lastUpdatedTime: new Date().toLocaleString()
+          }
+        })
+      }).catch(() => {});
     }
 
     onShowToast(`🎉 【${currentAdminName} (${currentAdminRole})】已成功通过【${name}】的加入申请！`);
@@ -965,17 +1114,44 @@ export default function MobileDispatchValetOrder({
       ];
     });
 
-    // 3. Save to Firestore
+    // 3. Save to Firestore & HTTP API
     if (targetPhone) {
-      setDoc(doc(db, 'squad_members', targetPhone), {
-        name,
-        phone: targetPhone,
-        status: '已拒绝',
-        approvedBy: currentAdminName,
-        approvedRole: currentAdminRole,
-        rejectionReasons: applicantObj?.selectedReasons || [],
-        lastUpdatedTime: new Date().toLocaleString()
-      }, { merge: true }).catch(() => {});
+      if (db) {
+        setDoc(doc(db, 'squad_applications', targetPhone), {
+          status: '已拒绝',
+          approvedBy: currentAdminName,
+          approvedRole: currentAdminRole,
+          rejectionReasons: applicantObj?.selectedReasons || [],
+          approvalTime: new Date().toLocaleString()
+        }, { merge: true }).catch(() => {});
+
+        setDoc(doc(db, 'squad_members', targetPhone), {
+          name,
+          phone: targetPhone,
+          status: '已拒绝',
+          approvedBy: currentAdminName,
+          approvedRole: currentAdminRole,
+          rejectionReasons: applicantObj?.selectedReasons || [],
+          lastUpdatedTime: new Date().toLocaleString()
+        }, { merge: true }).catch(() => {});
+      }
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection: 'squad_applications',
+          docId: targetPhone,
+          data: {
+            status: '已拒绝',
+            approvedBy: currentAdminName,
+            approvedRole: currentAdminRole,
+            rejectionReasons: applicantObj?.selectedReasons || [],
+            approvalTime: new Date().toLocaleString()
+          }
+        })
+      }).catch(() => {});
     }
 
     onShowToast(`❌ 【${currentAdminName} (${currentAdminRole})】已拒绝【${name}】的加入申请`);
@@ -1241,7 +1417,7 @@ export default function MobileDispatchValetOrder({
       const saved = localStorage.getItem('dd_merchant_users_v2');
       if (saved) return JSON.parse(saved);
     } catch (_) {}
-    return [{ phone: '15121904440', name: '商户、商家', role: '商户、商家', status: '已通过', approvedBy: '系统自动审批' }];
+    return [];
   });
 
   useEffect(() => {
@@ -3816,20 +3992,22 @@ export default function MobileDispatchValetOrder({
 
             {/* Centered Member Application & Merchant Management Buttons */}
             <div className="flex items-center justify-end gap-1.5 shrink-0 ml-auto">
-              <button 
-                type="button"
-                onClick={() => setShowApplicantApprovalModal(true)}
-                className="relative flex items-center gap-1 px-2.5 py-1 bg-[#ffdbc8] text-[#311300] hover:bg-[#ffbfa3] rounded-full text-xs font-bold shadow-xs active:scale-95 transition-all border border-[#ff7d00]/20 whitespace-nowrap shrink-0"
-                title="成员申请"
-              >
-                <UserPlus className="w-3.5 h-3.5 text-[#984800] shrink-0" />
-                <span className="whitespace-nowrap">成员申请</span>
-                {pendingApplicantCount > 0 && (
-                  <span className="flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#ba1a1a] text-[10px] font-bold text-white leading-none shrink-0">
-                    {pendingApplicantCount}
-                  </span>
-                )}
-              </button>
+              {canReviewApplicants && (
+                <button 
+                  type="button"
+                  onClick={() => setShowApplicantApprovalModal(true)}
+                  className="relative flex items-center gap-1 px-2.5 py-1 bg-[#ffdbc8] text-[#311300] hover:bg-[#ffbfa3] rounded-full text-xs font-bold shadow-xs active:scale-95 transition-all border border-[#ff7d00]/20 whitespace-nowrap shrink-0 cursor-pointer"
+                  title="成员申请"
+                >
+                  <UserPlus className="w-3.5 h-3.5 text-[#984800] shrink-0" />
+                  <span className="whitespace-nowrap">成员申请</span>
+                  {pendingApplicantCount > 0 && (
+                    <span className="flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#ba1a1a] text-[10px] font-bold text-white leading-none shrink-0">
+                      {pendingApplicantCount}
+                    </span>
+                  )}
+                </button>
+              )}
 
               <button 
                 type="button"
@@ -3901,7 +4079,7 @@ export default function MobileDispatchValetOrder({
                         <div className="flex items-center gap-1.5">
                           <span className="text-lg font-bold text-[#1a1c1c]">
                             {(() => {
-                              const isMgmt = isManagementRole || ['15509601222', '15121904440'].includes(activePhone) || ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(userRole);
+                              const isMgmt = isManagementRole || activePhone === '15509601222' || ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(userRole);
                               if (isMgmt) {
                                 return (adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机') ? adminProfile.name : '吴彦祖';
                               }
@@ -4774,8 +4952,8 @@ export default function MobileDispatchValetOrder({
         </div>
       )}
 
-      {/* Applicant Approval Modal (团队审核 - 申请审批) - Removed as requested */}
-      {false && showApplicantApprovalModal && (
+      {/* Applicant Approval Modal (团队审核 - 申请审批) */}
+      {showApplicantApprovalModal && (
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
           {/* TopAppBar */}
           <header className="bg-[#f9f9f9] w-full sticky top-0 z-50 border-b border-[#e2e2e2] flex justify-between items-center px-4 sm:px-5 h-14 shrink-0">
@@ -4811,7 +4989,14 @@ export default function MobileDispatchValetOrder({
               </div>
             </div>
 
-            {applicants.map((applicant) => (
+            {applicants.length === 0 ? (
+              <div className="bg-white rounded-xl border border-[#e2e2e2] p-8 text-center text-[#8b7263]">
+                <UserPlus className="w-10 h-10 mx-auto mb-2 text-[#dfc0af]" />
+                <p className="font-bold text-sm text-[#584235]">暂无待处理的小队申请记录</p>
+                <p className="text-xs text-[#8b7263] mt-1">当有司机提交入队申请后，此处将自动显示并可审核审批</p>
+              </div>
+            ) : (
+              applicants.map((applicant) => (
               <div 
                 key={applicant.id}
                 className="bg-white rounded-xl border border-[#e2e2e2] p-4 flex flex-col gap-3 shadow-xs"
@@ -4926,7 +5111,7 @@ export default function MobileDispatchValetOrder({
                   </div>
                 )}
               </div>
-            ))}
+            )))}
           </main>
         </div>
       )}

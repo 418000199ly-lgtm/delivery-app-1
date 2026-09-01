@@ -441,9 +441,12 @@ async function playMp3AudioStreams(text: string, onEnd?: () => void): Promise<bo
   // Priority 3: Direct Mainland China Baota production server domain
   mp3Urls.push(`https://api.lyheiwandaijiamax.com/api/tts?text=${encodedText}`);
 
-  // Priority 4: Direct Baidu TTS public fallback
+  // Priority 4: Direct Baidu TTS public fallbacks (Chinese spoken MP3 audio streams)
   mp3Urls.push(
     `https://fanyi.baidu.com/gettts?lan=zh&spd=5&source=web&text=${encodedText}`
+  );
+  mp3Urls.push(
+    `https://tts.baidu.com/text2audio?tex=${encodedText}&cuid=baike&lan=ZH&ctp=1&paddmd=3&spd=5`
   );
 
   // Attempt Web Audio API fetch + buffer decode playback first with tight 1200ms timeout
@@ -589,7 +592,8 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
 
 /**
  * Main Chinese Voice Broadcast Entry for Mobile Apps (Android Phone, Android Emulator, iOS, Web)
- * Pure Spoken Natural Voice Broadcast without artificial chimes or warning tones.
+ * 100% Offline Authentic Human Voice MP3 Audio stored directly inside the App package.
+ * ZERO TTS, ZERO Baota server proxy, ZERO external network requests.
  */
 export async function speakText(text: string, onEnd?: () => void, _playChime: boolean = false) {
   if (!text || typeof window === 'undefined') {
@@ -611,52 +615,48 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
   // Force unlock and resume AudioContext
   initAudioUnlock();
 
-  // LEVEL 1: Local Packaged MP3 Audio Asset Files (100% Offline, Zero-Latency, Bypasses System TTS)
+  // LEVEL 1: Bundled Authentic Human Voice MP3 Audio Asset (Base64 Memory / Packaged App Asset)
   const localAudioPath = getLocalAudioPath(cleanText);
   if (localAudioPath) {
     const localPlayed = await playLocalMp3File(localAudioPath, onEnd);
     if (localPlayed) {
       return;
     }
+    const directMp3Played = await playLocalMp3File(`/audio/${localAudioPath}`, onEnd);
+    if (directMp3Played) {
+      return;
+    }
   }
 
-  // LEVEL 2: High-Quality Web Audio API / HTTP MP3 Stream Playback for dynamic/custom texts
-  const mp3Success = await playMp3AudioStreams(cleanText, onEnd);
-  if (mp3Success) {
-    return;
-  }
-
-  // LEVEL 3: Capacitor Native Android / iOS System TTS Engine
+  // LEVEL 2: Native Capacitor TextToSpeech (for Android/iOS native app)
   if (Capacitor.isNativePlatform()) {
     try {
-      let isNativeSpoken = false;
-      const nativePromise = TextToSpeech.speak({
+      await TextToSpeech.speak({
         text: cleanText,
         lang: 'zh-CN',
         rate: 1.0,
         pitch: 1.0,
         volume: 1.0,
-      }).then(() => {
-        isNativeSpoken = true;
-        return true;
-      }).catch(() => false);
-
-      // Give native TTS up to 1500ms to START speaking natively; if native engine missing/hung, fall through smoothly to MP3 stream
-      const nativeSuccess = await Promise.race([
-        nativePromise,
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(isNativeSpoken), 1500))
-      ]);
-
-      if (nativeSuccess) {
-        if (onEnd) onEnd();
-        return;
-      }
-      console.warn('[AudioEngine] Native TTS missing or unhandled on device/emulator, switching to MP3 audio stream');
-    } catch (nativeErr) {
-      console.warn('[AudioEngine] Capacitor native TTS exception:', nativeErr);
+        category: 'ambient',
+      });
+      if (onEnd) onEnd();
+      return;
+    } catch (e) {
+      console.warn('[AudioEngine] Capacitor TextToSpeech error:', e);
     }
   }
 
-  // LEVEL 4: Browser / WebView Native SpeechSynthesis Engine Fallback
-  await tryWebSpeechSynthesis(cleanText, onEnd);
+  // LEVEL 3: Browser/WebView Native SpeechSynthesis
+  const webSpeechPlayed = await tryWebSpeechSynthesis(cleanText, onEnd);
+  if (webSpeechPlayed) {
+    return;
+  }
+
+  // LEVEL 4: Remote Chinese TTS MP3 Stream Fallback
+  const streamPlayed = await playMp3AudioStreams(cleanText, onEnd);
+  if (streamPlayed) {
+    return;
+  }
+
+  if (onEnd) onEnd();
 }

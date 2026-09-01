@@ -12,13 +12,15 @@ interface ReportTransferOrderModalProps {
   onClose: () => void;
   userPhone?: string | null;
   defaultPickup?: string;
+  driverCoords?: { lat: number; lng: number } | null;
 }
 
 export default function ReportTransferOrderModal({
   isOpen,
   onClose,
   userPhone,
-  defaultPickup = '运祥小区'
+  defaultPickup = '运祥小区',
+  driverCoords
 }: ReportTransferOrderModalProps) {
   const currentPickup = defaultPickup || '运祥小区';
   const [passengerPhone, setPassengerPhone] = useState('');
@@ -43,10 +45,26 @@ export default function ReportTransferOrderModal({
     setIsSubmitting(true);
 
     try {
-      // 1. Geocode start location
-      const pickupCoords = geocodeAddress(currentPickup);
-      const pLat = pickupCoords.lat;
-      const pLng = pickupCoords.lng;
+      // 1. Resolve real start location coordinates (using issuing driver's GPS or address)
+      let pLat: number = DEFAULT_YINCHUAN_COORDS.lat;
+      let pLng: number = DEFAULT_YINCHUAN_COORDS.lng;
+
+      const sLat = driverCoords?.lat || (typeof window !== 'undefined' ? Number(localStorage.getItem('dd_bg_driver_coords_lat')) : null);
+      const sLng = driverCoords?.lng || (typeof window !== 'undefined' ? Number(localStorage.getItem('dd_bg_driver_coords_lng')) : null);
+      const hasDriverCoords = sLat && sLng && isValidCoords(Number(sLat), Number(sLng));
+
+      if (currentPickup && currentPickup.trim() && currentPickup !== '运祥小区') {
+        const pickupCoords = geocodeAddress(currentPickup, hasDriverCoords ? { lat: Number(sLat), lng: Number(sLng) } : undefined);
+        pLat = pickupCoords.lat;
+        pLng = pickupCoords.lng;
+      } else if (hasDriverCoords) {
+        pLat = Number(sLat);
+        pLng = Number(sLng);
+      } else {
+        const pickupCoords = geocodeAddress(currentPickup);
+        pLat = pickupCoords.lat;
+        pLng = pickupCoords.lng;
+      }
 
       // 2. Fetch candidate drivers in team/squad (小队内的司机)
       const squadPhones = new Set<string>();
@@ -92,13 +110,12 @@ export default function ReportTransferOrderModal({
           const res = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
           if (res.ok) {
             const json = await res.json();
-            if (json && Array.isArray(json.data)) {
-              json.data.forEach((item: any) => {
-                if (item && item.id) {
-                  driverDocs.push({ phone: item.id, data: item.data || item });
-                }
-              });
-            }
+            const rawList = Array.isArray(json) ? json : (json?.docs || json?.data || []);
+            rawList.forEach((item: any) => {
+              if (item && item.id) {
+                driverDocs.push({ phone: item.id, data: item.data || item });
+              }
+            });
           }
         } catch (_) {}
       }
@@ -203,6 +220,10 @@ export default function ReportTransferOrderModal({
           type: '报单转单',
           passengerLat: pLat,
           passengerLng: pLng,
+          lat: pLat,
+          lng: pLng,
+          startLat: pLat,
+          startLng: pLng,
           approxPrice: '未知',
           scheduledTime: '现在出发',
           needScooter: false,
@@ -262,6 +283,10 @@ export default function ReportTransferOrderModal({
           type: '报单转单',
           passengerLat: pLat,
           passengerLng: pLng,
+          lat: pLat,
+          lng: pLng,
+          startLat: pLat,
+          startLng: pLng,
           approxPrice: '未知',
           scheduledTime: '现在出发',
           needScooter: false,

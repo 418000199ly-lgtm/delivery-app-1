@@ -252,7 +252,7 @@ export default function AdminPanel({
 
   // Active user's team status based on real-time DB data or fallback props
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
-  const activeRole = (isAdminAuthenticated || userPhone === '15509601222')
+  const activeRole = userPhone === '15509601222'
     ? '开发者司机'
     : (loggedInMember ? loggedInMember.role : '普通司机');
   const activeCity = loggedInMember ? loggedInMember.city : '';

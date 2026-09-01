@@ -894,7 +894,7 @@ export default function SettingsView({
                 type="button"
                 onClick={() => {
                   initAudioUnlock();
-                  speakText('语音播报测试正常！');
+                  speakText('语音播报测试正常');
                 }}
                 className="flex items-center space-x-1 text-xs text-blue-600 bg-blue-50 font-bold py-1 px-2.5 rounded-lg border border-blue-100 active:scale-95 transition-all cursor-pointer"
               >
@@ -924,7 +924,7 @@ export default function SettingsView({
           >
             <span className="text-sm font-semibold text-gray-700">账户余额</span>
             <div className="flex items-center space-x-1 text-emerald-600 font-mono font-bold">
-              <span>¥888.00</span>
+              <span>¥0.00</span>
             </div>
           </button>
 

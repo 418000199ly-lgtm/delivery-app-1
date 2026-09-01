@@ -682,22 +682,47 @@ export default function CreateOrderView({
   const [showReportTransferModal, setShowReportTransferModal] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const triggerToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => {
+      setToastMsg(null);
+    }, 3000);
+  };
 
   const isDefaultYinchuanCoords = (coords: { lat: number; lng: number } | null | undefined) => {
     if (!coords) return true;
     return Math.abs(coords.lat - 38.487193) < 0.0001 && Math.abs(coords.lng - 106.230912) < 0.0001;
   };
 
-  // Check if current driver is a team member (只有小队内的司机才显示)
+  // Check if current driver is an approved team member (只有已通过审批的小队司机才显示)
+  const isApprovedSquadMember = (m: any) => {
+    if (!m) return false;
+    const phone = m.phone || m.id || '';
+    if (phone === '15121904440') return false; // Merchant test phone is not a squad driver
+    const role = m.role || m.userRole || '';
+    if (role === '商户、商家' || role.includes('商户') || role.includes('商家')) {
+      return false; // Merchants are not squad drivers
+    }
+    const status = m.status || m.approvalStatus || '';
+    // Management roles count as approved team drivers
+    const mgmtRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者', '小队长', '队员', '普通司机'];
+    if (mgmtRoles.includes(role)) return true;
+    return ['已通过', 'approved', '通过'].includes(status);
+  };
+
   const [isTeamDriver, setIsTeamDriver] = useState<boolean>(() => {
     if (!userPhone) return false;
     if (userPhone === '15509601222') return true;
+    if (userPhone === '15121904440') return false;
     try {
       const saved = localStorage.getItem('dd_squad_members_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.some((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
+          const match = parsed.find((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
+          if (match) return isApprovedSquadMember(match);
         }
       }
     } catch (e) {
@@ -715,6 +740,10 @@ export default function CreateOrderView({
       setIsTeamDriver(true);
       return;
     }
+    if (userPhone === '15121904440') {
+      setIsTeamDriver(false);
+      return;
+    }
 
     const checkLocal = () => {
       try {
@@ -722,21 +751,21 @@ export default function CreateOrderView({
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed)) {
-            return parsed.some((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
+            const match = parsed.find((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
+            if (match) return isApprovedSquadMember(match);
           }
         }
       } catch (e) {}
       return false;
     };
 
-    if (checkLocal()) {
-      setIsTeamDriver(true);
-    }
+    setIsTeamDriver(checkLocal());
 
     if (db) {
       const unsub = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
         if (snap.exists()) {
-          setIsTeamDriver(true);
+          const data = snap.data();
+          setIsTeamDriver(isApprovedSquadMember({ ...data, phone: userPhone }));
         } else {
           setIsTeamDriver(checkLocal());
         }
@@ -1867,6 +1896,13 @@ export default function CreateOrderView({
   return (
     <div className="relative flex-grow flex flex-col justify-between w-full h-full select-none overflow-hidden text-gray-900 bg-gray-100 font-sans">
       
+      {/* Toast Overlay Banner */}
+      {toastMsg && (
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-[99999] bg-gray-900/90 text-white px-5 py-2.5 rounded-full text-xs font-medium shadow-2xl backdrop-blur-md animate-fade-in flex items-center gap-2 border border-white/10 pointer-events-none">
+          <span>{toastMsg}</span>
+        </div>
+      )}
+      
       {/* Location Permission Prompt Dialog */}
       {showPermissionPrompt && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-6 animate-in fade-in duration-200">
@@ -2720,6 +2756,7 @@ export default function CreateOrderView({
           onClose={() => setShowReportTransferModal(false)}
           userPhone={userPhone}
           defaultPickup={startLocation || '运祥小区'}
+          driverCoords={driverCoords}
         />
 
 </div>

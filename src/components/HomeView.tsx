@@ -47,11 +47,15 @@ import {
   Smartphone,
   Info,
   Headset,
-  FileX
+  FileX,
+  Receipt,
+  Route,
+  MoreVertical
 } from 'lucide-react';
-import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive } from '../types';
+import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive, DEFAULT_SLOTS } from '../types';
 import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
+import OrderDetailModal from './OrderDetailModal';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveAndSyncDuplicateNames } from '../utils/nameResolver';
@@ -162,6 +166,40 @@ const filterOrdersWithinSixMonths = (orders: any[]): any[] => {
       return true;
     })
     .map(sanitizeOrderLocations);
+};
+
+export const formatOrderDisplayTime = (order: any): string => {
+  if (!order) return '2026-08-31 16:47';
+  const str = order.timeStr || order.fullTimeStr;
+  const ts = order.timestamp || (order.id && !isNaN(Number(order.id)) && Number(order.id) > 1500000000000 ? Number(order.id) : null);
+
+  if (str && typeof str === 'string') {
+    // If it's already YYYY-MM-DD HH:mm or YYYY/MM/DD HH:mm
+    const fullMatch = str.match(/^(\d{4})[-/](\d{2})[-/](\d{2})\s+(\d{1,2}:\d{2})/);
+    if (fullMatch) {
+      return `${fullMatch[1]}-${fullMatch[2]}-${fullMatch[3]} ${fullMatch[4]}`;
+    }
+    // If it's MM-DD HH:mm
+    const mdMatch = str.match(/^(\d{2})-(\d{2})\s+(\d{1,2}:\d{2})/);
+    if (mdMatch) {
+      const year = ts ? new Date(ts).getFullYear() : (new Date().getFullYear());
+      return `${year}-${mdMatch[1]}-${mdMatch[2]} ${mdMatch[3]}`;
+    }
+  }
+
+  if (ts) {
+    const d = new Date(ts);
+    if (!isNaN(d.getTime())) {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const hours = String(d.getHours()).padStart(2, '0');
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      return `${year}-${month}-${day} ${hours}:${minutes}`;
+    }
+  }
+
+  return str || '2026-08-31 16:47';
 };
 
 const calculateDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
@@ -632,16 +670,43 @@ export default function HomeView({
         ];
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedMembers));
 
-        // 3. 兼容写入 Firestore (在非国内环境或配置了DB时同步，报错静默容错)
+        // 3. 写入 宝塔面板 HTTP REST API 后端
+        const appPayload = {
+          id: `app-${Date.now()}`,
+          name: applyName.trim(),
+          phone: currentPhone,
+          status: '待审核',
+          note: noteText,
+          city: effectiveCity || '银川市',
+          createdAt: new Date().toLocaleString(),
+          timestamp: Date.now()
+        };
+        const memberPayload = {
+          name: applyName.trim(),
+          phone: currentPhone,
+          role: '普通司机',
+          status: '待审核',
+          note: noteText,
+          city: effectiveCity || '银川市',
+          lastUpdatedTime: new Date().toLocaleString()
+        };
+
         if (db) {
-          setDoc(doc(db, 'squad_members', currentPhone), {
-            name: applyName.trim(),
-            phone: currentPhone,
-            status: '待审核',
-            note: noteText,
-            lastUpdatedTime: new Date().toLocaleString()
-          }, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'squad_applications', currentPhone), appPayload, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'squad_members', currentPhone), memberPayload, { merge: true }).catch(() => {});
         }
+
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
+        }).catch(() => {});
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'squad_members', docId: currentPhone, data: memberPayload })
+        }).catch(() => {});
       } catch (_) {}
 
       setIsSubmittingApply(false);
@@ -1306,6 +1371,8 @@ export default function HomeView({
   }, [showOrderHistory, userPhone]);
 
   const [swipedOrderId, setSwipedOrderId] = useState<string | null>(null);
+  const [selectedDetailOrder, setSelectedDetailOrder] = useState<any | null>(null);
+  const [showDeleteOrderModal, setShowDeleteOrderModal] = useState(false);
 
   // Click on blank space should close any swiped order
   useEffect(() => {
@@ -1324,20 +1391,43 @@ export default function HomeView({
     };
   }, [swipedOrderId]);
 
-  const handleDeleteOrder = (orderId: string) => {
+  const handleDeleteOrder = (target: any) => {
     try {
-      const updated = driverOrders.filter(o => o.id !== orderId);
+      if (!target) return;
+      const targetId = typeof target === 'object' ? (target.id || target.orderId) : target;
+      const targetObj = typeof target === 'object' ? target : null;
+
+      const updated = driverOrders.filter(o => {
+        if (!o) return false;
+        if (targetId && (o.id === targetId || o.orderId === targetId || String(o.id) === String(targetId))) {
+          return false;
+        }
+        if (targetObj) {
+          if (targetObj.timestamp && o.timestamp === targetObj.timestamp) return false;
+          if (targetObj.createdTime && o.createdTime === targetObj.createdTime) return false;
+          if (targetObj.timeStr && o.timeStr === targetObj.timeStr && String(o.amount) === String(targetObj.amount)) return false;
+        }
+        return true;
+      });
+
       setDriverOrders(updated);
       const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
       localStorage.setItem(ordersKey, JSON.stringify(updated));
-      if (swipedOrderId === orderId) {
+      if (userPhone) {
+        localStorage.setItem('dd_driver_orders', JSON.stringify(updated));
+      }
+
+      if (swipedOrderId && (swipedOrderId === targetId || typeof targetId === 'string')) {
         setSwipedOrderId(null);
       }
+
       // Decrease both monthly orders and total orders (represented by stats.myPoints) by 1
       const nextPoints = Math.max(0, (stats.myPoints || 0) - 1);
       onUpdateStats({
-        myPoints: nextPoints
+        myPoints: nextPoints,
+        todayOrders: Math.max(0, (stats.todayOrders || 0) - 1)
       });
+      triggerToast('订单已成功删除');
     } catch (e) {
       console.error('Failed to delete order:', e);
     }
@@ -2608,6 +2698,43 @@ export default function HomeView({
                 });
                 return;
               }
+
+              // 权限校验：
+              // 开发者司机、城市老板司机、城市管理司机、城市派单员司机 及 管理团队人员 可点击打开【商户代叫派单系统】
+              // 小队内普通司机 以及 非小队司机 点击【商户代叫】按钮后，提示：管理权限不足
+              const currentPhone = (userPhone || (settings as any)?.phone || '').trim();
+              const currentRole = userRole || (settings as any)?.role || '';
+
+              const squadMemberObj = (squadMembers || []).find((m: any) => m && m.phone === currentPhone);
+              const effectiveRole = String(squadMemberObj?.role || currentRole || '');
+
+              const isSuperDev = currentPhone === '15509601222';
+              const allowedRoles = [
+                '开发者司机',
+                '开发者',
+                '总指挥官',
+                '城市老板司机',
+                '城市老板',
+                '城市管理司机',
+                '城市管理',
+                '城市派单员司机',
+                '城市派单员',
+                '管理团队',
+                '管理员',
+                '队长'
+              ];
+
+              const canAccess = isSuperDev || allowedRoles.some(r => effectiveRole.includes(r));
+
+              if (!canAccess) {
+                setLocalAlert({
+                  title: '提示',
+                  message: '管理权限不足',
+                  type: 'warning'
+                });
+                return;
+              }
+
               setShowMerchantDispatchModal(true);
             }}
             className="flex flex-col items-center justify-center relative transition-all duration-200 group"
@@ -2690,8 +2817,8 @@ export default function HomeView({
               return (
                 <div className="flex-1 flex flex-col items-center justify-center text-center p-3 text-slate-400">
                   <Bell className="w-7 h-7 text-slate-300 mb-1.5 animate-pulse" />
-                  <p className="text-xs font-bold text-slate-500">选单大厅暂无等待接单的订单</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">商户代叫系统触发后，未派出的订单将在此出现</p>
+                  <p className="text-xs font-bold text-slate-500">选单大厅暂无订单</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">选单大厅自动刷新订单</p>
                 </div>
               );
             }
@@ -4747,140 +4874,113 @@ export default function HomeView({
                 return (
                   <div 
                     key={`order-${order.id || ''}-${idx}`} 
-                    className="relative overflow-hidden rounded-2xl bg-red-600 dark:bg-red-700/80"
+                    onClick={() => setSelectedDetailOrder(order)}
+                    className="bg-white dark:bg-zinc-900 relative rounded-2xl border border-slate-100 dark:border-zinc-800 p-5 shadow-xs hover:border-teal-500/30 select-none cursor-pointer transition-all active:scale-[0.98]"
                   >
-                    {/* Absolute Delete Button behind */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteOrder(order.id);
-                      }}
-                      className="absolute right-0 top-0 bottom-0 w-20 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white flex flex-col items-center justify-center space-y-1 transition-all z-0 delete-btn-container"
-                    >
-                      <Trash2 className="w-4.5 h-4.5 text-white animate-bounce duration-1000" />
-                      <span className="text-[10px] font-black tracking-wider text-white">删除</span>
-                    </button>
+                    {/* Timeline path line (green to orange vertical line) */}
+                    <div className="absolute left-[25px] top-[74px] bottom-[115px] w-[1px] bg-slate-100 dark:bg-zinc-800 z-0 pointer-events-none"></div>
 
-                     {/* Clickable content wrapper */}
-                    <div 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (swipedOrderId === order.id) {
-                          setSwipedOrderId(null);
-                        } else {
-                          setSwipedOrderId(order.id);
-                        }
-                      }}
-                      style={{ 
-                        transform: swipedOrderId === order.id ? 'translateX(-80px)' : 'translateX(0px)'
-                      }}
-                      className="bg-white dark:bg-zinc-900 relative rounded-2xl border border-slate-100 dark:border-zinc-800 p-5 shadow-xs hover:border-teal-500/30 z-10 select-none cursor-pointer transition-transform duration-300 ease-out"
-                    >
-                      {/* Timeline path line (green to orange vertical line) */}
-                      <div className="absolute left-[25px] top-[74px] bottom-[115px] w-[1px] bg-slate-100 dark:bg-zinc-800 z-0 pointer-events-none"></div>
-
-                      {/* Header info */}
-                      <div className="flex justify-between items-center mb-3.5 pb-2.5 border-b border-slate-50 dark:border-zinc-800/50 pointer-events-none">
-                        <div className="flex items-center text-slate-400 dark:text-slate-500 text-xs font-semibold">
-                          <Clock className="w-3.5 h-3.5 mr-1.5" />
-                          <span>{order.timeStr}</span>
-                        </div>
-                        <div className="flex items-center text-xs font-extrabold text-slate-500 dark:text-slate-400">
-                          <span>¥{Number(order.amount).toFixed(2)} 已支付</span>
-                          <ChevronRight className="w-3.5 h-3.5 text-slate-300 ml-0.5" />
-                        </div>
+                    {/* Header info */}
+                    <div className="flex justify-between items-center mb-3.5 pb-2.5 border-b border-slate-50 dark:border-zinc-800/50 pointer-events-none">
+                      <div className="flex items-center text-slate-400 dark:text-slate-500 text-xs font-semibold">
+                        <Clock className="w-3.5 h-3.5 mr-1.5" />
+                        <span>{formatOrderDisplayTime(order)}</span>
                       </div>
-
-                      {/* Locations */}
-                      <div className="space-y-4 mb-3 relative z-10 pointer-events-none">
-                        <div className="flex items-start">
-                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 mt-1 mr-3.5 flex-shrink-0 shadow-sm shadow-emerald-400/50"></div>
-                          <span className="font-bold text-slate-700 dark:text-slate-200 text-xs leading-normal">
-                            {order.startLocation}
-                          </span>
-                        </div>
-                        <div className="flex items-start">
-                          <div className="w-2.5 h-2.5 rounded-full bg-orange-400 mt-1 mr-3.5 flex-shrink-0 shadow-sm shadow-orange-400/50"></div>
-                          <span className="font-bold text-slate-700 dark:text-slate-200 text-xs leading-normal">
-                            {order.endLocation}
-                          </span>
-                        </div>
+                      <div className="flex items-center text-xs font-extrabold text-slate-500 dark:text-slate-400">
+                        <span>¥{Number(order.amount).toFixed(2)} 已支付</span>
+                        <ChevronRight className="w-3.5 h-3.5 text-slate-300 ml-0.5" />
                       </div>
+                    </div>
 
-                      {/* Customer Phone & Dial Button Component */}
-                      <div className="my-3 py-2 px-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-100 dark:border-zinc-800 flex items-center justify-between z-20">
-                        <div className="flex items-center text-xs font-bold text-slate-700 dark:text-slate-200 truncate mr-2">
-                          <Phone className="w-3.5 h-3.5 mr-1.5 text-teal-600 dark:text-teal-400 shrink-0" />
-                          <span className="truncate">
-                            电话：{hasPhone ? rawPhone : '客户的手机号码（无）'}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (hasPhone) {
-                              window.location.href = `tel:${rawPhone}`;
-                            } else {
-                              triggerToast('无手机号码');
-                            }
-                          }}
-                          className="flex items-center space-x-1 px-2.5 py-1 bg-teal-600 hover:bg-teal-700 active:scale-95 text-white rounded-lg text-xs font-bold shadow-xs transition-all shrink-0 cursor-pointer pointer-events-auto"
-                        >
-                          <Phone className="w-3 h-3 text-white" />
-                          <span>拨打电话</span>
-                        </button>
-                      </div>
-
-                      {/* Tags */}
-                      <div className="flex items-center justify-between pointer-events-none">
-                        <span className={`inline-block px-2.5 py-0.5 border rounded-md text-[10px] font-extrabold ${
-                          (() => {
-                            const t = (order.type || (order as any).orderType || '').trim();
-                            const r = ((order as any).orderRemark || (order as any).remark || '').trim();
-                            const m = ((order as any).merchantName || (order as any).source || '').trim();
-                            const dest = ((order as any).endLocation || (order as any).destination || '').trim();
-                            const isReportTransfer = (
-                              t === '报单转单' ||
-                              r === '报单转单' ||
-                              m === '报单转单' ||
-                              dest.includes('报单转单') ||
-                              (order as any).isReportTransferOrder ||
-                              (order as any).isReportTransfer ||
-                              (order as any).isReportTransferValet
-                            );
-                            return isReportTransfer
-                              ? 'bg-amber-50/80 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60'
-                              : 'bg-slate-50/50 dark:bg-zinc-900/50 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-zinc-700/80';
-                          })()
-                        }`}>
-                          {(() => {
-                            const t = (order.type || (order as any).orderType || '').trim();
-                            const r = ((order as any).orderRemark || (order as any).remark || '').trim();
-                            const m = ((order as any).merchantName || (order as any).source || '').trim();
-                            const dest = ((order as any).endLocation || (order as any).destination || '').trim();
-                            const isReportTransfer = (
-                              t === '报单转单' ||
-                              r === '报单转单' ||
-                              m === '报单转单' ||
-                              dest.includes('报单转单') ||
-                              (order as any).isReportTransferOrder ||
-                              (order as any).isReportTransfer ||
-                              (order as any).isReportTransferValet
-                            );
-                            if (isReportTransfer) {
-                              return '报单转单';
-                            }
-                            if (r === '商户代叫' || t === '商户代叫' || t === '商户代叫订单' || t === '后台指派订单' || (order as any).isMerchantValetOrder) {
-                              return '商户代叫';
-                            }
-                            if (t === '二维码开单' || t === '二维码创单' || t === '二维码报单' || t === '乘客下单' || t === '特惠代驾' || r === '二维码开单' || r === '乘客扫码创单' || (order as any).isOnlineOrder) {
-                              return '二维码开单';
-                            }
-                            return '报单';
-                          })()}
+                    {/* Locations */}
+                    <div className="space-y-4 mb-3 relative z-10 pointer-events-none">
+                      <div className="flex items-start">
+                        <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 mt-1 mr-3.5 flex-shrink-0 shadow-sm shadow-emerald-400/50"></div>
+                        <span className="font-bold text-slate-700 dark:text-slate-200 text-xs leading-normal">
+                          {order.startLocation}
                         </span>
                       </div>
+                      <div className="flex items-start">
+                        <div className="w-2.5 h-2.5 rounded-full bg-orange-400 mt-1 mr-3.5 flex-shrink-0 shadow-sm shadow-orange-400/50"></div>
+                        <span className="font-bold text-slate-700 dark:text-slate-200 text-xs leading-normal">
+                          {order.endLocation}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Customer Phone & Dial Button Component */}
+                    <div className="my-3 py-2 px-3 bg-slate-50 dark:bg-zinc-800/50 rounded-xl border border-slate-100 dark:border-zinc-800 flex items-center justify-between z-20">
+                      <div className="flex items-center text-xs font-bold text-slate-700 dark:text-slate-200 truncate mr-2">
+                        <Phone className="w-3.5 h-3.5 mr-1.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                        <span className="truncate">
+                          电话：{hasPhone ? rawPhone : '客户的手机号码（无）'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (hasPhone) {
+                            window.location.href = `tel:${rawPhone}`;
+                          } else {
+                            triggerToast('无手机号码');
+                          }
+                        }}
+                        className="flex items-center space-x-1 px-2.5 py-1 bg-teal-600 hover:bg-teal-700 active:scale-95 text-white rounded-lg text-xs font-bold shadow-xs transition-all shrink-0 cursor-pointer pointer-events-auto"
+                      >
+                        <Phone className="w-3 h-3 text-white" />
+                        <span>拨打电话</span>
+                      </button>
+                    </div>
+
+                    {/* Tags */}
+                    <div className="flex items-center justify-between pointer-events-none">
+                      <span className={`inline-block px-2.5 py-0.5 border rounded-md text-[10px] font-extrabold ${
+                        (() => {
+                          const t = (order.type || (order as any).orderType || '').trim();
+                          const r = ((order as any).orderRemark || (order as any).remark || '').trim();
+                          const m = ((order as any).merchantName || (order as any).source || '').trim();
+                          const dest = ((order as any).endLocation || (order as any).destination || '').trim();
+                          const isReportTransfer = (
+                            t === '报单转单' ||
+                            r === '报单转单' ||
+                            m === '报单转单' ||
+                            dest.includes('报单转单') ||
+                            (order as any).isReportTransferOrder ||
+                            (order as any).isReportTransfer ||
+                            (order as any).isReportTransferValet
+                          );
+                          return isReportTransfer
+                            ? 'bg-amber-50/80 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/60'
+                            : 'bg-slate-50/50 dark:bg-zinc-900/50 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-zinc-700/80';
+                        })()
+                      }`}>
+                        {(() => {
+                          const t = (order.type || (order as any).orderType || '').trim();
+                          const r = ((order as any).orderRemark || (order as any).remark || '').trim();
+                          const m = ((order as any).merchantName || (order as any).source || '').trim();
+                          const dest = ((order as any).endLocation || (order as any).destination || '').trim();
+                          const isReportTransfer = (
+                            t === '报单转单' ||
+                            r === '报单转单' ||
+                            m === '报单转单' ||
+                            dest.includes('报单转单') ||
+                            (order as any).isReportTransferOrder ||
+                            (order as any).isReportTransfer ||
+                            (order as any).isReportTransferValet
+                          );
+                          if (isReportTransfer) {
+                            return '报单转单';
+                          }
+                          if (r === '商户代叫' || t === '商户代叫' || t === '商户代叫订单' || t === '后台指派订单' || (order as any).isMerchantValetOrder) {
+                            return '商户代叫';
+                          }
+                          if (t === '二维码开单' || t === '二维码创单' || t === '二维码报单' || t === '乘客下单' || t === '特惠代驾' || r === '二维码开单' || r === '乘客扫码创单' || (order as any).isOnlineOrder) {
+                            return '二维码开单';
+                          }
+                          return '报单';
+                        })()}
+                      </span>
                     </div>
                   </div>
                 );
@@ -4888,6 +4988,17 @@ export default function HomeView({
             )}
           </main>
         </div>
+      )}
+
+      {/* 11. Full-screen Order Detail Modal (订单详情) */}
+      {selectedDetailOrder && (
+        <OrderDetailModal
+          order={selectedDetailOrder}
+          billingRules={billingRules}
+          onClose={() => setSelectedDetailOrder(null)}
+          onDeleteOrder={(orderToDelete) => handleDeleteOrder(orderToDelete)}
+          toastNotice={(msg) => triggerToast(msg)}
+        />
       )}
 
     </div>

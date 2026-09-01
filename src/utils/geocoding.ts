@@ -124,22 +124,7 @@ export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): C
     : DEFAULT_YINCHUAN_COORDS;
 
   if (!addressName || typeof addressName !== 'string' || !addressName.trim() || addressName.includes('****') || addressName.trim() === '起点') {
-    // Generate a distinct realistic offset (0.8km - 3.8km) based on address string hash so orders have natural varied distances
-    let strHash = 0;
-    const keyStr = addressName || 'default_valet_order';
-    for (let i = 0; i < keyStr.length; i++) {
-      strHash = ((strHash << 5) - strHash) + keyStr.charCodeAt(i);
-      strHash |= 0;
-    }
-    const angle = (Math.abs(strHash) % 360) * (Math.PI / 180);
-    const distKm = 0.8 + ((Math.abs(strHash >> 2) % 30) / 10); // 0.8km ~ 3.8km
-    const latOffset = (Math.sin(angle) * distKm) / 111;
-    const lngOffset = (Math.cos(angle) * distKm) / 87;
-
-    return {
-      lat: Number((baseCenter.lat + latOffset).toFixed(6)),
-      lng: Number((baseCenter.lng + lngOffset).toFixed(6))
-    };
+    return baseCenter;
   }
 
   const cleanAddr = addressName.trim();
@@ -151,23 +136,7 @@ export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): C
     }
   }
 
-  // 2. Deterministic realistic offset based on address string near baseCenter (0.8km - 5.5km)
-  let hash = 0;
-  for (let i = 0; i < cleanAddr.length; i++) {
-    hash = ((hash << 5) - hash) + cleanAddr.charCodeAt(i);
-    hash |= 0;
-  }
-  
-  const angle = (Math.abs(hash) % 360) * (Math.PI / 180);
-  const distanceKm = 0.8 + ((Math.abs(hash >> 2) % 45) / 10); // 0.8km ~ 5.3km
-  
-  const latOffset = (Math.sin(angle) * distanceKm) / 111;
-  const lngOffset = (Math.cos(angle) * distanceKm) / 87;
-
-  return {
-    lat: Number((baseCenter.lat + latOffset).toFixed(6)),
-    lng: Number((baseCenter.lng + lngOffset).toFixed(6))
-  };
+  return baseCenter;
 }
 
 /**

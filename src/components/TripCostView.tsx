@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, Landmark, Car, HelpCircle, Flame, X } from 'lucide-react';
+import { Landmark, Car, HelpCircle, Flame, X } from 'lucide-react';
 import { TripState, BillingRules, ChauffeurSettings, checkVipActive, DEFAULT_SLOTS } from '../types';
 
 interface TripCostViewProps {
@@ -71,14 +71,9 @@ export default function TripCostView({
       
       {/* 1. Top Bar Navigation Panel */}
       <div className="bg-[#273046] header-safe-pt pb-2 min-h-14 flex items-center justify-between px-4 text-white shadow-md z-10">
-        <button 
-          onClick={onNavigateBack}
-          className="p-1 px-1.5 rounded-lg hover:bg-white/10 text-white transition-colors flex items-center"
-        >
-          <ArrowLeft className="w-5 h-5 text-gray-100" />
-        </button>
-        <span className="font-semibold text-base tracking-wide text-center flex-1 pr-6 text-gray-100">行程结束</span>
-        <div></div>
+        <div className="w-6"></div>
+        <span className="font-semibold text-base tracking-wide text-center flex-1 text-gray-100">行程结束</span>
+        <div className="w-6"></div>
       </div>
 
       {/* Main calculation summary card container */}

@@ -42,6 +42,7 @@ export interface ChauffeurSettings {
   phoneNumber?: string;
   isBanned?: boolean;
   role?: string;
+  billingRules?: BillingRules;
 }
 
 export interface TripState {

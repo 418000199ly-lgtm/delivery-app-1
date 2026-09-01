@@ -1136,7 +1136,7 @@ export default function AdminBillingRules({ onShowToast }: AdminBillingRulesProp
     return (
       <div className="flex flex-col items-center justify-center py-20 text-slate-400 space-y-4">
         <div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin"></div>
-        <p className="text-sm font-mono text-slate-500">正在从 Firestore 云数据库读取线上计费数据...</p>
+        <p className="text-sm font-mono text-slate-500">正在从 阿里云宝塔面板云数据库 读取线上计费数据...</p>
       </div>
     );
   }
