@@ -628,7 +628,7 @@ export default function CreateOrderView({
       }
       // Stage 2 or regular order: fill passenger destination if valid
       const passDest = activeOnlineOrder.destination;
-      if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头协商')) {
+      if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头') && !passDest.includes('报单转单')) {
         return passDest;
       }
       return '';
@@ -651,7 +651,7 @@ export default function CreateOrderView({
         setStartLocation(getPassengerDepartureAddress());
         // Destination input (destination): Passenger's final destination if specified, else empty for verbal negotiation
         const passDest = activeOnlineOrder.destination;
-        if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头协商')) {
+        if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头') && !passDest.includes('报单转单')) {
           setDestination(passDest);
         } else {
           setDestination('');
@@ -700,13 +700,25 @@ export default function CreateOrderView({
   const isApprovedSquadMember = (m: any) => {
     if (!m) return false;
     const phone = m.phone || m.id || '';
-    if (phone === '15121904440') return false; // Merchant test phone is not a squad driver
+    if (!phone) return false;
+    try {
+      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (savedRemoved) {
+        const removed = JSON.parse(savedRemoved);
+        if (Array.isArray(removed) && removed.includes(phone)) {
+          return false;
+        }
+      }
+    } catch (_) {}
+
     const role = m.role || m.userRole || '';
     if (role === '商户、商家' || role.includes('商户') || role.includes('商家')) {
       return false; // Merchants are not squad drivers
     }
     const status = m.status || m.approvalStatus || '';
-    // Management roles count as approved team drivers
+    if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(status)) {
+      return false;
+    }
     const mgmtRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者', '小队长', '队员', '普通司机'];
     if (mgmtRoles.includes(role)) return true;
     return ['已通过', 'approved', '通过'].includes(status);
@@ -715,7 +727,16 @@ export default function CreateOrderView({
   const [isTeamDriver, setIsTeamDriver] = useState<boolean>(() => {
     if (!userPhone) return false;
     if (userPhone === '15509601222') return true;
-    if (userPhone === '15121904440') return false;
+    try {
+      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (savedRemoved) {
+        const removed = JSON.parse(savedRemoved);
+        if (Array.isArray(removed) && removed.includes(userPhone)) {
+          return false;
+        }
+      }
+    } catch (_) {}
+
     try {
       const saved = localStorage.getItem('dd_squad_members_v2');
       if (saved) {
@@ -738,10 +759,6 @@ export default function CreateOrderView({
     }
     if (userPhone === '15509601222') {
       setIsTeamDriver(true);
-      return;
-    }
-    if (userPhone === '15121904440') {
-      setIsTeamDriver(false);
       return;
     }
 
@@ -2277,9 +2294,12 @@ export default function CreateOrderView({
               if (isMerchantValetOrder && !arrivedAtDeparture) {
                 setArrivedAtDeparture(true);
                 const passStart = activeOnlineOrder?.startLocation || activeOnlineOrder?.originName || '出发地';
-                const passDest = activeOnlineOrder?.destination && activeOnlineOrder.destination !== activeOnlineOrder.startLocation
-                  ? activeOnlineOrder.destination
-                  : '';
+                const rawDest = activeOnlineOrder?.destination || '';
+                const isValidDest = rawDest && 
+                  rawDest !== activeOnlineOrder?.startLocation && 
+                  !rawDest.includes('口头') && 
+                  !rawDest.includes('报单转单');
+                const passDest = isValidDest ? rawDest : '';
                 setStartLocation(passStart);
                 setDestination(passDest);
 

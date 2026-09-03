@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, MoreVertical, CheckCircle2, Receipt, Route, Clock, User, Phone, Trash2 } from 'lucide-react';
+import { ArrowLeft, MoreVertical, CheckCircle2, Receipt, Route, Clock, User, Phone, Trash2, Send } from 'lucide-react';
 import { BillingRules, DEFAULT_SLOTS } from '../types';
 import { formatOrderDisplayTime } from './HomeView';
 
@@ -9,6 +9,7 @@ interface OrderDetailModalProps {
   onClose: () => void;
   onDeleteOrder?: (order: any) => void;
   toastNotice?: (msg: string) => void;
+  onOpenMerchantValetPayment?: (trip: any) => void;
 }
 
 export default function OrderDetailModal({
@@ -16,7 +17,8 @@ export default function OrderDetailModal({
   billingRules,
   onClose,
   onDeleteOrder,
-  toastNotice
+  toastNotice,
+  onOpenMerchantValetPayment
 }: OrderDetailModalProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
@@ -250,6 +252,50 @@ export default function OrderDetailModal({
                 <Phone className="w-5 h-5" />
               </button>
             </div>
+
+            {/* 补发代叫费按钮 */}
+            {(() => {
+              const t = (order.type || order.orderType || '').trim();
+              const r = (order.orderRemark || order.remark || '').trim();
+              const m = (order.merchantName || order.source || '').trim();
+              const dest = (order.endLocation || order.destination || '').trim();
+              const isReportTransfer = (
+                t === '报单转单' ||
+                r === '报单转单' ||
+                m === '报单转单' ||
+                dest.includes('报单转单') ||
+                order.isReportTransferOrder ||
+                order.isReportTransfer ||
+                order.isReportTransferValet
+              );
+              const isMerchantValet = (
+                !isReportTransfer && (
+                  r === '商户代叫' ||
+                  t === '商户代叫' ||
+                  t === '商户代叫订单' ||
+                  t === '后台指派订单' ||
+                  order.isMerchantValetOrder
+                )
+              );
+              if ((isReportTransfer || isMerchantValet) && onOpenMerchantValetPayment) {
+                return (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenMerchantValetPayment(order);
+                        onClose();
+                      }}
+                      className="w-full py-2.5 px-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 active:scale-[0.98] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                    >
+                      <Send className="w-4 h-4 text-white" />
+                      <span>补发代叫费</span>
+                    </button>
+                  </div>
+                );
+              }
+              return null;
+            })()}
 
             <div className="relative pl-7 pt-2">
               <div className="absolute left-[13px] top-[18px] bottom-6 w-0.5 bg-slate-200 dark:bg-zinc-800"></div>

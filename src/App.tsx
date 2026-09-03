@@ -17,6 +17,7 @@ import CreateOrderView from './components/CreateOrderView';
 import PassengerOrderView from './components/PassengerOrderView';
 import WeChatAuthMobile from './components/WeChatAuthMobile';
 import WeChatMiniSimulator from './components/WeChatMiniSimulator';
+import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset } from './utils/locationResolver';
 
 import { 
@@ -28,7 +29,7 @@ import {
   DEFAULT_SETTINGS,
   checkVipActive
 } from './types';
-import { Sparkles, CheckCircle, Database, Smartphone, Users, ShieldAlert, FileCode, Download, Store } from 'lucide-react';
+import { Sparkles, CheckCircle, Database, Smartphone, Users, ShieldAlert, FileCode, Download, Store, CreditCard } from 'lucide-react';
 import AdminPanel from './components/AdminPanel';
 import LoginView from './components/LoginView';
 import MobileDispatchValetOrder from './components/MobileDispatchValetOrder';
@@ -42,6 +43,7 @@ import {
   getPendingOrderCache, 
   clearPendingOrderCache 
 } from './utils/backgroundNotification';
+import { isOrderAlreadyEnded } from './utils/orderValidation';
 import { getDeviceId, clearDeviceSession } from './utils/deviceSession';
 import { downloadDeployZip } from './utils/downloadHelper';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
@@ -462,7 +464,7 @@ export default function App() {
   });
 
   const [currentView, setCurrentView] = useState<string>('home');
-  const [mobileActiveTab, setMobileActiveTab] = useState<'app' | 'admin' | 'passenger' | 'wechat_mini' | 'qr_expired' | 'vip_blocked' | 'dispatch_valet'>(() => {
+  const [mobileActiveTab, setMobileActiveTab] = useState<'app' | 'admin' | 'passenger' | 'wechat_mini' | 'alipay_mini' | 'qr_expired' | 'vip_blocked' | 'dispatch_valet'>(() => {
     if (typeof window !== 'undefined') {
       const hostname = window.location.hostname;
       const params = new URLSearchParams(window.location.search);
@@ -479,6 +481,9 @@ export default function App() {
       }
       if (params.get('wechat_mini') === 'true') {
         return 'wechat_mini';
+      }
+      if (params.get('alipay_mini') === 'true') {
+        return 'alipay_mini';
       }
     }
     return 'app';
@@ -1285,23 +1290,39 @@ export default function App() {
   useEffect(() => {
     initNotificationSystem();
 
-    const cleanup = registerBackgroundOrderListeners((order) => {
+    const cleanup = registerBackgroundOrderListeners(async (order) => {
       if (order) {
+        // Validate if order is already completed / cancelled / ended
+        const ended = await isOrderAlreadyEnded(order, userPhone);
+        if (ended) {
+          clearPendingOrderCache();
+          setIncomingOrder(null);
+          triggerToast('⚠️ 该订单已完结或已被接单，无需重复查看');
+          return;
+        }
         setIncomingOrder(order);
-        setActiveOnlineOrder(order);
       }
     });
 
     // Custom event listener to force trigger incoming order overlay popup
-    const handleCustomTrigger = (e: any) => {
+    const handleCustomTrigger = async (e: any) => {
       if (e.detail) {
         const data = e.detail;
         const rawTime = Number(data.timestamp || data.updatedAt || Date.now());
         const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
+
+        // Validate if order is already completed / cancelled / ended
+        const ended = await isOrderAlreadyEnded(data, userPhone);
+        if (ended) {
+          clearPendingOrderCache();
+          setIncomingOrder(null);
+          triggerToast('⚠️ 该订单已完结，无需重复接单');
+          return;
+        }
+
         dismissedIncomingOrderKeysRef.current.delete(orderKey);
         triggerBackgroundOrderAlert(data);
         setIncomingOrder(data);
-        setActiveOnlineOrder(data);
       }
     };
     window.addEventListener('trigger_incoming_order', handleCustomTrigger);
@@ -1310,7 +1331,7 @@ export default function App() {
       cleanup();
       window.removeEventListener('trigger_incoming_order', handleCustomTrigger);
     };
-  }, []);
+  }, [userPhone]);
 
   // Listen for real-time incoming passenger orders from passenger self-service scans or admin dispatching
   useEffect(() => {
@@ -1324,10 +1345,18 @@ export default function App() {
       return;
     }
 
-    const processIncomingData = (data: any) => {
+    const processIncomingData = async (data: any) => {
       if (data && (data.status === 'submitted' || data.passengerPhone)) {
         const rawTime = Number(data.timestamp || data.updatedAt || 0);
         const orderKey = data.orderId || data.id || data.orderNo || `${data.passengerPhone || 'p'}_${rawTime || 0}`;
+
+        // Validate if order is already completed / cancelled / ended
+        const ended = await isOrderAlreadyEnded(data, userPhone);
+        if (ended) {
+          clearPendingOrderCache();
+          setIncomingOrder(null);
+          return;
+        }
 
         // Guarantee popup only shows once per order if dismissed
         if (dismissedIncomingOrderKeysRef.current.has(orderKey)) {
@@ -1356,7 +1385,6 @@ export default function App() {
             // Trigger high-priority system alert for background / lockscreen
             triggerBackgroundOrderAlert(data);
             setIncomingOrder(data);
-            setActiveOnlineOrder(data);
           } else {
             dismissedIncomingOrderKeysRef.current.add(orderKey);
             setIncomingOrder(null);
@@ -1468,12 +1496,19 @@ export default function App() {
     };
   }, [activeOnlineOrder]);
 
-  const handleAcceptIncomingOrder = (trip: TripState) => {
+  const handleAcceptIncomingOrder = async (trip: TripState) => {
     if (!userPhone) return;
     clearPendingOrderCache();
     if (incomingOrder) {
       const orderKey = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
+
+      const ended = await isOrderAlreadyEnded(incomingOrder, userPhone);
+      if (ended) {
+        setIncomingOrder(null);
+        triggerToast('⚠️ 该订单已结单，无法重复接单！');
+        return;
+      }
     }
     setActiveOnlineOrder(incomingOrder);
     setMobileActiveTab('app');
@@ -1783,6 +1818,7 @@ export default function App() {
       myPoints: nextPoints,
       lastResetDate: stats.lastResetDate || getCurrent6AmDay()
     };
+    clearPendingOrderCache();
     setStats(updatedStats);
     setCurrentTrip(null);
     setCurrentView('home');
@@ -1874,6 +1910,9 @@ export default function App() {
     setSettings(newSettings);
     if (userPhone) {
       localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(newSettings));
+      if (newSettings.wechatQrCode) {
+        localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, newSettings.wechatQrCode);
+      }
       if (isUserDataLoaded) {
         const userDocRef = doc(db, 'driver_users', userPhone);
         setDoc(userDocRef, {
@@ -1893,10 +1932,35 @@ export default function App() {
           onlineOrdersEnabled: !!newSettings.onlineOrdersEnabled,
           city: newSettings.city || '',
           isBanned: !!newSettings.isBanned,
+          wechatQrCode: newSettings.wechatQrCode || '',
+          qrCode: newSettings.wechatQrCode || '',
           updatedAt: new Date().toISOString()
         }, { merge: true }).catch(err => {
           console.error("Error syncing user settings update to Firestore:", err);
         });
+
+        // Sync to dispatch_qrs collection for cross-driver 报单转单 payment QR code resolution
+        if (newSettings.wechatQrCode) {
+          const qrPayload = {
+            id: userPhone,
+            qrCode: newSettings.wechatQrCode,
+            wechatQrCode: newSettings.wechatQrCode,
+            phone: userPhone,
+            updatedAt: Date.now()
+          };
+          setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).catch(() => {});
+          const baseUrl = getBaseApiUrl();
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ collection: 'dispatch_qrs', docId: userPhone, data: qrPayload })
+          }).catch(() => {});
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: newSettings.wechatQrCode, qrCode: newSettings.wechatQrCode } })
+          }).catch(() => {});
+        }
       }
     }
   };
@@ -2316,6 +2380,7 @@ export default function App() {
               onLogout={handleLogout}
               driverCoords={driverCoords}
               xianyuUrl={sysXianyuUrl}
+              onOpenMerchantValetPayment={(trip) => setMerchantValetPaymentTrip(trip)}
             />
             {merchantValetPaymentTrip && (
               <div className="absolute inset-0 z-[99999] bg-[#f9f9f9] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -2502,6 +2567,18 @@ export default function App() {
             <FileCode className="w-3.5 h-3.5 text-emerald-400" />
             <span>微信小程序下单</span>
           </button>
+
+          <button
+            onClick={() => setMobileActiveTab('alipay_mini')}
+            className={`px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+              mobileActiveTab === 'alipay_mini'
+                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-md font-bold'
+                : 'text-gray-400 hover:text-white'
+            }`}
+          >
+            <CreditCard className="w-3.5 h-3.5 text-sky-400" />
+            <span>支付宝小程序(VIP收银台)</span>
+          </button>
           
           <button
             onClick={() => setMobileActiveTab('admin')}
@@ -2532,6 +2609,13 @@ export default function App() {
         {mobileActiveTab === 'wechat_mini' ? (
           <div className="flex-1 bg-[#111625]/90 border border-[#212b44] rounded-3xl overflow-hidden flex flex-col shadow-2xl">
             <WeChatMiniSimulator 
+              currentDriverPhone={userPhone}
+              onTriggerToast={triggerToast}
+            />
+          </div>
+        ) : mobileActiveTab === 'alipay_mini' ? (
+          <div className="flex-1 bg-[#111625]/90 border border-[#212b44] rounded-3xl overflow-hidden flex flex-col shadow-2xl">
+            <AlipayMiniSimulator 
               currentDriverPhone={userPhone}
               onTriggerToast={triggerToast}
             />

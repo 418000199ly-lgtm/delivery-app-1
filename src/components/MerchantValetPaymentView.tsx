@@ -204,8 +204,8 @@ export default function MerchantValetPaymentView({
   })();
 
   const qrImage = isReportTransfer
-    ? (isCreatorSelf ? (driverOwnQr || dispatcherQr) : (dispatcherQr || driverOwnQr || (trip as any)?.paymentQrCode || ''))
-    : (dispatcherQr || (trip as any)?.paymentQrCode || '');
+    ? (dispatcherQr || (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || (isCreatorSelf ? driverOwnQr : ''))
+    : (dispatcherQr || (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || '');
 
   return (
     <div className="w-full h-full bg-[#f9f9f9] text-[#1a1c1c] select-none font-sans flex flex-col justify-between overflow-hidden relative z-50">

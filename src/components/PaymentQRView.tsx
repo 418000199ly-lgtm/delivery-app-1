@@ -7,6 +7,7 @@ import MerchantValetPaymentView from './MerchantValetPaymentView';
 import OrderDetailModal from './OrderDetailModal';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
+import { getBaseApiUrl } from '../lib/dbProxy';
 
 function cleanAndRegenerate(dataUrl: string, type: 'wechat' | 'alipay'): Promise<string> {
   return new Promise((resolve) => {
@@ -82,10 +83,59 @@ export default function PaymentQRView({
   const [showValetFeePayment, setShowValetFeePayment] = useState<boolean>(false);
   const [showOrderDetailModal, setShowOrderDetailModal] = useState<boolean>(false);
   const [currentTripState, setCurrentTripState] = useState<TripState>(trip);
+  const [reportTransferQr, setReportTransferQr] = useState<string>('');
+
+  const isReportTransfer = Boolean(
+    (trip as any)?.orderType === '报单转单' ||
+    (trip as any)?.orderRemark === '报单转单' ||
+    (trip as any)?.type === '报单转单' ||
+    ((trip as any)?.destination && String((trip as any).destination).includes('报单转单')) ||
+    (trip?.startLocation && String(trip.startLocation).includes('报单转单')) ||
+    (trip as any)?.isReportTransfer
+  );
 
   useEffect(() => {
     setCurrentTripState(trip);
   }, [trip]);
+
+  // Query issuing driver QR code for report transfer orders
+  useEffect(() => {
+    if (!isReportTransfer) return;
+
+    const rawPhone = (
+      (trip as any)?.reporterPhone ||
+      (trip as any)?.dispatchedByPhone ||
+      (trip as any)?.dispatchedBy ||
+      (trip as any)?.merchantPhone ||
+      ''
+    ).toString().trim();
+
+    const existingQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || '';
+    if (existingQr) {
+      setReportTransferQr(existingQr);
+      return;
+    }
+
+    if (rawPhone) {
+      const cached = localStorage.getItem(`dd_dispatch_wechat_qr_${rawPhone}`);
+      if (cached) {
+        setReportTransferQr(cached);
+        return;
+      }
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/get?col=driver_users&id=${encodeURIComponent(rawPhone)}`)
+        .then(res => res.json())
+        .then(json => {
+          const qr = json?.data?.wechatQrCode || json?.data?.qrCode;
+          if (qr) {
+            setReportTransferQr(qr);
+            localStorage.setItem(`dd_dispatch_wechat_qr_${rawPhone}`, qr);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [trip, isReportTransfer]);
 
   // Auto-resolve destination if unset upon reaching payment confirmation screen (w3)
   useEffect(() => {
@@ -210,47 +260,45 @@ export default function PaymentQRView({
             <p className="text-gray-500 text-xs mb-3">客人扫码支付，支持微信/支付宝</p>
             
             <div className="w-full max-w-[170px] sm:max-w-[200px] aspect-square flex items-center justify-center shrink-0 mb-3 animate-in fade-in zoom-in-95" data-purpose="qr-code-display">
-              {isWechat ? (
-                settings?.wechatQrCode && settings.wechatQrCode.trim() !== '' ? (
-                  wechatClean ? (
-                    <img src={wechatClean} alt="微信收款码" className="w-full h-full object-contain" />
+              {(() => {
+                const activeWechatQr = isReportTransfer
+                  ? ((trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || reportTransferQr || wechatClean || settings?.wechatQrCode || '')
+                  : (wechatClean || settings?.wechatQrCode || '');
+
+                const activeAlipayQr = isReportTransfer
+                  ? ((trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || reportTransferQr || alipayClean || settings?.alipayQrCode || '')
+                  : (alipayClean || settings?.alipayQrCode || '');
+
+                if (isWechat) {
+                  return activeWechatQr ? (
+                    <img src={activeWechatQr} alt="微信收款码" className="w-full h-full object-contain" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gray-100/50 rounded-lg animate-pulse text-gray-400 text-xs text-center font-semibold">
-                      ⏳ 正在载入微信收款码...
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 border-2 border-dashed border-gray-300 rounded-2xl shadow-inner gap-1.5">
+                      <div className="w-9 h-9 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 border border-amber-200 shrink-0">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                      </div>
+                      <span className="text-xs sm:text-sm font-bold text-gray-800">请在设置里上传收款码</span>
+                      <span className="text-[10px] sm:text-[11px] text-gray-400 font-normal">首页 ➔ 设置 ➔ 上传微信收款码</span>
                     </div>
-                  )
-                ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 border-2 border-dashed border-gray-300 rounded-2xl shadow-inner gap-1.5">
-                    <div className="w-9 h-9 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 border border-amber-200 shrink-0">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                      </svg>
-                    </div>
-                    <span className="text-xs sm:text-sm font-bold text-gray-800">请在设置里上传收款码</span>
-                    <span className="text-[10px] sm:text-[11px] text-gray-400 font-normal">首页 ➔ 设置 ➔ 上传微信收款码</span>
-                  </div>
-                )
-              ) : (
-                settings?.alipayQrCode && settings.alipayQrCode.trim() !== '' ? (
-                  alipayClean ? (
-                    <img src={alipayClean} alt="支付宝收款码" className="w-full h-full object-contain" />
+                  );
+                } else {
+                  return activeAlipayQr ? (
+                    <img src={activeAlipayQr} alt="支付宝收款码" className="w-full h-full object-contain" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gray-100/50 rounded-lg animate-pulse text-gray-400 text-xs text-center font-semibold">
-                      ⏳ 正在载入支付宝收款码...
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 border-2 border-dashed border-gray-300 rounded-2xl shadow-inner gap-1.5">
+                      <div className="w-9 h-9 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 border border-amber-200 shrink-0">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                      </div>
+                      <span className="text-xs sm:text-sm font-bold text-gray-800">请在设置里上传收款码</span>
+                      <span className="text-[10px] sm:text-[11px] text-gray-400 font-normal">首页 ➔ 设置 ➔ 上传支付宝收款码</span>
                     </div>
-                  )
-                ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 border-2 border-dashed border-gray-300 rounded-2xl shadow-inner gap-1.5">
-                    <div className="w-9 h-9 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 border border-amber-200 shrink-0">
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                      </svg>
-                    </div>
-                    <span className="text-xs sm:text-sm font-bold text-gray-800">请在设置里上传收款码</span>
-                    <span className="text-[10px] sm:text-[11px] text-gray-400 font-normal">首页 ➔ 设置 ➔ 上传支付宝收款码</span>
-                  </div>
-                )
-              )}
+                  );
+                }
+              })()}
             </div>
 
             {isWechat ? (

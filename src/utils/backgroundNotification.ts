@@ -105,6 +105,11 @@ export function clearPendingOrderCache() {
   try {
     localStorage.removeItem(PENDING_ORDER_STORAGE_KEY);
   } catch (_) {}
+  if (Capacitor.isNativePlatform()) {
+    try {
+      LocalNotifications.removeAllDeliveredNotifications().catch(() => {});
+    } catch (_) {}
+  }
 }
 
 /**

@@ -3,6 +3,7 @@ import { Clock, Bike } from 'lucide-react';
 import { TripState, BillingRules } from '../types';
 import { speakText, stopSpeaking } from '../utils/speech';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
+import { isOrderAlreadyEnded } from '../utils/orderValidation';
 
 interface IncomingOrderOverlayProps {
   order: {
@@ -292,8 +293,22 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     };
   }, [approxPrice, startLocation, destination, distanceText]);
 
-  const handleConfirmOrder = () => {
+  const [isAccepting, setIsAccepting] = useState(false);
+
+  const handleConfirmOrder = async () => {
+    if (isAccepting) return;
+    setIsAccepting(true);
     stopSpeaking();
+
+    // Prevent duplicate accepting of already ended/completed orders
+    const ended = await isOrderAlreadyEnded(order);
+    if (ended) {
+      speakText('该订单已结单，无法重复接单');
+      onDecline();
+      setIsAccepting(false);
+      return;
+    }
+
     speakText('接单成功，请前往接驾地点');
     const orderNumber = 'DD' + Date.now();
     const trip: TripState = {
@@ -316,6 +331,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       orderType: order.isValetOrder ? '商户代叫' : '二维码开单',
     };
     onAccept(trip);
+    setIsAccepting(false);
   };
 
   return (

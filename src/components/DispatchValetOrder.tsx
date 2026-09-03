@@ -651,7 +651,20 @@ export default function DispatchValetOrder({
             });
             mergedList.forEach(item => {
               const key = item.phone || item.id;
-              combineMap.set(key, { ...(combineMap.get(key) || {}), ...item });
+              const prevItem = combineMap.get(key) || {};
+              const isPending = item.status === '待审核';
+              
+              combineMap.set(key, {
+                ...prevItem,
+                ...item,
+                approvedBy: isPending ? '' : (item.approvedBy || prevItem.approvedBy || ''),
+                approvedRole: isPending ? '' : (item.approvedRole || prevItem.approvedRole || ''),
+                approvalTime: isPending ? '' : (item.approvalTime || prevItem.approvalTime || ''),
+                rejectedBy: isPending ? '' : (item.rejectedBy || prevItem.rejectedBy || ''),
+                rejectedRole: isPending ? '' : (item.rejectedRole || prevItem.rejectedRole || ''),
+                rejectionTime: isPending ? '' : (item.rejectionTime || prevItem.rejectionTime || ''),
+                selectedReasons: isPending ? [] : (item.selectedReasons || prevItem.selectedReasons || [])
+              });
             });
             return Array.from(combineMap.values()).filter((a: any) => !['app-1', 'app-2', 'app-3'].includes(a.id));
           });
@@ -679,7 +692,19 @@ export default function DispatchValetOrder({
             list.forEach(item => {
               const key = item.phone || item.id;
               if (key) {
-                map.set(key, { ...map.get(key), ...item });
+                const prevItem = map.get(key) || {};
+                const isPending = item.status === '待审核';
+                map.set(key, {
+                  ...prevItem,
+                  ...item,
+                  approvedBy: isPending ? '' : (item.approvedBy || prevItem.approvedBy || ''),
+                  approvedRole: isPending ? '' : (item.approvedRole || prevItem.approvedRole || ''),
+                  approvalTime: isPending ? '' : (item.approvalTime || prevItem.approvalTime || ''),
+                  rejectedBy: isPending ? '' : (item.rejectedBy || prevItem.rejectedBy || ''),
+                  rejectedRole: isPending ? '' : (item.rejectedRole || prevItem.rejectedRole || ''),
+                  rejectionTime: isPending ? '' : (item.rejectionTime || prevItem.rejectionTime || ''),
+                  selectedReasons: isPending ? [] : (item.selectedReasons || prevItem.selectedReasons || [])
+                });
               }
             });
             return Array.from(map.values()).filter((a: any) => !['app-1', 'app-2', 'app-3'].includes(a.id));
@@ -2399,7 +2424,7 @@ export default function DispatchValetOrder({
         if (!phone) return false;
 
         // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders!
-        const isMerchant = d.role?.includes('商户') || d.role?.includes('商家') || d.userRole?.includes('商户') || d.userRole?.includes('商家') || phone === '15121904440';
+        const isMerchant = d.role?.includes('商户') || d.role?.includes('商家') || d.userRole?.includes('商户') || d.userRole?.includes('商家');
         if (isMerchant) return false;
 
         // 2. Check if in removedMemberPhones list
@@ -2428,7 +2453,7 @@ export default function DispatchValetOrder({
             if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
               return false;
             }
-            const smIsMerchant = sm.role?.includes('商户') || sm.role?.includes('商家') || sm.userRole?.includes('商户') || sm.userRole?.includes('商家') || phone === '15121904440';
+            const smIsMerchant = sm.role?.includes('商户') || sm.role?.includes('商家') || sm.userRole?.includes('商户') || sm.userRole?.includes('商家');
             if (smIsMerchant) {
               return false;
             }
@@ -3516,7 +3541,7 @@ export default function DispatchValetOrder({
         squadMembers.forEach((m, idx) => {
           if (!isRemovedItem(m)) {
             const isMe = m.phone === userPhone || m.phone === '15509601222';
-            const isMerchant = m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家') || m.phone === '15121904440';
+            const isMerchant = m.role === '商户、商家' || m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家');
             const memberName = isMerchant ? '商户、商家' : (isMe ? currentAdminName : (m.name || `司机${m.phone.slice(-4)}`));
             const memberRole = isMerchant ? '商户、商家' : (isMe ? currentAdminRole : (m.role || '普通司机'));
             const status = m.status || '已通过';
@@ -3538,7 +3563,7 @@ export default function DispatchValetOrder({
         applicants.forEach(app => {
           if (!isRemovedItem(app)) {
             const existing = membersMap.get(app.phone);
-            const isMerchant = app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家') || app.phone === '15121904440';
+            const isMerchant = app.role === '商户、商家' || app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家');
             const memberName = isMerchant ? '商户、商家' : (app.name || existing?.name || `司机${app.phone.slice(-4)}`);
             const memberRole = isMerchant ? '商户、商家' : (app.role || existing?.role || '普通司机');
             const status = app.status || '待审核';
@@ -3585,9 +3610,10 @@ export default function DispatchValetOrder({
           .filter(m => !isRemovedItem(m) || m.phone === userPhone || m.phone === '15509601222')
           .map(m => {
             const isMe = m.phone === userPhone || m.phone === '15509601222';
-            const roleTagClass = m.role.includes('开发者') ? 'bg-indigo-100 text-indigo-700 border-indigo-200' :
-                                  m.role.includes('老板') ? 'bg-[#ff7d00]/10 text-[#ff7d00] border-[#ff7d00]/20' :
-                                  m.role.includes('管理') ? 'bg-[#00aafc]/10 text-[#006496] border-[#00aafc]/20' :
+            const roleStr = m.role || '';
+            const roleTagClass = roleStr.includes('开发者') ? 'bg-indigo-100 text-indigo-700 border-indigo-200' :
+                                  roleStr.includes('老板') ? 'bg-[#ff7d00]/10 text-[#ff7d00] border-[#ff7d00]/20' :
+                                  roleStr.includes('管理') ? 'bg-[#00aafc]/10 text-[#006496] border-[#00aafc]/20' :
                                   'bg-[#e2e2e2] text-[#584235] border-[#dfc0af]';
 
             const statusTagClass = m.status === '已通过' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
@@ -3855,7 +3881,7 @@ export default function DispatchValetOrder({
                 return (
                   <div className="space-y-3">
                     {filteredMembers.map((member) => {
-                      const isMerchantMember = member.role === '商户、商家' || member.role?.includes('商户') || member.role?.includes('商家') || member.phone === '15121904440';
+                      const isMerchantMember = member.role === '商户、商家' || member.role?.includes('商户') || member.role?.includes('商家');
                       const assignableRoles = getAllowedAssignRoles(member);
                       const canChangeRole = !isMerchantMember && assignableRoles.length > 0;
                       const memberDisplayName = isMerchantMember ? '商户、商家' : member.name;
@@ -4072,10 +4098,11 @@ export default function DispatchValetOrder({
                                     return updated;
                                   });
 
-                                  // 3. Delete from Firestore database
+                                  // 3. Delete from Firestore & HTTP REST API database
                                   if (targetPhone) {
                                     try {
                                       await deleteDoc(doc(db, 'squad_members', targetPhone));
+                                      await deleteDoc(doc(db, 'squad_applications', targetPhone));
                                     } catch (e) {
                                       console.error(e);
                                     }
@@ -4083,10 +4110,23 @@ export default function DispatchValetOrder({
                                   if (targetId && targetId !== targetPhone) {
                                     try {
                                       await deleteDoc(doc(db, 'squad_members', targetId));
+                                      await deleteDoc(doc(db, 'squad_applications', targetId));
                                     } catch (e) {
                                       console.error(e);
                                     }
                                   }
+
+                                  const baseUrl = getBaseApiUrl();
+                                  fetch(`${baseUrl}/api/db/delete`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ collection: 'squad_members', docId: targetPhone || targetId })
+                                  }).catch(() => {});
+                                  fetch(`${baseUrl}/api/db/delete`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ collection: 'squad_applications', docId: targetPhone || targetId })
+                                  }).catch(() => {});
 
                                   onShowToast(`已成功彻底删除成员: ${targetName || '司机'}`);
                                 }}
@@ -4697,7 +4737,7 @@ export default function DispatchValetOrder({
                           onShowToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核');
                           return;
                         }
-                        setApplicants(prev => prev.map(a => a.id === applicant.id ? { ...a, showReasons: !a.showReasons } : a));
+                        setApplicants(prev => prev.map(a => a.id === applicant.id ? { ...a, showReasons: !a.showReasons, selectedReasons: a.selectedReasons || [] } : a));
                       }}
                       className="w-full bg-white border border-[#ff7d00] text-[#ff7d00] font-bold text-sm py-3 rounded-lg active:scale-95 transition-transform cursor-pointer"
                     >
@@ -4712,16 +4752,17 @@ export default function DispatchValetOrder({
                     <p className="text-xs font-bold text-[#584235]">选择不通过原因：</p>
                     <div className="flex flex-wrap gap-2">
                       {['备注填写不详细', '无法核实您的身份准确性'].map((reason) => {
-                        const isSelected = applicant.selectedReasons.includes(reason);
+                        const isSelected = (applicant.selectedReasons || []).includes(reason);
                         return (
                           <div 
                             key={reason}
                             onClick={() => {
                               setApplicants(prev => prev.map(a => {
                                 if (a.id !== applicant.id) return a;
+                                const currentReasons = a.selectedReasons || [];
                                 const reasons = isSelected 
-                                  ? a.selectedReasons.filter(r => r !== reason)
-                                  : [...a.selectedReasons, reason];
+                                  ? currentReasons.filter(r => r !== reason)
+                                  : [...currentReasons, reason];
                                 return { ...a, selectedReasons: reasons };
                               }));
                             }}

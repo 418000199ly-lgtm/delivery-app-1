@@ -45,23 +45,28 @@ export default function ReportTransferOrderModal({
     setIsSubmitting(true);
 
     try {
-      // 1. Resolve real start location coordinates (using issuing driver's GPS or address)
-      let pLat: number = DEFAULT_YINCHUAN_COORDS.lat;
-      let pLng: number = DEFAULT_YINCHUAN_COORDS.lng;
+      // 1. Resolve reporter (issuing driver's) location coordinates as distance origin
+      let reporterLat: number = DEFAULT_YINCHUAN_COORDS.lat;
+      let reporterLng: number = DEFAULT_YINCHUAN_COORDS.lng;
 
       const sLat = driverCoords?.lat || (typeof window !== 'undefined' ? Number(localStorage.getItem('dd_bg_driver_coords_lat')) : null);
       const sLng = driverCoords?.lng || (typeof window !== 'undefined' ? Number(localStorage.getItem('dd_bg_driver_coords_lng')) : null);
       const hasDriverCoords = sLat && sLng && isValidCoords(Number(sLat), Number(sLng));
 
-      if (currentPickup && currentPickup.trim() && currentPickup !== '运祥小区') {
-        const pickupCoords = geocodeAddress(currentPickup, hasDriverCoords ? { lat: Number(sLat), lng: Number(sLng) } : undefined);
-        pLat = pickupCoords.lat;
-        pLng = pickupCoords.lng;
-      } else if (hasDriverCoords) {
-        pLat = Number(sLat);
-        pLng = Number(sLng);
-      } else {
+      if (hasDriverCoords) {
+        reporterLat = Number(sLat);
+        reporterLng = Number(sLng);
+      } else if (currentPickup && currentPickup.trim()) {
         const pickupCoords = geocodeAddress(currentPickup);
+        reporterLat = pickupCoords.lat;
+        reporterLng = pickupCoords.lng;
+      }
+
+      // Passenger start coords for order display
+      let pLat = reporterLat;
+      let pLng = reporterLng;
+      if (currentPickup && currentPickup.trim()) {
+        const pickupCoords = geocodeAddress(currentPickup, hasDriverCoords ? { lat: reporterLat, lng: reporterLng } : undefined);
         pLat = pickupCoords.lat;
         pLng = pickupCoords.lng;
       }
@@ -120,15 +125,19 @@ export default function ReportTransferOrderModal({
         } catch (_) {}
       }
 
-      // Filter candidates
+      // Filter candidates (Strictly EXCLUDING current reporter driver!)
       const candidates: Array<{ phone: string; name: string; lat: number; lng: number; distKm: number }> = [];
 
       driverDocs.forEach(({ phone, data }) => {
         if (!data || data.isBanned) return;
+
+        // 绝不能派给自己！同时也排除乘客手机号（若正好是某个注册账户）
+        if (userPhone && (phone === userPhone || phone === cleanPhone)) return;
+
         const isOnline = Boolean(data.isOnline || data.onlineOrdersEnabled);
         if (!isOnline) return;
 
-        const isSquadMember = squadPhones.has(phone) || managementPhones.has(phone) || phone === '15509601222' || (userPhone && phone === userPhone);
+        const isSquadMember = squadPhones.has(phone) || managementPhones.has(phone) || phone === '15509601222';
         if (!isSquadMember) return;
 
         // Check if driver is free (not busy in serving state)
@@ -138,23 +147,15 @@ export default function ReportTransferOrderModal({
         let dLat = Number(data.lat);
         let dLng = Number(data.lng);
 
-        if (!isValidCoords(dLat, dLng) && userPhone && phone === userPhone) {
-          const sLat = localStorage.getItem('dd_bg_driver_coords_lat');
-          const sLng = localStorage.getItem('dd_bg_driver_coords_lng');
-          if (sLat && sLng && isValidCoords(Number(sLat), Number(sLng))) {
-            dLat = Number(sLat);
-            dLng = Number(sLng);
-          }
-        }
-
         if (!isValidCoords(dLat, dLng)) {
           dLat = DEFAULT_YINCHUAN_COORDS.lat;
           dLng = DEFAULT_YINCHUAN_COORDS.lng;
         }
 
-        const distKm = calculateHaversineDistanceKm(pLat, pLng, dLat, dLng);
+        // Calculate distance from the reporter driver's location
+        const distKm = calculateHaversineDistanceKm(reporterLat, reporterLng, dLat, dLng);
 
-        // Only candidates within 3.0 km radius
+        // Only candidates within 3.0 km radius from reporter driver
         if (distKm <= 3.0) {
           candidates.push({
             phone,
@@ -166,31 +167,23 @@ export default function ReportTransferOrderModal({
         }
       });
 
-      // Always include current driver if logged in, online and within 3km
-      if (userPhone && !candidates.some(c => c.phone === userPhone)) {
-        const isLoggedOnline = localStorage.getItem('dd_driver_is_online') !== 'false';
-        if (isLoggedOnline) {
-          let sLat = Number(localStorage.getItem('dd_bg_driver_coords_lat'));
-          let sLng = Number(localStorage.getItem('dd_bg_driver_coords_lng'));
-          if (!isValidCoords(sLat, sLng)) {
-            sLat = DEFAULT_YINCHUAN_COORDS.lat;
-            sLng = DEFAULT_YINCHUAN_COORDS.lng;
-          }
-          const distKm = calculateHaversineDistanceKm(pLat, pLng, sLat, sLng);
-          if (distKm <= 3.0) {
-            candidates.push({
-              phone: userPhone,
-              name: localStorage.getItem('dd_driver_name') || '当前小队司机',
-              lat: sLat,
-              lng: sLng,
-              distKm
-            });
-          }
-        }
-      }
-
       const orderId = 'RT' + Date.now();
       const baseUrl = getBaseApiUrl();
+
+      const myQrCode = (userPhone ? (
+        localStorage.getItem(`dd_dispatch_wechat_qr_${userPhone}`) || 
+        localStorage.getItem(`dd_dispatch_fee_qr_${userPhone}`) || 
+        (() => {
+          try {
+            const s = localStorage.getItem(`dd_settings_${userPhone}`) || localStorage.getItem('dd_settings');
+            if (s) {
+              const parsed = JSON.parse(s);
+              return parsed?.wechatQrCode || '';
+            }
+          } catch (_) {}
+          return '';
+        })()
+      ) : '') || '';
 
       if (candidates.length > 0) {
         // Find closest distance
@@ -200,9 +193,7 @@ export default function ReportTransferOrderModal({
         // If multiple drivers have same distance, randomly select one
         const selectedDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
 
-        const calculatedDistText = (userPhone && selectedDriver.phone === userPhone)
-          ? '0公里'
-          : (selectedDriver.distKm < 0.05 ? '0米' : formatDistance(selectedDriver.distKm));
+        const calculatedDistText = selectedDriver.distKm < 0.05 ? '0米' : formatDistance(selectedDriver.distKm);
 
         // Order Payload for Direct Dispatch
         const orderPayload = {
@@ -210,7 +201,7 @@ export default function ReportTransferOrderModal({
           orderId: orderId,
           passengerPhone: cleanPhone,
           startLocation: currentPickup,
-          destination: '报单转单：由司机与乘客口头沟通目的地',
+          destination: '',
           status: 'submitted',
           timestamp: Date.now(),
           isValetOrder: true,
@@ -233,6 +224,8 @@ export default function ReportTransferOrderModal({
           reporterPhone: userPhone || '',
           dispatchedByPhone: userPhone || '',
           dispatchedBy: userPhone || '',
+          paymentQrCode: myQrCode,
+          merchantPaymentQrCode: myQrCode,
           distanceText: calculatedDistText,
         };
 
@@ -252,14 +245,9 @@ export default function ReportTransferOrderModal({
           createdAt: Date.now()
         }).catch(() => {});
 
-        // 3. If selected driver is current user, trigger local popup instantly
-        if (userPhone && (selectedDriver.phone === userPhone || selectedDriver.phone === '15509601222')) {
-          window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
-        }
-
         setDispatchResultMsg({
           title: '报单转单派单成功',
-          desc: `已派单给方圆3公里内最近的小队司机【${selectedDriver.name} (${selectedDriver.phone})】，直线距离 ${formatDistance(minDist)}，司机APP已实时弹出新来单界面！`,
+          desc: `已派单给报单司机附近3公里内最近的小队司机【${selectedDriver.name} (${selectedDriver.phone})】，直线距离 ${formatDistance(minDist)}，对方司机APP已实时弹出新来单界面！`,
           isHall: false
         });
 
@@ -270,7 +258,7 @@ export default function ReportTransferOrderModal({
           orderId: orderId,
           passengerPhone: cleanPhone,
           startLocation: currentPickup,
-          destination: '报单转单：由司机与乘客口头沟通目的地',
+          destination: '',
           status: 'hall',
           statusCategory: '等待接单',
           in_hall: true,
@@ -294,6 +282,8 @@ export default function ReportTransferOrderModal({
           reporterPhone: userPhone || '',
           dispatchedByPhone: userPhone || '',
           dispatchedBy: userPhone || '',
+          paymentQrCode: myQrCode,
+          merchantPaymentQrCode: myQrCode,
           merchantName: '报单转单'
         };
 

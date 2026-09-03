@@ -81,6 +81,7 @@ interface HomeViewProps {
   userRole?: string;
   userTeamCity?: string;
   xianyuUrl?: string;
+  onOpenMerchantValetPayment?: (trip: any) => void;
 }
 
 const minorStoreKeywords = [
@@ -230,7 +231,8 @@ export default function HomeView({
   driverCoords,
   userRole = '普通司机',
   userTeamCity = '',
-  xianyuUrl = 'https://www.goofish.com'
+  xianyuUrl = 'https://www.goofish.com',
+  onOpenMerchantValetPayment
 }: HomeViewProps) {
   const effectiveCity = (userRole && userRole !== '开发者司机' && userTeamCity) ? userTeamCity : (settings?.city || '银川市');
 
@@ -636,6 +638,15 @@ export default function HomeView({
       try {
         const noteText = applyRemarks.trim() || '身份信息确认填写正确，申请加入小队！';
         
+        // 0. 从被删除名单中移除该手机号（重新申请）
+        setRemovedMemberPhones(prev => {
+          const updated = prev.filter(p => String(p).trim() !== currentPhone);
+          try {
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
+          } catch (_) {}
+          return updated;
+        });
+
         // 1. 本地存储更新 dd_applicants_v2
         const savedApps = localStorage.getItem('dd_applicants_v2');
         const existingApps = savedApps ? JSON.parse(savedApps) : [];
@@ -649,7 +660,7 @@ export default function HomeView({
           selectedReasons: [],
           createdAt: new Date().toLocaleString()
         };
-        const updatedApps = [newApp, ...existingApps.filter((a: any) => a.phone !== currentPhone)];
+        const updatedApps = [newApp, ...existingApps.filter((a: any) => String(a.phone || a.id || '').trim() !== currentPhone)];
         localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
 
         // 2. 本地存储更新 dd_squad_members_v2 (支持国内宝塔面板单机部署)
@@ -666,11 +677,11 @@ export default function HomeView({
             city: effectiveCity || '银川市',
             createdAt: Date.now()
           },
-          ...existingMembers.filter((m: any) => m.phone !== currentPhone)
+          ...existingMembers.filter((m: any) => String(m.phone || m.id || '').trim() !== currentPhone)
         ];
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedMembers));
 
-        // 3. 写入 宝塔面板 HTTP REST API 后端
+        // 3. 写入 宝塔面板 HTTP REST API 后端 与 Firestore
         const appPayload = {
           id: `app-${Date.now()}`,
           name: applyName.trim(),
@@ -679,7 +690,14 @@ export default function HomeView({
           note: noteText,
           city: effectiveCity || '银川市',
           createdAt: new Date().toLocaleString(),
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          approvedBy: '',
+          approvedRole: '',
+          approvalTime: '',
+          rejectedBy: '',
+          rejectedRole: '',
+          rejectionTime: '',
+          selectedReasons: []
         };
         const memberPayload = {
           name: applyName.trim(),
@@ -688,12 +706,16 @@ export default function HomeView({
           status: '待审核',
           note: noteText,
           city: effectiveCity || '银川市',
-          lastUpdatedTime: new Date().toLocaleString()
+          lastUpdatedTime: new Date().toLocaleString(),
+          approvedBy: '',
+          approvedRole: '',
+          approvalTime: ''
         };
 
         if (db) {
-          setDoc(doc(db, 'squad_applications', currentPhone), appPayload, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'squad_members', currentPhone), memberPayload, { merge: true }).catch(() => {});
+          // 直接全量替换申请记录，擦除原先审批历史
+          setDoc(doc(db, 'squad_applications', currentPhone), appPayload).catch(() => {});
+          setDoc(doc(db, 'squad_members', currentPhone), memberPayload).catch(() => {});
         }
 
         const baseUrl = getBaseApiUrl();
@@ -721,47 +743,176 @@ export default function HomeView({
   };
 
   const checkApprovalStatus = () => {
+    const currentPhone = (userPhone || applyPhone || '').trim();
+    if (!currentPhone) return false;
+
+    // 0. 优先判断该账号是否已被管理员从小队删除/移除
+    let removedList: string[] = removedMemberPhones || [];
+    try {
+      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          removedList = Array.from(new Set([...removedList, ...parsed]));
+        }
+      }
+    } catch (_) {}
+
+    if (removedList.some(p => String(p).trim() === currentPhone)) {
+      return false; // 已被删除，必须重新申请
+    }
+
     // 开发者司机、城市老板司机、城市管理司机、城市派单员司机不用申请加入小队就可以接收到真实订单
     if (['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(userRole)) {
       return true;
     }
 
     if (isReapplying) return false;
-    const currentPhone = (userPhone || applyPhone || '').trim();
-    if (!currentPhone) return false;
 
-    // 1. Check in localStorage dd_squad_members_v2
-    try {
-      const savedM = localStorage.getItem('dd_squad_members_v2');
-      if (savedM) {
-        const members = JSON.parse(savedM);
-        const myMember = members.find((m: any) => m.phone === currentPhone);
-        if (myMember && ['已通过', 'approved', '通过'].includes(myMember.status)) {
-          return true;
-        }
-      }
-    } catch (_) {}
-
-    // 2. Check in state squadMembers
-    const memberInState = squadMembers.find((m: any) => m.phone === currentPhone);
-    if (memberInState && ['已通过', 'approved', '通过'].includes(memberInState.status)) {
-      return true;
-    }
-
-    // 3. Check in localStorage dd_applicants_v2
+    // 1. Check in localStorage dd_applicants_v2 first: if status is pending, MUST return false!
     try {
       const savedApps = localStorage.getItem('dd_applicants_v2');
       if (savedApps) {
         const apps = JSON.parse(savedApps);
-        const myApp = apps.find((a: any) => a.phone === currentPhone);
-        if (myApp && ['已通过', 'approved', '通过'].includes(myApp.status)) {
+        const myApp = apps.find((a: any) => String(a.phone || a.id).trim() === currentPhone);
+        if (myApp) {
+          const st = String(myApp.status || '').trim();
+          if (['待审核', 'pending', '审核中'].includes(st)) {
+            return false;
+          }
+          if (['已通过', 'approved', '通过'].includes(st)) {
+            return true;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 2. Check in localStorage dd_squad_members_v2
+    try {
+      const savedM = localStorage.getItem('dd_squad_members_v2');
+      if (savedM) {
+        const members = JSON.parse(savedM);
+        const myMember = members.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
+        if (myMember) {
+          const st = String(myMember.status || '').trim();
+          if (['待审核', 'pending', '审核中'].includes(st)) {
+            return false;
+          }
+          if (['已通过', 'approved', '通过'].includes(st)) {
+            return true;
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Check in state squadMembers
+    const memberInState = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
+    if (memberInState) {
+      const st = String(memberInState.status || '').trim();
+      if (['待审核', 'pending', '审核中'].includes(st)) {
+        return false;
+      }
+      if (['已通过', 'approved', '通过'].includes(st)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const checkPendingStatus = () => {
+    if (isReapplying) return false;
+    const currentPhone = (userPhone || applyPhone || '').trim();
+    if (!currentPhone) return false;
+
+    let removedList: string[] = removedMemberPhones || [];
+    try {
+      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          removedList = Array.from(new Set([...removedList, ...parsed]));
+        }
+      }
+    } catch (_) {}
+
+    if (removedList.some(p => String(p).trim() === currentPhone)) {
+      return false;
+    }
+
+    try {
+      const saved = localStorage.getItem('dd_applicants_v2');
+      if (saved) {
+        const apps = JSON.parse(saved);
+        const myApp = apps.find((a: any) => String(a.phone || a.id).trim() === currentPhone);
+        if (myApp && ['待审核', 'pending', '审核中'].includes(myApp.status)) {
           return true;
         }
       }
     } catch (_) {}
 
+    const member = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
+    if (member && ['待审核', 'pending', '审核中'].includes(member.status)) {
+      return true;
+    }
+
     return false;
   };
+
+  const renderPendingResultView = (onCloseModal: () => void) => (
+    <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
+      <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-5 shrink-0">
+        <button 
+          type="button"
+          onClick={onCloseModal}
+          className="p-1 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c]"
+        >
+          <ArrowLeft className="w-6 h-6" />
+        </button>
+        <h1 className="text-lg font-bold text-[#ff7d00]">审核中</h1>
+        <div className="w-8"></div>
+      </header>
+
+      <main className="flex-grow flex flex-col items-center justify-center px-5 py-8 max-w-md mx-auto w-full text-center">
+        <div className="relative mb-6">
+          <div className="w-24 h-24 rounded-full bg-[#ff7d00]/10 flex items-center justify-center border-4 border-[#ff7d00]/20 shadow-md animate-pulse">
+            <Clock className="w-12 h-12 text-[#ff7d00]" />
+          </div>
+        </div>
+
+        <h2 className="text-2xl font-bold text-[#1a1c1c] mb-1">入队申请审核中</h2>
+        <p className="text-base text-[#5f5e5e] mb-2">您的入队申请已成功提交，正在等待管理审核</p>
+        <div className="text-sm font-semibold text-[#ff7d00] mb-6">后台管理员将在 1 个工作日内完成批复</div>
+
+        <div className="w-full bg-white rounded-2xl p-4 border border-[#dfc0af] shadow-xs text-left mb-6">
+          <div className="flex items-center gap-2 mb-2 text-sm font-bold text-[#1a1c1c]">
+            <Info className="w-4 h-4 text-[#ff7d00]" />
+            <span>提示事项</span>
+          </div>
+          <p className="text-xs text-[#707070] leading-relaxed">
+            如需修改申请信息或重新填写，可点击下方“重新填写申请”按钮更新您的入队材料。
+          </p>
+        </div>
+      </main>
+
+      <footer className="p-5 bg-[#f9f9f9] border-t border-[#dfc0af]/40 shrink-0 flex gap-3 max-w-md mx-auto w-full">
+        <button
+          type="button"
+          onClick={() => setIsReapplying(true)}
+          className="flex-1 py-3.5 px-4 bg-white border border-[#ff7d00] text-[#ff7d00] font-bold rounded-xl active:scale-98 transition-transform cursor-pointer shadow-xs text-center"
+        >
+          重新填写申请
+        </button>
+        <button
+          type="button"
+          onClick={onCloseModal}
+          className="flex-1 py-3.5 px-4 bg-[#ff7d00] text-white font-bold rounded-xl active:scale-98 transition-transform cursor-pointer shadow-md text-center"
+        >
+          返回首页
+        </button>
+      </footer>
+    </div>
+  );
 
   const renderApprovedResultView = (onCloseModal: () => void) => (
     <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
@@ -844,21 +995,37 @@ export default function HomeView({
 
   const checkRejectionStatus = () => {
     if (isReapplying) return false;
-    const currentPhone = userPhone || applyPhone || '';
+    const currentPhone = (userPhone || applyPhone || '').trim();
     if (!currentPhone) return false;
+
+    // 0. 若已被从小队中删除/移除，不显示未通过，直接返回 false 允许重新申请
+    let removedList: string[] = removedMemberPhones || [];
+    try {
+      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          removedList = Array.from(new Set([...removedList, ...parsed]));
+        }
+      }
+    } catch (_) {}
+
+    if (removedList.some(p => String(p).trim() === currentPhone)) {
+      return false;
+    }
 
     try {
       const saved = localStorage.getItem('dd_applicants_v2');
       if (saved) {
         const apps = JSON.parse(saved);
-        const myApp = apps.find((a: any) => a.phone === currentPhone);
+        const myApp = apps.find((a: any) => String(a.phone || a.id).trim() === currentPhone);
         if (myApp && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(myApp.status)) {
           return true;
         }
       }
     } catch (_) {}
 
-    const member = squadMembers.find((m: any) => m.phone === currentPhone);
+    const member = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
     if (member && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(member.status)) {
       return true;
     }
@@ -3455,6 +3622,8 @@ export default function HomeView({
         <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">
           {checkApprovalStatus() ? (
             renderApprovedResultView(() => setShowApplySquadModal(false))
+          ) : checkPendingStatus() ? (
+            renderPendingResultView(() => setShowApplySquadModal(false))
           ) : checkRejectionStatus() ? (
             renderRejectedResultView(() => setShowApplySquadModal(false))
           ) : (
@@ -4933,6 +5102,54 @@ export default function HomeView({
                       </button>
                     </div>
 
+                    {/* 补发代叫费组件按钮 (仅针对 报单转单 和 商户代叫 订单) */}
+                    {(() => {
+                      const t = (order.type || (order as any).orderType || '').trim();
+                      const r = ((order as any).orderRemark || (order as any).remark || '').trim();
+                      const m = ((order as any).merchantName || (order as any).source || '').trim();
+                      const dest = ((order as any).endLocation || (order as any).destination || '').trim();
+                      const isReportTransfer = (
+                        t === '报单转单' ||
+                        r === '报单转单' ||
+                        m === '报单转单' ||
+                        dest.includes('报单转单') ||
+                        (order as any).isReportTransferOrder ||
+                        (order as any).isReportTransfer ||
+                        (order as any).isReportTransferValet
+                      );
+                      const isMerchantValet = (
+                        !isReportTransfer && (
+                          r === '商户代叫' ||
+                          t === '商户代叫' ||
+                          t === '商户代叫订单' ||
+                          t === '后台指派订单' ||
+                          (order as any).isMerchantValetOrder
+                        )
+                      );
+                      if (isReportTransfer || isMerchantValet) {
+                        return (
+                          <div className="-mt-1 mb-3 z-20 pointer-events-auto">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onOpenMerchantValetPayment) {
+                                  onOpenMerchantValetPayment(order);
+                                } else {
+                                  triggerToast('无法打开代叫费发送页面');
+                                }
+                              }}
+                              className="w-full py-2 px-3.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 active:scale-[0.98] text-white rounded-xl text-xs font-bold shadow-xs transition-all flex items-center justify-center space-x-1.5 cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5 text-white" />
+                              <span>补发代叫费</span>
+                            </button>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+
                     {/* Tags */}
                     <div className="flex items-center justify-between pointer-events-none">
                       <span className={`inline-block px-2.5 py-0.5 border rounded-md text-[10px] font-extrabold ${
@@ -4998,6 +5215,12 @@ export default function HomeView({
           onClose={() => setSelectedDetailOrder(null)}
           onDeleteOrder={(orderToDelete) => handleDeleteOrder(orderToDelete)}
           toastNotice={(msg) => triggerToast(msg)}
+          onOpenMerchantValetPayment={(trip) => {
+            setSelectedDetailOrder(null);
+            if (onOpenMerchantValetPayment) {
+              onOpenMerchantValetPayment(trip);
+            }
+          }}
         />
       )}
 
