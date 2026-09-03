@@ -18,6 +18,8 @@ jobs:
   build-android:
     name: 🤖 打包 手机端（司机）Android APK
     runs-on: ubuntu-latest
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -72,9 +74,11 @@ jobs:
       - name: Upload Driver APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 黑湾代驾MAX-手机司机端-Android-v2.0-APK
+          name: HeiWan-Driver-Android-v2.0-APK
           path: 黑湾代驾MAX-手机司机端-Android-v2.0.apk
           retention-days: 14
+          compression-level: 6
+          overwrite: true
 
   # ==========================================
   # 任务 2: 打包 手机端（司机）苹果 iOS IPA
@@ -82,6 +86,8 @@ jobs:
   build-ios:
     name: 🍏 打包 手机端（司机）iOS IPA 应用
     runs-on: macos-14
+    env:
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -147,18 +153,20 @@ jobs:
           SWIFT_DYLIBS=$(find build -name "*.dylib" -o -name "*.framework" | grep -v "App.app" || true)
           if [ -n "$SWIFT_DYLIBS" ]; then
             mkdir -p Payload/App.app/Frameworks
-            find build -name "*.framework" -maxdepth 4 -exec cp -r {} Payload/App.app/Frameworks/ \; || true
+            find build -maxdepth 4 \( -name "*.framework" -o -name "*.dylib" \) -exec cp -r {} Payload/App.app/Frameworks/ \; || true
           fi
 
-          zip -r -0 "黑湾代驾MAX-手机司机端-iOS-v2.0.ipa" Payload
+          zip -r "黑湾代驾MAX-手机司机端-iOS-v2.0.ipa" Payload
           rm -rf Payload
 
       - name: Upload Driver iOS IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 黑湾代驾MAX-手机司机端-iOS-v2.0-IPA
+          name: HeiWan-Driver-iOS-v2.0-IPA
           path: 黑湾代驾MAX-手机司机端-iOS-v2.0.ipa
           retention-days: 14
+          compression-level: 6
+          overwrite: true
 
 
 
