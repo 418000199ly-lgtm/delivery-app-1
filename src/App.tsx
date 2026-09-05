@@ -401,7 +401,7 @@ export default function App() {
         return { ...DEFAULT_SETTINGS, ...loaded };
       }
     } catch (_) {}
-    return DEFAULT_SETTINGS;
+    return { ...DEFAULT_SETTINGS };
   });
 
   const [stats, setStats] = useState<DriverStats>(() => {
@@ -588,10 +588,53 @@ export default function App() {
     return () => unsubscribe();
   }, [userPhone]);
 
+  const [squadRole, setSquadRole] = useState<string>('');
+
+  useEffect(() => {
+    if (!userPhone) {
+      setSquadRole('');
+      return;
+    }
+
+    // Try reading local storage first
+    try {
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      if (saved) {
+        const members = JSON.parse(saved);
+        const m = members.find((mem: any) => String(mem.phone || mem.id).trim() === userPhone.trim());
+        if (m && (m.role || m.userRole)) {
+          setSquadRole(m.role || m.userRole);
+        }
+      }
+    } catch (_) {}
+
+    // Realtime listeners for squad_members & driver_users
+    const unsub1 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
+      if (snap.exists()) {
+        const sm = snap.data();
+        const r = sm?.role || sm?.userRole;
+        if (r) setSquadRole(r);
+      }
+    }, () => {});
+
+    const unsub2 = onSnapshot(doc(db, 'driver_users', userPhone), (snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        const r = d?.role || d?.userRole;
+        if (r) setSquadRole(r);
+      }
+    }, () => {});
+
+    return () => {
+      unsub1();
+      unsub2();
+    };
+  }, [userPhone]);
+
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
   const userRole = (userPhone === '15509601222')
     ? '开发者司机'
-    : (loggedInMember ? loggedInMember.role : '普通司机');
+    : (squadRole || (loggedInMember ? loggedInMember.role : '普通司机'));
   const userTeamCity = loggedInMember ? loggedInMember.city : '';
   const [incomingOrder, setIncomingOrder] = useState<any>(null);
   const [activeOnlineOrder, setActiveOnlineOrder] = useState<any>(null);
@@ -1062,6 +1105,7 @@ export default function App() {
           setSettings(prev => {
             let nextSettings = { ...prev };
             let changed = false;
+
             if (data.vipExpiry !== undefined && prev.vipExpiry !== data.vipExpiry) {
               nextSettings.vipExpiry = data.vipExpiry;
               changed = true;
@@ -1503,14 +1547,20 @@ export default function App() {
       const orderKey = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
 
-      const ended = await isOrderAlreadyEnded(incomingOrder, userPhone);
-      if (ended) {
-        setIncomingOrder(null);
-        triggerToast('⚠️ 该订单已结单，无法重复接单！');
-        return;
-      }
+      try {
+        const ended = await Promise.race([
+          isOrderAlreadyEnded(incomingOrder, userPhone),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1200))
+        ]).catch(() => false);
+
+        if (ended) {
+          setIncomingOrder(null);
+          triggerToast('⚠️ 该订单已结单，无法重复接单！');
+          return;
+        }
+      } catch (_) {}
     }
-    setActiveOnlineOrder(incomingOrder);
+    setActiveOnlineOrder(incomingOrder || { ...trip, id: trip.id || trip.orderNumber });
     setMobileActiveTab('app');
     setCurrentView('create_order');
     setIncomingOrder(null);
@@ -2380,7 +2430,15 @@ export default function App() {
               onLogout={handleLogout}
               driverCoords={driverCoords}
               xianyuUrl={sysXianyuUrl}
-              onOpenMerchantValetPayment={(trip) => setMerchantValetPaymentTrip(trip)}
+              onOpenMerchantValetPayment={(trip) => {
+                const effectiveQr = trip?.paymentQrCode || trip?.merchantPaymentQrCode || trip?.qrCode || trip?.wechatQrCode || settings?.wechatQrCode || '';
+                const mergedTrip = {
+                  ...trip,
+                  paymentQrCode: effectiveQr,
+                  merchantPaymentQrCode: effectiveQr
+                };
+                setMerchantValetPaymentTrip(mergedTrip);
+              }}
             />
             {merchantValetPaymentTrip && (
               <div className="absolute inset-0 z-[99999] bg-[#f9f9f9] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">

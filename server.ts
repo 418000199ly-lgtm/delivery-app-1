@@ -249,10 +249,31 @@ async function startServer() {
       updatedAt: new Date().toISOString()
     };
 
+    const driverUserData = {
+      phone: '15509601222',
+      driverName: '吴彦祖',
+      role: '开发者',
+      userRole: '开发者',
+      isOnline: true,
+      onlineOrdersEnabled: true,
+      isBanned: false,
+      city: '银川市',
+      updatedAt: new Date().toISOString()
+    };
+
     try {
       const dbData = readLocalJsonDb();
       if (!dbData.system_admins) dbData.system_admins = {};
       dbData.system_admins['15509601222'] = superAdminData;
+
+      if (!dbData.driver_users) dbData.driver_users = {};
+      const existingDriver = dbData.driver_users['15509601222'] || {};
+      dbData.driver_users['15509601222'] = {
+        vipExpiry: '待激活',
+        ...driverUserData,
+        ...existingDriver
+      };
+
       writeLocalJsonDb(dbData);
       console.log('✓ [Database] Super Admin 15509601222 verified in local_db.json');
     } catch (e) {
@@ -268,6 +289,15 @@ async function startServer() {
            ON DUPLICATE KEY UPDATE \`data\` = ?`,
           [JSON.stringify(superAdminData), JSON.stringify(superAdminData)]
         );
+
+        const localDriver = readLocalJsonDb()?.driver_users?.['15509601222'] || driverUserData;
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`)
+           VALUES ('driver_users', '15509601222', ?)
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?)`,
+          [JSON.stringify(localDriver), JSON.stringify({ role: '开发者', userRole: '开发者' })]
+        );
+
         conn.release();
         console.log('✓ [Database] Super Admin 15509601222 verified in MySQL');
       } catch (e) {
@@ -622,6 +652,155 @@ async function startServer() {
       return res.json({ success: true, id: docId });
     } catch (err: any) {
       console.error('[DB Proxy DELETE Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Haversine Distance Helper
+  function calculateHaversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371; // Earth's radius in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  // 6. Server-Side Nearest Driver Dispatch Engine (阿里云高可用服务端精准距离派单)
+  app.post('/api/dispatch/nearest', async (req, res) => {
+    try {
+      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3.0 } = req.body || {};
+      const pLat = Number(pickupLat);
+      const pLng = Number(pickupLng);
+
+      if (!orderData || !orderData.id) {
+        return res.status(400).json({ success: false, error: 'Missing orderData' });
+      }
+
+      const dbData = readLocalJsonDb();
+      let driverList: any[] = [];
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
+            ['driver_users']
+          );
+          driverList = (rows || []).map((r: any) => {
+            const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            return { phone: r.doc_id, data };
+          });
+        } catch (_) {}
+      }
+
+      if (driverList.length === 0) {
+        const colData = dbData['driver_users'] || {};
+        driverList = Object.keys(colData).map((k) => ({ phone: k, data: colData[k] }));
+      }
+
+      // Candidate drivers filter
+      const candidates: Array<{ phone: string; name: string; distKm: number; data: any }> = [];
+
+      driverList.forEach(({ phone, data }) => {
+        if (!data || data.isBanned) return;
+        if (reporterPhone && (phone === reporterPhone || phone === orderData.passengerPhone)) return;
+
+        const isOnline = Boolean(data.isOnline || data.onlineOrdersEnabled);
+        if (!isOnline) return;
+
+        const isBusy = Boolean(data.hasActiveOrder || data.currentStatus === 'serving');
+        if (isBusy) return;
+
+        let dLat = Number(data.lat);
+        let dLng = Number(data.lng);
+
+        if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
+          dLat = 38.487167;
+          dLng = 106.230910;
+        }
+
+        const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) 
+          ? calculateHaversineKm(pLat, pLng, dLat, dLng)
+          : 0.5;
+
+        if (distKm <= radiusKm) {
+          candidates.push({
+            phone,
+            name: data.driverName || data.name || '代驾司机',
+            distKm,
+            data
+          });
+        }
+      });
+
+      const orderId = orderData.id;
+
+      if (candidates.length > 0) {
+        // Find closest driver
+        const minDist = Math.min(...candidates.map(c => c.distKm));
+        const tiedCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) < 0.001);
+        const selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
+
+        const distText = selected.distKm < 0.05 ? '0米' : `${(selected.distKm * 1000).toFixed(0)}米`;
+        const dispatchedPayload = {
+          ...orderData,
+          status: 'submitted',
+          isValetOrder: true,
+          isPlatformDispatch: true,
+          dispatchedDriverPhone: selected.phone,
+          dispatchedDriverName: selected.name,
+          distanceText: distText
+        };
+
+        // Write directly to passenger_links[selected.phone]
+        if (!dbData['passenger_links']) dbData['passenger_links'] = {};
+        dbData['passenger_links'][selected.phone] = dispatchedPayload;
+
+        // Save to merchant_orders[orderId]
+        if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+        dbData['merchant_orders'][orderId] = {
+          ...dispatchedPayload,
+          status: 'dispatched',
+          statusCategory: '已指派'
+        };
+
+        writeLocalJsonDb(dbData);
+
+        return res.json({
+          success: true,
+          isHall: false,
+          dispatchedDriverPhone: selected.phone,
+          dispatchedDriverName: selected.name,
+          distKm: selected.distKm,
+          distanceText: distText
+        });
+      } else {
+        // Order Lobby fallback
+        const hallPayload = {
+          ...orderData,
+          status: 'hall',
+          statusCategory: '等待接单',
+          in_hall: true,
+          isValetOrder: true,
+          isPlatformDispatch: true
+        };
+
+        if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+        dbData['merchant_orders'][orderId] = hallPayload;
+
+        writeLocalJsonDb(dbData);
+
+        return res.json({
+          success: true,
+          isHall: true,
+          message: '方圆3公里内无在线空闲司机，已转入选单大厅'
+        });
+      }
+    } catch (err: any) {
+      console.error('[Dispatch Nearest Exception]:', err);
       res.status(500).json({ success: false, error: err.message });
     }
   });

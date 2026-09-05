@@ -328,16 +328,19 @@ export default function HomeView({
       if (!phone) return;
       if (removedSet.has(phone) || removedSet.has(name) || removedSet.has(String(m.id))) return;
 
-      const isMerchant = m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家') || phone === '15121904440';
+      // 仅剔除明确为商户、商家的角色账号
+      const roleStr = String(m.role || m.userRole || '').trim();
+      const isMerchant = roleStr.includes('商户') || roleStr.includes('商家');
       if (isMerchant) return;
 
-      const st = m.status || m.approvalStatus || '已通过';
+      const st = String(m.status || m.approvalStatus || '已通过').trim();
       if (['已拒绝', 'rejected', '拒绝'].includes(st)) return;
+      if (['待审核', 'pending', '审核中'].includes(st)) return;
 
       activeDriverPhones.add(phone);
     });
 
-    // Ensure default admin/developer driver 15509601222 is included if not removed
+    // 包含默认团队管理/开发者账号 15509601222 (若未被剔除)
     if (!removedSet.has('15509601222')) {
       activeDriverPhones.add('15509601222');
     }
@@ -404,24 +407,40 @@ export default function HomeView({
         if (saved.length === 0) {
           setHallOrders([]);
         } else {
-          const validIds = new Set(
-            saved
-              .filter((o: any) => 
-                o && 
-                o.in_hall !== false && 
-                (o.status === 'hall' || (!o.status && o.in_hall === true)) && 
-                !o.dispatchedDriverPhone &&
-                o.status !== 'cancelled' && 
-                o.status !== 'dispatched' && 
-                o.status !== 'claimed' && 
-                o.status !== 'accepted' && 
-                o.status !== 'taken' && 
-                o.status !== 'arrived' && 
-                o.status !== 'serving' && 
-                o.status !== 'completed'
-              )
-              .map((o: any) => o.id || o.orderId)
-          );
+          const now = Date.now();
+          const TIMEOUT_20_MIN = 20 * 60 * 1000;
+          const validOrders = saved.filter((o: any) => {
+            if (!o) return false;
+            const orderTime = Number(o.timestamp || o.createdAt || o.createTime || 0);
+            const age = orderTime > 0 ? (now - orderTime) : (25 * 60 * 1000); // Un-timestamped orders treat as expired
+            if (age >= TIMEOUT_20_MIN) return false;
+            return (
+              o.in_hall !== false && 
+              (o.status === 'hall' || (!o.status && o.in_hall === true)) && 
+              !o.dispatchedDriverPhone &&
+              o.status !== 'cancelled' && 
+              o.status !== 'dispatched' && 
+              o.status !== 'claimed' && 
+              o.status !== 'accepted' && 
+              o.status !== 'taken' && 
+              o.status !== 'arrived' && 
+              o.status !== 'serving' && 
+              o.status !== 'completed'
+            );
+          });
+
+          // Clean up expired or invalid orders from localStorage
+          const cleanSaved = saved.filter((o: any) => {
+            if (!o) return false;
+            const orderTime = Number(o.timestamp || o.createdAt || o.createTime || 0);
+            const age = orderTime > 0 ? (now - orderTime) : (25 * 60 * 1000);
+            return age < TIMEOUT_20_MIN && o.status !== 'cancelled' && o.status !== 'completed';
+          });
+          if (cleanSaved.length !== saved.length) {
+            localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(cleanSaved));
+          }
+
+          const validIds = new Set(validOrders.map((o: any) => o.id || o.orderId));
           setHallOrders((prev) => prev.filter((ord: any) => validIds.has(ord.id) || validIds.has(ord.orderId)));
         }
       } catch (_) {
@@ -457,12 +476,14 @@ export default function HomeView({
           );
 
           if (isHallOrder) {
-            const age = data.timestamp ? (now - data.timestamp) : 0;
+            const orderTime = Number(data.timestamp || data.createdAt || data.createTime || 0);
+            const age = orderTime > 0 ? (now - orderTime) : (25 * 60 * 1000); // Un-timestamped orders treat as expired
             if (age >= TIMEOUT_20_MIN) {
               // Auto cancel expired hall orders after 20 minutes
               setDoc(doc(db, 'merchant_orders', docSnap.id), {
                 status: 'cancelled',
                 statusCategory: '已取消',
+                in_hall: false,
                 cancelReason: '选单大厅20分钟无人接单，系统自动取消',
                 cancelledAt: now
               }, { merge: true }).catch(() => {});
@@ -769,25 +790,16 @@ export default function HomeView({
 
     if (isReapplying) return false;
 
-    // 1. Check in localStorage dd_applicants_v2 first: if status is pending, MUST return false!
-    try {
-      const savedApps = localStorage.getItem('dd_applicants_v2');
-      if (savedApps) {
-        const apps = JSON.parse(savedApps);
-        const myApp = apps.find((a: any) => String(a.phone || a.id).trim() === currentPhone);
-        if (myApp) {
-          const st = String(myApp.status || '').trim();
-          if (['待审核', 'pending', '审核中'].includes(st)) {
-            return false;
-          }
-          if (['已通过', 'approved', '通过'].includes(st)) {
-            return true;
-          }
-        }
+    // 1. 优先检查 state squadMembers (云端/接口实时同步到的最新数据)
+    const memberInState = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
+    if (memberInState) {
+      const st = String(memberInState.status || '').trim();
+      if (['已通过', 'approved', '通过'].includes(st)) {
+        return true;
       }
-    } catch (_) {}
+    }
 
-    // 2. Check in localStorage dd_squad_members_v2
+    // 2. 检查 localStorage dd_squad_members_v2
     try {
       const savedM = localStorage.getItem('dd_squad_members_v2');
       if (savedM) {
@@ -795,9 +807,6 @@ export default function HomeView({
         const myMember = members.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
         if (myMember) {
           const st = String(myMember.status || '').trim();
-          if (['待审核', 'pending', '审核中'].includes(st)) {
-            return false;
-          }
           if (['已通过', 'approved', '通过'].includes(st)) {
             return true;
           }
@@ -805,17 +814,20 @@ export default function HomeView({
       }
     } catch (_) {}
 
-    // 3. Check in state squadMembers
-    const memberInState = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
-    if (memberInState) {
-      const st = String(memberInState.status || '').trim();
-      if (['待审核', 'pending', '审核中'].includes(st)) {
-        return false;
+    // 3. 检查 localStorage dd_applicants_v2
+    try {
+      const savedApps = localStorage.getItem('dd_applicants_v2');
+      if (savedApps) {
+        const apps = JSON.parse(savedApps);
+        const myApp = apps.find((a: any) => String(a.phone || a.id).trim() === currentPhone);
+        if (myApp) {
+          const st = String(myApp.status || '').trim();
+          if (['已通过', 'approved', '通过'].includes(st)) {
+            return true;
+          }
+        }
       }
-      if (['已通过', 'approved', '通过'].includes(st)) {
-        return true;
-      }
-    }
+    } catch (_) {}
 
     return false;
   };
@@ -837,6 +849,11 @@ export default function HomeView({
     } catch (_) {}
 
     if (removedList.some(p => String(p).trim() === currentPhone)) {
+      return false;
+    }
+
+    // 若已经通过审核，不属于 pending
+    if (checkApprovalStatus()) {
       return false;
     }
 
@@ -1242,18 +1259,116 @@ export default function HomeView({
     };
   };
 
+  // 实时从后端 API 和云端同步最新的小队成员与申请数据
+  const fetchLatestSquadData = async () => {
+    try {
+      const baseUrl = getBaseApiUrl();
+      const resMembers = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+      let apiMembers: any[] = [];
+      if (resMembers.ok) {
+        const data = await resMembers.json();
+        if (Array.isArray(data)) apiMembers = data;
+      }
+
+      const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store' });
+      let apiApps: any[] = [];
+      if (resApps.ok) {
+        const data = await resApps.json();
+        if (Array.isArray(data)) apiApps = data;
+      }
+
+      if (apiMembers.length > 0 || apiApps.length > 0) {
+        const map = new Map<string, any>();
+        apiApps.forEach(a => {
+          const phone = String(a.phone || a.id || '').trim();
+          if (phone) {
+            const existing = map.get(phone) || {};
+            map.set(phone, { ...existing, ...a });
+          }
+        });
+        apiMembers.forEach(m => {
+          const phone = String(m.phone || m.id || '').trim();
+          if (phone) {
+            const existing = map.get(phone) || {};
+            map.set(phone, { ...existing, ...m });
+          }
+        });
+        const mergedList = Array.from(map.values());
+
+        // 如果包含当前登录用户，把最新审核状态同步写回 localStorage，修正偏离数据
+        const currentPhone = (userPhone || applyPhone || '').trim();
+        if (currentPhone) {
+          const myRecord = mergedList.find(item => String(item.phone || item.id).trim() === currentPhone);
+          if (myRecord && myRecord.status) {
+            try {
+              const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+              const idxM = savedM.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
+              if (idxM >= 0) savedM[idxM] = { ...savedM[idxM], ...myRecord };
+              else savedM.push(myRecord);
+              localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedM));
+
+              const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+              const idxA = savedA.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
+              if (idxA >= 0) savedA[idxA] = { ...savedA[idxA], ...myRecord };
+              else savedA.push(myRecord);
+              localStorage.setItem('dd_applicants_v2', JSON.stringify(savedA));
+            } catch (_) {}
+          }
+        }
+
+        setSquadMembers(prev => {
+          const existingMap = new Map<string, any>();
+          prev.forEach(m => {
+            const key = String(m.phone || m.id || '').trim();
+            if (key) existingMap.set(key, m);
+          });
+          mergedList.forEach(m => {
+            const key = String(m.phone || m.id || '').trim();
+            if (key) {
+              const existing = existingMap.get(key) || {};
+              existingMap.set(key, { ...existing, ...m });
+            }
+          });
+          return Array.from(existingMap.values());
+        });
+      }
+    } catch (_) {}
+  };
+
   // Real-time synchronization for squad members
   useEffect(() => {
+    fetchLatestSquadData();
+    const interval = setInterval(() => {
+      fetchLatestSquadData();
+    }, 5000);
+
     const q = collection(db, 'squad_members');
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
         list.push({ id: docSnap.id, ...docSnap.data() });
       });
-      setSquadMembers(list);
+      setSquadMembers(prev => {
+        const map = new Map<string, any>();
+        prev.forEach(m => {
+          const key = String(m.phone || m.id || '').trim();
+          if (key) map.set(key, m);
+        });
+        list.forEach(m => {
+          const key = String(m.phone || m.id || '').trim();
+          if (key) {
+            const existing = map.get(key) || {};
+            map.set(key, { ...existing, ...m });
+          }
+        });
+        return Array.from(map.values());
+      });
     });
-    return () => unsubscribe();
-  }, []);
+    return () => {
+      clearInterval(interval);
+      unsubscribe();
+    };
+  }, [userPhone]);
 
   // Real-time synchronization for team config (squad name)
   useEffect(() => {
@@ -2095,7 +2210,7 @@ export default function HomeView({
     try {
       await deleteDoc(doc(db, 'squad_members', phone));
 
-      // Clean local storage
+      // Clean local storage & add to removed list
       try {
         const savedM = localStorage.getItem('dd_squad_members_v2');
         if (savedM) {
@@ -2109,7 +2224,16 @@ export default function HomeView({
           const filteredA = listA.filter((a: any) => a.phone !== phone && a.id !== phone);
           localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
         }
+
+        const savedRemoved = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
+        if (!savedRemoved.includes(phone)) {
+          savedRemoved.push(phone);
+          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
+        }
+        setRemovedMemberPhones(savedRemoved);
       } catch (_) {}
+
+      setSquadMembers(prev => prev.filter((m: any) => String(m.phone || m.id).trim() !== phone));
       
       if (!phoneToKick || phoneToKick === searchSquadPhone.trim()) {
         setSearchSquadResult(prev => prev ? {
@@ -2868,14 +2992,43 @@ export default function HomeView({
 
               // 权限校验：
               // 开发者司机、城市老板司机、城市管理司机、城市派单员司机 及 管理团队人员 可点击打开【商户代叫派单系统】
-              // 小队内普通司机 以及 非小队司机 点击【商户代叫】按钮后，提示：管理权限不足
+              // 商户、商家 以及 普通司机 点击【商户代叫】按钮后，提示：管理权限不足
               const currentPhone = (userPhone || (settings as any)?.phone || '').trim();
-              const currentRole = userRole || (settings as any)?.role || '';
-
-              const squadMemberObj = (squadMembers || []).find((m: any) => m && m.phone === currentPhone);
-              const effectiveRole = String(squadMemberObj?.role || currentRole || '');
-
               const isSuperDev = currentPhone === '15509601222';
+
+              let effectiveRoles: string[] = [];
+              if (userRole) effectiveRoles.push(userRole);
+              if ((settings as any)?.role) effectiveRoles.push((settings as any).role);
+
+              // 查找小队成员中的角色记录
+              const squadMemberObj = (squadMembers || []).find((m: any) => {
+                const p = String(m?.phone || m?.id || '').trim();
+                return p && p === currentPhone;
+              });
+              if (squadMemberObj) {
+                if (squadMemberObj.role) effectiveRoles.push(squadMemberObj.role);
+                if (squadMemberObj.userRole) effectiveRoles.push(squadMemberObj.userRole);
+              }
+
+              // 进一步查找本地存储中的最新角色记录
+              try {
+                const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+                const localObj = savedM.find((m: any) => String(m?.phone || m?.id || '').trim() === currentPhone);
+                if (localObj) {
+                  if (localObj.role) effectiveRoles.push(localObj.role);
+                  if (localObj.userRole) effectiveRoles.push(localObj.userRole);
+                }
+              } catch (_) {}
+
+              try {
+                const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+                const localAppObj = savedA.find((m: any) => String(m?.phone || m?.id || '').trim() === currentPhone);
+                if (localAppObj) {
+                  if (localAppObj.role) effectiveRoles.push(localAppObj.role);
+                  if (localAppObj.userRole) effectiveRoles.push(localAppObj.userRole);
+                }
+              } catch (_) {}
+
               const allowedRoles = [
                 '开发者司机',
                 '开发者',
@@ -2891,7 +3044,7 @@ export default function HomeView({
                 '队长'
               ];
 
-              const canAccess = isSuperDev || allowedRoles.some(r => effectiveRole.includes(r));
+              const canAccess = isSuperDev || effectiveRoles.some(r => allowedRoles.some(ar => String(r).includes(ar)));
 
               if (!canAccess) {
                 setLocalAlert({
@@ -2924,6 +3077,7 @@ export default function HomeView({
                 });
                 return;
               }
+              fetchLatestSquadData();
               setShowDispatchModal(true);
             }}
             className="flex flex-col items-center justify-center relative transition-all duration-200 group cursor-pointer"
@@ -3038,8 +3192,8 @@ export default function HomeView({
                           }`}>
                             {isReportTransfer ? '【报单转单】' : '【商户代叫】'}
                           </span>
-                          <span className="text-xs font-black text-slate-800 tracking-wider">
-                            起点：****
+                          <span className="text-xs font-black text-slate-800 tracking-wider truncate max-w-[180px]">
+                            起点：{ord.startLocation || ord.originName || ord.passengerAddress || '代驾起点'}
                           </span>
                         </div>
 
@@ -3437,6 +3591,10 @@ export default function HomeView({
         ) : checkApprovalStatus() ? (
           <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">
             {renderApprovedResultView(() => setShowDispatchModal(false))}
+          </div>
+        ) : checkPendingStatus() ? (
+          <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">
+            {renderPendingResultView(() => setShowDispatchModal(false))}
           </div>
         ) : checkRejectionStatus() ? (
           <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">

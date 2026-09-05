@@ -43,7 +43,7 @@ export default function MerchantValetPaymentView({
     let isMounted = true;
 
     // Check initial QR code from trip or localStorage immediately
-    const initialQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || '';
+    const initialQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || (trip as any)?.qrCode || (trip as any)?.wechatQrCode || (trip as any)?.wechatClean || (trip as any)?.dispatcherQr || '';
     if (initialQr) {
       setDispatcherQr(initialQr);
     } else if (rawDispatchedBy) {
@@ -55,27 +55,49 @@ export default function MerchantValetPaymentView({
 
     // High-availability Baota Node DB API polling for Mainland China direct server storage (No Firebase)
     const queryBaotaQr = async () => {
+      if (!isMounted) return;
       const baseUrl = getBaseApiUrl();
       const timeToken = Date.now();
       const orderId = (trip as any)?.orderId || (trip as any)?.orderNumber || trip?.id;
 
-      let targetPhone = rawDispatchedBy;
+      const userP = settings?.phoneNumber || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '';
+      const candidatePhones = Array.from(new Set([
+        rawDispatchedBy,
+        (trip as any)?.reporterPhone,
+        (trip as any)?.dispatchedByPhone,
+        (trip as any)?.dispatchedBy,
+        (trip as any)?.dispatcherPhone,
+        (trip as any)?.adminPhone,
+        (trip as any)?.merchantPhone,
+        (trip as any)?.creatorPhone,
+        (trip as any)?.driverPhone,
+        (trip as any)?.acceptDriverPhone,
+        userP
+      ].map(p => (p || '').toString().trim()).filter(Boolean)));
 
       // 1. First attempt: Query merchant_orders on Baota server using orderId / orderNumber to retrieve real-time order record
       const orderCandidates = Array.from(new Set([orderId, (trip as any)?.orderNumber, trip?.id].filter(Boolean)));
       for (const candidateId of orderCandidates) {
+        if (!isMounted) return;
         try {
-          const resOrder = await fetch(`${baseUrl}/api/db/get?col=merchant_orders&id=${encodeURIComponent(candidateId)}&_t=${timeToken}`, { cache: 'no-store' });
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const resOrder = await fetch(`${baseUrl}/api/db/get?col=merchant_orders&id=${encodeURIComponent(candidateId)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+          clearTimeout(timeoutId);
           if (resOrder.ok) {
             const jsonOrder = await resOrder.json();
             if (isMounted && jsonOrder?.data) {
               const orderData = jsonOrder.data;
-              if (orderData.paymentQrCode && orderData.paymentQrCode.trim()) {
-                setDispatcherQr(orderData.paymentQrCode);
+              const foundOrderQr = orderData.paymentQrCode || orderData.merchantPaymentQrCode || orderData.qrCode || orderData.wechatQrCode;
+              if (foundOrderQr && foundOrderQr.trim()) {
+                setDispatcherQr(foundOrderQr);
                 return;
               }
               if (orderData.dispatchedByPhone || orderData.adminPhone || orderData.dispatchedBy) {
-                targetPhone = (orderData.dispatchedByPhone || orderData.adminPhone || orderData.dispatchedBy).toString().trim();
+                const fetchedPhone = (orderData.dispatchedByPhone || orderData.adminPhone || orderData.dispatchedBy).toString().trim();
+                if (fetchedPhone && !candidatePhones.includes(fetchedPhone)) {
+                  candidatePhones.unshift(fetchedPhone);
+                }
               }
             }
           }
@@ -89,76 +111,44 @@ export default function MerchantValetPaymentView({
           orderCandidates.some(cid => o.id === cid || o.orderId === cid || o.orderNo === cid)
         );
         if (match) {
-          if (match.paymentQrCode && match.paymentQrCode.trim()) {
-            setDispatcherQr(match.paymentQrCode);
+          const foundMatchQr = match.paymentQrCode || match.merchantPaymentQrCode || match.qrCode || match.wechatQrCode;
+          if (foundMatchQr && foundMatchQr.trim()) {
+            setDispatcherQr(foundMatchQr);
             return;
-          }
-          if (match.dispatchedByPhone || match.adminPhone || match.dispatchedBy) {
-            targetPhone = (match.dispatchedByPhone || match.adminPhone || match.dispatchedBy).toString().trim();
           }
         }
       } catch (_) {}
 
-      if (!targetPhone) return;
+      // Loop through candidate phones to query QR codes from Baota collections
+      for (const targetPhone of candidatePhones) {
+        if (!targetPhone || !isMounted) continue;
 
-      const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) || localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`);
-      if (localPhoneQr) {
-        setDispatcherQr(localPhoneQr);
+        const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) || localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`);
+        if (localPhoneQr) {
+          setDispatcherQr(localPhoneQr);
+          return;
+        }
+
+        // Try query collections on Baota server
+        for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'merchant_users', 'driver_users']) {
+          if (!isMounted) return;
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (res.ok) {
+              const json = await res.json();
+              const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
+              if (isMounted && foundQr) {
+                setDispatcherQr(foundQr);
+                localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, foundQr);
+                return;
+              }
+            }
+          } catch (_) {}
+        }
       }
-
-      // 2. Try dispatch_qrs collection on Baota server
-      try {
-        const res1 = await fetch(`${baseUrl}/api/db/get?col=dispatch_qrs&id=${encodeURIComponent(targetPhone)}&_t=${timeToken}`, { cache: 'no-store' });
-        if (res1.ok) {
-          const json1 = await res1.json();
-          if (isMounted && json1?.data?.qrCode) {
-            setDispatcherQr(json1.data.qrCode);
-            localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, json1.data.qrCode);
-            return;
-          }
-        }
-      } catch (_) {}
-
-      // 3. Try dispatch_qrcodes collection on Baota server
-      try {
-        const res2 = await fetch(`${baseUrl}/api/db/get?col=dispatch_qrcodes&id=${encodeURIComponent(targetPhone)}&_t=${timeToken}`, { cache: 'no-store' });
-        if (res2.ok) {
-          const json2 = await res2.json();
-          if (isMounted && json2?.data?.qrCode) {
-            setDispatcherQr(json2.data.qrCode);
-            localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, json2.data.qrCode);
-            return;
-          }
-        }
-      } catch (_) {}
-
-      // 4. Try merchant_users collection on Baota server
-      try {
-        const res3 = await fetch(`${baseUrl}/api/db/get?col=merchant_users&id=${encodeURIComponent(targetPhone)}&_t=${timeToken}`, { cache: 'no-store' });
-        if (res3.ok) {
-          const json3 = await res3.json();
-          const foundQr = json3?.data?.wechatQrCode || json3?.data?.qrCode;
-          if (isMounted && foundQr) {
-            setDispatcherQr(foundQr);
-            localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, foundQr);
-            return;
-          }
-        }
-      } catch (_) {}
-
-      // 5. Try driver_users collection on Baota server for order creator QR
-      try {
-        const res4 = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${encodeURIComponent(targetPhone)}&_t=${timeToken}`, { cache: 'no-store' });
-        if (res4.ok) {
-          const json4 = await res4.json();
-          const foundQr = json4?.data?.wechatQrCode || json4?.data?.qrCode || json4?.data?.wechatClean;
-          if (isMounted && foundQr) {
-            setDispatcherQr(foundQr);
-            localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, foundQr);
-            return;
-          }
-        }
-      } catch (_) {}
     };
 
     queryBaotaQr();
@@ -199,13 +189,46 @@ export default function MerchantValetPaymentView({
         const parsed = JSON.parse(cachedSet);
         if (parsed?.wechatQrCode) return parsed.wechatQrCode;
       }
+      return localStorage.getItem('dd_user_wechat_qr') ||
+             localStorage.getItem('dd_dispatch_wechat_qr') ||
+             (userP ? localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) : '') ||
+             '';
     } catch (_) {}
     return '';
   })();
 
-  const qrImage = isReportTransfer
-    ? (dispatcherQr || (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || (isCreatorSelf ? driverOwnQr : ''))
-    : (dispatcherQr || (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || '');
+  const tripDirectQr = (
+    (trip as any)?.paymentQrCode ||
+    (trip as any)?.merchantPaymentQrCode ||
+    (trip as any)?.qrCode ||
+    (trip as any)?.wechatQrCode ||
+    (trip as any)?.wechatClean ||
+    (trip as any)?.dispatcherQr ||
+    ''
+  ).toString().trim();
+
+  const localDispatchedByQr = rawDispatchedBy ? (
+    localStorage.getItem(`dd_dispatch_wechat_qr_${rawDispatchedBy}`) ||
+    localStorage.getItem(`dd_dispatch_fee_qr_${rawDispatchedBy}`) ||
+    ''
+  ) : '';
+
+  const globalFallbackQr = (typeof window !== 'undefined' ? (
+    localStorage.getItem('dd_user_wechat_qr') ||
+    localStorage.getItem('dd_dispatch_wechat_qr') ||
+    localStorage.getItem('dd_last_payment_qr') ||
+    ''
+  ) : '').trim();
+
+  // Multi-tier fallback chain ensures current order payment QR code is ALWAYS shown
+  const qrImage = (
+    dispatcherQr ||
+    tripDirectQr ||
+    localDispatchedByQr ||
+    driverOwnQr ||
+    globalFallbackQr ||
+    ''
+  ).trim();
 
   return (
     <div className="w-full h-full bg-[#f9f9f9] text-[#1a1c1c] select-none font-sans flex flex-col justify-between overflow-hidden relative z-50">

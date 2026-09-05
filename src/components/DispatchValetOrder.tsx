@@ -1434,10 +1434,16 @@ export default function DispatchValetOrder({
     // Update local React state immediately so UI updates without external database/network dependency
     setSquadMembers(prev => {
       const exists = prev.some(m => m.phone === targetMember.phone);
+      let updatedList = [];
       if (exists) {
-        return prev.map(m => m.phone === targetMember.phone ? { ...m, role: newRole, userRole: newRole } : m);
+        updatedList = prev.map(m => m.phone === targetMember.phone ? { ...m, role: newRole, userRole: newRole } : m);
+      } else {
+        updatedList = [...prev, { ...targetMember, role: newRole, userRole: newRole }];
       }
-      return [...prev, { ...targetMember, role: newRole, userRole: newRole }];
+      try {
+        localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
+      } catch (_) {}
+      return updatedList;
     });
 
     // Also sync to applicants list if present
@@ -2536,12 +2542,10 @@ export default function DispatchValetOrder({
       const merchantDispatcherName = isRealPerson ? adminProfile.name : `商户商家${phoneLast4}`;
       const mgmtRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'];
       let currentAdminRole = '商户、商家';
-      if (currentPhone !== '15121904440') {
-        if (adminProfile?.role && mgmtRoles.includes(adminProfile.role)) {
-          currentAdminRole = adminProfile.role;
-        } else if (userRole && mgmtRoles.includes(userRole)) {
-          currentAdminRole = userRole;
-        }
+      if (adminProfile?.role && mgmtRoles.includes(adminProfile.role)) {
+        currentAdminRole = adminProfile.role;
+      } else if (userRole && mgmtRoles.includes(userRole)) {
+        currentAdminRole = userRole;
       }
 
       const effectiveQr = wechatQrUrl || MOCK_ALBUM_PHOTOS[0]?.dataUrl || '';
@@ -3620,12 +3624,17 @@ export default function DispatchValetOrder({
                                    m.status === '已拒绝' ? 'bg-rose-100 text-rose-800 border-rose-200' :
                                    'bg-amber-100 text-amber-800 border-amber-200';
 
+            const approverName = (m.approvedBy && m.approvedBy !== '系统自动审批') ? m.approvedBy : currentAdminName;
+            const approverRole = (m.approvedRole && m.approvedRole !== '系统自动') ? m.approvedRole : currentAdminRole;
+
             const footprint = isMe
               ? '超级管理员（实时同步派单与调度日志）'
               : m.status === '已通过'
-              ? '由系统自动审批通过'
+              ? (m.approvedBy === '系统自动审批' 
+                  ? '由系统自动审批通过' 
+                  : `由${approverName} (${approverRole}) 审批通过`)
               : m.status === '已拒绝'
-              ? `由${m.approvedBy || currentAdminName} (${m.approvedRole || currentAdminRole}) 审批拒绝`
+              ? `由${approverName} (${approverRole}) 审批拒绝`
               : `待${currentAdminName} (${currentAdminRole}) 审核批复中`;
 
             return {
@@ -3858,7 +3867,7 @@ export default function DispatchValetOrder({
                     return !(item.role?.includes('商户') || item.role?.includes('商家'));
                   }
                   if (memberCategoryTab === '管理层') {
-                    return (item.role?.includes('管理') || item.role?.includes('老板') || item.role?.includes('开发者')) && !(item.role?.includes('商户') || item.role?.includes('商家'));
+                    return (item.role?.includes('管理') || item.role?.includes('老板') || item.role?.includes('开发者') || item.role?.includes('派单') || item.role?.includes('指挥') || item.role?.includes('队长')) && !(item.role?.includes('商户') || item.role?.includes('商家'));
                   }
                   if (memberCategoryTab === '司机') {
                     return (item.role?.includes('司机') || item.role === '普通司机') && !(item.role?.includes('商户') || item.role?.includes('商家'));
@@ -4322,10 +4331,10 @@ export default function DispatchValetOrder({
               const orderAdminRole = selectedOrderDetail.adminRole || selectedOrderDetail.dispatcherRole;
 
               let displayRole = '商户、商家';
-              if (fullPhone !== '15121904440' && orderAdminRole && mgmtRoles.includes(orderAdminRole)) {
+              if (orderAdminRole && mgmtRoles.includes(orderAdminRole)) {
                 displayRole = orderAdminRole;
-              } else if (fullPhone !== '15121904440') {
-                const sm = squadMembers.find((m: any) => m.phone === fullPhone);
+              } else {
+                const sm = squadMembers.find((m: any) => String(m.phone || m.id).trim() === fullPhone.trim());
                 if (sm && sm.role && mgmtRoles.includes(sm.role)) {
                   displayRole = sm.role;
                 }

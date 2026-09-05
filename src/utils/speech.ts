@@ -67,9 +67,13 @@ function getLocalAudioPath(text: string): string | null {
   }
 
   // Keyword fuzzy matching for dynamic voice phrases when offline or on Android emulator
-  if (clean.includes('报单转单')) return 'report_transfer.mp3';
-  if (clean.includes('系统派单')) return 'system_dispatch.mp3';
-  if (clean.includes('新订单') || clean.includes('代驾派单') || clean.includes('收到新订单')) return 'background_alert.mp3';
+  // Note: For long dynamic sentences containing specific route/price details, do NOT intercept with notification-only chime MP3!
+  const isDetailedSentence = clean.length > 12 && (clean.includes('从') || clean.includes('到') || clean.includes('预估') || clean.includes('金额') || clean.includes('距离'));
+  if (!isDetailedSentence) {
+    if (clean.includes('报单转单')) return 'report_transfer.mp3';
+    if (clean.includes('系统派单')) return 'system_dispatch.mp3';
+    if (clean.includes('新订单') || clean.includes('代驾派单') || clean.includes('收到新订单')) return 'background_alert.mp3';
+  }
   if (clean.includes('上线')) return 'online.mp3';
   if (clean.includes('下线')) return 'offline.mp3';
   if (clean.includes('接单')) return 'accept_order.mp3';

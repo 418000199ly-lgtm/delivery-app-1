@@ -295,47 +295,80 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
   const [isAccepting, setIsAccepting] = useState(false);
 
-  const handleConfirmOrder = async () => {
+  const handleConfirmOrder = async (e?: React.SyntheticEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     if (isAccepting) return;
     setIsAccepting(true);
-    stopSpeaking();
 
-    // Prevent duplicate accepting of already ended/completed orders
-    const ended = await isOrderAlreadyEnded(order);
-    if (ended) {
-      speakText('该订单已结单，无法重复接单');
-      onDecline();
+    try {
+      stopSpeaking();
+
+      // Prevent duplicate accepting of already ended/completed orders with 1.2s timeout race
+      const ended = await Promise.race([
+        isOrderAlreadyEnded(order),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1200))
+      ]).catch(() => false);
+
+      if (ended) {
+        speakText('该订单已结单，无法重复接单');
+        onDecline();
+        return;
+      }
+
+      speakText('接单成功，请前往接驾地点');
+      const orderNumber = (order as any)?.id || (order as any)?.orderId || ('DD' + Date.now());
+      const trip: TripState = {
+        id: orderNumber,
+        orderNumber: orderNumber,
+        passengerName: order.isValetOrder ? '商户代叫乘客' : '线上自助预约乘客',
+        passengerPhone: passengerPhone,
+        startLocation: startLocation,
+        endLocation: destination,
+        startTimestamp: Date.now(),
+        currentDistance: 0.0,
+        currentWaitingTime: 0,
+        currentStatus: 'serving',
+        extraBridgeFee: 0,
+        extraParkingFee: 0,
+        extraOtherFee: 0,
+        calculatedBaseFee: startPrice,
+        calculatedTotalFee: startPrice,
+        isOnlineOrder: true,
+        orderType: order.isValetOrder ? '商户代叫' : '二维码开单',
+      };
+      onAccept(trip);
+    } catch (err) {
+      console.error('Confirm order execution error:', err);
+      // Fallback direct accept on error
+      onAccept({
+        id: 'DD' + Date.now(),
+        orderNumber: 'DD' + Date.now(),
+        passengerName: order.isValetOrder ? '商户代叫乘客' : '线上自助预约乘客',
+        passengerPhone: passengerPhone,
+        startLocation: startLocation,
+        endLocation: destination,
+        startTimestamp: Date.now(),
+        currentDistance: 0.0,
+        currentWaitingTime: 0,
+        currentStatus: 'serving',
+        extraBridgeFee: 0,
+        extraParkingFee: 0,
+        extraOtherFee: 0,
+        calculatedBaseFee: startPrice,
+        calculatedTotalFee: startPrice,
+        isOnlineOrder: true,
+        orderType: order.isValetOrder ? '商户代叫' : '二维码开单',
+      });
+    } finally {
       setIsAccepting(false);
-      return;
     }
-
-    speakText('接单成功，请前往接驾地点');
-    const orderNumber = 'DD' + Date.now();
-    const trip: TripState = {
-      id: orderNumber,
-      orderNumber: orderNumber,
-      passengerName: order.isValetOrder ? '后台派遣乘客' : '线上自助预约乘客',
-      passengerPhone: passengerPhone,
-      startLocation: startLocation,
-      endLocation: destination,
-      startTimestamp: Date.now(),
-      currentDistance: 0.0,
-      currentWaitingTime: 0,
-      currentStatus: 'serving',
-      extraBridgeFee: 0,
-      extraParkingFee: 0,
-      extraOtherFee: 0,
-      calculatedBaseFee: startPrice,
-      calculatedTotalFee: startPrice,
-      isOnlineOrder: true,
-      orderType: order.isValetOrder ? '商户代叫' : '二维码开单',
-    };
-    onAccept(trip);
-    setIsAccepting(false);
   };
 
   return (
-    <div className="absolute inset-0 z-[100] bg-gray-50 flex flex-col justify-between overflow-y-auto select-none pb-40">
+    <div className="fixed inset-0 z-[999] bg-gray-50 flex flex-col justify-between overflow-hidden select-none">
       
       {/* HEADER SECTION */}
       <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative py-6 pb-20 shrink-0">
@@ -465,9 +498,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       </main>
 
       {/* STICKY FOOTER ACTIONS */}
-      <footer className="absolute bottom-0 left-0 right-0 pt-3 px-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white border-t border-gray-100 flex flex-col items-center z-50 android-nav-safe-pb">
+      <footer className="shrink-0 w-full pt-2 px-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),24px))] bg-white border-t border-gray-100 flex flex-col items-center z-[1000] relative shadow-[0_-4px_16px_rgba(0,0,0,0.06)] android-nav-safe-pb">
         {/* Countdown message */}
-        <div className="w-full flex justify-center items-center py-2.5 text-center">
+        <div className="w-full flex justify-center items-center py-2 text-center">
           <span className="text-sm font-bold text-[#e61a1a] animate-pulse">
             (请在 <span className="text-base font-black px-1 font-mono">{timeLeft}</span> 秒内确认接单)
           </span>
@@ -476,10 +509,12 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         {/* Accept Main Action Button */}
         <button 
           onClick={handleConfirmOrder}
-          className="w-full bg-[#e61a1a] text-white py-3.5 rounded-2xl text-lg font-black active:opacity-95 text-center transition-all shadow-lg hover:shadow-[#e61a1a]/20 shadow-[#e61a1a]/10 hover:translate-y-[-1px] active:translate-y-[1px]"
+          onTouchEnd={handleConfirmOrder}
+          disabled={isAccepting}
+          className="w-full bg-[#e61a1a] active:bg-[#c81414] text-white py-3.5 rounded-2xl text-lg font-black text-center transition-all shadow-lg hover:shadow-[#e61a1a]/20 shadow-[#e61a1a]/10 hover:translate-y-[-1px] active:translate-y-[1px] disabled:opacity-50 cursor-pointer touch-manipulation"
           data-purpose="confirm-order-btn"
         >
-          确认接单
+          {isAccepting ? '正在确认接单...' : '确认接单'}
         </button>
       </footer>
 

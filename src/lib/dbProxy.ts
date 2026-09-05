@@ -114,6 +114,20 @@ export function where(field: string, operator: string, value: any) {
   };
 }
 
+// Safe fetch with AbortController timeout to prevent unhandled Network errors
+async function safeFetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 3000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return response;
+  } catch (err) {
+    clearTimeout(id);
+    throw err;
+  }
+}
+
 // REST API Database Client Implementations
 export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
   const baseUrl = getBaseApiUrl();
@@ -121,7 +135,7 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
   const url = `${baseUrl}/api/db/get?col=${encodeURIComponent(docRef.collectionName)}&id=${encodeURIComponent(cleanId)}&_t=${Date.now()}`;
   
   try {
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await safeFetchWithTimeout(url, { cache: 'no-store' });
     if (!res.ok) {
       throw new Error(`DB Fetch failed with status: ${res.status}`);
     }
@@ -134,14 +148,11 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     }
     return new ProxyDocumentSnapshot(cleanId, result.data, result.exists);
   } catch (err: any) {
-    console.warn("DB Proxy error in getDoc, falling back to local simulation:", err);
     // Secondary simulation fallback to guarantee absolute offline stability
     const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
     const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      return new ProxyDocumentSnapshot(cleanId, JSON.parse(cached), true);
-    }
-    return new ProxyDocumentSnapshot(cleanId, null, false);
+    const parsed = cached ? JSON.parse(cached) : null;
+    return new ProxyDocumentSnapshot(cleanId, parsed, Boolean(parsed));
   }
 }
 
@@ -163,7 +174,7 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
   } catch (_) {}
 
   try {
-    const res = await fetch(url, {
+    const res = await safeFetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -178,7 +189,6 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
     }
     return true;
   } catch (err) {
-    console.warn("Proxy DB Set fell back to pure local storage sync:", err);
     return true;
   }
 }
@@ -198,7 +208,7 @@ export async function updateDoc(docRef: any, data: any) {
   } catch (_) {}
 
   try {
-    const res = await fetch(url, {
+    const res = await safeFetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -212,7 +222,6 @@ export async function updateDoc(docRef: any, data: any) {
     }
     return true;
   } catch (err) {
-    console.warn("Proxy DB Update fell back to local storage sync:", err);
     return true;
   }
 }
@@ -228,7 +237,7 @@ export async function deleteDoc(docRef: any) {
   } catch (_) {}
 
   try {
-    const res = await fetch(url, {
+    const res = await safeFetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -241,7 +250,6 @@ export async function deleteDoc(docRef: any) {
     }
     return true;
   } catch (err) {
-    console.warn("Proxy DB Delete fell back to local storage:", err);
     return true;
   }
 }
@@ -257,7 +265,7 @@ export async function addDoc(collectionRef: any, data: any) {
   } catch (_) {}
 
   try {
-    const res = await fetch(url, {
+    const res = await safeFetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -279,7 +287,6 @@ export async function addDoc(collectionRef: any, data: any) {
 
     return { id: finalId };
   } catch (err) {
-    console.warn("Proxy DB Add fell back to local store:", err);
     return { id: randomId };
   }
 }
@@ -295,7 +302,7 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
   }
 
   try {
-    const res = await fetch(url);
+    const res = await safeFetchWithTimeout(url);
     if (!res.ok) {
       throw new Error(`DB Query failed: ${res.statusText}`);
     }
@@ -414,7 +421,7 @@ export async function clearCollection(colName: string) {
   } catch (_) {}
 
   try {
-    const res = await fetch(url, {
+    const res = await safeFetchWithTimeout(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ col: colName })

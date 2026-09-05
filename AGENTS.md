@@ -4,7 +4,7 @@
 When the user requests GitHub sync, code push, or asks "What changes did you make?" / "填写What changes did you make?", ALWAYS generate a clear, formatted commit message ready to paste into the AI Studio "What changes did you make?" input box.
 
 ### Latest Update Commit Message:
-fix(ci): fix GitHub Actions upload-artifact ECONNRESET and Node 24 runner compatibility for Android & iOS builds
+fix(payment): display current order valet fee payment QR code on reissue payment page
 
 ## Mobile & Packaging Rules
 1. App Icon: `hwdjtb.png` is the standard lossless 1024x1024 full-bleed icon stored locally in `public/hwdjtb.png` and `src/assets/images/hwdjtb.png`.

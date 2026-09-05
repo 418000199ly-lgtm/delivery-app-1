@@ -88,7 +88,10 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
   if (orderId) {
     try {
       const baseUrl = getBaseApiUrl();
-      const res = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${encodeURIComponent(orderId)}`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
+      const res = await fetch(`${baseUrl}/api/db/get?col=merchant_orders&id=${encodeURIComponent(orderId)}`, { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (res.ok) {
         const json = await res.json();
         if (json && json.data) {

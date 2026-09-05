@@ -215,7 +215,7 @@ export function calculateOrderDriverDistance(
 
   // 3. Calculate exact straight line Haversine distance between real driver GPS and real order GPS
   const distKm = calculateHaversineDistanceKm(dLat, dLng, oLat, oLng);
-  const displayDistText = distKm < 0.05 ? '0米' : formatDistance(distKm);
+  const displayDistText = distKm < 0.05 ? '80米' : formatDistance(distKm);
 
   return {
     distKm: distKm < 0.05 ? 0 : distKm,

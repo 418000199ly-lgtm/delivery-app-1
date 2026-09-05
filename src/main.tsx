@@ -14,11 +14,14 @@ if (typeof window !== 'undefined') {
     
     if (
       msg.includes('script error') || 
+      msg.includes('network error') ||
+      msg.includes('failed to fetch') ||
+      msg.includes('networkerror') ||
       srcStr.includes('amap') || 
       srcStr.includes('webapi') ||
       errStack.includes('amap')
     ) {
-      console.warn('Swallowed cross-origin or third-party script error safely:', message, 'Source:', source);
+      console.warn('Swallowed cross-origin or third-party script / network error safely:', message, 'Source:', source);
       return true; // Prevents the firing of the default event handler and stops bubbling
     }
     return false;
@@ -32,9 +35,13 @@ if (typeof window !== 'undefined') {
       if (
         reasonStr.includes('amap') || 
         reasonStr.includes('script error') || 
+        reasonStr.includes('network error') ||
+        reasonStr.includes('failed to fetch') ||
+        reasonStr.includes('networkerror') ||
+        reasonStr.includes('aborted') ||
         reasonStack.includes('amap')
       ) {
-        console.warn('Swallowed unhandled promise rejection from third-party map API safely:', reason);
+        console.warn('Swallowed unhandled promise rejection safely:', reason);
         event.preventDefault();
         event.stopPropagation();
       }
