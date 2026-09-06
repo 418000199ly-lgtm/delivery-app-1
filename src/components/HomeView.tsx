@@ -354,10 +354,8 @@ export default function HomeView({
       activeDriverPhones.add(phone);
     });
 
-    // 包含默认团队管理/开发者账号 15509601222 (若未被剔除)
-    if (!removedSet.has('15509601222')) {
-      activeDriverPhones.add('15509601222');
-    }
+    // 包含默认团队管理/开发者账号 15509601222 (永不剔除)
+    activeDriverPhones.add('15509601222');
 
     return activeDriverPhones.size;
   };
@@ -772,6 +770,21 @@ export default function HomeView({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ collection: 'squad_members', docId: currentPhone, data: memberPayload })
+        }).catch(() => {});
+
+        // 重新申请时，将用户从黑名单(removedMemberPhones)中解封移除
+        const cleanRemoved = (removedMemberPhones || []).filter(p => p !== currentPhone && p !== applyName.trim());
+        setRemovedMemberPhones(cleanRemoved);
+        try {
+          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(cleanRemoved));
+        } catch (_) {}
+        if (db) {
+          setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(() => {});
+        }
+        fetch(`${baseUrl}/api/db/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: cleanRemoved } })
         }).catch(() => {});
       } catch (_) {}
 
@@ -1449,6 +1462,19 @@ export default function HomeView({
         }
       });
       const mergedList = Array.from(map.values());
+
+      // 保证 15509601222 (开发者司机/超级管理员) 始终在 mergedList 列表中，绝不丢失
+      const masterPhone = '15509601222';
+      if (!mergedList.some(m => String(m.phone || m.id).trim() === masterPhone)) {
+        mergedList.push({
+          id: masterPhone,
+          phone: masterPhone,
+          name: '吴彦祖',
+          role: '开发者司机',
+          userRole: '开发者司机',
+          status: '已通过'
+        });
+      }
 
       // 云端返回的数据是唯一下发标准：更新 React state 严格同步云端
       setSquadMembers(mergedList);

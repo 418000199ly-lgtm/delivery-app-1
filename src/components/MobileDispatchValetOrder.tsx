@@ -3960,6 +3960,8 @@ export default function MobileDispatchValetOrder({
         const isRemovedItem = (item: any) => {
           if (!item) return true;
           if (item.phone === '15509601222' || item.id === '15509601222') return false;
+          // 重新申请且处于待审核状态的申请记录绝不作为已剔除过滤
+          if (item.status === '待审核' || item.approvalStatus === '待审核') return false;
           if (isMockDriver(item)) return true;
           return Boolean(
             (item.phone && removedMemberPhones.includes(item.phone)) ||
@@ -4027,19 +4029,22 @@ export default function MobileDispatchValetOrder({
           }
         });
 
-        // 4. 遍历 merchantUsers
+        // 4. 遍历 merchantUsers (绝不覆盖开发者/管理员/司机角色)
         merchantUsers.forEach((mu, idx) => {
-          if (mu?.phone && !isRemovedItem(mu)) {
-            membersMap.set(mu.phone, {
-              id: mu.id || mu.phone || `merchant-${idx}`,
-              name: '商户、商家',
-              role: '商户、商家',
-              phone: mu.phone,
-              status: '已通过',
-              approvedBy: '系统自动审批',
-              approvedRole: '系统自动',
-              avatarBg: 'bg-[#e0e0e0] text-[#333]',
-            });
+          if (mu?.phone && mu.phone !== '15509601222' && !isRemovedItem(mu)) {
+            const existing = membersMap.get(mu.phone);
+            if (!existing || existing.role === '商户、商家') {
+              membersMap.set(mu.phone, {
+                id: mu.id || mu.phone || `merchant-${idx}`,
+                name: '商户、商家',
+                role: '商户、商家',
+                phone: mu.phone,
+                status: '已通过',
+                approvedBy: '系统自动审批',
+                approvedRole: '系统自动',
+                avatarBg: 'bg-[#e0e0e0] text-[#333]',
+              });
+            }
           }
         });
 
