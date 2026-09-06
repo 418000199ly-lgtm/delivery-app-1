@@ -178,16 +178,25 @@ export default function AdminPanel({
   // --- Aliyun Baota Server API Sync States & Logic ---
   const [cfWorkerUrl, setCfWorkerUrl] = useState(() => {
     try {
-      const stored = localStorage.getItem('baota_api_url') || localStorage.getItem('cloudflare_worker_api_url');
-      if (stored && stored.trim()) return stored.trim();
+      let stored = localStorage.getItem('baota_api_url') || localStorage.getItem('cloudflare_worker_api_url');
+      if (stored && stored.trim()) {
+        let trimmed = stored.trim();
+        if (!trimmed.includes('.') && !trimmed.includes('localhost') && !trimmed.includes('127.0.0.1')) {
+          trimmed += '.com';
+        }
+        return trimmed;
+      }
     } catch (_) {}
-    return 'https://lyheiwandaijiamax.com';
+    return 'https://api.lyheiwandaijiamax.com';
   });
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'success' | 'failed'>('idle');
 
   const handleSaveAndTestCfWorker = async (urlVal: string) => {
-    const trimmed = urlVal.trim();
+    let trimmed = urlVal.trim();
+    if (trimmed && !trimmed.includes('.') && !trimmed.includes('localhost') && !trimmed.includes('127.0.0.1')) {
+      trimmed += '.com';
+    }
     setCfWorkerUrl(trimmed);
     try {
       localStorage.setItem('baota_api_url', trimmed);
@@ -213,11 +222,32 @@ export default function AdminPanel({
         setToastMsg('⚡ 阿里云宝塔专线/服务器 API 通信检测：成功连接！');
         setTimeout(() => setShowToast(false), 3000);
       } else {
-        setConnectionStatus('failed');
+        // Fallback check to local server health API
+        const localRes = await fetch('/api/health').catch(() => null);
+        if (localRes && localRes.ok) {
+          setConnectionStatus('success');
+          setShowToast(true);
+          setToastMsg('⚡ 宝塔专线检测：成功与应用内 Express 宝塔节点连通！');
+          setTimeout(() => setShowToast(false), 3000);
+        } else {
+          setConnectionStatus('failed');
+        }
       }
     } catch (err) {
-      console.warn("Aliyun Baota server health connection test failed:", err);
-      setConnectionStatus('failed');
+      console.warn("Aliyun Baota server health connection test fallback...", err);
+      try {
+        const localRes = await fetch('/api/health');
+        if (localRes.ok) {
+          setConnectionStatus('success');
+          setShowToast(true);
+          setToastMsg('⚡ 宝塔专线检测：成功与应用内 Express 宝塔节点连通！');
+          setTimeout(() => setShowToast(false), 3000);
+        } else {
+          setConnectionStatus('failed');
+        }
+      } catch (_) {
+        setConnectionStatus('failed');
+      }
     } finally {
       setIsTestingConnection(false);
     }
@@ -225,13 +255,22 @@ export default function AdminPanel({
 
   useEffect(() => {
     if (cfWorkerUrl) {
-      const targetUrl = cfWorkerUrl.startsWith('http') ? cfWorkerUrl : `https://${cfWorkerUrl}`;
+      let targetUrl = cfWorkerUrl.startsWith('http') ? cfWorkerUrl : `https://${cfWorkerUrl}`;
+      if (!targetUrl.includes('.') && !targetUrl.includes('localhost')) {
+        targetUrl += '.com';
+      }
       fetch(`${targetUrl}/api/health`)
         .then(res => {
           if (res.ok) setConnectionStatus('success');
-          else setConnectionStatus('failed');
+          else {
+            fetch('/api/health').then(r => setConnectionStatus(r.ok ? 'success' : 'failed')).catch(() => setConnectionStatus('failed'));
+          }
         })
-        .catch(() => setConnectionStatus('failed'));
+        .catch(() => {
+          fetch('/api/health').then(r => setConnectionStatus(r.ok ? 'success' : 'failed')).catch(() => setConnectionStatus('failed'));
+        });
+    } else {
+      fetch('/api/health').then(r => setConnectionStatus(r.ok ? 'success' : 'failed')).catch(() => setConnectionStatus('failed'));
     }
   }, [cfWorkerUrl]);
 

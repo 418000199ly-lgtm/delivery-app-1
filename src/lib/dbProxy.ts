@@ -44,6 +44,9 @@ export function getBaseApiUrl(): string {
     const customUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('custom_api_base_url');
     if (customUrl && customUrl.trim()) {
       let trimmed = customUrl.trim().replace(/\/$/, '');
+      if (!trimmed.includes('.') && !trimmed.includes('localhost') && !trimmed.includes('127.0.0.1')) {
+        trimmed = trimmed + '.com';
+      }
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
         return trimmed;
       }
@@ -55,12 +58,12 @@ export function getBaseApiUrl(): string {
     const hostname = window.location.hostname || '';
     
     // AI Studio Cloud Run preview environment
-    if (hostname.includes('run.app')) {
+    if (hostname.includes('run.app') || hostname.includes('localhost') || hostname.includes('127.0.0.1')) {
       return window.location.origin;
     }
 
     // Direct web browser access to your Baota API domain
-    if (hostname === 'api.lyheiwandaijiamax.com') {
+    if (hostname.includes('lyheiwandaijiamax')) {
       return window.location.origin;
     }
   }

@@ -1403,34 +1403,6 @@ export default function HomeView({
       }
 
       const currentPhone = (userPhone || applyPhone || '').trim();
-      const isCurrentlyRemoved = currentPhone && currentPhone !== '15509601222' && (
-        removedMemberPhones.includes(currentPhone) || cloudRemovedPhones.includes(currentPhone) ||
-        (() => {
-          try {
-            const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-            if (saved) {
-              const parsed = JSON.parse(saved);
-              if (Array.isArray(parsed) && parsed.includes(currentPhone)) return true;
-            }
-          } catch (_) {}
-          return false;
-        })()
-      );
-
-      if (isCurrentlyRemoved) {
-        // 如果当前用户已被删除，清除其本地通过缓存，并重置其用户角色为普通司机
-        try {
-          localStorage.setItem('dd_user_role', '普通司机');
-          window.dispatchEvent(new CustomEvent('user_role_updated'));
-          const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-          const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
-          localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
-
-          const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-          const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
-          localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
-        } catch (_) {}
-      }
 
       const resMembers = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store' });
       let apiMembers: any[] = [];
@@ -1447,18 +1419,19 @@ export default function HomeView({
       }
 
       const map = new Map<string, any>();
-      apiApps.forEach(a => {
-        const phone = String(a.phone || a.id || '').trim();
-        if (phone) {
-          const existing = map.get(phone) || {};
-          map.set(phone, { ...existing, ...a });
-        }
-      });
       apiMembers.forEach(m => {
         const phone = String(m.phone || m.id || '').trim();
         if (phone) {
-          const existing = map.get(phone) || {};
-          map.set(phone, { ...existing, ...m });
+          map.set(phone, m);
+        }
+      });
+      apiApps.forEach(a => {
+        const phone = String(a.phone || a.id || '').trim();
+        if (phone) {
+          const existing = map.get(phone);
+          if (a.status === '待审核' || !existing) {
+            map.set(phone, { ...existing, ...a });
+          }
         }
       });
       const mergedList = Array.from(map.values());
@@ -1481,11 +1454,20 @@ export default function HomeView({
 
       if (currentPhone && currentPhone !== '15509601222') {
         const myRecord = mergedList.find(item => String(item.phone || item.id).trim() === currentPhone);
-        const isApprovedInCloud = myRecord && ['已通过', 'approved', '通过'].includes(String(myRecord.status || '').trim());
-        const isRemovedInCloud = isCurrentlyRemoved || cloudRemovedPhones.includes(currentPhone);
+        const myStatus = String(myRecord?.status || '').trim();
+        const isApprovedInCloud = ['已通过', 'approved', '通过'].includes(myStatus);
+        const isPendingInCloud = ['待审核', 'pending', '审核中'].includes(myStatus);
 
-        if (!isApprovedInCloud || isRemovedInCloud) {
-          // 当前用户不在云端 approved 列表中，或已被移出小队：彻底清除本地通过缓存与相关高权限角色！
+        if (isPendingInCloud) {
+          // 当前用户正在待审核状态：清空黑名单记录，保留申请记录
+          try {
+            const savedR = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
+            const cleanR = savedR.filter((p: any) => String(p).trim() !== currentPhone);
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(cleanR));
+            setRemovedMemberPhones(cleanR);
+          } catch (_) {}
+        } else if (!isApprovedInCloud && cloudRemovedPhones.includes(currentPhone)) {
+          // 当前用户既非通过、也非待审核，且云端黑名单明确存在时，才做离职清除
           try {
             localStorage.setItem('dd_user_role', '普通司机');
             setUserRole('普通司机');
@@ -1498,13 +1480,6 @@ export default function HomeView({
             const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
             const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
             localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
-
-            const savedR = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
-            if (!savedR.includes(currentPhone)) {
-              savedR.push(currentPhone);
-              localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedR));
-            }
-            setRemovedMemberPhones(savedR);
 
             window.dispatchEvent(new CustomEvent('user_role_updated'));
           } catch (_) {}
