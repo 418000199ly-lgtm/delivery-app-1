@@ -268,6 +268,17 @@ export default function MobileDispatchValetOrder({
   userTeamCity = '',
   onClose
 }: MobileDispatchValetOrderProps) {
+
+  const isStandaloneMerchantWeb = (() => {
+    if (typeof window === 'undefined') return false;
+    const hostname = window.location.hostname;
+    const params = new URLSearchParams(window.location.search);
+    return hostname === 'api.lyheiwandaijiamax.com' || 
+           params.get('dispatch') === 'true' || 
+           params.get('view') === 'dispatch' || 
+           params.get('merchant') === 'true' || 
+           params.get('type') === 'merchant';
+  })();
   
   // Team management state (Default and fixed as requested)
   const teamName = '黑湾代驾小队';
@@ -1083,6 +1094,43 @@ export default function MobileDispatchValetOrder({
           }
         })
       }).catch(() => {});
+
+      // 只要通过审批加入小队后保存在软件 app 里的二维码立即自动上传中国大陆阿里云服务器宝塔面板
+      try {
+        let appQr = '';
+        const userSettingsStr = localStorage.getItem(`dd_settings_${targetPhone}`);
+        if (userSettingsStr) {
+          const parsed = JSON.parse(userSettingsStr);
+          appQr = (parsed?.wechatQrCode || parsed?.alipayQrCode || '').trim();
+        }
+        if (!appQr) {
+          appQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) ||
+                   localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`) ||
+                   localStorage.getItem('dd_user_wechat_qr') ||
+                   localStorage.getItem('dd_dispatch_wechat_qr') || '').trim();
+        }
+
+        if (appQr) {
+          const qrPayload = {
+            id: targetPhone,
+            phone: targetPhone,
+            qrCode: appQr,
+            wechatQrCode: appQr,
+            updatedAt: Date.now()
+          };
+          for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'driver_users']) {
+            fetch(`${baseUrl}/api/db/set`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: colName, docId: targetPhone, data: qrPayload })
+            }).catch(() => {});
+          }
+          if (db) {
+            setDoc(doc(db, 'dispatch_qrs', targetPhone), qrPayload, { merge: true }).catch(() => {});
+            setDoc(doc(db, 'driver_users', targetPhone), { wechatQrCode: appQr, qrCode: appQr }, { merge: true }).catch(() => {});
+          }
+        }
+      } catch (_) {}
     }
 
     onShowToast(`🎉 【${currentAdminName} (${currentAdminRole})】已成功通过【${name}】的加入申请！`);
@@ -2880,7 +2928,26 @@ export default function MobileDispatchValetOrder({
         currentAdminRole = userRole;
       }
 
-      const effectiveQr = wechatQrUrl || MOCK_ALBUM_PHOTOS[0]?.dataUrl || '';
+      const dispatcherPhoneVal = activePhone || userPhone || '';
+      const settingsQr = (() => {
+        try {
+          const userP = dispatcherPhoneVal || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '';
+          const cachedSet = (userP ? localStorage.getItem(`dd_settings_${userP}`) : null) || localStorage.getItem('dd_settings_v1') || localStorage.getItem('dd_settings');
+          if (cachedSet) {
+            const parsed = JSON.parse(cachedSet);
+            if (parsed?.wechatQrCode) return parsed.wechatQrCode;
+          }
+          if (userP) {
+            const localQ = localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`);
+            if (localQ) return localQ;
+          }
+        } catch (_) {}
+        return localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr') || '';
+      })();
+
+      const effectiveQr = isStandaloneMerchantWeb
+        ? (wechatQrUrl || settingsQr || '')
+        : (settingsQr || wechatQrUrl || '');
 
       const newOrderData = {
         id: orderId,
@@ -3393,67 +3460,69 @@ export default function MobileDispatchValetOrder({
 
         </section>
 
-        {/* Section 4: Payment QR Code (代叫费收款二维码) */}
-        <section className="space-y-3">
-          <h2 className="font-bold text-base text-[#1a1c1c] flex items-center gap-1.5">
-            <QrCode className="w-5 h-5 text-[#984800]" />
-            <span>代叫费收款二维码</span>
-          </h2>
+        {/* Section 4: Payment QR Code (代叫费收款二维码) - 仅在商户代叫（手机网页版）独立网页中显示 */}
+        {isStandaloneMerchantWeb && (
+          <section className="space-y-3">
+            <h2 className="font-bold text-base text-[#1a1c1c] flex items-center gap-1.5">
+              <QrCode className="w-5 h-5 text-[#984800]" />
+              <span>代叫费收款二维码</span>
+            </h2>
 
-          <div className="bg-white border border-[#dfc0af]/60 rounded-2xl p-5 space-y-4 shadow-sm flex flex-col items-center">
-            {/* WeChat Payment Badge Header */}
-            <div className="flex items-center gap-2 bg-[#f3f3f3] px-4 py-1.5 rounded-full border border-gray-200">
-              <svg fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 2C6.477 2 2 6.015 2 10.97c0 2.81 1.442 5.315 3.69 6.963l-.46 1.72a.5.5 0 0 0 .668.59l2.12-.96c1.233.454 2.585.717 3.982.717 5.523 0 10-4.015 10-10.97C22 6.015 17.523 2 12 2z" fill="#07C160"/>
-                <path d="M7.5 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm5 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0z" fill="white"/>
-              </svg>
-              <span className="text-xs font-bold text-gray-800">微信代叫费收款码</span>
-            </div>
+            <div className="bg-white border border-[#dfc0af]/60 rounded-2xl p-5 space-y-4 shadow-sm flex flex-col items-center">
+              {/* WeChat Payment Badge Header */}
+              <div className="flex items-center gap-2 bg-[#f3f3f3] px-4 py-1.5 rounded-full border border-gray-200">
+                <svg fill="none" height="18" viewBox="0 0 24 24" width="18" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 2C6.477 2 2 6.015 2 10.97c0 2.81 1.442 5.315 3.69 6.963l-.46 1.72a.5.5 0 0 0 .668.59l2.12-.96c1.233.454 2.585.717 3.982.717 5.523 0 10-4.015 10-10.97C22 6.015 17.523 2 12 2z" fill="#07C160"/>
+                  <path d="M7.5 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm5 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0z" fill="white"/>
+                </svg>
+                <span className="text-xs font-bold text-gray-800">微信代叫费收款码</span>
+              </div>
 
-            {/* QR Code Container styled identically to payment confirmation page */}
-            <div className="relative w-60 h-60 p-3 bg-white rounded-2xl border border-gray-200 shadow-inner flex items-center justify-center overflow-hidden">
-              {wechatQrUrl ? (
-                <img 
-                  src={wechatQrUrl} 
-                  alt="微信代叫费收款码" 
-                  className="w-full h-full object-contain rounded-xl"
-                />
-              ) : (
-                <div 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="relative z-10 w-full h-full flex flex-col items-center justify-center border-2 border-dashed border-[#dfc0af] rounded-xl bg-gray-50/80 p-4 cursor-pointer hover:border-[#ff7d00] transition-colors"
-                >
-                  <QrCode className="w-12 h-12 text-[#ff7d00]/40 mb-2" />
-                  <div className="bg-[#ff7d00] p-2 rounded-xl shadow-xs">
-                    <Car className="w-5 h-5 text-white" />
+              {/* QR Code Container */}
+              <div className="relative w-60 h-60 p-3 bg-white rounded-2xl border border-gray-200 shadow-inner flex items-center justify-center overflow-hidden">
+                {wechatQrUrl ? (
+                  <img 
+                    src={wechatQrUrl} 
+                    alt="微信代叫费收款码" 
+                    className="w-full h-full object-contain rounded-xl"
+                  />
+                ) : (
+                  <div 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="relative z-10 w-full h-full flex flex-col items-center justify-center border-2 border-dashed border-[#dfc0af] rounded-xl bg-gray-50/80 p-4 cursor-pointer hover:border-[#ff7d00] transition-colors"
+                  >
+                    <QrCode className="w-12 h-12 text-[#ff7d00]/40 mb-2" />
+                    <div className="bg-[#ff7d00] p-2 rounded-xl shadow-xs">
+                      <Car className="w-5 h-5 text-white" />
+                    </div>
+                    <p className="mt-2 text-xs text-gray-700 font-bold text-center">
+                      请上传您的微信收款码
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-gray-400 font-normal text-center">
+                      作为代叫费用收款渠道
+                    </p>
                   </div>
-                  <p className="mt-2 text-xs text-gray-700 font-bold text-center">
-                    请上传您的微信收款码
-                  </p>
-                  <p className="mt-0.5 text-[10px] text-gray-400 font-normal text-center">
-                    作为代叫费用收款渠道
-                  </p>
-                </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 px-3 py-1 bg-[#f3f3f3] rounded-full">
+                <ShieldCheck className="w-3.5 h-3.5 text-gray-600 shrink-0" />
+                <span className="text-[11px] text-gray-600 font-semibold">实名收款 · 派单人员代叫费专属</span>
+              </div>
+
+              {wechatQrUrl && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="text-xs font-bold text-[#ff7d00] bg-[#ff7d00]/10 hover:bg-[#ff7d00]/20 px-4 py-1.5 rounded-full transition-all cursor-pointer"
+                >
+                  更换微信代叫费收款码
+                </button>
               )}
+
             </div>
-
-            <div className="flex items-center gap-1.5 px-3 py-1 bg-[#f3f3f3] rounded-full">
-              <ShieldCheck className="w-3.5 h-3.5 text-gray-600 shrink-0" />
-              <span className="text-[11px] text-gray-600 font-semibold">实名收款 · 派单人员代叫费专属</span>
-            </div>
-
-            {wechatQrUrl && (
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="text-xs font-bold text-[#ff7d00] bg-[#ff7d00]/10 hover:bg-[#ff7d00]/20 px-4 py-1.5 rounded-full transition-all cursor-pointer"
-              >
-                更换微信代叫费收款码
-              </button>
-            )}
-
-          </div>
-        </section>
+          </section>
+        )}
 
       </main>
 
@@ -3861,20 +3930,21 @@ export default function MobileDispatchValetOrder({
         const currentAdminRole = userRole || '开发者司机';
         const currentAdminName = (adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机') ? adminProfile.name : '吴彦祖';
 
-        const adminMember = {
-          id: activePhone,
-          name: currentAdminName,
-          role: currentAdminRole,
-          phone: activePhone,
+        // 固定超级管理员（仅绑定手机号15509601222，姓名支持改名）
+        const masterDevName = (activePhone === '15509601222' && adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机')
+          ? adminProfile.name
+          : (squadMembers.find((sm: any) => sm.phone === '15509601222')?.name || '吴彦祖');
+
+        const masterDevMember = {
+          id: '15509601222',
+          name: masterDevName,
+          role: '开发者司机',
+          phone: '15509601222',
           status: '已通过',
           approvedBy: '系统分配',
           approvedRole: '超级管理员',
           avatarBg: 'bg-[#ffdbc8] text-[#311300]',
         };
-
-        const defaultMembers = [
-          adminMember
-        ];
 
         const isMockDriver = (item: any) => {
           if (!item) return false;
@@ -3899,20 +3969,18 @@ export default function MobileDispatchValetOrder({
 
         const membersMap = new Map<string, any>();
 
-        // 1. Fill default members (skip if removed)
-        defaultMembers.forEach(m => {
-          if (!isRemovedItem(m)) {
-            membersMap.set(m.phone, m);
-          }
-        });
+        // 1. 始终优先包含超级管理员 15509601222
+        membersMap.set('15509601222', masterDevMember);
 
-        // 2. Fill/Override with real Firestore squad members
+        // 2. 遍历真实 squadMembers
         squadMembers.forEach((m, idx) => {
           if (!isRemovedItem(m)) {
-            const isMe = m.phone === activePhone;
+            const isMaster = m.phone === '15509601222';
             const isMerchant = m.role === '商户、商家' || m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家');
-            const memberName = isMerchant ? '商户、商家' : (isMe ? currentAdminName : (m.name || `司机${m.phone.slice(-4)}`));
-            const memberRole = isMerchant ? '商户、商家' : (isMe ? currentAdminRole : (m.role || '普通司机'));
+            const memberName = isMerchant 
+              ? '商户、商家' 
+              : (m.name || m.driverName || m.realName || m.applicantName || (isMaster ? masterDevName : (m.phone === '15121904440' ? '李扬' : `司机${m.phone.slice(-4)}`)));
+            const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (m.role || m.userRole || '普通司机');
             const status = m.status || '已通过';
 
             membersMap.set(m.phone, {
@@ -3923,18 +3991,21 @@ export default function MobileDispatchValetOrder({
               status,
               approvedBy: m.approvedBy || currentAdminName,
               approvedRole: m.approvedRole || currentAdminRole,
-              avatarBg: isMe ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]',
+              avatarBg: isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]',
             });
           }
         });
 
-        // 3. Fill/Override with applicants (sync '已通过', '待审核', '已拒绝')
+        // 3. 遍历申请记录 applicants
         applicants.forEach(app => {
           if (!isRemovedItem(app)) {
             const existing = membersMap.get(app.phone);
+            const isMaster = app.phone === '15509601222';
             const isMerchant = app.role === '商户、商家' || app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家');
-            const memberName = isMerchant ? '商户、商家' : (app.name || existing?.name || `司机${app.phone.slice(-4)}`);
-            const memberRole = isMerchant ? '商户、商家' : (app.role || existing?.role || '普通司机');
+            const memberName = isMerchant 
+              ? '商户、商家' 
+              : (app.name || app.driverName || app.realName || app.applicantName || existing?.name || (isMaster ? masterDevName : (app.phone === '15121904440' ? '李扬' : `司机${app.phone.slice(-4)}`)));
+            const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (app.role || existing?.role || '普通司机');
             const status = app.status || '待审核';
             const approvedBy = app.approvedBy || (app.status !== '待审核' ? (existing?.approvedBy || currentAdminName) : (existing?.approvedRole || ''));
             const approvedRole = app.approvedRole || (app.status !== '待审核' ? (existing?.approvedRole || currentAdminRole) : (existing?.approvedRole || ''));
@@ -3948,7 +4019,7 @@ export default function MobileDispatchValetOrder({
               approvedBy,
               approvedRole,
               avatarBg: status === '已通过' 
-                ? 'bg-[#e2e2e2] text-[#584235]' 
+                ? (isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]') 
                 : status === '已拒绝' 
                 ? 'bg-rose-100 text-rose-800' 
                 : 'bg-amber-100 text-amber-800',
@@ -3956,7 +4027,7 @@ export default function MobileDispatchValetOrder({
           }
         });
 
-        // 4. Fill/Override with merchant users registered via 商户代叫（手机网页版）
+        // 4. 遍历 merchantUsers
         merchantUsers.forEach((mu, idx) => {
           if (mu?.phone && !isRemovedItem(mu)) {
             membersMap.set(mu.phone, {
@@ -3972,13 +4043,10 @@ export default function MobileDispatchValetOrder({
           }
         });
 
-        // Always ensure current admin is set
-        membersMap.set(activePhone, adminMember);
-
         const allMembersList = Array.from(membersMap.values())
-          .filter(m => !isRemovedItem(m) || m.phone === activePhone)
+          .filter(m => !isRemovedItem(m))
           .map(m => {
-            const isMe = m.phone === activePhone;
+            const isSuperAdmin = m.phone === '15509601222';
             const roleStr = m.role || '';
             const roleTagClass = roleStr.includes('开发者') ? 'bg-indigo-100 text-indigo-700 border-indigo-200' :
                                   roleStr.includes('老板') ? 'bg-[#ff7d00]/10 text-[#ff7d00] border-[#ff7d00]/20' :
@@ -3992,7 +4060,7 @@ export default function MobileDispatchValetOrder({
             const approverName = (m.approvedBy && m.approvedBy !== '系统自动审批') ? m.approvedBy : currentAdminName;
             const approverRole = (m.approvedRole && m.approvedRole !== '系统自动') ? m.approvedRole : currentAdminRole;
 
-            const footprint = isMe
+            const footprint = isSuperAdmin
               ? '超级管理员（实时同步派单与调度日志）'
               : m.status === '已通过'
               ? (m.approvedBy === '系统自动审批' 
@@ -4472,25 +4540,34 @@ export default function MobileDispatchValetOrder({
                                     return updated;
                                   });
 
-                                  // 3. Delete from Firestore & HTTP REST API database
-                                  if (targetPhone) {
+                                  // 3. Delete from Firestore & HTTP REST API database & Reset userRole
+                                  if (targetPhone && targetPhone !== '15509601222') {
                                     try {
                                       await deleteDoc(doc(db, 'squad_members', targetPhone));
                                       await deleteDoc(doc(db, 'squad_applications', targetPhone));
+                                      await setDoc(doc(db, 'driver_users', targetPhone), { role: '', userRole: '' }, { merge: true });
                                     } catch (e) {
                                       console.error(e);
                                     }
                                   }
-                                  if (targetId && targetId !== targetPhone) {
+                                  if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
                                     try {
                                       await deleteDoc(doc(db, 'squad_members', targetId));
                                       await deleteDoc(doc(db, 'squad_applications', targetId));
+                                      await setDoc(doc(db, 'driver_users', targetId), { role: '', userRole: '' }, { merge: true });
                                     } catch (e) {
                                       console.error(e);
                                     }
                                   }
 
                                   const baseUrl = getBaseApiUrl();
+                                  if (targetPhone && targetPhone !== '15509601222') {
+                                    fetch(`${baseUrl}/api/db/save`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ collection: 'driver_users', docId: targetPhone, data: { role: '', userRole: '' } })
+                                    }).catch(() => {});
+                                  }
                                   fetch(`${baseUrl}/api/db/delete`, {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
@@ -4500,6 +4577,33 @@ export default function MobileDispatchValetOrder({
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ collection: 'squad_applications', docId: targetPhone || targetId })
+                                  }).catch(() => {});
+
+                                  // Sync removed_squad_members to cloud config for multi-device sync
+                                  const updatedRemoved = Array.from(new Set([...removedMemberPhones, targetPhone, targetId, targetName].filter(Boolean)));
+                                  setRemovedMemberPhones(updatedRemoved);
+                                  try {
+                                    localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updatedRemoved));
+                                    const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+                                    const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== targetPhone && String(item.phone || item.id).trim() !== targetId);
+                                    localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
+
+                                    const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+                                    const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== targetPhone && String(item.phone || item.id).trim() !== targetId);
+                                    localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
+
+                                    if (targetPhone === (userPhone || '').trim() || targetId === (userPhone || '').trim()) {
+                                      localStorage.setItem('dd_user_role', '普通司机');
+                                    }
+                                  } catch (_) {}
+
+                                  if (db) {
+                                    setDoc(doc(db, 'config', 'removed_squad_members'), { phones: updatedRemoved }, { merge: true }).catch(() => {});
+                                  }
+                                  fetch(`${baseUrl}/api/db/save`, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: updatedRemoved } })
                                   }).catch(() => {});
 
                                   onShowToast(`已成功彻底删除成员: ${targetName || '司机'}`);

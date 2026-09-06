@@ -308,10 +308,7 @@ export default function MerchantValetPaymentView({
                       <Car className="w-5 h-5 text-white" />
                     </div>
                     <p className="mt-2 text-[11px] text-gray-600 font-bold text-center leading-snug">
-                      {isReportTransfer 
-                        ? '请下单人员/接单司机先在【代驾设置 ➔ 上传收款码】中上传微信收款码' 
-                        : '请派单人员先在【商户代叫系统】上传微信代叫费收款码'
-                      }
+                      请派单人员/司机先在【代驾设置 ➔ 上传收款码】中上传微信收款码
                     </p>
                   </div>
                 )}

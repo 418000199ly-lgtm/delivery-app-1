@@ -852,10 +852,10 @@ export default function App() {
       const todayStr = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
       const lastResetDate = localStorage.getItem('dd_last_559am_offline_date');
 
-      // Trigger if time is past 05:59 AM (hours === 5 && minutes >= 59 or hours >= 6)
-      const isPast559 = (hours === 5 && minutes >= 59) || hours >= 6;
+      // Trigger if clock hits 05:59 AM while online
+      const is559AM = (hours === 5 && minutes >= 59);
 
-      if (isPast559 && lastResetDate !== todayStr) {
+      if (is559AM && lastResetDate !== todayStr) {
         localStorage.setItem('dd_last_559am_offline_date', todayStr);
         setIsOnline(false);
         const offlinePayload = {
@@ -898,7 +898,7 @@ export default function App() {
     };
 
     checkDaily559AM();
-    const interval = setInterval(checkDaily559AM, 15000);
+    const interval = setInterval(checkDaily559AM, 10000);
     return () => clearInterval(interval);
   }, [isOnline, userPhone]);
 
@@ -1908,6 +1908,14 @@ export default function App() {
     }
     setIsOnline(online);
     localStorage.setItem('dd_is_online', online ? 'true' : 'false');
+
+    if (online) {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+      if (now.getHours() > 5 || (now.getHours() === 5 && now.getMinutes() >= 59)) {
+        localStorage.setItem('dd_last_559am_offline_date', todayStr);
+      }
+    }
 
     // Voice announcement for online / offline toggle on gesture
     initAudioUnlock();

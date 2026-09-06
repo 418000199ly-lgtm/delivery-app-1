@@ -642,6 +642,15 @@ export default function HomeView({
 
   // 秒级提交申请加入小队处理函数
   const processApplicationSubmission = (closeModalCallback: () => void) => {
+    if (!hasDriverUploadedQrCode()) {
+      setLocalAlert({
+        title: '提示',
+        message: '请在app设置-上传二维码里添加二维码。',
+        type: 'warning'
+      });
+      return;
+    }
+
     if (!applyName.trim()) {
       setLocalAlert({ title: '提示', message: '请输入申请人真实姓名', type: 'error' });
       return;
@@ -831,6 +840,79 @@ export default function HomeView({
 
     return false;
   };
+
+  const hasDriverUploadedQrCode = (): boolean => {
+    try {
+      if (settings?.wechatQrCode && settings.wechatQrCode.trim()) return true;
+      if (settings?.alipayQrCode && settings.alipayQrCode.trim()) return true;
+      const currentPhone = (userPhone || applyPhone || localStorage.getItem('dd_user_phone') || '').trim();
+      if (currentPhone) {
+        const userSettingsStr = localStorage.getItem(`dd_settings_${currentPhone}`);
+        if (userSettingsStr) {
+          const parsed = JSON.parse(userSettingsStr);
+          if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return true;
+          if (parsed?.alipayQrCode && parsed.alipayQrCode.trim()) return true;
+        }
+        const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`) || localStorage.getItem(`dd_dispatch_fee_qr_${currentPhone}`);
+        if (localPhoneQr && localPhoneQr.trim()) return true;
+      }
+      const globalQr = localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr');
+      if (globalQr && globalQr.trim()) return true;
+    } catch (_) {}
+    return false;
+  };
+
+  // 只要通过审批加入小队后保存在软件 app 里的二维码立即自动上传中国大陆阿里云服务器宝塔面板
+  useEffect(() => {
+    const currentPhone = (userPhone || applyPhone || localStorage.getItem('dd_user_phone') || '').trim();
+    if (!currentPhone) return;
+
+    if (checkApprovalStatus()) {
+      let qrCode = (settings?.wechatQrCode || settings?.alipayQrCode || '').trim();
+      if (!qrCode) {
+        try {
+          const userSettingsStr = localStorage.getItem(`dd_settings_${currentPhone}`);
+          if (userSettingsStr) {
+            const parsed = JSON.parse(userSettingsStr);
+            qrCode = (parsed?.wechatQrCode || parsed?.alipayQrCode || '').trim();
+          }
+        } catch (_) {}
+      }
+      if (!qrCode) {
+        qrCode = (localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`) ||
+                  localStorage.getItem(`dd_dispatch_fee_qr_${currentPhone}`) ||
+                  localStorage.getItem('dd_user_wechat_qr') ||
+                  localStorage.getItem('dd_dispatch_wechat_qr') || '').trim();
+      }
+
+      if (qrCode) {
+        try {
+          localStorage.setItem(`dd_dispatch_wechat_qr_${currentPhone}`, qrCode);
+          localStorage.setItem('dd_user_wechat_qr', qrCode);
+
+          const baseUrl = getBaseApiUrl();
+          const qrPayload = {
+            id: currentPhone,
+            phone: currentPhone,
+            qrCode: qrCode,
+            wechatQrCode: qrCode,
+            updatedAt: Date.now()
+          };
+
+          for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'driver_users']) {
+            fetch(`${baseUrl}/api/db/set`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: colName, docId: currentPhone, data: qrPayload })
+            }).catch(() => {});
+          }
+
+          setDoc(doc(db, 'dispatch_qrs', currentPhone), qrPayload, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'driver_users', currentPhone), { wechatQrCode: qrCode, qrCode: qrCode }, { merge: true }).catch(() => {});
+        } catch (_) {}
+      }
+    }
+  }, [userPhone, squadMembers, settings?.wechatQrCode]);
 
   const checkPendingStatus = () => {
     if (isReapplying) return false;
@@ -1263,6 +1345,66 @@ export default function HomeView({
   const fetchLatestSquadData = async () => {
     try {
       const baseUrl = getBaseApiUrl();
+
+      // 0. 拉取云端最新被删除小队成员名单
+      let cloudRemovedPhones: string[] = [];
+      try {
+        const resRemoved = await fetch(`${baseUrl}/api/db/list?col=config&_t=${Date.now()}`, { cache: 'no-store' });
+        if (resRemoved.ok) {
+          const list = await resRemoved.json();
+          if (Array.isArray(list)) {
+            const configObj = list.find((item: any) => item.id === 'removed_squad_members' || item.docId === 'removed_squad_members');
+            if (configObj) {
+              if (Array.isArray(configObj.phones)) {
+                cloudRemovedPhones = configObj.phones;
+              } else if (Array.isArray(configObj.data?.phones)) {
+                cloudRemovedPhones = configObj.data.phones;
+              }
+            }
+          }
+        }
+      } catch (_) {}
+
+      if (cloudRemovedPhones.length > 0) {
+        setRemovedMemberPhones(prev => {
+          const updated = Array.from(new Set([...prev, ...cloudRemovedPhones].filter(Boolean)));
+          try {
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
+          } catch (_) {}
+          return updated;
+        });
+      }
+
+      const currentPhone = (userPhone || applyPhone || '').trim();
+      const isCurrentlyRemoved = currentPhone && currentPhone !== '15509601222' && (
+        removedMemberPhones.includes(currentPhone) || cloudRemovedPhones.includes(currentPhone) ||
+        (() => {
+          try {
+            const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (Array.isArray(parsed) && parsed.includes(currentPhone)) return true;
+            }
+          } catch (_) {}
+          return false;
+        })()
+      );
+
+      if (isCurrentlyRemoved) {
+        // 如果当前用户已被删除，清除其本地通过缓存，并重置其用户角色为普通司机
+        try {
+          localStorage.setItem('dd_user_role', '普通司机');
+          window.dispatchEvent(new CustomEvent('user_role_updated'));
+          const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+          const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
+          localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
+
+          const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+          const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
+          localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
+        } catch (_) {}
+      }
+
       const resMembers = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store' });
       let apiMembers: any[] = [];
       if (resMembers.ok) {
@@ -1277,60 +1419,75 @@ export default function HomeView({
         if (Array.isArray(data)) apiApps = data;
       }
 
-      if (apiMembers.length > 0 || apiApps.length > 0) {
-        const map = new Map<string, any>();
-        apiApps.forEach(a => {
-          const phone = String(a.phone || a.id || '').trim();
-          if (phone) {
-            const existing = map.get(phone) || {};
-            map.set(phone, { ...existing, ...a });
-          }
-        });
-        apiMembers.forEach(m => {
-          const phone = String(m.phone || m.id || '').trim();
-          if (phone) {
-            const existing = map.get(phone) || {};
-            map.set(phone, { ...existing, ...m });
-          }
-        });
-        const mergedList = Array.from(map.values());
-
-        // 如果包含当前登录用户，把最新审核状态同步写回 localStorage，修正偏离数据
-        const currentPhone = (userPhone || applyPhone || '').trim();
-        if (currentPhone) {
-          const myRecord = mergedList.find(item => String(item.phone || item.id).trim() === currentPhone);
-          if (myRecord && myRecord.status) {
-            try {
-              const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-              const idxM = savedM.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
-              if (idxM >= 0) savedM[idxM] = { ...savedM[idxM], ...myRecord };
-              else savedM.push(myRecord);
-              localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedM));
-
-              const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-              const idxA = savedA.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
-              if (idxA >= 0) savedA[idxA] = { ...savedA[idxA], ...myRecord };
-              else savedA.push(myRecord);
-              localStorage.setItem('dd_applicants_v2', JSON.stringify(savedA));
-            } catch (_) {}
-          }
+      const map = new Map<string, any>();
+      apiApps.forEach(a => {
+        const phone = String(a.phone || a.id || '').trim();
+        if (phone) {
+          const existing = map.get(phone) || {};
+          map.set(phone, { ...existing, ...a });
         }
+      });
+      apiMembers.forEach(m => {
+        const phone = String(m.phone || m.id || '').trim();
+        if (phone) {
+          const existing = map.get(phone) || {};
+          map.set(phone, { ...existing, ...m });
+        }
+      });
+      const mergedList = Array.from(map.values());
 
-        setSquadMembers(prev => {
-          const existingMap = new Map<string, any>();
-          prev.forEach(m => {
-            const key = String(m.phone || m.id || '').trim();
-            if (key) existingMap.set(key, m);
-          });
-          mergedList.forEach(m => {
-            const key = String(m.phone || m.id || '').trim();
-            if (key) {
-              const existing = existingMap.get(key) || {};
-              existingMap.set(key, { ...existing, ...m });
+      // 云端返回的数据是唯一下发标准：更新 React state 严格同步云端
+      setSquadMembers(mergedList);
+
+      if (currentPhone && currentPhone !== '15509601222') {
+        const myRecord = mergedList.find(item => String(item.phone || item.id).trim() === currentPhone);
+        const isApprovedInCloud = myRecord && ['已通过', 'approved', '通过'].includes(String(myRecord.status || '').trim());
+        const isRemovedInCloud = isCurrentlyRemoved || cloudRemovedPhones.includes(currentPhone);
+
+        if (!isApprovedInCloud || isRemovedInCloud) {
+          // 当前用户不在云端 approved 列表中，或已被移出小队：彻底清除本地通过缓存与相关高权限角色！
+          try {
+            localStorage.setItem('dd_user_role', '普通司机');
+            setUserRole('普通司机');
+            localStorage.removeItem(`dd_squad_member_${currentPhone}`);
+
+            const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+            const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
+            localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
+
+            const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+            const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
+            localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
+
+            const savedR = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
+            if (!savedR.includes(currentPhone)) {
+              savedR.push(currentPhone);
+              localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedR));
             }
-          });
-          return Array.from(existingMap.values());
-        });
+            setRemovedMemberPhones(savedR);
+
+            window.dispatchEvent(new CustomEvent('user_role_updated'));
+          } catch (_) {}
+        } else if (myRecord && myRecord.status) {
+          try {
+            const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+            const idxM = savedM.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
+            if (idxM >= 0) savedM[idxM] = { ...savedM[idxM], ...myRecord };
+            else savedM.push(myRecord);
+            localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedM));
+
+            const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+            const idxA = savedA.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
+            if (idxA >= 0) savedA[idxA] = { ...savedA[idxA], ...myRecord };
+            else savedA.push(myRecord);
+            localStorage.setItem('dd_applicants_v2', JSON.stringify(savedA));
+
+            if (myRecord.role) {
+              setUserRole(myRecord.role);
+              localStorage.setItem('dd_user_role', myRecord.role);
+            }
+          } catch (_) {}
+        }
       }
     } catch (_) {}
   };
@@ -2209,6 +2366,25 @@ export default function HomeView({
     
     try {
       await deleteDoc(doc(db, 'squad_members', phone));
+      await deleteDoc(doc(db, 'squad_applications', phone));
+      await setDoc(doc(db, 'driver_users', phone), { role: '普通司机', userRole: '普通司机' }, { merge: true });
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_members', docId: phone })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_applications', docId: phone })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_users', docId: phone, data: { role: '普通司机', userRole: '普通司机' } })
+      }).catch(() => {});
 
       // Clean local storage & add to removed list
       try {
@@ -2231,6 +2407,14 @@ export default function HomeView({
           localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
         }
         setRemovedMemberPhones(savedRemoved);
+
+        // Sync removed_squad_members to cloud
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(() => {});
+        fetch(`${baseUrl}/api/db/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
+        }).catch(() => {});
       } catch (_) {}
 
       setSquadMembers(prev => prev.filter((m: any) => String(m.phone || m.id).trim() !== phone));
@@ -3044,14 +3228,40 @@ export default function HomeView({
                 '队长'
               ];
 
-              const canAccess = isSuperDev || effectiveRoles.some(r => allowedRoles.some(ar => String(r).includes(ar)));
+              const isUserInRemovedList = currentPhone !== '15509601222' && (
+                removedMemberPhones.includes(currentPhone) ||
+                (() => {
+                  try {
+                    const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+                    if (saved) {
+                      const parsed = JSON.parse(saved);
+                      if (Array.isArray(parsed) && parsed.includes(currentPhone)) return true;
+                    }
+                  } catch (_) {}
+                  return false;
+                })()
+              );
+
+              const isApprovedSquadMember = checkApprovalStatus();
+
+              const canAccess = !isUserInRemovedList && (isSuperDev || (isApprovedSquadMember && effectiveRoles.some(r => allowedRoles.some(ar => String(r).includes(ar)))));
 
               if (!canAccess) {
                 setLocalAlert({
                   title: '提示',
-                  message: '管理权限不足',
+                  message: (isUserInRemovedList || !isApprovedSquadMember) ? '您未加入小队或已被移出小队，请先申请加入小队！' : '管理权限不足',
                   type: 'warning'
                 });
+                if (isUserInRemovedList || !isApprovedSquadMember) {
+                  setIsReapplying(true);
+                  try {
+                    localStorage.setItem('dd_user_role', '普通司机');
+                    setUserRole('普通司机');
+                    window.dispatchEvent(new CustomEvent('user_role_updated'));
+                  } catch (_) {}
+                  fetchLatestSquadData();
+                  setShowDispatchModal(true);
+                }
                 return;
               }
 
@@ -3068,6 +3278,15 @@ export default function HomeView({
 
           <button 
             onClick={() => {
+              if (!hasDriverUploadedQrCode()) {
+                setLocalAlert({
+                  title: '提示',
+                  message: '请在app设置-上传二维码里添加二维码。',
+                  type: 'warning'
+                });
+                return;
+              }
+
               const cfg = getDriverCityConfig();
               if (!cfg.squad_management_enabled) {
                 setLocalAlert({
@@ -3077,6 +3296,34 @@ export default function HomeView({
                 });
                 return;
               }
+              const currentPhone = (userPhone || applyPhone || '').trim();
+              const isRemoved = currentPhone && currentPhone !== '15509601222' && (
+                removedMemberPhones.includes(currentPhone) ||
+                (() => {
+                  try {
+                    const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+                    if (saved) {
+                      const parsed = JSON.parse(saved);
+                      if (Array.isArray(parsed) && parsed.includes(currentPhone)) return true;
+                    }
+                  } catch (_) {}
+                  return false;
+                })()
+              );
+
+              if (isRemoved) {
+                setIsReapplying(true);
+                try {
+                  localStorage.setItem('dd_user_role', '普通司机');
+                  window.dispatchEvent(new CustomEvent('user_role_updated'));
+                } catch (_) {}
+                setLocalAlert({
+                  title: '提示',
+                  message: '您未加入小队或已被移出小队，请先申请加入小队！',
+                  type: 'warning'
+                });
+              }
+
               fetchLatestSquadData();
               setShowDispatchModal(true);
             }}
@@ -3542,7 +3789,23 @@ export default function HomeView({
 
       {/* 8.5 Squad Management / Apply Overlay Screen Page */}
       {showDispatchModal && (
-        ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(userRole) && showAdminDispatchView ? (
+        (() => {
+          const currentPhone = (userPhone || applyPhone || '').trim();
+          const isRemoved = currentPhone && currentPhone !== '15509601222' && (
+            removedMemberPhones.includes(currentPhone) ||
+            (() => {
+              try {
+                const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  if (Array.isArray(parsed) && parsed.includes(currentPhone)) return true;
+                }
+              } catch (_) {}
+              return false;
+            })()
+          );
+          return !isRemoved && ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(userRole) && showAdminDispatchView;
+        })() ? (
           <div className="absolute inset-0 bg-[#0a0c16] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
             {/* Page Toolbar Header */}
             <div className="bg-slate-900 text-white header-safe-pt pb-3.5 px-4 flex items-center justify-between shrink-0 border-b border-slate-800">
