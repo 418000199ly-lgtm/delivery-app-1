@@ -3517,11 +3517,11 @@ export default function DispatchValetOrder({
 
         const isRemovedItem = (item: any) => {
           if (!item) return true;
+          if (item.phone === '15509601222' || item.id === '15509601222') return false;
           if (isMockDriver(item)) return true;
           return Boolean(
             (item.phone && removedMemberPhones.includes(item.phone)) ||
-            (item.id && removedMemberPhones.includes(item.id)) ||
-            (item.name && removedMemberPhones.includes(item.name))
+            (item.id && removedMemberPhones.includes(item.id))
           );
         };
 

@@ -234,6 +234,20 @@ export default function HomeView({
   xianyuUrl = 'https://www.goofish.com',
   onOpenMerchantValetPayment
 }: HomeViewProps) {
+  const [localRole, setLocalRole] = useState<string>(userRole);
+
+  useEffect(() => {
+    setLocalRole(userRole);
+  }, [userRole]);
+
+  const setUserRole = (role: string) => {
+    setLocalRole(role);
+    try {
+      localStorage.setItem('dd_user_role', role);
+      window.dispatchEvent(new CustomEvent('user_role_updated'));
+    } catch (_) {}
+  };
+
   const effectiveCity = (userRole && userRole !== '开发者司机' && userTeamCity) ? userTeamCity : (settings?.city || '银川市');
 
   const [sliderPos, setSliderPos] = useState(0);
@@ -1505,21 +1519,19 @@ export default function HomeView({
       snapshot.forEach((docSnap) => {
         list.push({ id: docSnap.id, ...docSnap.data() });
       });
-      setSquadMembers(prev => {
-        const map = new Map<string, any>();
-        prev.forEach(m => {
-          const key = String(m.phone || m.id || '').trim();
-          if (key) map.set(key, m);
+      // 保证 15509601222 (超级管理员) 始终在列表中
+      const masterPhone = '15509601222';
+      if (!list.some(m => String(m.phone || m.id).trim() === masterPhone)) {
+        list.push({
+          id: masterPhone,
+          phone: masterPhone,
+          name: '吴彦祖',
+          role: '开发者司机',
+          userRole: '开发者司机',
+          status: '已通过'
         });
-        list.forEach(m => {
-          const key = String(m.phone || m.id || '').trim();
-          if (key) {
-            const existing = map.get(key) || {};
-            map.set(key, { ...existing, ...m });
-          }
-        });
-        return Array.from(map.values());
-      });
+      }
+      setSquadMembers(list);
     });
     return () => {
       clearInterval(interval);
@@ -1985,6 +1997,24 @@ export default function HomeView({
     });
     return () => unsubscribe();
   }, []);
+
+  // 实时监听 driver_users 改变，若后台/模拟器修改了当前账号的身份（如设置普通司机），立即毫秒级同步更新
+  useEffect(() => {
+    const currentPhone = (userPhone || localStorage.getItem('dd_user_phone') || '').trim();
+    if (!currentPhone || currentPhone === '15509601222') return;
+
+    const myDoc = allDrivers.find(d => String(d.id || d.phone || d.phoneNumber).trim() === currentPhone);
+    if (myDoc) {
+      const updatedRole = myDoc.userRole || myDoc.role || '普通司机';
+      if (updatedRole !== userRole) {
+        setUserRole(updatedRole);
+        try {
+          localStorage.setItem('dd_user_role', updatedRole);
+          window.dispatchEvent(new CustomEvent('user_role_updated'));
+        } catch (_) {}
+      }
+    }
+  }, [allDrivers, userPhone, userRole]);
 
   // Filter messages relevant to this user (either 'all' or specifically matched targetPhone)
   const userMessages = dbMessages.filter(msg => {
