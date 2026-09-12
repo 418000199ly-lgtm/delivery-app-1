@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-01T09:14:41.530Z"
+      "updatedAt": "2026-09-09T09:05:00.149Z"
     }
   },
   "version_history": {
@@ -38,24 +38,35 @@
   },
   "driver_users": {
     "15509601222": {
-      "isOnline": true,
-      "onlineOrdersEnabled": true,
-      "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
       "phone": "15509601222",
       "driverName": "吴彦祖",
-      "lat": 38.475121,
-      "lng": 106.286642,
-      "isBusy": false,
+      "role": "开发者",
+      "userRole": "开发者",
+      "vipExpiry": "2026-10-23",
+      "customAppName": "滴滴代驾",
+      "isOnline": false,
+      "onlineOrdersEnabled": false,
+      "lastOfflineReason": "daily_0559_expired",
+      "lastOfflineTime": "2026-09-09T05:59:00.000Z",
+      "isBanned": false,
       "city": "银川市",
+      "updatedAt": "2026-09-07T16:40:37.510Z",
+      "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
+      "lat": 38.47513,
+      "lng": 106.28665,
+      "isBusy": false,
       "version": "V1.0",
       "appVersion": "V1.0",
-      "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
+      "lastUpdatedBy": "Gaode AMap 20s Auto Reporter",
+      "lastLocationTime": 1788803793368
     }
   },
   "squad_members": {
     "15509601222": {
-      "isOnline": true,
-      "onlineOrdersEnabled": true,
+      "isOnline": false,
+      "onlineOrdersEnabled": false,
+      "lastOfflineReason": "daily_0559_expired",
+      "lastOfflineTime": "2026-09-09T05:59:00.000Z",
       "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
       "phone": "15509601222",
       "driverName": "吴彦祖",
@@ -74,8 +85,8 @@
       "driverName": "吴彦祖",
       "lat": 38.475121,
       "lng": 106.286642,
-      "isOnline": true,
-      "onlineOrdersEnabled": true,
+      "isOnline": false,
+      "onlineOrdersEnabled": false,
       "isBusy": false,
       "city": "银川市",
       "version": "V1.0",

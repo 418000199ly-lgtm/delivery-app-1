@@ -67,7 +67,7 @@ export default function TripCostView({
   };
 
   return (
-    <div className="flex-1 flex flex-col justify-between h-full bg-slate-100 select-none">
+    <div className="flex-1 flex flex-col justify-between h-full bg-slate-100 select-none relative overflow-hidden">
       
       {/* 1. Top Bar Navigation Panel */}
       <div className="bg-[#273046] header-safe-pt pb-2 min-h-14 flex items-center justify-between px-4 text-white shadow-md z-10">
@@ -223,7 +223,7 @@ export default function TripCostView({
 
       {/* DETAILED BILLING RULES OVERVIEW MODAL */}
       {showRulesModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl w-full max-w-[320px] p-5 shadow-2xl border border-slate-100 text-left animate-in zoom-in-95 duration-150">
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-100">
               <span className="text-sm font-black text-slate-800">代驾规则与计费模版</span>

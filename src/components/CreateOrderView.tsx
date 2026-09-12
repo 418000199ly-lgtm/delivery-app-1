@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { QrCode, Clock, RotateCw, CheckCircle2, Plus, Minus, Phone } from 'lucide-react';
 import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats, DEFAULT_SLOTS } from '../types';
+import { getTimeSlotForTime } from '../utils/billingUtils';
 import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { speakText } from '../utils/speech';
 import PassengerOrderView from './PassengerOrderView';
@@ -1724,34 +1725,8 @@ export default function CreateOrderView({
     }
   };
 
-  // Find active time slot for the current time
-  const getActiveTimeSlot = () => {
-    const slots = (billingRules && Array.isArray(billingRules.slots) && billingRules.slots.length > 0) ? billingRules.slots : DEFAULT_SLOTS;
-    const nowObj = new Date();
-    const activeHour = nowObj.getHours();
-    let activeSlot = slots[0] || DEFAULT_SLOTS[0];
-    
-    for (const slot of slots) {
-      if (!slot || !slot.startTime || !slot.endTime) continue;
-      const [startH] = slot.startTime.split(':').map(Number);
-      const [endH] = slot.endTime.split(':').map(Number);
-      
-      if (startH > endH) { // overnight slot
-        if (activeHour >= startH || activeHour <= endH) {
-          activeSlot = slot;
-          break;
-        }
-      } else {
-        if (activeHour >= startH && activeHour <= endH) {
-          activeSlot = slot;
-          break;
-        }
-      }
-    }
-    return activeSlot;
-  };
-
-  const activeSlot = getActiveTimeSlot();
+  // Find active time slot for the current time or order creation time (minute accurate)
+  const activeSlot = getTimeSlotForTime(billingRules);
   const baseStartingPrice = activeSlot.startingPrice ?? 40;
   
   // Calculate estimation fee: show starting price as minimum even if destination is empty
@@ -1792,7 +1767,16 @@ export default function CreateOrderView({
       const userEnteredDest = (destination || '').trim();
       const targetDestination = userEnteredDest || '请填写目的地（选填）';
       const targetPhone = (phoneNumber || '').trim();
-      const startingFeeApplied = Number(((baseStartingPrice || 59) * (weatherMultiplier || 1.0)).toFixed(2));
+
+      // Lock starting timestamp and starting slot for the order
+      const orderStartMs = (activeOnlineOrder && (activeOnlineOrder.startTimestamp || activeOnlineOrder.timestamp))
+        ? Number(activeOnlineOrder.startTimestamp || activeOnlineOrder.timestamp)
+        : Date.now();
+
+      // Accurately determine the starting price from the rule template corresponding to the order's start time
+      const orderSlot = getTimeSlotForTime(billingRules, orderStartMs);
+      const lockedStartingPrice = orderSlot?.startingPrice ?? baseStartingPrice ?? 40;
+      const startingFeeApplied = Number((lockedStartingPrice * (weatherMultiplier || 1.0)).toFixed(2));
       
       if (registeredCity && startLocation && typeof startLocation === 'string' && !startLocation.includes(registeredCity)) {
         console.warn(`出发地（当前输入：${startLocation}）不在线上认证的听单开通城市（${registeredCity}）范围内。但因属于线下自助报单，已放行创建订单。`);
@@ -1817,7 +1801,7 @@ export default function CreateOrderView({
           passengerPhone: targetPhone || activeOnlineOrder.passengerPhone || '',
           startLocation: activeOnlineOrder.startLocation || activeOnlineOrder.originName || startLocation || '银川市',
           endLocation: userEnteredDest || activeOnlineOrder.destination || activeOnlineOrder.endLocation || targetDestination,
-          startTimestamp: Date.now(),
+          startTimestamp: orderStartMs,
           currentDistance: 0.0,
           currentWaitingTime: 0,
           currentStatus: 'serving',
@@ -1870,7 +1854,7 @@ export default function CreateOrderView({
         passengerPhone: targetPhone,
         startLocation: startLocation || '银川市',
         endLocation: targetDestination,
-        startTimestamp: Date.now(),
+        startTimestamp: orderStartMs,
         currentDistance: 0.0,
         currentWaitingTime: 0,
         currentStatus: 'serving',

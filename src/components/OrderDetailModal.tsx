@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { ArrowLeft, MoreVertical, CheckCircle2, Receipt, Route, Clock, User, Phone, Trash2, Send } from 'lucide-react';
 import { BillingRules, DEFAULT_SLOTS } from '../types';
-import { formatOrderDisplayTime } from './HomeView';
+import { getTimeSlotForTime } from '../utils/billingUtils';
+import { formatOrderDisplayTime, formatTransferOrderEndLocation } from './HomeView';
 
 interface OrderDetailModalProps {
   order: any;
@@ -44,7 +45,7 @@ export default function OrderDetailModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-[#f0f9f4] dark:bg-zinc-950 z-[1200] flex flex-col overflow-hidden animate-in slide-in-from-right duration-200 select-none">
+    <div className="absolute inset-0 bg-[#f0f9f4] dark:bg-zinc-950 z-[1200] flex flex-col overflow-hidden animate-in slide-in-from-right duration-200 select-none">
       {/* Header */}
       <header className="sticky top-0 w-full z-50 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between px-4 h-14 shrink-0">
         <button 
@@ -80,35 +81,33 @@ export default function OrderDetailModal({
 
         {/* 费用明细卡片 */}
         {(() => {
-          const slots = (billingRules && Array.isArray(billingRules.slots) && billingRules.slots.length > 0)
-            ? billingRules.slots
-            : DEFAULT_SLOTS;
-
-          let orderHour = new Date().getHours();
-          const orderTimeStr = order.timeStr || order.fullTimeStr || '';
-          const timeMatch = orderTimeStr.match(/(\d{1,2}):(\d{2})/);
-          if (timeMatch) {
-            orderHour = parseInt(timeMatch[1], 10);
-          }
-
-          let activeSlot = slots[0] || DEFAULT_SLOTS[0];
-          for (const slot of slots) {
-            if (!slot || !slot.startTime || !slot.endTime) continue;
-            const [startH] = slot.startTime.split(':').map(Number);
-            const [endH] = slot.endTime.split(':').map(Number);
-            
-            if (startH > endH) {
-              if (orderHour >= startH || orderHour <= endH) {
-                activeSlot = slot;
-                break;
+          // Accurate order start time resolution: timestamp or timeStr
+          let orderDate: Date = new Date();
+          if (order.startTimestamp || order.timestamp) {
+            orderDate = new Date(Number(order.startTimestamp || order.timestamp));
+          } else {
+            const orderTimeStr = order.timeStr || order.fullTimeStr || '';
+            const timeMatch = orderTimeStr.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})/);
+            if (timeMatch) {
+              orderDate = new Date(
+                parseInt(timeMatch[1], 10),
+                parseInt(timeMatch[2], 10) - 1,
+                parseInt(timeMatch[3], 10),
+                parseInt(timeMatch[4], 10),
+                parseInt(timeMatch[5], 10)
+              );
+            } else {
+              const hmMatch = orderTimeStr.match(/(\d{1,2}):(\d{2})/);
+              if (hmMatch) {
+                orderDate = new Date();
+                orderDate.setHours(parseInt(hmMatch[1], 10), parseInt(hmMatch[2], 10), 0, 0);
               }
-            } else if (orderHour >= startH && orderHour <= endH) {
-              activeSlot = slot;
-              break;
             }
           }
 
-          // 1. 起步价
+          const activeSlot = getTimeSlotForTime(billingRules, orderDate);
+
+          // 1. 起步价: 优先使用订单创建/锁定的起步价（calculatedBaseFee / startPrice），确保几点开始就显示多少元
           const ruleStartPrice = activeSlot?.startingPrice ?? 38.00;
           const startFee = Number(order.calculatedBaseFee || order.startPrice || ruleStartPrice);
 
@@ -277,22 +276,51 @@ export default function OrderDetailModal({
                   order.isMerchantValetOrder
                 )
               );
-              if ((isReportTransfer || isMerchantValet) && onOpenMerchantValetPayment) {
-                return (
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenMerchantValetPayment(order);
-                        onClose();
-                      }}
-                      className="w-full py-2.5 px-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 active:scale-[0.98] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-pointer"
-                    >
-                      <Send className="w-4 h-4 text-white" />
-                      <span>补发代叫费</span>
-                    </button>
-                  </div>
+              if (isReportTransfer || isMerchantValet) {
+                const isTransferIssuer = isReportTransfer && (
+                  (order as any).isTransferIssuer === true ||
+                  (order as any).isReporter === true ||
+                  order.status === '已转单' ||
+                  dest.includes('报单转单') ||
+                  dest.includes('派给') ||
+                  dest.includes('选单大厅')
                 );
+
+                if (isTransferIssuer) {
+                  return (
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // 点击无任何效果
+                        }}
+                        className="w-full py-2.5 px-4 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-default select-none"
+                      >
+                        <Send className="w-4 h-4 text-white" />
+                        <span>等候接单的司机发送您代叫费</span>
+                      </button>
+                    </div>
+                  );
+                }
+
+                if (onOpenMerchantValetPayment) {
+                  return (
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onOpenMerchantValetPayment(order);
+                          onClose();
+                        }}
+                        className="w-full py-2.5 px-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 active:scale-[0.98] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                      >
+                        <Send className="w-4 h-4 text-white" />
+                        <span>补发代叫费</span>
+                      </button>
+                    </div>
+                  );
+                }
               }
               return null;
             })()}
@@ -313,7 +341,7 @@ export default function OrderDetailModal({
                 <div className="flex flex-col">
                   <span className="text-xs text-slate-400 font-semibold">终点</span>
                   <span className="text-sm text-slate-800 dark:text-slate-200 font-medium">
-                    {order.endLocation || '盈北路'}
+                    {formatTransferOrderEndLocation(order) || order.endLocation || '盈北路'}
                   </span>
                 </div>
               </div>
@@ -338,7 +366,7 @@ export default function OrderDetailModal({
 
       {/* 删除确认 Modal */}
       {showDeleteConfirm && onDeleteOrder && (
-        <div className="fixed inset-0 z-[1300] bg-black/60 backdrop-blur-xs flex items-center justify-center p-6 animate-in fade-in duration-150">
+        <div className="absolute inset-0 z-[1300] bg-black/60 backdrop-blur-xs flex items-center justify-center p-6 animate-in fade-in duration-150">
           <div className="bg-white dark:bg-zinc-900 rounded-2xl p-6 w-full max-w-sm shadow-2xl border border-gray-100 dark:border-zinc-800 text-center space-y-4">
             <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 mx-auto flex items-center justify-center">
               <Trash2 className="w-6 h-6" />

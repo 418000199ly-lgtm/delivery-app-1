@@ -12,6 +12,22 @@ interface MerchantValetPaymentViewProps {
   onFinishTrip: (amount: number) => void;
 }
 
+// Helper to normalize image URLs with base API prefix when needed
+const getFullQrUrl = (url: string): string => {
+  if (!url) return '';
+  const trimmed = url.trim();
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('/')) {
+    const baseUrl = getBaseApiUrl();
+    if (baseUrl && (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))) {
+      return `${baseUrl.replace(/\/$/, '')}${trimmed}`;
+    }
+  }
+  return trimmed;
+};
+
 export default function MerchantValetPaymentView({
   trip,
   settings,
@@ -39,17 +55,79 @@ export default function MerchantValetPaymentView({
     }
   }, [trip?.id]);
 
+  const isWebChannel = Boolean(
+    (trip as any)?.orderChannel === 'web' ||
+    (trip as any)?.dispatchChannel === 'web' ||
+    (trip as any)?.sourceChannel === 'web' ||
+    (trip as any)?.isStandaloneMerchantWeb ||
+    (trip as any)?.orderType === '商户代叫' ||
+    (trip as any)?.type === '商户代叫' ||
+    (trip as any)?.orderRemark === '商户代叫'
+  );
+
   useEffect(() => {
     let isMounted = true;
 
-    // Check initial QR code from trip or localStorage immediately
-    const initialQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || (trip as any)?.qrCode || (trip as any)?.wechatQrCode || (trip as any)?.wechatClean || (trip as any)?.dispatcherQr || '';
-    if (initialQr) {
-      setDispatcherQr(initialQr);
-    } else if (rawDispatchedBy) {
-      const savedLocal = localStorage.getItem(`dd_dispatch_wechat_qr_${rawDispatchedBy}`) || localStorage.getItem(`dd_dispatch_fee_qr_${rawDispatchedBy}`);
-      if (savedLocal) {
-        setDispatcherQr(savedLocal);
+    // Prioritize direct QR attached to the order if present
+    const initialDirectQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || (trip as any)?.qrCode || (trip as any)?.wechatQrCode || '';
+    if (initialDirectQr && initialDirectQr.trim()) {
+      setDispatcherQr(initialDirectQr);
+    }
+
+    const candidatePhones = Array.from(new Set([
+      rawDispatchedBy,
+      (trip as any)?.merchantPhone,
+      (trip as any)?.dispatchedByPhone,
+      (trip as any)?.dispatchedBy,
+      (trip as any)?.dispatcherPhone,
+      (trip as any)?.reporterPhone,
+      (trip as any)?.adminPhone,
+      (trip as any)?.creatorPhone,
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_login_phone') : ''),
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_phone') : ''),
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : ''),
+      '15509601222'
+    ].map(p => (p || '').toString().trim()).filter(Boolean)));
+
+    // Check initial QR code matching the channel from localStorage immediately if not direct on trip
+    if (!initialDirectQr) {
+      for (const phone of candidatePhones) {
+        if (!phone) continue;
+        if (isWebChannel) {
+          const webCached = localStorage.getItem(`dd_web_valet_wechat_qr_${phone}`) ||
+                            localStorage.getItem(`dd_dispatch_wechat_qr_${phone}`) ||
+                            localStorage.getItem(`dd_dispatch_fee_qr_${phone}`) ||
+                            localStorage.getItem(`dd_merchant_user_qr_${phone}`);
+          if (webCached) {
+            setDispatcherQr(webCached);
+            break;
+          }
+        } else {
+          const appCached = localStorage.getItem(`dd_app_valet_wechat_qr_${phone}`) ||
+                            localStorage.getItem(`dd_dispatch_wechat_qr_${phone}`) ||
+                            (() => {
+                              try {
+                                const s = localStorage.getItem(`dd_settings_${phone}`);
+                                if (s) return JSON.parse(s)?.wechatQrCode || '';
+                              } catch (_) {}
+                              return '';
+                            })();
+          if (appCached) {
+            setDispatcherQr(appCached);
+            break;
+          }
+        }
+      }
+
+      if (!dispatcherQr) {
+        const fallbackGlobal = localStorage.getItem('dd_web_valet_wechat_qr') ||
+                               localStorage.getItem('dd_dispatch_fee_qr_global') ||
+                               localStorage.getItem('dd_merchant_web_qr') ||
+                               localStorage.getItem('dd_dispatch_wechat_qr_15509601222') ||
+                               localStorage.getItem('dd_dispatch_wechat_qr');
+        if (fallbackGlobal) {
+          setDispatcherQr(fallbackGlobal);
+        }
       }
     }
 
@@ -60,22 +138,7 @@ export default function MerchantValetPaymentView({
       const timeToken = Date.now();
       const orderId = (trip as any)?.orderId || (trip as any)?.orderNumber || trip?.id;
 
-      const userP = settings?.phoneNumber || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '';
-      const candidatePhones = Array.from(new Set([
-        rawDispatchedBy,
-        (trip as any)?.reporterPhone,
-        (trip as any)?.dispatchedByPhone,
-        (trip as any)?.dispatchedBy,
-        (trip as any)?.dispatcherPhone,
-        (trip as any)?.adminPhone,
-        (trip as any)?.merchantPhone,
-        (trip as any)?.creatorPhone,
-        (trip as any)?.driverPhone,
-        (trip as any)?.acceptDriverPhone,
-        userP
-      ].map(p => (p || '').toString().trim()).filter(Boolean)));
-
-      // 1. First attempt: Query merchant_orders on Baota server using orderId / orderNumber to retrieve real-time order record
+      // 1. First attempt: Query merchant_orders on Baota server using orderId / orderNumber
       const orderCandidates = Array.from(new Set([orderId, (trip as any)?.orderNumber, trip?.id].filter(Boolean)));
       for (const candidateId of orderCandidates) {
         if (!isMounted) return;
@@ -104,33 +167,40 @@ export default function MerchantValetPaymentView({
         } catch (_) {}
       }
 
-      // 1.5 Fallback check in local storage dd_merchant_orders_v2 for matching order record
-      try {
-        const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-        const match = saved.find((o: any) =>
-          orderCandidates.some(cid => o.id === cid || o.orderId === cid || o.orderNo === cid)
-        );
-        if (match) {
-          const foundMatchQr = match.paymentQrCode || match.merchantPaymentQrCode || match.qrCode || match.wechatQrCode;
-          if (foundMatchQr && foundMatchQr.trim()) {
-            setDispatcherQr(foundMatchQr);
-            return;
+      // 2. Query dedicated /api/get-wechat-qr endpoint which checks server disk files and all DB collections
+      for (const targetPhone of candidatePhones) {
+        if (!targetPhone || !isMounted) continue;
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2000);
+          const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetPhone)}&channel=${isWebChannel ? 'web' : 'app'}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            const json = await res.json();
+            if (isMounted && json?.success && json?.url && typeof json.url === 'string' && json.url.trim()) {
+              setDispatcherQr(json.url);
+              if (isWebChannel) {
+                localStorage.setItem(`dd_web_valet_wechat_qr_${targetPhone}`, json.url);
+              } else {
+                localStorage.setItem(`dd_app_valet_wechat_qr_${targetPhone}`, json.url);
+                localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, json.url);
+              }
+              return;
+            }
           }
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
 
-      // Loop through candidate phones to query QR codes from Baota collections
+      // 3. Loop through candidate phones to query channel-specific QR codes from Baota collections
+      const targetCols = isWebChannel 
+        ? ['web_valet_qrs', 'dispatch_qrs_web', 'merchant_users', 'dispatch_qrs', 'dispatch_qrcodes']
+        : ['app_valet_qrs', 'driver_users', 'dispatch_qrs', 'dispatch_qrcodes', 'web_valet_qrs'];
+
       for (const targetPhone of candidatePhones) {
         if (!targetPhone || !isMounted) continue;
 
-        const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) || localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`);
-        if (localPhoneQr) {
-          setDispatcherQr(localPhoneQr);
-          return;
-        }
-
         // Try query collections on Baota server
-        for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'merchant_users', 'driver_users']) {
+        for (const colName of targetCols) {
           if (!isMounted) return;
           try {
             const controller = new AbortController();
@@ -140,9 +210,14 @@ export default function MerchantValetPaymentView({
             if (res.ok) {
               const json = await res.json();
               const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
-              if (isMounted && foundQr) {
+              if (isMounted && foundQr && typeof foundQr === 'string' && foundQr.trim()) {
                 setDispatcherQr(foundQr);
-                localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, foundQr);
+                if (isWebChannel) {
+                  localStorage.setItem(`dd_web_valet_wechat_qr_${targetPhone}`, foundQr);
+                } else {
+                  localStorage.setItem(`dd_app_valet_wechat_qr_${targetPhone}`, foundQr);
+                  localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, foundQr);
+                }
                 return;
               }
             }
@@ -160,7 +235,7 @@ export default function MerchantValetPaymentView({
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [trip, rawDispatchedBy]);
+  }, [trip, rawDispatchedBy, isWebChannel]);
 
   const handleConfirmSent = () => {
     onFinishTrip(trip.calculatedTotalFee);
@@ -180,22 +255,21 @@ export default function MerchantValetPaymentView({
     userPhone && rawDispatchedBy && (rawDispatchedBy === userPhone || rawDispatchedBy.trim() === userPhone.trim())
   );
 
-  const driverOwnQr = wechatClean || settings?.wechatQrCode || (() => {
-    try {
-      if (typeof window === 'undefined') return '';
-      const userP = settings?.phoneNumber || localStorage.getItem('dd_user_phone') || '';
-      const cachedSet = (userP ? localStorage.getItem(`dd_settings_${userP}`) : null) || localStorage.getItem('dd_settings');
-      if (cachedSet) {
-        const parsed = JSON.parse(cachedSet);
-        if (parsed?.wechatQrCode) return parsed.wechatQrCode;
-      }
-      return localStorage.getItem('dd_user_wechat_qr') ||
-             localStorage.getItem('dd_dispatch_wechat_qr') ||
-             (userP ? localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) : '') ||
-             '';
-    } catch (_) {}
-    return '';
-  })();
+  const driverOwnQr = (isCreatorSelf || !rawDispatchedBy) ? (
+    wechatClean || settings?.wechatQrCode || (() => {
+      try {
+        if (typeof window === 'undefined') return '';
+        const userP = settings?.phoneNumber || localStorage.getItem('dd_user_phone') || '';
+        const cachedSet = userP ? localStorage.getItem(`dd_settings_${userP}`) : null;
+        if (cachedSet) {
+          const parsed = JSON.parse(cachedSet);
+          if (parsed?.wechatQrCode) return parsed.wechatQrCode;
+        }
+        return userP ? (localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) || '') : '';
+      } catch (_) {}
+      return '';
+    })()
+  ) : '';
 
   const tripDirectQr = (
     (trip as any)?.paymentQrCode ||
@@ -207,28 +281,63 @@ export default function MerchantValetPaymentView({
     ''
   ).toString().trim();
 
-  const localDispatchedByQr = rawDispatchedBy ? (
-    localStorage.getItem(`dd_dispatch_wechat_qr_${rawDispatchedBy}`) ||
-    localStorage.getItem(`dd_dispatch_fee_qr_${rawDispatchedBy}`) ||
-    ''
-  ) : '';
+  const localDispatchedByQr = (() => {
+    const phones = Array.from(new Set([
+      rawDispatchedBy,
+      (trip as any)?.merchantPhone,
+      (trip as any)?.dispatchedByPhone,
+      (trip as any)?.dispatchedBy,
+      (trip as any)?.dispatcherPhone,
+      (trip as any)?.reporterPhone,
+      (trip as any)?.adminPhone,
+      (trip as any)?.creatorPhone,
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_login_phone') : ''),
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_phone') : ''),
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : ''),
+      '15509601222'
+    ].map(p => (p || '').toString().trim()).filter(Boolean)));
 
-  const globalFallbackQr = (typeof window !== 'undefined' ? (
-    localStorage.getItem('dd_user_wechat_qr') ||
-    localStorage.getItem('dd_dispatch_wechat_qr') ||
-    localStorage.getItem('dd_last_payment_qr') ||
-    ''
-  ) : '').trim();
+    for (const p of phones) {
+      if (isWebChannel) {
+        const q = localStorage.getItem(`dd_web_valet_wechat_qr_${p}`) ||
+                  localStorage.getItem(`dd_dispatch_wechat_qr_${p}`) ||
+                  localStorage.getItem(`dd_dispatch_fee_qr_${p}`) ||
+                  localStorage.getItem(`dd_merchant_user_qr_${p}`);
+        if (q) return q;
+      } else {
+        const q = localStorage.getItem(`dd_app_valet_wechat_qr_${p}`) ||
+                  localStorage.getItem(`dd_dispatch_wechat_qr_${p}`) ||
+                  (() => {
+                    try {
+                      const s = localStorage.getItem(`dd_settings_${p}`);
+                      if (s) return JSON.parse(s)?.wechatQrCode || '';
+                    } catch (_) {}
+                    return '';
+                  })();
+        if (q) return q;
+      }
+    }
 
-  // Multi-tier fallback chain ensures current order payment QR code is ALWAYS shown
-  const qrImage = (
-    dispatcherQr ||
+    // Fallback to global web / dispatch QR cache if available
+    return localStorage.getItem('dd_web_valet_wechat_qr') ||
+           localStorage.getItem('dd_dispatch_fee_qr_global') ||
+           localStorage.getItem('dd_merchant_web_qr') ||
+           localStorage.getItem('dd_dispatch_wechat_qr_15509601222') ||
+           localStorage.getItem('dd_dispatch_wechat_qr') ||
+           localStorage.getItem('dd_dispatch_fee_qr') ||
+           '';
+  })();
+
+  // Multi-tier fallback chain strictly isolated per order and sender phone number
+  const rawQr = (
     tripDirectQr ||
+    dispatcherQr ||
     localDispatchedByQr ||
-    driverOwnQr ||
-    globalFallbackQr ||
+    (isCreatorSelf ? driverOwnQr : '') ||
     ''
   ).trim();
+
+  const qrImage = getFullQrUrl(rawQr);
 
   return (
     <div className="w-full h-full bg-[#f9f9f9] text-[#1a1c1c] select-none font-sans flex flex-col justify-between overflow-hidden relative z-50">
@@ -289,7 +398,7 @@ export default function MerchantValetPaymentView({
               <div className="mb-3 flex items-baseline justify-center">
                 <span className="text-xl font-bold text-[#1a1c1c] mr-1">¥</span>
                 <span className="text-3xl sm:text-4xl font-black text-[#1a1c1c] tracking-tight font-mono">
-                  {((trip as any)?.dispatchFee || (trip as any)?.valetFee || 10).toFixed(2)}
+                  {((trip as any)?.dispatchFee || (trip as any)?.valetFee || 12).toFixed(2)}
                 </span>
               </div>
 
@@ -300,6 +409,7 @@ export default function MerchantValetPaymentView({
                     src={qrImage} 
                     alt="微信代叫费收款码" 
                     className="w-full h-full object-contain rounded-xl"
+                    referrerPolicy="no-referrer"
                   />
                 ) : (
                   <div className="relative z-10 w-full h-full flex flex-col items-center justify-center border-2 border-dashed border-[#dfc0af] rounded-xl bg-gray-50/80 p-3">

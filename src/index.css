@@ -107,15 +107,35 @@ button:focus, button:focus-visible, button:active {
   background: #94a3b8;
 }
 
-/* Hide AutoNavi map copyright text (© 2026 AutoNavi - GS (2025) 5996 号) */
+/* Hide AutoNavi map logo, brand name and copyright text completely (高德地图 logo, icon and © AutoNavi) */
+.amap-logo,
+.amap-logo *,
 .amap-copyright,
 .amap-copyright *,
 .amap-info-copyright,
-.amap-logo + .amap-copyright {
+.amap-logo + .amap-copyright,
+div[class*="amap-logo"],
+a[class*="amap-logo"],
+img[src*="autonavi.com"],
+img[src*="amap.com/theme/v1.3/markers"],
+img[src*="logo"],
+[class*="amap-copyright"] {
   display: none !important;
   opacity: 0 !important;
   visibility: hidden !important;
   pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  position: absolute !important;
+  left: -99999px !important;
+  clip: rect(0, 0, 0, 0) !important;
+}
+
+/* Ensure amap-logo container is collapsed */
+.amap-logo {
+  max-width: 0px !important;
+  max-height: 0px !important;
 }
 
 

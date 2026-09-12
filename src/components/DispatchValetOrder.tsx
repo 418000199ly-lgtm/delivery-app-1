@@ -258,6 +258,9 @@ interface DispatchValetOrderProps {
   userRole?: string;
   userTeamCity?: string;
   onClose?: () => void;
+  isOnline?: boolean;
+  driverCoords?: { lat: number; lng: number };
+  onCloseModal?: () => void;
 }
 
 export default function DispatchValetOrder({ 
@@ -265,7 +268,10 @@ export default function DispatchValetOrder({
   userPhone = null,
   userRole = '普通司机',
   userTeamCity = '',
-  onClose
+  onClose,
+  isOnline: propIsOnline,
+  driverCoords: propDriverCoords,
+  onCloseModal
 }: DispatchValetOrderProps) {
   
   // Team management state
@@ -540,7 +546,7 @@ export default function DispatchValetOrder({
       console.warn('Error clearing merchant_orders collection:', err);
     }
 
-    // 3. Wipe all local storage caches for orders
+    // 3. Wipe all local storage caches for merchant orders (DO NOT delete dd_driver_orders which is the Driver Order Center container)
     try {
       localStorage.removeItem('dd_merchant_orders_v2');
       localStorage.removeItem('dd_merchant_orders');
@@ -554,9 +560,8 @@ export default function DispatchValetOrder({
           key.startsWith('mock_db_merchant_orders_') ||
           key.startsWith('mock_db_valet_orders_') ||
           key.startsWith('dd_merchant_order') ||
-          key.startsWith('dd_driver_orders') ||
-          key.startsWith('ord_') ||
-          key.startsWith('valet_order')
+          key.startsWith('valet_order') ||
+          key.startsWith('mock_db_passenger_links_')
         )) {
           localStorage.removeItem(key);
         }
@@ -1375,39 +1380,104 @@ export default function DispatchValetOrder({
   const [editingMemberNameTemp, setEditingMemberNameTemp] = useState<string>('');
 
   // Helper to check allowed roles that current user can assign to target member
+  // 分级权限与职务分配规则：
+  // 职务等级顺序为：开发者司机 > 城市老板司机 > 城市管理司机 > 城市派单员司机 > 普通司机
+  // 1. 开发者司机：可以分配 城市老板司机、城市管理司机、城市派单员司机、普通司机
+  // 2. 城市老板司机：可以分配 城市管理司机、城市派单员司机、普通司机（不可修改上级【开发者司机】与同级【城市老板司机】）
+  // 3. 城市管理司机：可以分配 城市派单员司机、普通司机（不可修改上级【开发者司机、城市老板司机】及同级【城市管理司机】）
+  // 4. 城市派单员司机：可分配 普通司机（不可变更上级及同级管理司机）
   const getAllowedAssignRoles = (targetMember: any) => {
     if (targetMember?.role === '商户、商家' || targetMember?.role?.includes('商户') || targetMember?.role?.includes('商家')) {
       return [];
     }
-    const isDevOp = userPhone === '15509601222' || userRole === '开发者司机' || userRole === '开发者' || userRole === '总指挥官';
-    const isBossOp = userRole === '城市老板司机' || userRole === '城市老板';
-    const isManagerOp = userRole === '城市管理司机' || userRole === '城市管理';
 
-    // 开发者司机 can assign any role in any city
-    if (isDevOp) {
-      return ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '商户、商家', '普通司机'];
-    }
-
-    const opCity = userTeamCity || currentCity || '银川市';
-    const memberCity = targetMember.city || opCity;
-
-    // City Boss & Manager can ONLY set drivers in their own city
-    if (opCity && memberCity && opCity !== memberCity) {
+    const targetPhone = String(targetMember?.phone || targetMember?.id || '').trim();
+    // 开发者司机 15509601222 拥有最高权限，其职务不可被变更或降级
+    if (targetPhone === '15509601222' || targetMember?.role === '开发者司机') {
       return [];
     }
 
-    // 城市老板司机 can assign: 城市老板司机, 城市管理司机, 城市派单员司机, 普通司机 (cannot assign 开发者司机)
+    const isDevOp = userPhone === '15509601222' || userRole === '开发者司机' || userRole === '开发者' || adminProfile.role === '开发者司机';
+    const isBossOp = userRole === '城市老板司机' || userRole === '城市老板' || adminProfile.role === '城市老板司机';
+    const isManagerOp = userRole === '城市管理司机' || userRole === '城市管理' || adminProfile.role === '城市管理司机';
+    const isDispatcherOp = userRole === '城市派单员司机' || userRole === '城市派单员' || adminProfile.role === '城市派单员司机';
+
+    const targetRoleStr = String(targetMember?.role || targetMember?.userRole || '');
+
+    // 1. 开发者司机：可以分配 城市老板司机、城市管理司机、城市派单员司机、普通司机
+    if (isDevOp) {
+      return ['城市老板司机', '城市管理司机', '城市派单员司机', '普通司机'];
+    }
+
+    // 2. 城市老板司机：可以分配 城市管理司机、城市派单员司机、普通司机（不可修改上级【开发者司机】与同级【城市老板司机】）
     if (isBossOp) {
-      return ['城市老板司机', '城市管理司机', '城市派单员司机', '商户、商家', '普通司机'];
+      if (
+        targetRoleStr.includes('开发者') || 
+        targetRoleStr.includes('老板') || 
+        ['开发者司机', '城市老板司机'].includes(targetRoleStr)
+      ) {
+        return [];
+      }
+      return ['城市管理司机', '城市派单员司机', '普通司机'];
     }
 
-    // 城市管理司机 can assign: 城市派单员司机, 普通司机
+    // 3. 城市管理司机：可以分配 城市派单员司机、普通司机（不可修改上级【开发者司机、城市老板司机】及同级【城市管理司机】）
     if (isManagerOp) {
-      return ['城市派单员司机', '商户、商家', '普通司机'];
+      if (
+        targetRoleStr.includes('开发者') || 
+        targetRoleStr.includes('老板') || 
+        targetRoleStr.includes('管理') || 
+        ['开发者司机', '城市老板司机', '城市管理司机'].includes(targetRoleStr)
+      ) {
+        return [];
+      }
+      return ['城市派单员司机', '普通司机'];
     }
 
-    // 城市派单员司机 & 普通司机 cannot assign roles
+    // 4. 城市派单员司机：可分配 普通司机（不可变更上级及同级管理司机）
+    if (isDispatcherOp) {
+      if (
+        targetRoleStr.includes('开发者') || 
+        targetRoleStr.includes('老板') || 
+        targetRoleStr.includes('管理') || 
+        targetRoleStr.includes('派单') || 
+        ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(targetRoleStr)
+      ) {
+        return [];
+      }
+      return ['普通司机'];
+    }
+
     return [];
+  };
+
+  // Check who can modify a member's name:
+  // 1. 开发者司机：可以修改自己、管理层、老板、派单员、普通司机的名字
+  // 2. 城市管理司机、城市老板司机：可以修改自己的名字，可以修改城市派单员司机、普通司机的名字；严禁修改开发者司机的名字
+  const canModifyMemberName = (targetMember: any) => {
+    if (!targetMember || targetMember.role === '商户、商家' || targetMember.role?.includes('商户') || targetMember.role?.includes('商家')) return false;
+
+    const targetPhone = String(targetMember.phone || targetMember.id || '').trim();
+    const targetRole = String(targetMember.role || targetMember.userRole || '').trim();
+
+    const isCurrentDev = userPhone === '15509601222' || userRole === '开发者司机' || userRole === '开发者' || userRole === '总指挥官';
+    const isCurrentManagerOrBoss = userRole === '城市管理司机' || userRole === '城市管理' || userRole === '城市老板司机' || userRole === '城市老板';
+
+    const isTargetDev = targetPhone === '15509601222' || targetRole === '开发者司机' || targetRole === '开发者' || targetRole === '总指挥官';
+    const isTargetDispatcherOrNormal = targetRole === '城市派单员司机' || targetRole === '城市派单员' || targetRole === '普通司机' || targetRole === '司机' || !targetRole || targetRole === '在线代驾司机';
+
+    if (isCurrentDev) {
+      return true;
+    }
+
+    if (isCurrentManagerOrBoss) {
+      if (isTargetDev) return false;
+      if (targetPhone === userPhone) return true;
+      if (isTargetDispatcherOrNormal) return true;
+      return false;
+    }
+
+    return false;
   };
 
   // Save modified member name in member list (up to 8 Chinese characters)
@@ -1420,8 +1490,18 @@ export default function DispatchValetOrder({
 
     const finalName = trimmed.slice(0, 8); // Max 8 Chinese characters
 
+    // Security check: 城市管理司机、城市老板司机不可以修改开发者司机的名字
+    const targetMember = squadMembers.find(m => m.phone === targetPhone);
+    const isTargetDev = targetPhone === '15509601222' || targetMember?.role === '开发者司机' || targetMember?.role === '开发者';
+    const isCurrentDev = userPhone === '15509601222' || userRole === '开发者司机' || userRole === '开发者';
+    if (isTargetDev && !isCurrentDev) {
+      onShowToast('❌ 权限不足：城市管理与城市老板司机不可修改开发者司机的名字！');
+      setEditingMemberPhone(null);
+      return;
+    }
+
     // Sync adminProfile if editing self
-    if (targetPhone === userPhone || targetPhone === '15509601222') {
+    if (targetPhone === userPhone || (isCurrentDev && targetPhone === '15509601222')) {
       setAdminProfile(prev => ({ ...prev, name: finalName }));
       localStorage.setItem('dd_admin_name', finalName);
       localStorage.setItem('dd_user_name', finalName);
@@ -1430,28 +1510,57 @@ export default function DispatchValetOrder({
       }
     }
 
-    // Update local React state immediately so UI updates without external database/network dependency
+    // 1. Persist directly to Alibaba Cloud Baota REST API & MySQL
+    try {
+      const baseUrl = getBaseApiUrl();
+      await fetch(`${baseUrl}/api/driver/name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: targetPhone, name: finalName })
+      });
+    } catch (_) {}
+
+    // 2. Update local React state immediately so UI updates without external database/network dependency
     setSquadMembers(prev => {
       const exists = prev.some(m => m.phone === targetPhone);
+      let updatedList = [];
       if (exists) {
-        return prev.map(m => m.phone === targetPhone ? { ...m, name: finalName, driverName: finalName } : m);
+        updatedList = prev.map(m => m.phone === targetPhone ? { ...m, name: finalName, driverName: finalName } : m);
+      } else {
+        updatedList = [...prev, { phone: targetPhone, name: finalName, driverName: finalName }];
       }
-      return [...prev, { phone: targetPhone, name: finalName, driverName: finalName }];
+      try {
+        localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
+      } catch (_) {}
+      return updatedList;
     });
 
     // Also sync to applicants list if present
-    setApplicants(prev => prev.map(a => (a.phone === targetPhone || a.id === targetPhone) ? { ...a, name: finalName } : a));
+    setApplicants(prev => prev.map(a => (a.phone === targetPhone || a.id === targetPhone) ? { ...a, name: finalName, applicantName: finalName } : a));
 
+    // 3. Update dbProxy collections
     try {
       if (targetPhone) {
         setDoc(doc(db, 'squad_members', targetPhone), {
           name: finalName,
+          driverName: finalName,
           lastUpdatedTime: new Date().toLocaleString()
         }, { merge: true }).catch(() => {});
 
         setDoc(doc(db, 'driver_users', targetPhone), {
           driverName: finalName,
+          name: finalName,
           lastUpdatedTime: new Date().toLocaleString()
+        }, { merge: true }).catch(() => {});
+
+        setDoc(doc(db, 'driver_locations', targetPhone), {
+          driverName: finalName,
+          name: finalName
+        }, { merge: true }).catch(() => {});
+
+        setDoc(doc(db, 'online_applications', targetPhone), {
+          applicantName: finalName,
+          name: finalName
         }, { merge: true }).catch(() => {});
       }
     } catch (_) {}
@@ -1507,7 +1616,7 @@ export default function DispatchValetOrder({
   const handleSaveAdminName = async () => {
     const trimmed = tempAdminName.trim();
     if (!trimmed) {
-      onShowToast('⚠️ 管理员名字不能为空');
+      onShowToast('⚠️ 名字不能为空');
       return;
     }
 
@@ -1516,15 +1625,61 @@ export default function DispatchValetOrder({
     setAdminProfile(prev => ({ ...prev, name: finalName }));
     localStorage.setItem('dd_admin_name', finalName);
     localStorage.setItem('dd_user_name', finalName);
+    if (userPhone) {
+      localStorage.setItem(`dd_custom_app_name_${userPhone}`, finalName);
+    }
 
+    // 1. Persist directly to Alibaba Cloud Baota REST API & MySQL
+    if (userPhone) {
+      try {
+        const baseUrl = getBaseApiUrl();
+        await fetch(`${baseUrl}/api/driver/name`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: userPhone, name: finalName })
+        });
+      } catch (_) {}
+    }
+
+    // 2. Update local squadMembers and applicants state
+    if (userPhone) {
+      setSquadMembers(prev => {
+        const exists = prev.some(m => m.phone === userPhone);
+        let updatedList = [];
+        if (exists) {
+          updatedList = prev.map(m => m.phone === userPhone ? { ...m, name: finalName, driverName: finalName } : m);
+        } else {
+          updatedList = [...prev, { phone: userPhone, name: finalName, driverName: finalName, role: userRole || '开发者司机' }];
+        }
+        try {
+          localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
+        } catch (_) {}
+        return updatedList;
+      });
+      setApplicants(prev => prev.map(a => (a.phone === userPhone || a.id === userPhone) ? { ...a, name: finalName, applicantName: finalName } : a));
+    }
+
+    // 3. Update dbProxy documents
     if (userPhone) {
       try {
         setDoc(doc(db, 'driver_users', userPhone), {
           driverName: finalName,
+          name: finalName,
           lastUpdatedTime: new Date().toLocaleString()
         }, { merge: true }).catch(() => {});
 
         setDoc(doc(db, 'squad_members', userPhone), {
+          name: finalName,
+          driverName: finalName
+        }, { merge: true }).catch(() => {});
+
+        setDoc(doc(db, 'driver_locations', userPhone), {
+          driverName: finalName,
+          name: finalName
+        }, { merge: true }).catch(() => {});
+
+        setDoc(doc(db, 'online_applications', userPhone), {
+          applicantName: finalName,
           name: finalName
         }, { merge: true }).catch(() => {});
       } catch (err) {
@@ -1741,7 +1896,7 @@ export default function DispatchValetOrder({
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: locData })
+          body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: locData, merge: true })
         }).catch(() => {});
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
@@ -1755,7 +1910,8 @@ export default function DispatchValetOrder({
               city: currentCity || '银川市',
               lastLocationTime: Date.now(),
               lastUpdatedTime: timeStr
-            }
+            },
+            merge: true
           })
         }).catch(() => {});
       };
@@ -1838,6 +1994,23 @@ export default function DispatchValetOrder({
 
   // Requirement 4: 选单大厅里20分钟没有司机接单则自动取消订单
   useEffect(() => {
+    const parseOrderTime = (ord: any): number => {
+      if (!ord) return 0;
+      let t = 0;
+      if (typeof ord.timestamp === 'number') t = ord.timestamp;
+      else if (ord.timestamp) t = Number(ord.timestamp) || new Date(ord.timestamp).getTime() || 0;
+      else if (typeof ord.createdAt === 'number') t = ord.createdAt;
+      else if (ord.createdAt) t = Number(ord.createdAt) || new Date(ord.createdAt).getTime() || 0;
+      else if (typeof ord.createTime === 'number') t = ord.createTime;
+      else if (ord.createTime) t = Number(ord.createTime) || new Date(ord.createTime).getTime() || 0;
+
+      // Handle seconds timestamp by converting to milliseconds (10 digits)
+      if (t > 0 && t < 10000000000) {
+        t = t * 1000;
+      }
+      return isNaN(t) ? 0 : t;
+    };
+
     const check20MinHallTimeout = async () => {
       const now = Date.now();
       const TIMEOUT_20_MIN = 20 * 60 * 1000; // 20分钟 = 1,200,000毫秒
@@ -1847,9 +2020,11 @@ export default function DispatchValetOrder({
         const updatedList = prevOrders.map(ord => {
           const isHallOrder = ord.status === 'hall' || ord.statusCategory === '呼叫中' || ord.status === 'submitted';
           const isNotFinal = ord.status !== 'cancelled' && ord.status !== 'completed' && ord.status !== 'claimed';
-          const orderAge = ord.timestamp ? (now - ord.timestamp) : 0;
+          const orderTime = parseOrderTime(ord);
+          const orderAge = orderTime > 0 ? (now - orderTime) : 0;
 
-          if (isHallOrder && isNotFinal && orderAge >= TIMEOUT_20_MIN) {
+          // Only cancel if order timestamp is valid (>0) and actually older than 20 minutes
+          if (isHallOrder && isNotFinal && orderTime > 0 && orderAge >= TIMEOUT_20_MIN) {
             changed = true;
             const cancelledData = {
               ...ord,
@@ -1878,8 +2053,9 @@ export default function DispatchValetOrder({
             const localSaved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
             const updatedSaved = localSaved.map((item: any) => {
               const isHallOrder = item.status === 'hall' || item.statusCategory === '呼叫中';
-              const orderAge = item.timestamp ? (now - item.timestamp) : 0;
-              if (isHallOrder && item.status !== 'cancelled' && orderAge >= TIMEOUT_20_MIN) {
+              const orderTime = parseOrderTime(item);
+              const orderAge = orderTime > 0 ? (now - orderTime) : 0;
+              if (isHallOrder && item.status !== 'cancelled' && orderTime > 0 && orderAge >= TIMEOUT_20_MIN) {
                 return {
                   ...item,
                   status: 'cancelled',
@@ -2177,7 +2353,7 @@ export default function DispatchValetOrder({
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ phone: activePhone, imageBase64: pngDataUrl })
+          body: JSON.stringify({ phone: activePhone, imageBase64: pngDataUrl, channel: 'app' })
         });
 
         let uploadData: any = null;
@@ -2326,57 +2502,55 @@ export default function DispatchValetOrder({
       }
     });
 
-    // 3. Ensure developer admin driver 15509601222 is ALWAYS present if online
-    const localIsOnline = typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false;
-    if (userPhone && userPhone === '15509601222') {
-      if (localIsOnline) {
-        const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
-        const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
-        const selfLat = latStr ? parseFloat(latStr) : passengerCoords.lat;
-        const selfLng = lngStr ? parseFloat(lngStr) : passengerCoords.lng;
+    // 3. Ensure currently logged-in driver and developer admin are properly registered in driverMap
+    const effectivePhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '15509601222').trim();
+    const effectiveIsOnline = propIsOnline ?? (typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false);
 
-        const existing = driverMap.get('15509601222') || {};
-        driverMap.set('15509601222', {
-          ...existing,
-          phone: '15509601222',
-          name: adminProfile?.name || existing.name || '开发者司机',
-          lat: isValidCoords(selfLat, selfLng) ? selfLat : (isValidCoords(existing.lat, existing.lng) ? existing.lat : passengerCoords.lat),
-          lng: isValidCoords(selfLat, selfLng) ? selfLng : (isValidCoords(existing.lat, existing.lng) ? existing.lng : passengerCoords.lng),
-          isOnline: true,
-          isBusy: existing.isBusy === true,
-          onlineOrdersEnabled: true,
-          role: '开发者司机'
-        });
-      }
+    const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
+    const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+    const effectiveDriverLat = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
+      ? propDriverCoords.lat
+      : (latStr && !isNaN(parseFloat(latStr)) ? parseFloat(latStr) : 38.4830);
+    const effectiveDriverLng = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
+      ? propDriverCoords.lng
+      : (lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : 106.2350);
+
+    const hasActiveTrip = typeof window !== 'undefined' && Boolean(
+      localStorage.getItem('dd_current_trip') ||
+      localStorage.getItem('dd_current_order')
+    );
+
+    if (effectiveIsOnline && effectivePhone) {
+      const existing = driverMap.get(effectivePhone) || {};
+      const smSelf = squadMembers.find((m: any) => String(m.phone).trim() === effectivePhone);
+      const selfRealName = smSelf?.name || smSelf?.driverName || smSelf?.realName || (adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' ? adminProfile.name : (effectivePhone === '15509601222' ? '开发者司机' : `司机${effectivePhone.slice(-4)}`));
+
+      driverMap.set(effectivePhone, {
+        ...existing,
+        phone: effectivePhone,
+        name: selfRealName,
+        lat: isValidCoords(effectiveDriverLat, effectiveDriverLng) ? effectiveDriverLat : 38.4830,
+        lng: isValidCoords(effectiveDriverLat, effectiveDriverLng) ? effectiveDriverLng : 106.2350,
+        isOnline: true,
+        isBusy: hasActiveTrip,
+        onlineOrdersEnabled: true,
+        role: adminProfile?.role || existing.role || (effectivePhone === '15509601222' ? '开发者司机' : '普通司机')
+      });
     }
 
-    // 4. Ensure currently logged-in driver status is derived strictly from localIsOnline
-    if (userPhone && userPhone !== '15509601222') {
-      if (localIsOnline) {
-        const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
-        const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
-        const smSelf = squadMembers.find((m: any) => m.phone === userPhone);
-        const selfRealName = smSelf?.name || smSelf?.driverName || smSelf?.realName || (adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' ? adminProfile.name : `司机${userPhone.slice(-4)}`);
-
-        const selfLat = latStr ? parseFloat(latStr) : passengerCoords.lat;
-        const selfLng = lngStr ? parseFloat(lngStr) : passengerCoords.lng;
-
-        const existing = driverMap.get(userPhone) || {};
-        driverMap.set(userPhone, {
-          ...existing,
-          phone: userPhone,
-          name: selfRealName,
-          lat: isValidCoords(selfLat, selfLng) ? selfLat : existing.lat,
-          lng: isValidCoords(selfLat, selfLng) ? selfLng : existing.lng,
-          isOnline: true,
-          isBusy: existing.isBusy === true,
-          onlineOrdersEnabled: true,
-          role: adminProfile?.role || existing.role || '开发者司机'
-        });
-      } else {
-        // Driver is offline, remove from candidate dispatch map!
-        driverMap.delete(userPhone);
-      }
+    if (effectiveIsOnline && effectivePhone !== '15509601222') {
+      const existing = driverMap.get('15509601222') || {};
+      driverMap.set('15509601222', {
+        ...existing,
+        phone: '15509601222',
+        name: '开发者司机',
+        lat: 38.4830,
+        lng: 106.2350,
+        isOnline: true,
+        isBusy: false,
+        onlineOrdersEnabled: true,
+        role: '开发者司机'
+      });
     }
 
     const onlineRealDrivers = Array.from(driverMap.values());
@@ -2461,14 +2635,38 @@ export default function DispatchValetOrder({
       const formattedOrderNo = `YC${yyyy}${mm}${dd}${hh}${min}${seqStr}`;
       const orderId = 'MO_' + ts;
 
+      const effectivePhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '15509601222').trim();
+      const effectiveIsOnline = propIsOnline ?? (typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false);
+
+      const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
+      const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+      const effectiveDriverLat = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
+        ? propDriverCoords.lat
+        : (latStr && !isNaN(parseFloat(latStr)) ? parseFloat(latStr) : 38.4830);
+      const effectiveDriverLng = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
+        ? propDriverCoords.lng
+        : (lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : 106.2350);
+
       // Helper to verify driver eligibility for orders
       const isDriverEligible = (d: any) => {
         const phone = d.phone ? String(d.phone).trim() : '';
         if (!phone) return false;
 
-        // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders!
-        const isMerchant = d.role?.includes('商户') || d.role?.includes('商家') || d.userRole?.includes('商户') || d.userRole?.includes('商家');
-        if (isMerchant) return false;
+        const isCurrentDriver = (
+          phone === effectivePhone ||
+          phone === '15509601222' ||
+          (userPhone && phone === String(userPhone).trim())
+        );
+
+        // Currently logged-in driver / developer driver who is online is ALWAYS eligible!
+        if (isCurrentDriver) {
+          return effectiveIsOnline;
+        }
+
+        // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders
+        const dRole = (d.role || d.userRole || d.approvedRole || '').trim();
+        const isPureMerchant = (dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理');
+        if (isPureMerchant) return false;
 
         // 2. Check if in removedMemberPhones list
         let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
@@ -2485,31 +2683,25 @@ export default function DispatchValetOrder({
         const isRemoved = removedList.some(p => String(p).trim() === phone || String(p).trim() === String(d.id || '').trim() || String(p).trim() === String(d.name || '').trim());
         if (isRemoved) return false;
 
-        // 3. MUST be an approved driver in squadMembers or developer admin 15509601222!
+        // 3. MUST be an approved driver in squadMembers
         const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
-        if (phone !== '15509601222') {
-          if (squadMembers && squadMembers.length > 0 && !sm) {
+        if (squadMembers && squadMembers.length > 0 && !sm) {
+          return false;
+        }
+        if (sm) {
+          const st = sm.status || sm.approvalStatus || '已通过';
+          if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
             return false;
           }
-          if (sm) {
-            const st = sm.status || sm.approvalStatus || '已通过';
-            if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
-              return false;
-            }
-            const smIsMerchant = sm.role?.includes('商户') || sm.role?.includes('商家') || sm.userRole?.includes('商户') || sm.userRole?.includes('商家');
-            if (smIsMerchant) {
-              return false;
-            }
+          const smRole = (sm.role || sm.approvedRole || sm.userRole || '').trim();
+          const smIsPureMerchant = (smRole.includes('商户') || smRole.includes('商家')) && !smRole.includes('司机') && !smRole.includes('管理');
+          if (smIsPureMerchant) {
+            return false;
           }
         }
 
-        // 4. Online check
-        if (userPhone && phone === userPhone) {
-          const localIsOnline = typeof window !== 'undefined' ? safeGetItem('dd_is_online') === 'true' : false;
-          if (!localIsOnline) return false;
-        }
-
-        const isOnline = d.isOnline === true || d.isOnline === 'true' || d.onlineOrdersEnabled === true || d.onlineOrdersEnabled === 'true';
+        // 4. Online & free check - MUST strictly be online, NOT just having permission enabled!
+        const isOnline = d.isOnline === true || d.isOnline === 'true';
         if (!isOnline) return false;
 
         if (d.isBusy === true || d.isBusy === 'true') return false;
@@ -2530,7 +2722,9 @@ export default function DispatchValetOrder({
         ? passengerCoords.lng
         : geocodedStart.lng;
 
-      // Recalculate distance for all online drivers using exact finalLat & finalLng
+      const isTransferOrder = Boolean(orderRemark && orderRemark.includes('报单转单'));
+
+      // Recalculate distance for all candidate drivers using exact finalLat & finalLng
       const allCandidateDrivers = getCombinedDrivers().map(d => {
         let dLat = d.lat;
         let dLng = d.lng;
@@ -2541,31 +2735,65 @@ export default function DispatchValetOrder({
             dLng = sm.lng;
           }
         }
-        const dist = (isValidCoords(dLat, dLng) && isValidCoords(finalLat, finalLng))
-          ? calculateDistance(finalLat, finalLng, dLat, dLng)
+        const hasValidCoords = isValidCoords(dLat, dLng);
+        const dist = hasValidCoords
+          ? calculateOrderDriverDistance(
+              passengerAddress,
+              finalLat,
+              finalLng,
+              { lat: dLat, lng: dLng }
+            ).distKm
           : 999;
         return { ...d, lat: dLat, lng: dLng, distance: dist };
       });
 
       // Find online free drivers who are eligible
       const eligibleDrivers = allCandidateDrivers.filter(d => {
+        const dPhone = String(d.phone || '').trim();
+        const isCurrentDriver = (
+          dPhone === effectivePhone ||
+          dPhone === '15509601222' ||
+          (userPhone && dPhone === String(userPhone).trim())
+        );
+
+        // 报单转单绝对不能派单给自己！
+        if (isTransferOrder && isCurrentDriver) {
+          return false;
+        }
+
+        if (isCurrentDriver) {
+          return effectiveIsOnline;
+        }
         const isFree = !d.isBusy && d.isBusy !== 'true';
         const isEligible = isDriverEligible(d);
         return isFree && isEligible;
       });
 
-      // Filter drivers within 3km (3000m)
+      // Filter drivers within 3km (3000m) with valid coordinates
       const driversWithin3km = eligibleDrivers.filter(d => {
-        const distMeters = (d.distance || 0) * 1000;
-        return distMeters <= 3000;
+        const distKm = typeof d.distance === 'number' ? d.distance : 999;
+        return distKm <= 3.0 && isValidCoords(d.lat, d.lng);
       });
 
       let chosenDriver: any = null;
 
       if (driversWithin3km.length > 0) {
+        // Find minimum distance
         const minDist = Math.min(...driversWithin3km.map(d => d.distance || 0));
-        const closestTied = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
-        chosenDriver = closestTied[Math.floor(Math.random() * closestTied.length)];
+        // Find all candidates with exact minimum distance
+        const sameMinDistCandidates = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
+        // Randomly pick one among closest candidates
+        chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
+      } else if (!isTransferOrder) {
+        // Fallback ONLY for non-transfer orders: If no other drivers within 3km, but current driver is online and within 3km
+        const currentDriverCandidate = eligibleDrivers.find(d => 
+          d.phone === effectivePhone || 
+          d.phone === '15509601222' || 
+          (userPhone && d.phone === String(userPhone).trim())
+        );
+        if (currentDriverCandidate && (currentDriverCandidate.distance || 0) <= 3.0 && isValidCoords(currentDriverCandidate.lat, currentDriverCandidate.lng)) {
+          chosenDriver = currentDriverCandidate;
+        }
       }
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
@@ -2621,7 +2849,16 @@ export default function DispatchValetOrder({
         scheduledTime: finalScheduledTime,
         bookingTime: finalScheduledTime,
         paymentQrCode: effectiveQr,
+        merchantPaymentQrCode: effectiveQr,
+        orderChannel: 'app',
+        dispatchChannel: 'app',
+        sourceChannel: 'app',
+        orderType: isTransferOrder ? '报单转单' : '商户代叫',
+        type: isTransferOrder ? '报单转单' : '商户代叫',
+        reporterPhone: isTransferOrder ? (currentPhone || userPhone || '') : '',
+        merchantPhone: currentPhone || userPhone || '',
         dispatchedByPhone: currentPhone,
+        creatorPhone: currentPhone || userPhone || '',
         adminPhone: currentPhone,
         adminName: merchantDispatcherName,
         dispatchedByName: merchantDispatcherName,
@@ -2634,23 +2871,42 @@ export default function DispatchValetOrder({
         status: chosenDriver ? 'dispatched' : 'hall',
         in_hall: chosenDriver ? false : true,
         statusCategory: chosenDriver ? '已指派' : '呼叫中',
-        dispatchedDriverPhone: chosenDriver ? chosenDriver.phone : ''
+        dispatchedDriverPhone: chosenDriver ? chosenDriver.phone : '',
+        driver: chosenDriver || null
       };
 
       // Save active order ID
       setActiveOrderId(orderId);
 
-      // 1. Instant local persistence & UI update
-      try {
-        const savedLocal = JSON.parse(safeGetItem('dd_merchant_orders_v2') || '[]');
-        savedLocal.unshift(newOrderData);
-        safeSetItem('dd_merchant_orders_v2', JSON.stringify(savedLocal.slice(0, 50)));
-      } catch (_) {}
+      // 1. Instant local persistence & UI update (Skip local hall insertion for transfer order creator)
+      if (!isTransferOrder || chosenDriver) {
+        try {
+          const savedLocal = JSON.parse(safeGetItem('dd_merchant_orders_v2') || '[]');
+          savedLocal.unshift(newOrderData);
+          safeSetItem('dd_merchant_orders_v2', JSON.stringify(savedLocal.slice(0, 50)));
+        } catch (_) {}
+      }
 
       window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 
-      if (chosenDriver && currentPhone && (chosenDriver.phone === currentPhone || chosenDriver.phone === '15509601222')) {
+      const isTargetingCurrentDriver = chosenDriver && (
+        String(chosenDriver.phone).trim() === String(currentPhone).trim() ||
+        String(chosenDriver.phone).trim() === String(effectivePhone).trim() ||
+        String(chosenDriver.phone).trim() === '15509601222' ||
+        String(currentPhone).trim() === '15509601222' ||
+        String(effectivePhone).trim() === '15509601222' ||
+        String(userPhone || '').trim() === '15509601222' ||
+        String(userPhone || '').trim() === String(chosenDriver.phone).trim()
+      );
+
+      if (isTargetingCurrentDriver) {
         const passengerLinkPayload = { ...newOrderData, status: 'submitted', orderId };
+        try {
+          safeSetItem('dd_active_incoming_order', JSON.stringify(passengerLinkPayload));
+        } catch (_) {}
+        if (typeof onCloseModal === 'function') {
+          onCloseModal();
+        }
         window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
       }
 
@@ -3517,73 +3773,74 @@ export default function DispatchValetOrder({
 
         const isRemovedItem = (item: any) => {
           if (!item) return true;
-          if (item.phone === '15509601222' || item.id === '15509601222') return false;
-          // 重新申请且处于待审核状态的申请记录绝不作为已剔除过滤
-          if (item.status === '待审核' || item.approvalStatus === '待审核') return false;
+          const phone = String(item.phone || item.id || '').trim();
+          if (phone === '15509601222') return false;
           if (isMockDriver(item)) return true;
           return Boolean(
-            (item.phone && removedMemberPhones.includes(item.phone)) ||
-            (item.id && removedMemberPhones.includes(item.id))
+            (phone && removedMemberPhones.includes(phone)) ||
+            (item.name && removedMemberPhones.includes(item.name))
           );
         };
 
         const membersMap = new Map<string, any>();
 
-        // 1. 始终优先包含超级管理员 15509601222
+        // 1. 始终优先包含超级管理员 15509601222 (吴彦祖，开发者司机，已通过)
         membersMap.set('15509601222', masterDevMember);
 
-        // 2. 遍历真实 squadMembers
+        // 2. 遍历真实 squadMembers (仅包含已审核通过的成员)
         squadMembers.forEach((m, idx) => {
           if (!isRemovedItem(m)) {
             const isMaster = m.phone === '15509601222';
-            const isMerchant = m.role === '商户、商家' || m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家');
-            const memberName = isMerchant 
-              ? '商户、商家' 
-              : (m.name || m.driverName || m.realName || m.applicantName || (isMaster ? masterDevName : (m.phone === '15121904440' ? '李扬' : `司机${m.phone.slice(-4)}`)));
-            const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (m.role || m.userRole || '普通司机');
-            const status = m.status || '已通过';
+            const status = String(m.status || (isMaster ? '已通过' : '')).trim();
+            // 只有审核通过的司机才进入成员列表！未审核或待审核绝不计入！
+            if (isMaster || ['已通过', 'approved', '通过'].includes(status)) {
+              const isMerchant = m.role === '商户、商家' || m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家');
+              const memberName = isMerchant 
+                ? '商户、商家' 
+                : (m.name || m.driverName || m.realName || m.applicantName || (isMaster ? masterDevName : (m.phone === '15121904440' ? '李扬' : `司机${m.phone.slice(-4)}`)));
+              const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (m.role || m.userRole || '普通司机');
 
-            membersMap.set(m.phone, {
-              id: m.id || m.phone || `real-${idx}`,
-              name: memberName,
-              role: memberRole,
-              phone: m.phone,
-              status,
-              approvedBy: m.approvedBy || currentAdminName,
-              approvedRole: m.approvedRole || currentAdminRole,
-              avatarBg: isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]',
-            });
+              membersMap.set(m.phone, {
+                id: m.id || m.phone || `real-${idx}`,
+                name: memberName,
+                role: memberRole,
+                phone: m.phone,
+                status: '已通过',
+                approvedBy: m.approvedBy || currentAdminName,
+                approvedRole: m.approvedRole || currentAdminRole,
+                avatarBg: isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]',
+              });
+            }
           }
         });
 
         // 3. 遍历申请记录 applicants
+        // 关键：只有审核通过的申请才进入成员列表！状态为待审核/审核批复中/已拒绝的，绝不在小队成员列表显示，也不计入小队人数！
         applicants.forEach(app => {
           if (!isRemovedItem(app)) {
-            const existing = membersMap.get(app.phone);
             const isMaster = app.phone === '15509601222';
-            const isMerchant = app.role === '商户、商家' || app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家');
-            const memberName = isMerchant 
-              ? '商户、商家' 
-              : (app.name || app.driverName || app.realName || app.applicantName || existing?.name || (isMaster ? masterDevName : (app.phone === '15121904440' ? '李扬' : `司机${app.phone.slice(-4)}`)));
-            const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (app.role || existing?.role || '普通司机');
-            const status = app.status || '待审核';
-            const approvedBy = app.approvedBy || (app.status !== '待审核' ? (existing?.approvedBy || currentAdminName) : (existing?.approvedRole || ''));
-            const approvedRole = app.approvedRole || (app.status !== '待审核' ? (existing?.approvedRole || currentAdminRole) : (existing?.approvedRole || ''));
+            const status = String(app.status || '').trim();
+            if (isMaster || ['已通过', 'approved', '通过'].includes(status)) {
+              const existing = membersMap.get(app.phone);
+              const isMerchant = app.role === '商户、商家' || app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家');
+              const memberName = isMerchant 
+                ? '商户、商家' 
+                : (app.name || app.driverName || app.realName || app.applicantName || existing?.name || (isMaster ? masterDevName : (app.phone === '15121904440' ? '李扬' : `司机${app.phone.slice(-4)}`)));
+              const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (app.role || existing?.role || '普通司机');
+              const approvedBy = app.approvedBy || existing?.approvedBy || currentAdminName;
+              const approvedRole = app.approvedRole || existing?.approvedRole || currentAdminRole;
 
-            membersMap.set(app.phone, {
-              id: app.id || app.phone,
-              name: memberName,
-              role: memberRole,
-              phone: app.phone,
-              status,
-              approvedBy,
-              approvedRole,
-              avatarBg: status === '已通过' 
-                ? (isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]') 
-                : status === '已拒绝' 
-                ? 'bg-rose-100 text-rose-800' 
-                : 'bg-amber-100 text-amber-800',
-            });
+              membersMap.set(app.phone, {
+                id: app.id || app.phone,
+                name: memberName,
+                role: memberRole,
+                phone: app.phone,
+                status: '已通过',
+                approvedBy,
+                approvedRole,
+                avatarBg: isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]',
+              });
+            }
           }
         });
 
@@ -3614,6 +3871,7 @@ export default function DispatchValetOrder({
             const roleTagClass = roleStr.includes('开发者') ? 'bg-indigo-100 text-indigo-700 border-indigo-200' :
                                   roleStr.includes('老板') ? 'bg-[#ff7d00]/10 text-[#ff7d00] border-[#ff7d00]/20' :
                                   roleStr.includes('管理') ? 'bg-[#00aafc]/10 text-[#006496] border-[#00aafc]/20' :
+                                  roleStr.includes('派单') ? 'bg-purple-100 text-purple-700 border-purple-200' :
                                   'bg-[#e2e2e2] text-[#584235] border-[#dfc0af]';
 
             const statusTagClass = m.status === '已通过' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
@@ -3755,7 +4013,7 @@ export default function DispatchValetOrder({
                               return `网页商户商家代叫${userPhone ? userPhone.slice(-4) : '5554'}`;
                             })()}
                           </span>
-                          {isManagementRole && (
+                          {(userPhone === '15509601222' || ['开发者司机', '开发者', '总指挥官', '城市管理司机', '城市管理', '城市老板司机', '城市老板'].includes(userRole || adminProfile.role || '')) && (
                             <button
                               type="button"
                               onClick={() => {
@@ -3999,7 +4257,7 @@ export default function DispatchValetOrder({
                                     <span className="font-bold text-base text-[#1a1c1c] truncate max-w-[120px]" title={memberDisplayName}>
                                       {memberDisplayName}
                                     </span>
-                                    {isManagementRole && !isMerchantMember && (
+                                    {canModifyMemberName(member) && !isMerchantMember && (
                                       <button
                                         type="button"
                                         onClick={() => {
@@ -4454,7 +4712,15 @@ export default function DispatchValetOrder({
 
             {/* Passenger & Driver Info Card */}
             {(() => {
-              const rawDriverPhone = (
+              const isHall = Boolean(
+                selectedOrderDetail.in_hall === true ||
+                selectedOrderDetail.status === 'hall' ||
+                selectedOrderDetail.statusCategory === '呼叫中' ||
+                selectedOrderDetail.statusCategory === '等待接单' ||
+                !selectedOrderDetail.dispatchedDriverPhone
+              );
+
+              const rawDriverPhone = isHall ? '' : (
                 selectedOrderDetail.dispatchedDriverPhone ||
                 selectedOrderDetail.rawOrder?.driverPhone || 
                 selectedOrderDetail.driverPhone || 
@@ -4463,45 +4729,49 @@ export default function DispatchValetOrder({
 
               let resolvedDriverName = '';
 
-              // 1. Look up in active squadMembers state
-              const matchedMember = squadMembers.find(
-                (m: any) => (m.phone && m.phone.replace(/[-\s]/g, '') === rawDriverPhone) || m.id === rawDriverPhone
-              );
-              if (matchedMember && matchedMember.name) {
-                resolvedDriverName = matchedMember.name;
-              }
+              if (isHall) {
+                resolvedDriverName = '选单大厅 (开放抢单)';
+              } else {
+                // 1. Look up in active squadMembers state
+                const matchedMember = squadMembers.find(
+                  (m: any) => (m.phone && m.phone.replace(/[-\s]/g, '') === rawDriverPhone) || m.id === rawDriverPhone
+                );
+                if (matchedMember && matchedMember.name) {
+                  resolvedDriverName = matchedMember.name;
+                }
 
-              // 2. Look up in localStorage dd_squad_members_v2 or dd_applicants_v2
-              if (!resolvedDriverName) {
-                try {
-                  const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-                  const m = savedM.find((item: any) => (item.phone && item.phone.replace(/[-\s]/g, '') === rawDriverPhone) || item.id === rawDriverPhone);
-                  if (m && m.name) resolvedDriverName = m.name;
-                } catch (_) {}
-              }
+                // 2. Look up in localStorage dd_squad_members_v2 or dd_applicants_v2
+                if (!resolvedDriverName) {
+                  try {
+                    const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+                    const m = savedM.find((item: any) => (item.phone && item.phone.replace(/[-\s]/g, '') === rawDriverPhone) || item.id === rawDriverPhone);
+                    if (m && m.name) resolvedDriverName = m.name;
+                  } catch (_) {}
+                }
 
-              if (!resolvedDriverName) {
-                try {
-                  const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-                  const a = savedA.find((item: any) => (item.phone && item.phone.replace(/[-\s]/g, '') === rawDriverPhone) || item.id === rawDriverPhone);
-                  if (a && a.name) resolvedDriverName = a.name;
-                } catch (_) {}
-              }
+                if (!resolvedDriverName) {
+                  try {
+                    const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+                    const a = savedA.find((item: any) => (item.phone && item.phone.replace(/[-\s]/g, '') === rawDriverPhone) || item.id === rawDriverPhone);
+                    if (a && a.name) resolvedDriverName = a.name;
+                  } catch (_) {}
+                }
 
-              // 3. Look up in order properties if not placeholder
-              if (!resolvedDriverName) {
-                const candidate = selectedOrderDetail.driverDisplayName || selectedOrderDetail.driverName || selectedOrderDetail.rawOrder?.driverName || selectedOrderDetail.rawOrder?.driverDisplayName;
-                if (candidate) {
-                  resolvedDriverName = candidate;
+                // 3. Look up in order properties if not placeholder
+                if (!resolvedDriverName) {
+                  const candidate = selectedOrderDetail.driverDisplayName || selectedOrderDetail.driverName || selectedOrderDetail.rawOrder?.driverName || selectedOrderDetail.rawOrder?.driverDisplayName;
+                  if (candidate) {
+                    resolvedDriverName = candidate;
+                  }
+                }
+
+                // 4. Fallback
+                if (!resolvedDriverName) {
+                  resolvedDriverName = rawDriverPhone ? '在线接单司机' : '选单大厅 (开放抢单)';
                 }
               }
 
-              // 4. Fallback
-              if (!resolvedDriverName) {
-                resolvedDriverName = rawDriverPhone ? '在线接单司机' : '等待接单中';
-              }
-
-              const cleanDriverPhone = rawDriverPhone || '暂无';
+              const cleanDriverPhone = isHall ? '暂无 (选单大厅抢单中)' : (rawDriverPhone || '暂无');
 
               return (
                 <div className="bg-white border border-[#e2e2e2] rounded-xl shadow-sm overflow-hidden text-xs">
@@ -4835,7 +5105,7 @@ export default function DispatchValetOrder({
 
       {/* Custom Confirmation Modal for Clearing Orders */}
       {showConfirmClearOrdersModal && (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-rose-100 flex flex-col gap-4 animate-in zoom-in-95 duration-200">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">

@@ -1,5 +1,17 @@
 import { getBaseApiUrl } from '../lib/dbProxy';
 
+function isPlaceholderPhone(phone: string): boolean {
+  if (!phone) return true;
+  const p = phone.trim();
+  return (
+    p.includes('匿名') ||
+    p.includes('未填写') ||
+    p.includes('代叫客户') ||
+    p.includes('测试') ||
+    p.length < 7
+  );
+}
+
 /**
  * Validates whether an order has already been completed, finished, paid, or cancelled.
  * Checks local storage cache, driver order history, and remote database.
@@ -7,7 +19,7 @@ import { getBaseApiUrl } from '../lib/dbProxy';
 export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promise<boolean> {
   if (!order) return true;
 
-  const orderId = order.id || order.orderId || order.orderNo;
+  const orderId = (order.id || order.orderId || order.orderNo || order.orderNumber || '').toString().trim();
   const pPhone = (order.passengerPhone || order.phone || '').toString().trim();
   const startLoc = (order.startLocation || order.pickupName || '').toString().trim();
 
@@ -38,10 +50,25 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
     try {
       const savedMerchant = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
       if (Array.isArray(savedMerchant)) {
-        const match = savedMerchant.find((o: any) =>
-          (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) ||
-          (pPhone && startLoc && o.passengerPhone === pPhone && (o.startLocation === startLoc || o.pickupName === startLoc))
-        );
+        let match: any = null;
+        if (orderId) {
+          // Strictly match by order ID only! Never match different orders by passenger phone or address
+          match = savedMerchant.find((o: any) =>
+            o && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId || o.orderNumber === orderId)
+          );
+        } else if (pPhone && startLoc && !isPlaceholderPhone(pPhone)) {
+          // Fallback only when orderId is completely absent and phone is a real non-placeholder phone
+          const orderTime = Number(order.timestamp || order.createdAt || 0);
+          match = savedMerchant.find((o: any) => {
+            if (!o) return false;
+            const oPhone = (o.passengerPhone || o.phone || '').toString().trim();
+            const oLoc = (o.startLocation || o.pickupName || '').toString().trim();
+            const oTime = Number(o.timestamp || o.createdAt || 0);
+            const timeDiff = Math.abs(orderTime - oTime);
+            return oPhone === pPhone && oLoc === startLoc && (timeDiff < 30 * 60 * 1000);
+          });
+        }
+
         if (match) {
           const mStatus = (match.status || '').toString();
           const mCat = (match.statusCategory || '').toString();
@@ -71,10 +98,24 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
         if (historyRaw) {
           const history = JSON.parse(historyRaw);
           if (Array.isArray(history)) {
-            const matchHist = history.find((h: any) =>
-              (orderId && (h.id === orderId || h.orderId === orderId || h.orderNumber === orderId)) ||
-              (pPhone && startLoc && h.passengerPhone === pPhone && (h.startLocation === startLoc || h.endLocation === startLoc))
-            );
+            let matchHist: any = null;
+            if (orderId) {
+              // Strictly match by order ID only! Never match different orders by passenger phone or address
+              matchHist = history.find((h: any) =>
+                h && (h.id === orderId || h.orderId === orderId || h.orderNumber === orderId || h.orderNo === orderId)
+              );
+            } else if (pPhone && startLoc && !isPlaceholderPhone(pPhone)) {
+              const orderTime = Number(order.timestamp || order.createdAt || 0);
+              matchHist = history.find((h: any) => {
+                if (!h) return false;
+                const hPhone = (h.passengerPhone || h.phone || '').toString().trim();
+                const hLoc = (h.startLocation || h.endLocation || '').toString().trim();
+                const hTime = Number(h.timestamp || h.createdAt || 0);
+                const timeDiff = Math.abs(orderTime - hTime);
+                return hPhone === pPhone && hLoc === startLoc && (timeDiff < 30 * 60 * 1000);
+              });
+            }
+
             if (matchHist) {
               return true;
             }
@@ -117,3 +158,4 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
 
   return false;
 }
+

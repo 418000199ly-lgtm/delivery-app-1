@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import jsQR from 'jsqr';
-import QRCode from 'qrcode';
 import { TripState, ChauffeurSettings } from '../types';
 import DriverIllustration from './DriverIllustration';
 import MerchantValetPaymentView from './MerchantValetPaymentView';
@@ -8,57 +6,10 @@ import OrderDetailModal from './OrderDetailModal';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
 import { getBaseApiUrl } from '../lib/dbProxy';
+import { regenerateQRCode } from '../utils/qrCodeHelper';
 
 function cleanAndRegenerate(dataUrl: string, type: 'wechat' | 'alipay'): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.src = dataUrl;
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(dataUrl);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, img.width, img.height);
-        const imgData = ctx.getImageData(0, 0, img.width, img.height);
-        
-        // Scan original QR payload using jsQR
-        const code = jsQR(imgData.data, imgData.width, imgData.height, {
-          inversionAttempts: 'attemptBoth'
-        });
-        
-        if (code && code.data) {
-          // Re-generate complete, clean, vector-exact high-contrast black-white QR code
-          QRCode.toDataURL(code.data, {
-            errorCorrectionLevel: 'H',
-            margin: 2,
-            width: 450,
-            color: {
-              dark: '#000000',
-              light: '#ffffff'
-            }
-          }).then(resolve).catch((err) => {
-            console.error('QRCode generation failed in view', err);
-            resolve(dataUrl);
-          });
-        } else {
-          // Use user's uploaded image directly if jsQR can't scan payload
-          resolve(dataUrl);
-        }
-      } catch (err) {
-        console.error('Failed in cleanAndRegenerate processing', err);
-        resolve(dataUrl);
-      }
-    };
-    img.onerror = () => {
-      resolve(dataUrl);
-    };
-  });
+  return regenerateQRCode(dataUrl, type);
 }
 
 interface PaymentQRViewProps {
@@ -83,59 +34,10 @@ export default function PaymentQRView({
   const [showValetFeePayment, setShowValetFeePayment] = useState<boolean>(false);
   const [showOrderDetailModal, setShowOrderDetailModal] = useState<boolean>(false);
   const [currentTripState, setCurrentTripState] = useState<TripState>(trip);
-  const [reportTransferQr, setReportTransferQr] = useState<string>('');
-
-  const isReportTransfer = Boolean(
-    (trip as any)?.orderType === '报单转单' ||
-    (trip as any)?.orderRemark === '报单转单' ||
-    (trip as any)?.type === '报单转单' ||
-    ((trip as any)?.destination && String((trip as any).destination).includes('报单转单')) ||
-    (trip?.startLocation && String(trip.startLocation).includes('报单转单')) ||
-    (trip as any)?.isReportTransfer
-  );
 
   useEffect(() => {
     setCurrentTripState(trip);
   }, [trip]);
-
-  // Query issuing driver QR code for report transfer orders
-  useEffect(() => {
-    if (!isReportTransfer) return;
-
-    const rawPhone = (
-      (trip as any)?.reporterPhone ||
-      (trip as any)?.dispatchedByPhone ||
-      (trip as any)?.dispatchedBy ||
-      (trip as any)?.merchantPhone ||
-      ''
-    ).toString().trim();
-
-    const existingQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || '';
-    if (existingQr) {
-      setReportTransferQr(existingQr);
-      return;
-    }
-
-    if (rawPhone) {
-      const cached = localStorage.getItem(`dd_dispatch_wechat_qr_${rawPhone}`);
-      if (cached) {
-        setReportTransferQr(cached);
-        return;
-      }
-
-      const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/get?col=driver_users&id=${encodeURIComponent(rawPhone)}`)
-        .then(res => res.json())
-        .then(json => {
-          const qr = json?.data?.wechatQrCode || json?.data?.qrCode;
-          if (qr) {
-            setReportTransferQr(qr);
-            localStorage.setItem(`dd_dispatch_wechat_qr_${rawPhone}`, qr);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [trip, isReportTransfer]);
 
   // Auto-resolve destination if unset upon reaching payment confirmation screen (w3)
   useEffect(() => {
@@ -219,7 +121,7 @@ export default function PaymentQRView({
   }
 
   return (
-    <div className="flex-1 flex flex-col justify-between h-full bg-[#F8FAFC] text-[#333333] select-none font-sans overflow-hidden">
+    <div className="flex-1 flex flex-col justify-between h-full bg-[#F8FAFC] text-[#333333] select-none font-sans relative overflow-hidden">
       {/* HEADER */}
       <header className="bg-[#3B4257] text-white px-4 header-safe-pt pb-2.5 flex items-center justify-between sticky top-0 z-50 shrink-0">
         <div className="w-16"></div>
@@ -259,21 +161,43 @@ export default function PaymentQRView({
             
             <p className="text-gray-500 text-xs mb-3">客人扫码支付，支持微信/支付宝</p>
             
-            <div className="w-full max-w-[170px] sm:max-w-[200px] aspect-square flex items-center justify-center shrink-0 mb-3 animate-in fade-in zoom-in-95" data-purpose="qr-code-display">
+            <div className="w-full max-w-[170px] sm:max-w-[200px] aspect-square flex items-center justify-center shrink-0 mb-3 animate-in fade-in zoom-in-95 bg-gray-50/50 rounded-2xl border border-dashed border-gray-200 overflow-hidden" data-purpose="qr-code-display">
               {(() => {
-                const activeWechatQr = isReportTransfer
-                  ? ((trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || reportTransferQr || wechatClean || settings?.wechatQrCode || '')
-                  : (wechatClean || settings?.wechatQrCode || '');
+                const driverOwnWechat = wechatClean || settings?.wechatQrCode || (() => {
+                  try {
+                    const userP = settings?.phoneNumber || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '';
+                    const cachedSet = userP ? localStorage.getItem(`dd_settings_${userP}`) : null;
+                    if (cachedSet) {
+                      const parsed = JSON.parse(cachedSet);
+                      if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return parsed.wechatQrCode.trim();
+                    }
+                    return (localStorage.getItem('dd_user_wechat_qr') || '').trim();
+                  } catch (_) {}
+                  return '';
+                })();
 
-                const activeAlipayQr = isReportTransfer
-                  ? ((trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || reportTransferQr || alipayClean || settings?.alipayQrCode || '')
-                  : (alipayClean || settings?.alipayQrCode || '');
+                const driverOwnAlipay = alipayClean || settings?.alipayQrCode || (() => {
+                  try {
+                    const userP = settings?.phoneNumber || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '';
+                    const cachedSet = userP ? localStorage.getItem(`dd_settings_${userP}`) : null;
+                    if (cachedSet) {
+                      const parsed = JSON.parse(cachedSet);
+                      if (parsed?.alipayQrCode && parsed.alipayQrCode.trim()) return parsed.alipayQrCode.trim();
+                    }
+                    return (localStorage.getItem('dd_user_alipay_qr') || '').trim();
+                  } catch (_) {}
+                  return '';
+                })();
 
                 if (isWechat) {
-                  return activeWechatQr ? (
-                    <img src={activeWechatQr} alt="微信收款码" className="w-full h-full object-contain" />
+                  return driverOwnWechat ? (
+                    <img 
+                      src={driverOwnWechat} 
+                      alt="微信收款码" 
+                      className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
+                    />
                   ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 border-2 border-dashed border-gray-300 rounded-2xl shadow-inner gap-1.5">
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 rounded-2xl gap-1.5">
                       <div className="w-9 h-9 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 border border-amber-200 shrink-0">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -284,10 +208,14 @@ export default function PaymentQRView({
                     </div>
                   );
                 } else {
-                  return activeAlipayQr ? (
-                    <img src={activeAlipayQr} alt="支付宝收款码" className="w-full h-full object-contain" />
+                  return driverOwnAlipay ? (
+                    <img 
+                      src={driverOwnAlipay} 
+                      alt="支付宝收款码" 
+                      className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
+                    />
                   ) : (
-                    <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 border-2 border-dashed border-gray-300 rounded-2xl shadow-inner gap-1.5">
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 rounded-2xl gap-1.5">
                       <div className="w-9 h-9 rounded-full bg-amber-50 flex items-center justify-center text-amber-500 border border-amber-200 shrink-0">
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -366,6 +294,10 @@ export default function PaymentQRView({
           order={currentTripState}
           billingRules={settings?.billingRules}
           onClose={() => setShowOrderDetailModal(false)}
+          onOpenMerchantValetPayment={(valetTrip) => {
+            setShowOrderDetailModal(false);
+            setShowValetFeePayment(true);
+          }}
         />
       )}
     </div>

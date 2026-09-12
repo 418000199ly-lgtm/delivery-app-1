@@ -1,422 +1,13 @@
-import React, { useState, useRef } from 'react';
-import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Volume2, Download } from 'lucide-react';
-import jsQR from 'jsqr';
-import QRCode from 'qrcode';
+import React, { useState, useRef, useEffect } from 'react';
+import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Volume2, Download, AlertCircle } from 'lucide-react';
 import { ChauffeurSettings, checkVipActive } from '../types';
-import { db, doc, getDoc, updateDoc, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
+import { regenerateQRCode, cropQRCodeFromImage } from '../utils/qrCodeHelper';
+import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
 
-export function regenerateQRCode(dataUrl: string, type: 'wechat' | 'alipay'): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.src = dataUrl;
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(dataUrl);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, img.width, img.height);
-        const imgData = ctx.getImageData(0, 0, img.width, img.height);
-        
-        // Scan original QR payload using jsQR
-        const code = jsQR(imgData.data, imgData.width, imgData.height, {
-          inversionAttempts: 'attemptBoth'
-        });
-        
-        if (code && code.data) {
-          // Re-generate complete, clean, vector-exact high-contrast black-white QR code
-          QRCode.toDataURL(code.data, {
-            errorCorrectionLevel: 'H',
-            margin: 2,
-            width: 450,
-            color: {
-              dark: '#000000',
-              light: '#ffffff'
-            }
-          }).then(resolve).catch((err) => {
-            console.error('QRCode generation failed', err);
-            resolve(dataUrl);
-          });
-        } else {
-          // Use user's uploaded image directly if jsQR can't scan payload
-          resolve(dataUrl);
-        }
-      } catch (err) {
-        console.error('Failed in regenerateQRCode processing', err);
-        resolve(dataUrl);
-      }
-    };
-    img.onerror = () => {
-      resolve(dataUrl);
-    };
-  });
-}
-
-export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.src = dataUrl;
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(dataUrl);
-          return;
-        }
-
-        // Downscale matching for efficiency (max 500px to keep it super fast and accurate)
-        const maxDim = 500;
-        let width = img.width;
-        let height = img.height;
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        ctx.drawImage(img, 0, 0, width, height);
-
-        const imgData = ctx.getImageData(0, 0, width, height);
-        const data = imgData.data;
-
-        // Step 1: Divide the image into blocks, and calculate contrast transitions
-        const blockSize = 8; // Small block size for high-resolution density map
-        const cols = Math.floor(width / blockSize);
-        const rows = Math.floor(height / blockSize);
-        const density = Array.from({ length: rows }, () => new Float32Array(cols));
-
-        let maxDensity = 0;
-
-        // For each block, count horizontal and vertical gradient changes
-        for (let r = 0; r < rows; r++) {
-          for (let c = 0; c < cols; c++) {
-            let transitionCount = 0;
-            const startX = c * blockSize;
-            const startY = r * blockSize;
-
-            for (let y = startY; y < Math.min(height - 1, startY + blockSize); y++) {
-              for (let x = startX; x < Math.min(width - 1, startX + blockSize); x++) {
-                const idx1 = (y * width + x) * 4;
-                const idxRight = (y * width + (x + 1)) * 4;
-                const idxDown = ((y + 1) * width + x) * 4;
-
-                const l1 = 0.299 * data[idx1] + 0.587 * data[idx1 + 1] + 0.114 * data[idx1 + 2];
-                const lRight = 0.299 * data[idxRight] + 0.587 * data[idxRight + 1] + 0.114 * data[idxRight + 2];
-                const lDown = 0.299 * data[idxDown] + 0.587 * data[idxDown + 1] + 0.114 * data[idxDown + 2];
-
-                if (Math.abs(l1 - lRight) > 40) transitionCount++;
-                if (Math.abs(l1 - lDown) > 40) transitionCount++;
-              }
-            }
-            density[r][c] = transitionCount;
-            if (transitionCount > maxDensity) {
-              maxDensity = transitionCount;
-            }
-          }
-        }
-
-        // Set threshold to clear solid whitespace boundaries (e.g. 15% of maxDensity)
-        const threshold = Math.max(3, maxDensity * 0.15);
-
-        // Find connected components using high-gap bridge tolerance to bypass middle avatar logo
-        const components: { cells: [number, number][]; minR: number; maxR: number; minC: number; maxC: number }[] = [];
-        const visited = Array.from({ length: rows }, () => new Uint8Array(cols));
-
-        for (let r = 0; r < rows; r++) {
-          for (let c = 0; c < cols; c++) {
-            if (density[r][c] > threshold && visited[r][c] === 0) {
-              const cells: [number, number][] = [];
-              const queue: [number, number][] = [[r, c]];
-              visited[r][c] = 1;
-
-              let compMinR = r;
-              let compMaxR = r;
-              let compMinC = c;
-              let compMaxC = c;
-
-              while (queue.length > 0) {
-                const curr = queue.shift()!;
-                const [cr, cc] = curr;
-                cells.push([cr, cc]);
-
-                if (cr < compMinR) compMinR = cr;
-                if (cr > compMaxR) compMaxR = cr;
-                if (cc < compMinC) compMinC = cc;
-                if (cc > compMaxC) compMaxC = cc;
-
-                // Grab neighbors up to distance 3 (bridges gaps created by solid middle face/profile views!)
-                const dist = 3;
-                for (let dr = -dist; dr <= dist; dr++) {
-                  for (let dc = -dist; dc <= dist; dc++) {
-                    const nr = cr + dr;
-                    const nc = cc + dc;
-                    if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                      if (density[nr][nc] > threshold && visited[nr][nc] === 0) {
-                        visited[nr][nc] = 1;
-                        queue.push([nr, nc]);
-                      }
-                    }
-                  }
-                }
-              }
-
-              components.push({
-                cells,
-                minR: compMinR,
-                maxR: compMaxR,
-                minC: compMinC,
-                maxC: compMaxC,
-              });
-            }
-          }
-        }
-
-        if (components.length === 0) {
-          resolve(dataUrl);
-          return;
-        }
-
-        // Sort components by cell count descending to find the main QR code block
-        components.sort((a, b) => b.cells.length - a.cells.length);
-        const mainComp = components[0];
-
-        let qrMinR = mainComp.minR;
-        let qrMaxR = mainComp.maxR;
-        let qrMinC = mainComp.minC;
-        let qrMaxC = mainComp.maxC;
-
-        let qrX = qrMinC * blockSize;
-        let qrY = qrMinR * blockSize;
-        let qrW = (qrMaxC - qrMinC + 1) * blockSize;
-        let qrH = (qrMaxR - qrMinR + 1) * blockSize;
-
-        // Perfect padding: 6% of QR size for neat quiet-zone margin
-        const paddingPx = Math.max(12, Math.round(Math.min(qrW, qrH) * 0.06));
-        let cropX = qrX - paddingPx;
-        let cropY = qrY - paddingPx;
-        let cropW = qrW + paddingPx * 2;
-        let cropH = qrH + paddingPx * 2;
-
-        // Force a perfect square
-        const size = Math.max(cropW, cropH);
-        const cx = cropX + cropW / 2;
-        const cy = cropY + cropH / 2;
-
-        cropX = Math.round(cx - size / 2);
-        cropY = Math.round(cy - size / 2);
-        cropW = Math.round(size);
-        cropH = Math.round(size);
-
-        // Boundary safety clamps
-        cropX = Math.max(0, cropX);
-        cropY = Math.max(0, cropY);
-        if (cropX + cropW > width) cropW = width - cropX;
-        if (cropY + cropH > height) cropH = height - cropY;
-
-        let finalSize = Math.min(cropW, cropH);
-        let finalX = cropX;
-        let finalY = cropY;
-
-        // If the QR component spans the entire image, we still want to clean it,
-        // so we don't bypass. Just set coordinates to cover the bounding area.
-        if (finalSize >= width * 0.85 && finalSize >= height * 0.85) {
-          finalX = 0;
-          finalY = 0;
-          finalSize = Math.min(width, height);
-        }
-
-        // Render high-res cropped output
-        const outputCanvas = document.createElement('canvas');
-        outputCanvas.width = 360;
-        outputCanvas.height = 360;
-        const outputCtx = outputCanvas.getContext('2d');
-        if (outputCtx) {
-          outputCtx.imageSmoothingEnabled = true;
-          outputCtx.imageSmoothingQuality = 'high';
-          outputCtx.drawImage(
-            img,
-            (finalX / width) * img.width,
-            (finalY / height) * img.height,
-            (finalSize / width) * img.width,
-            (finalSize / height) * img.height,
-            0,
-            0,
-            360,
-            360
-          );
-
-          // Get cropped image pixels for pixel-level cleanup & center avatar removal
-          const imgData = outputCtx.getImageData(0, 0, 360, 360);
-          const pixels = imgData.data;
-
-          // 1. Calculate average luminance for adaptive threshold
-          let sumL = 0;
-          let count = 0;
-          for (let i = 0; i < pixels.length; i += 4) {
-            const r = pixels[i];
-            const g = pixels[i+1];
-            const b = pixels[i+2];
-            const l = 0.299 * r + 0.587 * g + 0.114 * b;
-            sumL += l;
-            count++;
-          }
-          const avgL = sumL / count;
-          // Set standard threshold based on overall image brightness
-          const contrastThreshold = avgL > 220 ? 190 : (avgL < 110 ? 110 : 145);
-
-          // Adaptive block (module) size and grid offset detection
-          const isPixelBlack = (sx: number, sy: number): boolean => {
-            const pidx = (sy * 360 + sx) * 4;
-            const r = pixels[pidx];
-            const g = pixels[pidx+1];
-            const b = pixels[pidx+2];
-            return (0.299 * r + 0.587 * g + 0.114 * b) <= contrastThreshold;
-          };
-
-          const runLengths: number[] = [];
-          const scanLines = [70, 90, 110, 250, 270, 290];
-          for (const sy of scanLines) {
-            let runStart = 50;
-            let lastState = isPixelBlack(50, sy);
-            for (let sx = 51; sx < 310; sx++) {
-              if (sx >= 135 && sx <= 225) continue; // skip central logo zone
-              const currState = isPixelBlack(sx, sy);
-              if (currState !== lastState) {
-                const runLen = sx - runStart;
-                if (runLen >= 4 && runLen <= 22) { // reasonable module pixel widths
-                  runLengths.push(runLen);
-                }
-                runStart = sx;
-                lastState = currState;
-              }
-            }
-          }
-
-          let detectedModSize = 9; // robust default (typical version module width in 360x360 image)
-          if (runLengths.length > 0) {
-            const counts: { [key: number]: number } = {};
-            runLengths.forEach(len => {
-              counts[len] = (counts[len] || 0) + 1;
-            });
-            let maxCount = 0;
-            let bestLen = 9;
-            for (const lenStr in counts) {
-              const len = parseInt(lenStr, 10);
-              if (counts[len] > maxCount) {
-                maxCount = counts[len];
-                bestLen = len;
-              }
-            }
-            if (bestLen >= 5 && bestLen <= 18) {
-              detectedModSize = bestLen;
-            }
-          }
-
-          // Backtrack to find exact grid boundary to align perfectly
-          let gridStartX = 142;
-          for (let sx = 135; sx >= 60; sx--) {
-            if (isPixelBlack(sx, 180) !== isPixelBlack(sx - 1, 180)) {
-              gridStartX = sx;
-              break;
-            }
-          }
-          let gridStartY = 142;
-          for (let sy = 135; sy >= 60; sy--) {
-            if (isPixelBlack(180, sy) !== isPixelBlack(180, sy - 1)) {
-              gridStartY = sy;
-              break;
-            }
-          }
-
-          // 2. Filter pixels and completely clear any center logo/avatar (the middle 20% area)
-          // Also binarize all colors to clean monochrome (like Image 05)
-          for (let y = 0; y < 360; y++) {
-            for (let x = 0; x < 360; x++) {
-              const idx = (y * 360 + x) * 4;
-
-              // Force clean white borders (quiet zone) to clear any captured bottom text "ID.17(*扬)"
-              if (x < 35 || x > 325 || y < 35 || y > 325) {
-                pixels[idx] = 255;
-                pixels[idx+1] = 255;
-                pixels[idx+2] = 255;
-                continue;
-              }
-
-              const r = pixels[idx];
-              const g = pixels[idx+1];
-              const b = pixels[idx+2];
-
-              // Grayscale luminance
-              const l = 0.299 * r + 0.587 * g + 0.114 * b;
-
-              // Color variance (saturation) to filter colors (like WeChat green)
-              const maxVal = Math.max(r, g, b);
-              const minVal = Math.min(r, g, b);
-              const saturation = maxVal - minVal;
-
-              // --- CLEAR CENTER LOGO / AVATAR WITH WHITE SQUARE ---
-              // Replacing the logo/portrait/wallet area with a clean plain white square.
-              // Center of 360 is 180. Range 140 to 220 is 80px (approx 22% of QR size).
-              if (x >= 140 && x <= 220 && y >= 140 && y <= 220) {
-                pixels[idx] = 255;
-                pixels[idx+1] = 255;
-                pixels[idx+2] = 255;
-                continue;
-              }
-
-              // --- CLEAR BORDERS & OUTLINE GREEN BACKGROUNDS ---
-              // If pixel is clearly colored (green background or blue backgrounds), turn it to pure white
-              if (saturation > 25) {
-                pixels[idx] = 255;
-                pixels[idx+1] = 255;
-                pixels[idx+2] = 255;
-                continue;
-              }
-
-              // --- CONVERT QR PATTERNS TO HIGH INTENSITY MONOCHROME (Image 05) ---
-              if (l > contrastThreshold) {
-                pixels[idx] = 255;
-                pixels[idx+1] = 255;
-                pixels[idx+2] = 255;
-              } else {
-                pixels[idx] = 0;
-                pixels[idx+1] = 0;
-                pixels[idx+2] = 0;
-              }
-            }
-          }
-
-          // Restore processed pixels to the canvas
-          outputCtx.putImageData(imgData, 0, 0);
-
-          resolve(outputCanvas.toDataURL('image/png'));
-        } else {
-          resolve(dataUrl);
-        }
-      } catch (err) {
-        console.error('QR Crop failed, using original', err);
-        resolve(dataUrl);
-      }
-    };
-    img.onerror = () => {
-      resolve(dataUrl);
-    };
-  });
-}
+export { regenerateQRCode, cropQRCodeFromImage };
 
 interface SettingsViewProps {
   settings: ChauffeurSettings;
@@ -426,6 +17,8 @@ interface SettingsViewProps {
   onNavigateToBilling: () => void;
   onLogout?: () => void;
   systemVersion?: string;
+  userPhone?: string;
+  userRole?: string;
 }
 
 export default function SettingsView({
@@ -435,8 +28,120 @@ export default function SettingsView({
   onClose,
   onNavigateToBilling,
   onLogout,
-  systemVersion = 'V2.0'
+  systemVersion = 'V2.0',
+  userPhone,
+  userRole
 }: SettingsViewProps) {
+  const effectivePhone = (userPhone || (settings as any)?.phone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').trim();
+
+  // Online Orders Application Modal States & Realtime Synchronization
+  const [showOnlineAppModal, setShowOnlineAppModal] = useState(false);
+  const [onlineApp, setOnlineApp] = useState<any>(null);
+  const [isCityDispatchEnabled, setIsCityDispatchEnabled] = useState<boolean | null>(null);
+  const [settingsLocalAlert, setSettingsLocalAlert] = useState<{ title: string; message: string; type?: 'warning' | 'info' | 'success' } | null>(null);
+
+  // City configs map state for per-city feature toggles
+  const [cityConfigsMap, setCityConfigsMap] = useState<Record<string, {
+    online_app_enabled?: boolean;
+    merchant_dispatch_enabled?: boolean;
+    squad_management_enabled?: boolean;
+    squadNames?: string[];
+  }>>(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('dd_city_configs_v2') : null;
+    if (saved) {
+      try { return JSON.parse(saved); } catch(e){}
+    }
+    return {};
+  });
+
+  useEffect(() => {
+    let unsubscribe = () => {};
+    if (db) {
+      const docRef = doc(db, 'config', 'city_configs');
+      unsubscribe = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists() && docSnap.data().configs) {
+          const newConfigs = docSnap.data().configs;
+          setCityConfigsMap(newConfigs);
+          localStorage.setItem('dd_city_configs_v2', JSON.stringify(newConfigs));
+        }
+      }, () => {});
+    }
+    return () => unsubscribe();
+  }, []);
+
+  // Listen to driver's online_application document
+  useEffect(() => {
+    if (!effectivePhone) return;
+    const docRef = doc(db, 'online_applications', effectivePhone);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setOnlineApp({ id: docSnap.id, ...docSnap.data() });
+      } else {
+        setOnlineApp(null);
+      }
+    }, () => {});
+    return () => unsubscribe();
+  }, [effectivePhone]);
+
+  // Subscribe to city dispatch config gate
+  useEffect(() => {
+    let city = settings?.city || onlineApp?.city || '银川市';
+    if (city && !city.endsWith('市')) {
+      city = city + '市';
+    }
+    const docRef = doc(db, 'city_dispatch_config', city);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setIsCityDispatchEnabled(data.enabled !== false);
+      } else {
+        setIsCityDispatchEnabled(true);
+      }
+    }, () => {
+      setIsCityDispatchEnabled(true);
+    });
+    return () => unsubscribe();
+  }, [settings?.city, onlineApp?.city]);
+
+  const getDriverCityConfig = () => {
+    const rawCity = (settings?.city || onlineApp?.city || '银川市').trim();
+    const norm = rawCity.replace(/市$/, '').trim();
+    const cfg = cityConfigsMap[norm] || cityConfigsMap[`${norm}市`] || cityConfigsMap[rawCity];
+
+    if (cfg) {
+      return {
+        online_app_enabled: cfg.online_app_enabled === true,
+        merchant_dispatch_enabled: cfg.merchant_dispatch_enabled === true,
+        squad_management_enabled: cfg.squad_management_enabled === true,
+      };
+    }
+    return {
+      online_app_enabled: false,
+      merchant_dispatch_enabled: false,
+      squad_management_enabled: false,
+    };
+  };
+
+  const handleOpenOnlineApp = () => {
+    const cfg = getDriverCityConfig();
+    if (!cfg.online_app_enabled) {
+      setSettingsLocalAlert({
+        title: '提示',
+        message: '您所在的城市暂未开通服务，请联系客服',
+        type: 'info'
+      });
+      return;
+    }
+    if (settings.onlineOrdersEnabled && isCityDispatchEnabled === false) {
+      setSettingsLocalAlert({
+        title: '提示',
+        message: '您所在的城市暂未开通服务，请联系客服',
+        type: 'info'
+      });
+      return;
+    }
+    setShowOnlineAppModal(true);
+  };
   // Realtime active template name resolution matching MileageModeView
   const activeRulesCache = typeof window !== 'undefined' ? (localStorage.getItem('dd_billing_rules') || (settings?.billingTemplateName ? null : null)) : null;
   let cachedRuleName = '';
@@ -773,9 +478,25 @@ export default function SettingsView({
       setIsProcessingWechat(true);
       const reader = new FileReader();
       reader.onload = async () => {
-        const cleanedQr = await regenerateQRCode(reader.result as string, 'wechat');
-        onUpdateSettings({ ...settings, wechatQrCode: cleanedQr });
-        setIsProcessingWechat(false);
+        try {
+          const cleanedQr = await regenerateQRCode(reader.result as string, 'wechat');
+          onUpdateSettings({ ...settings, wechatQrCode: cleanedQr });
+
+          // Also upload/replace on server filesystem (Baota panel)
+          const targetPhone = settings.phoneNumber || localStorage.getItem('dd_user_phone') || '';
+          if (targetPhone) {
+            const baseUrl = getBaseApiUrl();
+            fetch(`${baseUrl}/api/upload-wechat-qr`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ phone: targetPhone, imageBase64: cleanedQr })
+            }).catch(err => console.error('Upload QR to server error:', err));
+          }
+        } catch (err) {
+          console.error('Process QR error:', err);
+        } finally {
+          setIsProcessingWechat(false);
+        }
       };
       reader.onerror = () => setIsProcessingWechat(false);
       reader.readAsDataURL(file);
@@ -943,6 +664,56 @@ export default function SettingsView({
             )}
           </div>
 
+          {/* 线上单开通 (Online Orders Access) */}
+          <button 
+            type="button"
+            onClick={handleOpenOnlineApp}
+            className="w-full py-4 px-4 flex items-center justify-between bg-white hover:bg-gray-50 transition-colors text-left cursor-pointer"
+          >
+            <span className="text-sm font-semibold text-gray-700">线上单开通</span>
+            <div className="flex items-center space-x-1 text-xs">
+              {(() => {
+                const cfg = getDriverCityConfig();
+                // 1. 若当前城市未在管理后台由开发者15509601222开启【线上单开通】，一律显示未开通
+                if (!cfg.online_app_enabled) {
+                  return (
+                    <span className="text-slate-400 font-medium bg-slate-50 px-2.5 py-1 rounded-lg text-xs">
+                      未开通
+                    </span>
+                  );
+                }
+                // 2. 城市已开通后，再根据司机的资质认证审核状态展示
+                if (onlineApp?.status === 'approved') {
+                  return (
+                    <span className="text-emerald-600 font-bold bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 text-xs">
+                      已开通
+                    </span>
+                  );
+                }
+                if (onlineApp?.status === 'pending') {
+                  return (
+                    <span className="text-amber-600 font-bold bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 text-xs">
+                      审核中
+                    </span>
+                  );
+                }
+                if (onlineApp?.status === 'rejected') {
+                  return (
+                    <span className="text-rose-600 font-bold bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200 text-xs">
+                      已驳回
+                    </span>
+                  );
+                }
+                return (
+                  <span className="text-slate-400 font-medium bg-slate-50 px-2.5 py-1 rounded-lg text-xs">
+                    未开通
+                  </span>
+                );
+              })()}
+              <ChevronRight className="w-4 h-4 text-gray-300" />
+            </div>
+          </button>
+
         </div>
 
         {/* Card 3: Calibration */}
@@ -961,7 +732,7 @@ export default function SettingsView({
                 checked={!!(checkVipActive(settings.vipExpiry) && settings.deviationMitigation)}
                 onChange={(e) => {
                   if (!checkVipActive(settings.vipExpiry)) {
-                    alert('🔒 提示：纠偏功能为VIP会员专属特权！请先激活VIP。');
+                    alert('🔒 提示：纠偏功能为VIP会员专属特权！会员已到期、未激活或有效期为0时自动关闭，重新激活会员后方可在手机端开启此功能。');
                     return;
                   }
                   onUpdateSettings({ ...settings, deviationMitigation: e.target.checked });
@@ -1401,6 +1172,15 @@ export default function SettingsView({
                           const cleanedQr = await regenerateQRCode(photo.dataUrl, selectedQrTab);
                           if (selectedQrTab === 'wechat') {
                             onUpdateSettings({ ...settings, wechatQrCode: cleanedQr });
+                            const targetPhone = settings.phoneNumber || localStorage.getItem('dd_user_phone') || '';
+                            if (targetPhone) {
+                              const baseUrl = getBaseApiUrl();
+                              fetch(`${baseUrl}/api/upload-wechat-qr`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ phone: targetPhone, imageBase64: cleanedQr })
+                              }).catch(() => {});
+                            }
                           } else {
                             onUpdateSettings({ ...settings, alipayQrCode: cleanedQr });
                           }
@@ -1709,6 +1489,37 @@ export default function SettingsView({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Online Order Application / Qualification Modal */}
+      {showOnlineAppModal && (
+        <OnlineOrderApplicationModal
+          userPhone={effectivePhone}
+          settings={settings}
+          onClose={() => setShowOnlineAppModal(false)}
+          onUpdateSettings={onUpdateSettings}
+        />
+      )}
+
+      {/* Settings Local Alert Modal */}
+      {settingsLocalAlert && (
+        <div className="absolute inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="w-full max-w-[280px] bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-100 animate-in zoom-in-95 duration-200 text-center p-4 space-y-3">
+            <div className="w-10 h-10 mx-auto rounded-full flex items-center justify-center bg-teal-50 text-teal-600">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-xs font-extrabold text-slate-800">{settingsLocalAlert.title}</h4>
+              <p className="text-[11px] text-slate-600 leading-relaxed font-sans px-2">{settingsLocalAlert.message}</p>
+            </div>
+            <button
+              onClick={() => setSettingsLocalAlert(null)}
+              className="w-full h-9 bg-slate-900 text-white rounded-xl text-xs font-black hover:bg-slate-800 active:scale-98 transition-all cursor-pointer"
+            >
+              我知道了
+            </button>
           </div>
         </div>
       )}

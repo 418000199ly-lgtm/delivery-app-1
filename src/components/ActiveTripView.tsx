@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MapPin, Navigation, ChevronRight, Clock, ShieldCheck, X, PlusCircle, MinusCircle, CheckCircle, Phone } from 'lucide-react';
 import { TripState, ChauffeurSettings, BillingRules, DEFAULT_SLOTS, checkVipActive } from '../types';
+import { calculateOrderTripCost, getTimeSlotForTime } from '../utils/billingUtils';
 import NavigationView from './NavigationView';
 
 const SUGGESTED_DESTINATIONS = [
@@ -145,61 +146,21 @@ export default function ActiveTripView({
   const dragStartRef = useRef<number>(0);
 
   // 2. Mathematical cost calculation helper
+  // Strictly locked to the order's start time and prelocked starting price
   const calculateCost = (dist: number, waitMinutes: number, rules: BillingRules) => {
-    const slots = (rules && Array.isArray(rules.slots) && rules.slots.length > 0) ? rules.slots : DEFAULT_SLOTS;
-    const nowObj = new Date();
-    const activeHour = nowObj.getHours();
+    const currentTripVal = tripRef.current;
+    const startMs = currentTripVal.startTimestamp || tripStartMsRef.current;
+    const wMultiplier = currentTripVal.weatherMultiplier || safeTrip.weatherMultiplier || 1.0;
     
-    // Choose active slot based on hours
-    let activeSlot = slots[0] || DEFAULT_SLOTS[0];
-    for (const slot of slots) {
-      if (!slot || !slot.startTime || !slot.endTime) continue;
-      const [startH] = slot.startTime.split(':').map(Number);
-      const [endH] = slot.endTime.split(':').map(Number);
-      
-      if (startH > endH) {
-        if (activeHour >= startH || activeHour <= endH) {
-          activeSlot = slot;
-          break;
-        }
-      } else if (activeHour >= startH && activeHour <= endH) {
-        activeSlot = slot;
-        break;
-      }
-    }
-
-    const base = activeSlot?.startingPrice ?? 40;
-    const freeKm = activeSlot?.includedDistance ?? 7;
-    const interval = activeSlot?.distanceInterval || 1;
-    const increase = activeSlot?.priceIncrease ?? activeSlot?.unitPricePerKm ?? 5;
-
-    let distanceCost = 0;
-    if (dist > freeKm) {
-      distanceCost = Math.ceil((dist - freeKm) / interval) * increase;
-    }
-
-    // Return trip surcharge
-    let returnFee = 0;
-    if (rules.returnFeeStartKm > 0 && dist > rules.returnFeeStartKm) {
-      const rInterval = rules.returnFeeIntervalKm || 1;
-      const rIncrease = rules.returnFeeIncreaseYuan ?? rules.returnFeePerKm ?? 0;
-      returnFee = Math.ceil((dist - rules.returnFeeStartKm) / rInterval) * rIncrease;
-    }
-
-    // Waiting surcharge
-    let waitingFee = 0;
-    if (waitMinutes > rules.freeWaitingTime) {
-      const wInterval = rules.waitingIntervalMin || 1;
-      const wIncrease = rules.waitingIncreaseYuan ?? rules.waitingChargePerMin ?? 0;
-      waitingFee = Math.ceil((waitMinutes - rules.freeWaitingTime) / wInterval) * wIncrease;
-    }
-
-    const wMultiplier = safeTrip.weatherMultiplier || 1.0;
-    const totalCalculated = (base + distanceCost + returnFee + waitingFee) * wMultiplier;
-    return {
-      base: Number((base * wMultiplier).toFixed(2)),
-      total: Number(totalCalculated.toFixed(2))
-    };
+    // Pass pre-locked calculatedBaseFee if present on trip so starting price never alters mid-trip
+    return calculateOrderTripCost(
+      dist,
+      waitMinutes,
+      rules,
+      startMs,
+      wMultiplier,
+      currentTripVal.calculatedBaseFee
+    );
   };
 
   // 3. Keep real-time counter ticking and advancing trip metrics (using absolute timestamps to survive background & lock screen)
@@ -1037,7 +998,7 @@ export default function ActiveTripView({
 
       {/* DETAILED BILLING RULES OVERVIEW MODAL */}
       {showRulesModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl w-full max-w-[320px] p-5 shadow-2xl border border-slate-100 text-left animate-in zoom-in-95 duration-150">
             <div className="flex justify-between items-center mb-4 pb-2 border-b border-slate-100">
               <span className="text-sm font-black text-slate-800">代驾规则与计费模版</span>

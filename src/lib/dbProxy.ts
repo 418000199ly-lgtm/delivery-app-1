@@ -154,7 +154,7 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     // Secondary simulation fallback to guarantee absolute offline stability
     const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
     const cached = localStorage.getItem(cacheKey);
-    const parsed = cached ? JSON.parse(cached) : null;
+    let parsed = cached ? JSON.parse(cached) : null;
     return new ProxyDocumentSnapshot(cleanId, parsed, Boolean(parsed));
   }
 }
@@ -163,16 +163,18 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
   const baseUrl = getBaseApiUrl();
   const url = `${baseUrl}/api/db/set`;
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
+  const isMerge = options?.merge !== false; // Default to merge: true
   
   // Cache locally first for instant reactive response and local offline availability
   const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
   try {
-    if (options?.merge) {
+    if (isMerge) {
       const existing = localStorage.getItem(cacheKey);
       const parsed = existing ? JSON.parse(existing) : {};
-      safeSetItem(cacheKey, JSON.stringify({ ...parsed, ...data }));
+      const merged = { ...parsed, ...data, _lastLocalWriteTime: Date.now() };
+      safeSetItem(cacheKey, JSON.stringify(merged));
     } else {
-      safeSetItem(cacheKey, JSON.stringify(data));
+      safeSetItem(cacheKey, JSON.stringify({ ...data, _lastLocalWriteTime: Date.now() }));
     }
   } catch (_) {}
 
@@ -184,7 +186,7 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
         col: docRef.collectionName,
         id: cleanId,
         data,
-        merge: options?.merge ?? false
+        merge: isMerge
       })
     });
     if (!res.ok) {
@@ -315,16 +317,29 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
     });
 
     // Synchronize localStorage cache with authoritative server state:
-    // Remove stale/deleted local keys that no longer exist on server for this collection.
+    // Remove stale/deleted local keys that no longer exist on server for this collection,
+    // but protect recently written local entries (< 30 seconds) to prevent flickering.
     try {
       if (!constraints || constraints.length === 0) {
         const serverDocIds = new Set((result.docs || []).map((d: any) => String(d.id)));
         const prefix = `mock_db_${colName}_`;
+        const now = Date.now();
         for (let i = localStorage.length - 1; i >= 0; i--) {
           const key = localStorage.key(i);
           if (key && key.startsWith(prefix)) {
             const docId = key.substring(prefix.length);
             if (!serverDocIds.has(docId)) {
+              try {
+                const cached = localStorage.getItem(key);
+                if (cached) {
+                  const parsed = JSON.parse(cached);
+                  const writeTime = Number(parsed._lastLocalWriteTime || parsed.timestamp || parsed.createdAt || 0);
+                  if (writeTime > 0 && (now - writeTime) < 30000) {
+                    // Do not remove recent local doc
+                    continue;
+                  }
+                }
+              } catch (_) {}
               localStorage.removeItem(key);
             }
           }

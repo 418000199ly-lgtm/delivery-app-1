@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
 import { 
   ShoppingBag, 
@@ -56,6 +56,7 @@ import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive
 import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
 import OrderDetailModal from './OrderDetailModal';
+import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveAndSyncDuplicateNames } from '../utils/nameResolver';
@@ -82,6 +83,7 @@ interface HomeViewProps {
   userTeamCity?: string;
   xianyuUrl?: string;
   onOpenMerchantValetPayment?: (trip: any) => void;
+  onClaimIncomingOrder?: (order: any) => void;
 }
 
 const minorStoreKeywords = [
@@ -89,6 +91,57 @@ const minorStoreKeywords = [
   '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
   '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档'
 ];
+
+export const formatTransferOrderEndLocation = (order: any): string => {
+  if (!order) return '';
+  const t = (order.type || order.orderType || '').trim();
+  const r = (order.orderRemark || order.remark || '').trim();
+  const m = (order.merchantName || order.source || '').trim();
+  const dest = (order.endLocation || order.destination || '').trim();
+  const isReportTransfer = (
+    t === '报单转单' ||
+    r === '报单转单' ||
+    m === '报单转单' ||
+    dest.includes('报单转单') ||
+    order.isReportTransferOrder ||
+    order.isReportTransfer ||
+    order.isReportTransferValet ||
+    order.isTransferIssuer === true ||
+    order.isReporter === true ||
+    order.status === '已转单'
+  );
+  if (!isReportTransfer) {
+    return dest || '目的地';
+  }
+
+  // 1. Check direct driver name on order
+  let driverName = (order.dispatchedDriverName || order.claimedDriverName || order.driverName || order.completedByDriverName || '').trim();
+  if (!driverName && (order.dispatchedDriverPhone || order.claimedDriverPhone)) {
+    const dPhone = String(order.dispatchedDriverPhone || order.claimedDriverPhone).trim();
+    try {
+      const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+      const member = savedSq.find((item: any) => String(item.phone || '').trim() === dPhone);
+      if (member && member.name) driverName = member.name;
+    } catch (_) {}
+    if (!driverName) driverName = dPhone;
+  }
+
+  if (driverName && driverName !== '未知') {
+    return `报单转单 (派给${driverName})`;
+  }
+
+  // 2. Check if endLocation string already has 派给XXX
+  if (dest.includes('派给')) {
+    const match = dest.match(/派给([^）\)]+)/);
+    if (match && match[1]) {
+      return `报单转单 (派给${match[1].trim()})`;
+    }
+    return dest;
+  }
+
+  // 3. Fallback to 选单大厅
+  return '报单转单 (选单大厅)';
+};
 
 const sanitizeOrderLocations = (order: any) => {
   if (!order) return order;
@@ -232,7 +285,8 @@ export default function HomeView({
   userRole = '普通司机',
   userTeamCity = '',
   xianyuUrl = 'https://www.goofish.com',
-  onOpenMerchantValetPayment
+  onOpenMerchantValetPayment,
+  onClaimIncomingOrder
 }: HomeViewProps) {
   const [localRole, setLocalRole] = useState<string>(userRole);
 
@@ -340,21 +394,27 @@ export default function HomeView({
       const phone = String(m.phone || m.id || '').trim();
       const name = String(m.name || '').trim();
       if (!phone) return;
-      if (removedSet.has(phone) || removedSet.has(name) || removedSet.has(String(m.id))) return;
+      
+      // 15509601222 开发者最高权限账号永远不被剔除
+      if (phone !== '15509601222') {
+        if (removedSet.has(phone) || removedSet.has(name) || removedSet.has(String(m.id))) return;
+      }
 
       // 仅剔除明确为商户、商家的角色账号
       const roleStr = String(m.role || m.userRole || '').trim();
       const isMerchant = roleStr.includes('商户') || roleStr.includes('商家');
       if (isMerchant) return;
 
-      const st = String(m.status || m.approvalStatus || '已通过').trim();
-      if (['已拒绝', 'rejected', '拒绝'].includes(st)) return;
-      if (['待审核', 'pending', '审核中'].includes(st)) return;
+      // 只有明确审核通过的司机才计入小队人数！未通过审核或状态为待审核/已拒绝的一律不计入！
+      const st = String(m.status || m.approvalStatus || '').trim();
+      if (phone !== '15509601222') {
+        if (!['已通过', 'approved', '通过'].includes(st)) return;
+      }
 
       activeDriverPhones.add(phone);
     });
 
-    // 包含默认团队管理/开发者账号 15509601222 (永不剔除)
+    // 包含默认团队管理/开发者账号 15509601222 (永不剔除，默认自动加入)
     activeDriverPhones.add('15509601222');
 
     return activeDriverPhones.size;
@@ -378,6 +438,7 @@ export default function HomeView({
   // --- Order Selection Hall States & Real-time Subscription ---
   const [hallOrders, setHallOrders] = useState<any[]>([]);
   const prevHallOrderIdsRef = useRef<Set<string> | null>(null);
+  const announcedOrderIdsRef = useRef<Set<string>>(new Set());
 
   // Auto-acquire real browser GPS on HomeView mount to ensure driver distance accuracy in hall
   useEffect(() => {
@@ -396,68 +457,230 @@ export default function HomeView({
 
   // Voice broadcast announcement whenever a new order arrives in selection hall
   useEffect(() => {
-    const currentIds = new Set(hallOrders.map((o: any) => o.id || o.orderId));
+    const currentIds = new Set(hallOrders.map((o: any) => o.id || o.orderId || o.orderNo));
     if (prevHallOrderIdsRef.current !== null) {
       let hasNew = false;
       for (const id of currentIds) {
-        if (id && !prevHallOrderIdsRef.current.has(id)) {
+        if (id && !announcedOrderIdsRef.current.has(id)) {
+          announcedOrderIdsRef.current.add(id);
           hasNew = true;
-          break;
         }
       }
       if (hasNew) {
         speakText('选单大厅有新订单了');
       }
+    } else {
+      // First load: seed announcedOrderIdsRef so existing orders are not announced as "new"
+      currentIds.forEach(id => {
+        if (id) announcedOrderIdsRef.current.add(id);
+      });
     }
     prevHallOrderIdsRef.current = currentIds;
   }, [hallOrders]);
 
   useEffect(() => {
-    const handleOrdersUpdated = () => {
+    const parseOrderTime = (o: any): number => {
+      let orderTime = 0;
+      if (typeof o?.timestamp === 'number') orderTime = o.timestamp;
+      else if (o?.timestamp) orderTime = Number(o.timestamp) || new Date(o.timestamp).getTime() || 0;
+      else if (typeof o?.createdAt === 'number') orderTime = o.createdAt;
+      else if (o?.createdAt) orderTime = Number(o.createdAt) || new Date(o.createdAt).getTime() || 0;
+      else if (typeof o?.createTime === 'number') orderTime = o.createTime;
+      else if (o?.createTime) orderTime = Number(o.createTime) || new Date(o.createTime).getTime() || 0;
+
+      // Convert seconds timestamp to milliseconds if 10 digits
+      if (orderTime > 0 && orderTime < 10000000000) {
+        orderTime = orderTime * 1000;
+      }
+      return isNaN(orderTime) ? 0 : orderTime;
+    };
+
+    const isOrderEligibleForHall = (data: any): boolean => {
+      if (!data) return false;
+      const st = String(data.status || '').toLowerCase();
+      const cat = String(data.statusCategory || '').toLowerCase();
+      const isCancelled = st === 'cancelled' || cat.includes('取消');
+      const isCompleted = st === 'completed' || cat.includes('完成') || cat.includes('结单');
+      const isClaimed = st === 'claimed' || st === 'accepted' || st === 'taken' || st === 'arrived' || st === 'serving' || cat.includes('已接单') || cat.includes('服务中');
+      const isDispatched = st === 'dispatched' || Boolean(data.dispatchedDriverPhone);
+
+      if (isCancelled || isCompleted || isClaimed || isDispatched) return false;
+      if (data.in_hall === false) return false;
+
+      // 报单转单订单：转入选单大厅供所有其他司机抢单，但是订单绝对不要进入报单转单下单司机的选单大厅！
+      const isTransferOrder = Boolean(
+        data.orderType === '报单转单' ||
+        data.orderRemark === '报单转单' ||
+        data.type === '报单转单' ||
+        String(data.orderRemark || '').includes('报单转单') ||
+        String(data.merchantName || '').includes('报单转单')
+      );
+      if (isTransferOrder) {
+        const myPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
+        const issuerPhones = [
+          data.reporterPhone,
+          data.merchantPhone,
+          data.dispatchedByPhone,
+          data.dispatchedBy,
+          data.creatorPhone,
+          data.createdUserPhone,
+          data.userPhone
+        ].filter(Boolean).map((p: any) => String(p).replace(/\D/g, '').trim());
+
+        if (myPhone && issuerPhones.includes(myPhone)) {
+          // 下单司机的选单大厅绝对排除自身报单转单的订单
+          return false;
+        }
+      }
+
+      return (
+        st === 'hall' || st === 'submitted' || !st ||
+        cat.includes('呼叫') || cat.includes('等待') || cat.includes('大厅') || cat.includes('待接单') || cat.includes('新订单') ||
+        data.in_hall === true
+      );
+    };
+
+    const getValidHallOrdersFromLocal = () => {
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-        if (saved.length === 0) {
-          setHallOrders([]);
-        } else {
-          const now = Date.now();
-          const TIMEOUT_20_MIN = 20 * 60 * 1000;
-          const validOrders = saved.filter((o: any) => {
-            if (!o) return false;
-            const orderTime = Number(o.timestamp || o.createdAt || o.createTime || 0);
-            const age = orderTime > 0 ? (now - orderTime) : (25 * 60 * 1000); // Un-timestamped orders treat as expired
-            if (age >= TIMEOUT_20_MIN) return false;
-            return (
-              o.in_hall !== false && 
-              (o.status === 'hall' || (!o.status && o.in_hall === true)) && 
-              !o.dispatchedDriverPhone &&
-              o.status !== 'cancelled' && 
-              o.status !== 'dispatched' && 
-              o.status !== 'claimed' && 
-              o.status !== 'accepted' && 
-              o.status !== 'taken' && 
-              o.status !== 'arrived' && 
-              o.status !== 'serving' && 
-              o.status !== 'completed'
-            );
-          });
+        if (!Array.isArray(saved)) return [];
+        const now = Date.now();
+        const TIMEOUT_20_MIN = 20 * 60 * 1000;
+        return saved.filter((o: any) => {
+          if (!isOrderEligibleForHall(o)) return false;
+          const orderTime = parseOrderTime(o);
+          if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) return false;
+          return true;
+        });
+      } catch (_) {
+        return [];
+      }
+    };
 
-          // Clean up expired or invalid orders from localStorage
-          const cleanSaved = saved.filter((o: any) => {
-            if (!o) return false;
-            const orderTime = Number(o.timestamp || o.createdAt || o.createTime || 0);
-            const age = orderTime > 0 ? (now - orderTime) : (25 * 60 * 1000);
-            return age < TIMEOUT_20_MIN && o.status !== 'cancelled' && o.status !== 'completed';
-          });
-          if (cleanSaved.length !== saved.length) {
-            localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(cleanSaved));
+    const mergeOrders = (...orderLists: any[][]) => {
+      const map = new Map<string, any>();
+      const cancelledKeys = new Set<string>();
+
+      orderLists.forEach(list => {
+        if (!Array.isArray(list)) return;
+        list.forEach(item => {
+          if (!item) return;
+          const key = String(item.id || item.orderId || item.orderNo || '').trim();
+          if (!key) return;
+
+          if (!isOrderEligibleForHall(item)) {
+            cancelledKeys.add(key);
+            map.delete(key);
+            return;
           }
 
-          const validIds = new Set(validOrders.map((o: any) => o.id || o.orderId));
-          setHallOrders((prev) => prev.filter((ord: any) => validIds.has(ord.id) || validIds.has(ord.orderId)));
+          if (!cancelledKeys.has(key)) {
+            const existing = map.get(key) || {};
+            map.set(key, { ...existing, ...item });
+          }
+        });
+      });
+
+      cancelledKeys.forEach(k => map.delete(k));
+
+      const merged = Array.from(map.values()).filter(isOrderEligibleForHall);
+      merged.sort((a, b) => (parseOrderTime(b) - parseOrderTime(a)));
+      return merged;
+    };
+
+    // Synchronize issuer's 报单转单 history dynamically based on merchant_orders lifecycle
+    const syncDriverOrdersWithMerchantData = (merchantList: any[]) => {
+      try {
+        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
+        const existingRaw = localStorage.getItem(ordersKey) || localStorage.getItem('dd_driver_orders');
+        if (!existingRaw) return;
+        const savedOrders = JSON.parse(existingRaw);
+        if (!Array.isArray(savedOrders) || savedOrders.length === 0) return;
+
+        const mMap = new Map<string, any>();
+        merchantList.forEach((m: any) => {
+          if (m.id) mMap.set(String(m.id), m);
+          if (m.orderId) mMap.set(String(m.orderId), m);
+          if (m.orderNo) mMap.set(String(m.orderNo), m);
+        });
+
+        let hasChange = false;
+        const updated = savedOrders.map((ord: any) => {
+          const t = (ord.type || ord.orderType || '').trim();
+          const r = (ord.orderRemark || ord.remark || '').trim();
+          const m = (ord.merchantName || ord.source || '').trim();
+          const dest = (ord.endLocation || ord.destination || '').trim();
+          const isReportTransfer = (
+            t === '报单转单' ||
+            r === '报单转单' ||
+            m === '报单转单' ||
+            dest.includes('报单转单') ||
+            ord.isReportTransferOrder ||
+            ord.isReportTransfer ||
+            ord.isReportTransferValet ||
+            ord.isTransferIssuer === true ||
+            ord.isReporter === true ||
+            ord.status === '已转单'
+          );
+
+          if (!isReportTransfer) return ord;
+
+          const oid = ord.id ? String(ord.id) : (ord.orderId ? String(ord.orderId) : (ord.orderNo ? String(ord.orderNo) : null));
+          if (!oid) return ord;
+
+          const matched = mMap.get(oid);
+          if (!matched) return ord;
+
+          let targetDriverName = (matched.dispatchedDriverName || matched.claimedDriverName || matched.driverName || matched.completedByDriverName || '').trim();
+          const targetDriverPhone = (matched.dispatchedDriverPhone || matched.claimedDriverPhone || '').trim();
+
+          if (!targetDriverName && targetDriverPhone) {
+            try {
+              const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+              const found = savedSq.find((s: any) => String(s.phone || '').trim() === targetDriverPhone);
+              if (found && found.name) targetDriverName = found.name;
+            } catch (_) {}
+          }
+
+          let newEnd = '';
+          if (matched.status === 'hall' || (matched.in_hall && !targetDriverName && !targetDriverPhone)) {
+            newEnd = '报单转单 (选单大厅)';
+          } else if (targetDriverName) {
+            newEnd = `报单转单 (派给${targetDriverName})`;
+          } else if (targetDriverPhone) {
+            newEnd = `报单转单 (派给${targetDriverPhone})`;
+          }
+
+          if (newEnd && (ord.endLocation !== newEnd || ord.destination !== newEnd || ord.dispatchedDriverName !== targetDriverName)) {
+            hasChange = true;
+            return {
+              ...ord,
+              endLocation: newEnd,
+              destination: newEnd,
+              dispatchedDriverName: targetDriverName,
+              dispatchedDriverPhone: targetDriverPhone
+            };
+          }
+          return ord;
+        });
+
+        if (hasChange) {
+          localStorage.setItem(ordersKey, JSON.stringify(updated));
+          localStorage.setItem('dd_driver_orders', JSON.stringify(updated));
+          window.dispatchEvent(new CustomEvent('driver_orders_updated'));
         }
-      } catch (_) {
-        setHallOrders([]);
-      }
+      } catch (_) {}
+    };
+
+    // Initialize immediately on mount from local storage
+    const initialLocal = getValidHallOrdersFromLocal();
+    setHallOrders(initialLocal);
+    syncDriverOrdersWithMerchantData(initialLocal);
+
+    const handleOrdersUpdated = () => {
+      const localValid = getValidHallOrdersFromLocal();
+      setHallOrders(prev => mergeOrders(prev, localValid));
+      syncDriverOrdersWithMerchantData(localValid);
     };
 
     window.addEventListener('merchant_orders_updated', handleOrdersUpdated);
@@ -467,30 +690,16 @@ export default function HomeView({
       const q = collection(db, 'merchant_orders');
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const list: any[] = [];
+        const allMerchantOrders: any[] = [];
         const now = Date.now();
         const TIMEOUT_20_MIN = 20 * 60 * 1000;
 
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
-          const isHallOrder = Boolean(
-            data && 
-            data.in_hall !== false && 
-            (data.status === 'hall' || (!data.status && data.in_hall === true)) && 
-            !data.dispatchedDriverPhone &&
-            data.status !== 'cancelled' && 
-            data.status !== 'dispatched' && 
-            data.status !== 'claimed' && 
-            data.status !== 'accepted' && 
-            data.status !== 'taken' && 
-            data.status !== 'arrived' && 
-            data.status !== 'serving' && 
-            data.status !== 'completed'
-          );
-
-          if (isHallOrder) {
-            const orderTime = Number(data.timestamp || data.createdAt || data.createTime || 0);
-            const age = orderTime > 0 ? (now - orderTime) : (25 * 60 * 1000); // Un-timestamped orders treat as expired
-            if (age >= TIMEOUT_20_MIN) {
+          allMerchantOrders.push({ id: docSnap.id, ...data });
+          if (isOrderEligibleForHall(data)) {
+            const orderTime = parseOrderTime(data);
+            if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) {
               // Auto cancel expired hall orders after 20 minutes
               setDoc(doc(db, 'merchant_orders', docSnap.id), {
                 status: 'cancelled',
@@ -504,8 +713,9 @@ export default function HomeView({
             }
           }
         });
-        list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        setHallOrders(list);
+        const localValid = getValidHallOrdersFromLocal();
+        setHallOrders(prev => mergeOrders(prev, list, localValid));
+        syncDriverOrdersWithMerchantData([...allMerchantOrders, ...localValid]);
       }, (err) => {
         console.warn("Error listening to merchant_orders in HomeView:", err);
       });
@@ -517,7 +727,7 @@ export default function HomeView({
       console.warn("Failed to subscribe to merchant_orders:", e);
       return () => window.removeEventListener('merchant_orders_updated', handleOrdersUpdated);
     }
-  }, []);
+  }, [userPhone]);
 
   // --- Order Selection Hall Simulation Removed for Real Dispatches ---
   useEffect(() => {
@@ -563,12 +773,26 @@ export default function HomeView({
     );
 
     try {
+      let currentDriverName = (settings as any)?.driverName || (settings as any)?.name || applyName || '';
+      if (!currentDriverName || currentDriverName === '张三') {
+        try {
+          const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+          const me = savedSq.find((m: any) => String(m.phone || '').trim() === String(userPhone || '').trim());
+          if (me && me.name) currentDriverName = me.name;
+        } catch (_) {}
+      }
+      if (!currentDriverName) currentDriverName = userPhone ? `司机${String(userPhone).slice(-4)}` : '司机';
+
       const orderPayload = {
         ...ord,
         passengerPhone: ord.passengerPhone || '商户代叫客户',
         startLocation: ord.startLocation || '代叫起点',
-        destination: '由司机根据现场口头协商规划行程',
+        ...ord,
+        destination: ord.destination || '由司机根据现场口头协商规划行程',
         status: 'submitted',
+        statusCategory: '待接单',
+        isCompleted: false,
+        isDirectClaim: true,
         timestamp: Date.now(),
         isValetOrder: true,
         isPlatformDispatch: true,
@@ -581,24 +805,45 @@ export default function HomeView({
         passengerLat: finalLat,
         passengerLng: finalLng,
         distanceText: finalDistText,
-        orderId: ord.id || ord.orderId,
-        id: ord.id || ord.orderId,
+        orderId: ord.id || ord.orderId || ord.orderNo,
+        id: ord.id || ord.orderId || ord.orderNo,
         dispatchedDriverPhone: userPhone || '',
-        dispatchedByPhone: ord.dispatchedByPhone || ord.adminPhone || ord.dispatchedBy || ord.merchantPhone || '',
+        dispatchedDriverName: currentDriverName,
+        claimedDriverPhone: userPhone || '',
+        claimedDriverName: currentDriverName,
+        driverName: currentDriverName,
+        dispatchedByPhone: ord.dispatchedByPhone || ord.adminPhone || ord.dispatchedBy || ord.merchantPhone || ord.creatorPhone || '',
         adminPhone: ord.adminPhone || ord.dispatchedByPhone || '',
         dispatchedBy: ord.dispatchedBy || ord.dispatchedByPhone || '',
         paymentQrCode: ord.paymentQrCode || ord.merchantPaymentQrCode || '',
         merchantPaymentQrCode: ord.paymentQrCode || ord.merchantPaymentQrCode || '',
+        orderChannel: ord.orderChannel || ord.dispatchChannel || ord.sourceChannel || 'web',
+        dispatchChannel: ord.dispatchChannel || 'web',
+        sourceChannel: ord.sourceChannel || 'web',
+        isStandaloneMerchantWeb: ord.isStandaloneMerchantWeb ?? true,
         merchantPhone: ord.merchantPhone || ord.dispatchedByPhone || '',
+        reporterPhone: ord.reporterPhone || '',
         dispatchedByName: ord.dispatchedByName || ord.adminName || '',
         adminName: ord.adminName || ord.dispatchedByName || ''
       };
 
+      // Instantly remove claimed order from local hallOrders state so the hall view refreshes immediately
+      setHallOrders(prev => prev.filter(o => o.id !== ord.id && o.orderId !== ord.id && o.orderNo !== ord.orderNo));
+
+      const claimUpdateData = {
+        status: 'claimed',
+        statusCategory: '已接单',
+        in_hall: false,
+        dispatchedDriverPhone: userPhone || '',
+        dispatchedDriverName: currentDriverName,
+        claimedDriverPhone: userPhone || '',
+        claimedDriverName: currentDriverName,
+        driverName: currentDriverName,
+        claimedAt: Date.now()
+      };
+
       if (db) {
-        await setDoc(doc(db, 'merchant_orders', ord.id), {
-          status: 'claimed',
-          dispatchedDriverPhone: userPhone || ''
-        }, { merge: true }).catch(() => {});
+        await setDoc(doc(db, 'merchant_orders', ord.id), claimUpdateData, { merge: true }).catch(() => {});
       }
 
       // Sync to HTTP server API (Baota / Aliyun backend)
@@ -606,14 +851,40 @@ export default function HomeView({
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'merchant_orders', docId: ord.id, data: { status: 'claimed', dispatchedDriverPhone: userPhone || '' } })
+        body: JSON.stringify({ collection: 'merchant_orders', docId: ord.id, data: claimUpdateData })
       }).catch(() => {});
 
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-        const updated = saved.filter((o: any) => o.id !== ord.id);
+        const updated = saved.filter((o: any) => o.id !== ord.id && o.orderId !== ord.id && o.orderNo !== ord.orderNo);
         localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
         window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+      } catch (_) {}
+
+      try {
+        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
+        const savedDrv = JSON.parse(localStorage.getItem(ordersKey) || '[]');
+        if (Array.isArray(savedDrv)) {
+          let drvChanged = false;
+          const updatedDrv = savedDrv.map((o: any) => {
+            if (ord.id && (o.id === ord.id || o.orderId === ord.id || o.orderNo === ord.id)) {
+              drvChanged = true;
+              return {
+                ...o,
+                endLocation: `报单转单 (派给${currentDriverName})`,
+                destination: `报单转单 (派给${currentDriverName})`,
+                dispatchedDriverName: currentDriverName,
+                dispatchedDriverPhone: userPhone || ''
+              };
+            }
+            return o;
+          });
+          if (drvChanged) {
+            localStorage.setItem(ordersKey, JSON.stringify(updatedDrv));
+            localStorage.setItem('dd_driver_orders', JSON.stringify(updatedDrv));
+            window.dispatchEvent(new CustomEvent('driver_orders_updated'));
+          }
+        }
       } catch (_) {}
 
       if (userPhone) {
@@ -628,6 +899,9 @@ export default function HomeView({
       }
 
       // INSTANTLY trigger the full-screen Incoming Order Overlay modal on driver's screen!
+      if (onClaimIncomingOrder) {
+        onClaimIncomingOrder(orderPayload);
+      }
       window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
 
       triggerToast('✓ 抢单成功！已为您弹出新来单确认界面');
@@ -802,6 +1076,11 @@ export default function HomeView({
   const checkApprovalStatus = () => {
     const currentPhone = (userPhone || applyPhone || '').trim();
     if (!currentPhone) return false;
+
+    // 开发者 15509601222 拥有最高开发者权限，默认自动加入小队，绝不需要申请
+    if (currentPhone === '15509601222') {
+      return true;
+    }
 
     // 0. 优先判断该账号是否已被管理员从小队删除/移除
     let removedList: string[] = removedMemberPhones || [];
@@ -1040,84 +1319,86 @@ export default function HomeView({
     </div>
   );
 
-  const renderApprovedResultView = (onCloseModal: () => void) => (
-    <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
-      {/* Top AppBar */}
-      <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-5 shrink-0">
-        <button 
-          type="button"
-          onClick={onCloseModal}
-          className="p-1 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c]"
-        >
-          <ArrowLeft className="w-6 h-6" />
-        </button>
-        <h1 className="text-lg font-bold text-[#984800]">审核通过</h1>
-        <div className="w-8"></div>
-      </header>
+  const renderApprovedResultView = (onCloseModal: () => void) => {
+    return (
+      <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
+        {/* Top AppBar */}
+        <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-5 shrink-0">
+          <button 
+            type="button"
+            onClick={onCloseModal}
+            className="p-1 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c]"
+          >
+            <ArrowLeft className="w-6 h-6" />
+          </button>
+          <h1 className="text-lg font-bold text-[#984800]">审核通过</h1>
+          <div className="w-8"></div>
+        </header>
 
-      {/* Main Content Canvas */}
-      <main className="flex-grow flex flex-col items-center justify-center px-5 py-8 max-w-md mx-auto w-full text-center">
-        {/* Success Icon Badge */}
-        <div className="relative mb-6">
-          <div className="w-24 h-24 rounded-full bg-[#ff7d00]/10 flex items-center justify-center border-4 border-[#ff7d00]/20 shadow-md">
-            <CheckCircle2 className="w-16 h-16 text-[#ff7d00]" />
+        {/* Main Content Canvas */}
+        <main className="flex-grow flex flex-col items-center justify-center px-5 py-8 max-w-md mx-auto w-full text-center">
+          {/* Success Icon Badge */}
+          <div className="relative mb-6">
+            <div className="w-24 h-24 rounded-full bg-[#ff7d00]/10 flex items-center justify-center border-4 border-[#ff7d00]/20 shadow-md">
+              <CheckCircle2 className="w-16 h-16 text-[#ff7d00]" />
+            </div>
           </div>
-        </div>
 
-        {/* Titles */}
-        <h2 className="text-2xl font-bold text-[#1a1c1c] mb-1">恭喜您已成功加入小队</h2>
-        <p className="text-base text-[#5f5e5e] mb-2">您已成功通过审核</p>
-        <div className="text-sm font-semibold text-[#984800] mb-6">祝您订单多多，收入多多！</div>
+          {/* Titles */}
+          <h2 className="text-2xl font-bold text-[#1a1c1c] mb-1">恭喜您已成功加入小队</h2>
+          <p className="text-base text-[#5f5e5e] mb-2">您已成功通过审核</p>
+          <div className="text-sm font-semibold text-[#984800] mb-6">祝您订单多多，收入多多！</div>
 
-        {/* Info Card (Styled) */}
-        <div className="w-full bg-white border border-[#dfc0af]/70 rounded-2xl p-4 mb-6 text-left shadow-xs space-y-2">
-          <div className="flex items-center gap-2 text-[#984800]">
-            <Info className="w-5 h-5 text-[#984800]" />
-            <h3 className="text-xs font-bold uppercase tracking-wider">接单范围</h3>
+          {/* Info Card (Styled) */}
+          <div className="w-full bg-white border border-[#dfc0af]/70 rounded-2xl p-4 mb-6 text-left shadow-xs space-y-2">
+            <div className="flex items-center gap-2 text-[#984800]">
+              <Info className="w-5 h-5 text-[#984800]" />
+              <h3 className="text-xs font-bold uppercase tracking-wider">接单范围</h3>
+            </div>
+            <p className="text-sm text-[#1a1c1c] leading-relaxed font-medium">
+              商户代叫订单、司机代叫转单
+            </p>
           </div>
-          <p className="text-sm text-[#1a1c1c] leading-relaxed font-medium">
-            商户代叫订单、司机代叫转单
-          </p>
-        </div>
 
-        {/* Driver Identity Glimpse */}
-        <div className="w-full relative rounded-2xl overflow-hidden h-40 mb-6 shadow-sm border border-[#dfc0af]/70">
-          <img 
-            alt="Driver Ready"
-            className="absolute inset-0 w-full h-full object-cover" 
-            src={READY_DRIVER_PATH}
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (target.src !== READY_DRIVER_BASE64) {
-                target.src = READY_DRIVER_BASE64;
-              }
-            }}
-            referrerPolicy="no-referrer"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent flex items-end p-4">
-            <div className="text-white text-left">
-              <p className="text-xs opacity-80 font-medium">当前状态</p>
-              <div className="flex items-center gap-2">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
-                <span className="text-lg font-bold">准备就绪</span>
+          {/* Driver Identity Glimpse */}
+          <div className="w-full relative rounded-2xl overflow-hidden h-40 mb-6 shadow-sm border border-[#dfc0af]/70">
+            <img 
+              alt="Driver Ready"
+              className="absolute inset-0 w-full h-full object-cover" 
+              src={READY_DRIVER_PATH}
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (target.src !== READY_DRIVER_BASE64) {
+                  target.src = READY_DRIVER_BASE64;
+                }
+              }}
+              referrerPolicy="no-referrer"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent flex items-end p-4">
+              <div className="text-white text-left">
+                <p className="text-xs opacity-80 font-medium">当前状态</p>
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
+                  <span className="text-lg font-bold">准备就绪</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </main>
+        </main>
 
-      {/* Sticky Bottom Actions */}
-      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-[#dfc0af]/60 flex flex-col gap-2 w-full max-w-md mx-auto android-nav-safe-pb">
-        <button 
-          type="button"
-          onClick={onCloseModal}
-          className="w-full h-12 bg-[#ff7d00] hover:bg-[#e67000] text-white font-semibold text-base rounded-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-        >
-          <span>返回首页</span>
-        </button>
-      </footer>
-    </div>
-  );
+        {/* Sticky Bottom Actions */}
+        <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-[#dfc0af]/60 flex flex-col gap-2 w-full max-w-md mx-auto android-nav-safe-pb">
+          <button 
+            type="button"
+            onClick={onCloseModal}
+            className="w-full h-12 bg-[#ff7d00] hover:bg-[#e67000] text-white font-semibold text-base rounded-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+          >
+            <span>返回首页</span>
+          </button>
+        </footer>
+      </div>
+    );
+  };
 
   const checkRejectionStatus = () => {
     if (isReapplying) return false;
@@ -1421,25 +1702,17 @@ export default function HomeView({
       const map = new Map<string, any>();
       apiMembers.forEach(m => {
         const phone = String(m.phone || m.id || '').trim();
-        if (phone) {
-          map.set(phone, m);
+        const st = String(m.status || '').trim();
+        // 只有审核通过的成员才作为小队成员！
+        if (phone && (phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st))) {
+          map.set(phone, { ...m, status: '已通过' });
         }
       });
-      apiApps.forEach(a => {
-        const phone = String(a.phone || a.id || '').trim();
-        if (phone) {
-          const existing = map.get(phone);
-          if (a.status === '待审核' || !existing) {
-            map.set(phone, { ...existing, ...a });
-          }
-        }
-      });
-      const mergedList = Array.from(map.values());
 
-      // 保证 15509601222 (开发者司机/超级管理员) 始终在 mergedList 列表中，绝不丢失
+      // 保证 15509601222 (开发者司机/超级管理员) 始终在列表中，绝不丢失
       const masterPhone = '15509601222';
-      if (!mergedList.some(m => String(m.phone || m.id).trim() === masterPhone)) {
-        mergedList.push({
+      if (!map.has(masterPhone)) {
+        map.set(masterPhone, {
           id: masterPhone,
           phone: masterPhone,
           name: '吴彦祖',
@@ -1448,6 +1721,7 @@ export default function HomeView({
           status: '已通过'
         });
       }
+      const mergedList = Array.from(map.values());
 
       // 云端返回的数据是唯一下发标准：更新 React state 严格同步云端
       setSquadMembers(mergedList);
@@ -1518,7 +1792,13 @@ export default function HomeView({
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
+        const data: any = docSnap.data();
+        const phone = String(data?.phone || docSnap.id || '').trim();
+        const st = String(data?.status || '').trim();
+        // 只有明确审核通过的成员才进入小队列表
+        if (phone && (phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st))) {
+          list.push({ id: docSnap.id, ...data, status: '已通过' });
+        }
       });
       // 保证 15509601222 (超级管理员) 始终在列表中
       const masterPhone = '15509601222';
@@ -1656,6 +1936,7 @@ export default function HomeView({
   const [vipPurchaseSuccess, setVipPurchaseSuccess] = useState(false);
 
   const [isCityDispatchEnabled, setIsCityDispatchEnabled] = useState<boolean | null>(null);
+  const [showNearbyMap, setShowNearbyMap] = useState(false);
   const [onlineApp, setOnlineApp] = useState<any>(null);
   const [loadingApp, setLoadingApp] = useState(false);
   const [localAlert, setLocalAlert] = useState<{ title: string; message: string; type?: 'warning' | 'info' | 'success' } | null>(null);
@@ -1711,7 +1992,7 @@ export default function HomeView({
     '普通司机': 5
   };
 
-  const canSetRoles = ['开发者司机', '城市老板司机', '城市管理司机'].includes(userRole);
+  const canSetRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(userRole);
 
   const canManageTarget = (targetRole: string) => {
     const curLevel = ROLE_HIERARCHY[userRole] || 5;
@@ -1738,7 +2019,7 @@ export default function HomeView({
       return;
     }
     if (!canSetRoles) {
-      alert('❌ 权限不足：只有 开发者司机、城市老板司机、城市管理司机 有权限设置指定派单员！');
+      alert('❌ 权限不足：只有 开发者司机、城市老板司机、城市管理司机、城市派单员司机 有权限设置指定职务！');
       return;
     }
     if (!canManageTarget(searchedUserRole)) {
@@ -1747,9 +2028,21 @@ export default function HomeView({
     }
 
     // Safety constraint: Cannot set management team members
-    if (['开发者司机', '城市老板司机', '城市管理司机'].includes(searchedUserRole)) {
+    if (['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(searchedUserRole)) {
       alert('❌ 操作失败：管理团队人员角色不允许在此进行变更！');
       return;
+    }
+
+    // 城市派单员司机：可分配 普通司机。（不可变更上级及同级管理司机）
+    if (userRole === '城市派单员司机') {
+      if (targetRole !== '普通司机') {
+        alert('❌ 权限不足：城市派单员司机仅可分配【普通司机】职务！');
+        return;
+      }
+      if (['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(searchedUserRole)) {
+        alert('❌ 权限不足：城市派单员司机不可变更上级及同级管理司机！');
+        return;
+      }
     }
 
     // Safety constraint: Cannot set ordinary drivers who have not been approved for online orders
@@ -1786,41 +2079,196 @@ export default function HomeView({
   const [searchCityQuery, setSearchCityQuery] = useState('');
   const [showCitySelector, setShowCitySelector] = useState(false);
 
+  // Universal counter rollover: resets to 0 upon reaching 9999 and starts counting upwards again
+  // 当全部单数到达9999时，自动归0，同时软件app自动删除订单中心容器里的所有订单信息
+  const formatOrderCount9999 = (count: number): number => {
+    const n = Math.max(0, Number(count) || 0);
+    return n >= 9999 ? (n % 9999) : n;
+  };
+
   // Driver Order History Center states
   const [showOrderHistory, setShowOrderHistory] = useState(false);
-  const [driverOrders, setDriverOrders] = useState<any[]>(() => {
+
+  const reloadDriverOrders = useCallback(() => {
     try {
       const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
-      const existing = localStorage.getItem(ordersKey);
-      if (existing) {
-        const parsed = JSON.parse(existing);
-        const filtered = filterOrdersWithinSixMonths(parsed);
-        if (filtered.length !== parsed.length) {
-          localStorage.setItem(ordersKey, JSON.stringify(filtered));
-        }
-        return filtered;
-      }
+      const userOrders = userPhone ? localStorage.getItem(ordersKey) : null;
+      const genericOrders = localStorage.getItem('dd_driver_orders');
+
+      const combined: any[] = [];
+      const seenIds = new Set<string>();
+
+      const addItems = (raw: string | null) => {
+        if (!raw) return;
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            parsed.forEach((item: any) => {
+              const id = item?.id ? String(item.id) : (item?.orderId ? String(item.orderId) : null);
+              if (id) {
+                if (!seenIds.has(id)) {
+                  seenIds.add(id);
+                  combined.push(item);
+                }
+              } else {
+                combined.push(item);
+              }
+            });
+          }
+        } catch (_) {}
+      };
+
+      addItems(userOrders);
+      addItems(genericOrders);
+
+      const filtered = filterOrdersWithinSixMonths(combined);
+      return filtered;
     } catch (e) {}
     return [];
-  });
+  }, [userPhone]);
+
+  const [driverOrders, setDriverOrders] = useState<any[]>(() => reloadDriverOrders());
+
+  // Reactive synchronizer: instantly updates driverOrders when orders change (报单, 商户代叫, 二维码创单, 报单转单)
+  useEffect(() => {
+    const syncOrders = () => {
+      const refreshed = reloadDriverOrders();
+      setDriverOrders(refreshed);
+    };
+    syncOrders();
+    window.addEventListener('driver_orders_updated', syncOrders);
+    window.addEventListener('storage', syncOrders);
+    return () => {
+      window.removeEventListener('driver_orders_updated', syncOrders);
+      window.removeEventListener('storage', syncOrders);
+    };
+  }, [reloadDriverOrders]);
+
+  // Dynamically calculate: 当月接单, 全部单数, 今日成单, 今日收入, 总成单量
+  // Applicable to all 4 order types: 报单, 商户代叫, 二维码创单, 报单转单
+  // Automatically rolls over to 0 when reaching 999 (达到999后自动归0重新计算)
+  const computedStats = useMemo(() => {
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonth = now.getMonth();
+    const curDay = now.getDate();
+
+    // 6 AM shift for today
+    const nowShift = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+    const shiftYear = nowShift.getFullYear();
+    const shiftMonth = nowShift.getMonth();
+    const shiftDay = nowShift.getDate();
+
+    let totalCount = 0;
+    let monthlyCount = 0;
+    let todayCount = 0;
+    let todayIncome = 0;
+
+    driverOrders.forEach((order: any) => {
+      if (!order) return;
+      totalCount++;
+
+      let orderDate: Date | null = null;
+      if (order.timestamp && typeof order.timestamp === 'number' && !isNaN(order.timestamp)) {
+        orderDate = new Date(order.timestamp);
+      } else {
+        const dateStr = order.fullTimeStr || order.timeStr || order.createdTime || order.createdAt;
+        if (dateStr && typeof dateStr === 'string') {
+          const match = dateStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?/);
+          if (match) {
+            orderDate = new Date(
+              parseInt(match[1], 10),
+              parseInt(match[2], 10) - 1,
+              parseInt(match[3], 10),
+              match[4] ? parseInt(match[4], 10) : 0,
+              match[5] ? parseInt(match[5], 10) : 0
+            );
+          } else {
+            const parsed = new Date(dateStr);
+            if (!isNaN(parsed.getTime())) orderDate = parsed;
+          }
+        } else if (order.id && !isNaN(Number(order.id))) {
+          const ts = Number(order.id);
+          if (ts > 1500000000000 && ts < 3000000000000) {
+            orderDate = new Date(ts);
+          }
+        }
+      }
+
+      if (orderDate) {
+        if (orderDate.getFullYear() === curYear && orderDate.getMonth() === curMonth) {
+          monthlyCount++;
+        }
+        const isCalendarToday = (
+          orderDate.getFullYear() === curYear &&
+          orderDate.getMonth() === curMonth &&
+          orderDate.getDate() === curDay
+        );
+        const orderShift = new Date(orderDate.getTime() - 6 * 60 * 60 * 1000);
+        const isShiftToday = (
+          orderShift.getFullYear() === shiftYear &&
+          orderShift.getMonth() === shiftMonth &&
+          orderShift.getDate() === shiftDay
+        );
+
+        if (isCalendarToday || isShiftToday) {
+          todayCount++;
+          const amt = Number(order.amount ?? order.calculatedTotalFee ?? order.totalFee ?? 0);
+          if (!isNaN(amt)) todayIncome += amt;
+        }
+      } else {
+        monthlyCount++;
+      }
+    });
+
+    const rawTotal = Math.max(totalCount, stats?.myPoints || 0);
+    const rawToday = Math.max(todayCount, stats?.todayOrders || 0);
+    const rawIncome = todayCount > 0 ? todayIncome : (stats?.todayIncome || 0);
+    const rawMonthly = Math.max(monthlyCount, rawToday);
+
+    // 当全部单数到达9999时，自动归0，同时软件app自动删除订单中心容器里的所有订单信息
+    if (rawTotal >= 9999) {
+      try {
+        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
+        localStorage.removeItem(ordersKey);
+        localStorage.removeItem('dd_driver_orders');
+        setTimeout(() => {
+          window.dispatchEvent(new CustomEvent('driver_orders_updated'));
+        }, 50);
+      } catch (_) {}
+    }
+
+    return {
+      totalOrders: formatOrderCount9999(rawTotal),
+      monthlyOrders: formatOrderCount9999(rawMonthly),
+      todayOrders: formatOrderCount9999(rawToday),
+      todayIncome: rawIncome
+    };
+  }, [driverOrders, stats?.myPoints, stats?.todayOrders, stats?.todayIncome, userPhone]);
+
+  // Keep stats in sync with driverOrders calculation
+  useEffect(() => {
+    if (!onUpdateStats) return;
+    if (
+      (stats.todayOrders ?? 0) !== computedStats.todayOrders ||
+      (stats.myPoints ?? 0) !== computedStats.totalOrders ||
+      Math.abs((stats.todayIncome ?? 0) - computedStats.todayIncome) > 0.01
+    ) {
+      onUpdateStats({
+        todayOrders: computedStats.todayOrders,
+        todayIncome: computedStats.todayIncome,
+        myPoints: computedStats.totalOrders
+      });
+    }
+  }, [computedStats.todayOrders, computedStats.todayIncome, computedStats.totalOrders]);
 
   // Sync order history whenever it is shown
   useEffect(() => {
     if (showOrderHistory) {
-      try {
-        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
-        const existing = localStorage.getItem(ordersKey);
-        if (existing) {
-          const parsed = JSON.parse(existing);
-          const filtered = filterOrdersWithinSixMonths(parsed);
-          setDriverOrders(filtered);
-          if (filtered.length !== parsed.length) {
-            localStorage.setItem(ordersKey, JSON.stringify(filtered));
-          }
-        }
-      } catch (e) {}
+      const refreshed = reloadDriverOrders();
+      setDriverOrders(refreshed);
     }
-  }, [showOrderHistory, userPhone]);
+  }, [showOrderHistory, reloadDriverOrders]);
 
   const [swipedOrderId, setSwipedOrderId] = useState<string | null>(null);
   const [selectedDetailOrder, setSelectedDetailOrder] = useState<any | null>(null);
@@ -1873,12 +2321,7 @@ export default function HomeView({
         setSwipedOrderId(null);
       }
 
-      // Decrease both monthly orders and total orders (represented by stats.myPoints) by 1
-      const nextPoints = Math.max(0, (stats.myPoints || 0) - 1);
-      onUpdateStats({
-        myPoints: nextPoints,
-        todayOrders: Math.max(0, (stats.todayOrders || 0) - 1)
-      });
+      window.dispatchEvent(new CustomEvent('driver_orders_updated'));
       triggerToast('订单已成功删除');
     } catch (e) {
       console.error('Failed to delete order:', e);
@@ -3074,26 +3517,26 @@ export default function HomeView({
         </div>
 
         {/* Work stats display slots (exactly matching Screenshot 4 layout) */}
-        <div className="grid grid-cols-3 gap-2 text-center text-white mt-2">
-          <div>
+        <div className="grid grid-cols-3 gap-2 text-center text-white mt-2 items-start">
+          <div className="flex flex-col items-center justify-start">
             <div className="text-3xl font-bold font-display tracking-tight text-white mb-1">
-              {stats.todayOrders}
+              {computedStats.todayOrders}
             </div>
             <div className="text-[11px] text-gray-300 font-medium">今日成单</div>
           </div>
-          <div>
+          <div className="flex flex-col items-center justify-start">
             <div className="text-3xl font-bold font-display tracking-tight text-amber-400 mb-1">
-              {(stats.todayIncome || 0).toFixed(2)}
+              {(computedStats.todayIncome || 0).toFixed(2)}
             </div>
             <div className="text-[11px] text-gray-300 font-medium">今日收入</div>
           </div>
           <button
             onClick={() => setShowOrderHistory(true)}
-            className="flex flex-col items-center justify-center cursor-pointer hover:bg-white/10 active:scale-95 transition-all p-1 rounded-xl w-full"
+            className="flex flex-col items-center justify-start cursor-pointer hover:opacity-85 active:scale-95 transition-all p-0 rounded-xl w-full border-0 bg-transparent outline-none"
             id="menu-btn-order-history"
           >
             <div className="text-3xl font-bold font-display tracking-tight text-teal-300 mb-1">
-              {stats.myPoints}
+              {computedStats.totalOrders}
             </div>
             <div className="text-[11px] text-gray-300 font-medium flex items-center justify-center space-x-0.5">
               <span>总成单量</span>
@@ -3152,45 +3595,18 @@ export default function HomeView({
             </span>
           </div>
 
+          {/* 附近 (Nearby) - Location Pin (开发者/管理/老板/派单员司机/普通司机均可直接查看所有司机位置) */}
           <button 
             onClick={() => {
-              const cfg = getDriverCityConfig();
-              if (!cfg.online_app_enabled) {
-                setLocalAlert({
-                  title: '提示',
-                  message: '您所在的城市暂未开通服务，请联系客服',
-                  type: 'info'
-                });
-                return;
-              }
-              if (settings.onlineOrdersEnabled && isCityDispatchEnabled === false) {
-                setLocalAlert({
-                  title: '提示',
-                  message: '您所在的城市暂未开通服务，请联系客服',
-                  type: 'info'
-                });
-                return;
-              }
-              setShowOnlineAppModal(true);
+              setShowNearbyMap(true);
             }} 
-            className="flex flex-col items-center justify-center group select-none relative"
-            id="menu-btn-online-orders"
+            className="flex flex-col items-center justify-center group select-none relative cursor-pointer"
+            id="menu-btn-nearby"
           >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center mb-1.5 transition-all duration-200 group-active:scale-95 ${
-              (settings.onlineOrdersEnabled && isCityDispatchEnabled === false)
-                ? 'bg-slate-100 text-slate-400 border border-slate-200 opacity-60'
-                : settings.onlineOrdersEnabled 
-                  ? 'bg-emerald-500 text-white shadow-xs border border-emerald-600' 
-                  : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
-            }`}>
-              {(settings.onlineOrdersEnabled && isCityDispatchEnabled === false) ? <Lock className="w-4 h-4 text-slate-400" /> : <Globe className="w-5 h-5" />}
+            <div className="w-10 h-10 rounded-full bg-rose-50 border border-rose-100 flex items-center justify-center text-rose-500 mb-1.5 transition-all duration-200 group-active:scale-95 group-hover:scale-105 shadow-xs">
+              <MapPin className="w-5 h-5 text-rose-500" />
             </div>
-            <span className="text-[10px] text-gray-700 font-bold font-sans whitespace-nowrap">线上单开通</span>
-            {(settings.onlineOrdersEnabled && isCityDispatchEnabled === false) ? (
-              <span className="absolute -top-1 -right-1 text-[8px] bg-rose-500 text-white px-1 rounded-full font-black scale-85">已锁</span>
-            ) : settings.onlineOrdersEnabled && (
-              <span className="absolute top-0 right-0 w-2 h-2 bg-emerald-500 rounded-full animate-ping"></span>
-            )}
+            <span className="text-[10px] text-gray-700 font-bold font-sans whitespace-nowrap">附近</span>
           </button>
 
           <button 
@@ -3298,11 +3714,22 @@ export default function HomeView({
 
               setShowMerchantDispatchModal(true);
             }}
-            className="flex flex-col items-center justify-center relative transition-all duration-200 group"
+            className="flex flex-col items-center justify-center relative transition-all duration-200 group cursor-pointer"
             id="menu-btn-merchant-dispatch"
           >
-            <div className="w-10 h-10 rounded-full flex items-center justify-center mb-1.5 transition-all duration-200 bg-indigo-50 text-indigo-600 group-active:scale-95 border border-indigo-100">
-              <Briefcase className="w-5 h-5 text-indigo-600" />
+            <div className="relative w-10 h-10 rounded-full flex items-center justify-center mb-1.5 transition-all duration-200 group-active:scale-95 group-hover:brightness-105 bg-gradient-to-br from-indigo-500 via-indigo-600 to-purple-600 text-white shadow-xs border border-indigo-400/40 overflow-hidden">
+              {/* Specular top sheen */}
+              <div className="absolute top-0 inset-x-0 h-1/2 rounded-t-full bg-gradient-to-b from-white/25 to-transparent pointer-events-none" />
+              {/* Inner subtle glass ring */}
+              <div className="absolute inset-[1px] rounded-full border border-white/20 pointer-events-none" />
+              
+              {/* Center Business / Merchant Icon Composition */}
+              <div className="relative flex items-center justify-center">
+                <Briefcase className="w-[19px] h-[19px] text-white stroke-[2.2] drop-shadow-xs" />
+                <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-gradient-to-tr from-amber-400 to-amber-300 border-[1.5px] border-indigo-700 flex items-center justify-center shadow-xs">
+                  <span className="text-[7.5px] font-black text-indigo-950 leading-none select-none">商</span>
+                </div>
+              </div>
             </div>
             <span className="text-[10px] text-gray-700 font-bold font-sans whitespace-nowrap">商户代叫</span>
           </button>
@@ -3355,6 +3782,9 @@ export default function HomeView({
                 });
               }
 
+              // 点击小队管理组件按钮后弹出审核通过页面，管理层账号可在审核通过页点击「进入小队管理与派单中心」
+              setShowAdminDispatchView(false);
+
               fetchLatestSquadData();
               setShowDispatchModal(true);
             }}
@@ -3364,7 +3794,7 @@ export default function HomeView({
             <div className="w-10 h-10 rounded-full flex items-center justify-center mb-1.5 transition-all duration-200 bg-teal-50 text-teal-600 group-active:scale-95 border border-teal-100">
               <Users className="w-5 h-5" />
             </div>
-            <span className="text-[10px] text-gray-500 font-bold font-sans">小队管理</span>
+            <span className="text-[10px] text-gray-700 font-bold font-sans whitespace-nowrap">小队申请</span>
             <span className="absolute -top-1 -right-1 bg-teal-500 text-white text-[8px] px-1.5 py-0.5 rounded-full font-bold scale-90 whitespace-nowrap">
               {getActiveSquadDriverCount()}人
             </span>
@@ -3410,7 +3840,33 @@ export default function HomeView({
           {/* Hall Orders List - Filter out simulated orders */}
           {(() => {
             const isApproved = checkApprovalStatus();
-            const visibleHallOrders = hallOrders.filter((ord: any) => !ord.isSimulated);
+            const myCurrentPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
+            const visibleHallOrders = hallOrders.filter((ord: any) => {
+              if (!ord || ord.isSimulated) return false;
+              const isTransferOrder = Boolean(
+                ord.orderType === '报单转单' ||
+                ord.orderRemark === '报单转单' ||
+                ord.type === '报单转单' ||
+                String(ord.orderRemark || '').includes('报单转单') ||
+                String(ord.merchantName || '').includes('报单转单')
+              );
+              if (isTransferOrder && myCurrentPhone) {
+                const issuerPhones = [
+                  ord.reporterPhone,
+                  ord.merchantPhone,
+                  ord.dispatchedByPhone,
+                  ord.dispatchedBy,
+                  ord.creatorPhone,
+                  ord.createdUserPhone,
+                  ord.userPhone
+                ].filter(Boolean).map((p: any) => String(p).replace(/\D/g, '').trim());
+
+                if (issuerPhones.includes(myCurrentPhone)) {
+                  return false;
+                }
+              }
+              return true;
+            });
 
             if (visibleHallOrders.length === 0) {
               return (
@@ -3432,14 +3888,6 @@ export default function HomeView({
                     : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
 
                   const isReportTransfer = ord.orderType === '报单转单' || ord.orderRemark === '报单转单' || ord.type === '报单转单';
-                  const isIssuerDriver = Boolean(
-                    userPhone && (
-                      ord.merchantPhone === userPhone ||
-                      ord.reporterPhone === userPhone ||
-                      ord.userPhone === userPhone ||
-                      ord.createdUserPhone === userPhone
-                    )
-                  );
 
                   const { displayDistText, resolvedLat, resolvedLng } = calculateOrderDriverDistance(
                     ord.startLocation,
@@ -3448,7 +3896,7 @@ export default function HomeView({
                     currentDriverCoords
                   );
 
-                  const finalDistText = isIssuerDriver ? '0公里' : displayDistText;
+                  const finalDistText = displayDistText;
 
                   // Attach resolved coords and distance text to order object
                   ord.resolvedLat = resolvedLat;
@@ -3471,7 +3919,7 @@ export default function HomeView({
                             {isReportTransfer ? '【报单转单】' : '【商户代叫】'}
                           </span>
                           <span className="text-xs font-black text-slate-800 tracking-wider truncate max-w-[180px]">
-                            起点：{ord.startLocation || ord.originName || ord.passengerAddress || '代驾起点'}
+                            起点：****
                           </span>
                         </div>
 
@@ -3822,7 +4270,8 @@ export default function HomeView({
       {showDispatchModal && (
         (() => {
           const currentPhone = (userPhone || applyPhone || '').trim();
-          const isRemoved = currentPhone && currentPhone !== '15509601222' && (
+          const isSuperDev = currentPhone === '15509601222';
+          const isRemoved = currentPhone && !isSuperDev && (
             removedMemberPhones.includes(currentPhone) ||
             (() => {
               try {
@@ -3835,7 +4284,9 @@ export default function HomeView({
               return false;
             })()
           );
-          return !isRemoved && ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(userRole) && showAdminDispatchView;
+          // 管理层司机且开启了后台视图时进入管理后台
+          const isManagement = isSuperDev || (!isRemoved && ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(userRole));
+          return isManagement && showAdminDispatchView;
         })() ? (
           <div className="absolute inset-0 bg-[#0a0c16] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
             {/* Page Toolbar Header */}
@@ -3854,11 +4305,11 @@ export default function HomeView({
                   onClick={() => setShowAdminDispatchView(false)}
                   className="px-2.5 py-1 text-[10px] font-bold bg-teal-500/20 text-teal-300 border border-teal-500/30 rounded-lg hover:bg-teal-500/30 transition-all cursor-pointer"
                 >
-                  返回申请页
+                  返回审核通过页
                 </button>
                 <button 
                   onClick={() => setShowDispatchModal(false)}
-                  className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white transition-all active:scale-90"
+                  className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white transition-all active:scale-90 cursor-pointer"
                 >
                   <X className="w-4.5 h-4.5" />
                 </button>
@@ -4288,6 +4739,9 @@ export default function HomeView({
               userPhone={userPhone}
               userRole={userRole}
               userTeamCity={effectiveCity}
+              isOnline={isOnline}
+              driverCoords={driverCoords}
+              onCloseModal={() => setShowMerchantDispatchModal(false)}
             />
           </div>
         </div>
@@ -5462,7 +5916,7 @@ export default function HomeView({
           <section className="bg-white dark:bg-zinc-900 py-6 flex items-center border-b border-slate-100 dark:border-zinc-800 shrink-0">
             <div className="flex-1 text-center border-r border-slate-100 dark:border-zinc-800">
               <div className="font-extrabold text-slate-800 dark:text-white text-3xl font-display">
-                {stats.myPoints}
+                {computedStats.monthlyOrders}
               </div>
               <div className="text-slate-400 dark:text-slate-500 mt-1 text-xs font-semibold">
                 当月接单
@@ -5470,7 +5924,7 @@ export default function HomeView({
             </div>
             <div className="flex-1 text-center">
               <div className="font-extrabold text-slate-800 dark:text-white text-3xl font-display">
-                {stats.myPoints}
+                {computedStats.totalOrders}
               </div>
               <div className="text-slate-400 dark:text-slate-500 mt-1 text-xs font-semibold">
                 全部单数
@@ -5524,7 +5978,7 @@ export default function HomeView({
                       <div className="flex items-start">
                         <div className="w-2.5 h-2.5 rounded-full bg-orange-400 mt-1 mr-3.5 flex-shrink-0 shadow-sm shadow-orange-400/50"></div>
                         <span className="font-bold text-slate-700 dark:text-slate-200 text-xs leading-normal">
-                          {order.endLocation}
+                          {formatTransferOrderEndLocation(order)}
                         </span>
                       </div>
                     </div>
@@ -5579,6 +6033,36 @@ export default function HomeView({
                         )
                       );
                       if (isReportTransfer || isMerchantValet) {
+                        // 区分 报单转单下单发单司机 与 接收报单转单的接单司机
+                        const isTransferIssuer = isReportTransfer && (
+                          (order as any).isTransferIssuer === true ||
+                          (order as any).isReporter === true ||
+                          order.status === '已转单' ||
+                          dest.includes('报单转单') ||
+                          dest.includes('派给') ||
+                          dest.includes('选单大厅')
+                        );
+
+                        if (isTransferIssuer) {
+                          // 所有司机报单转单下单的所有订单，文字显示改为：等后接单的司机发送您代叫费，点击组件按钮改为无任何效果
+                          return (
+                            <div className="-mt-1 mb-3 z-20 pointer-events-auto">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  // 点击无任何效果
+                                }}
+                                className="w-full py-2 px-3.5 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-xl text-xs font-bold shadow-xs transition-all flex items-center justify-center space-x-1.5 cursor-default select-none"
+                              >
+                                <Send className="w-3.5 h-3.5 text-white" />
+                                <span>等候接单的司机发送您代叫费</span>
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        // 接收报单转单订单的司机以及商户代叫订单，还是显示补发代叫费并可正常点击
                         return (
                           <div className="-mt-1 mb-3 z-20 pointer-events-auto">
                             <button
@@ -5673,6 +6157,20 @@ export default function HomeView({
               onOpenMerchantValetPayment(trip);
             }
           }}
+        />
+      )}
+
+      {/* 12. Nearby Dispatch Map View (附近代驾调度地图) */}
+      {showNearbyMap && (
+        <NearbyMapView 
+          userPhone={userPhone || undefined}
+          settings={settings}
+          driverCoords={driverCoords}
+          isOnline={isOnline}
+          currentTrip={currentTrip}
+          todayOrdersCount={computedStats.todayOrders}
+          onClose={() => setShowNearbyMap(false)}
+          onNavigateToSettings={() => onNavigate('settings')}
         />
       )}
 

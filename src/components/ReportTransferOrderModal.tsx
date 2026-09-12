@@ -71,11 +71,13 @@ export default function ReportTransferOrderModal({
         pLng = pickupCoords.lng;
       }
 
-      // 2. Fetch candidate drivers in team/squad (小队内的司机)
+      // 2. Fetch candidate drivers from all sources
       const squadPhones = new Set<string>();
       try {
         const squadSnap = await getDocs(collection(db, 'squad_members'));
-        squadSnap.forEach(d => squadPhones.add(d.id));
+        squadSnap.forEach(d => {
+          if (d.id) squadPhones.add(String(d.id).replace(/\D/g, '').trim());
+        });
       } catch (_) {}
 
       try {
@@ -83,7 +85,7 @@ export default function ReportTransferOrderModal({
         if (Array.isArray(savedSq)) {
           savedSq.forEach((m: any) => {
             const p = typeof m === 'string' ? m : (m?.phone || m?.userPhone);
-            if (p) squadPhones.add(p);
+            if (p) squadPhones.add(String(p).replace(/\D/g, '').trim());
           });
         }
       } catch (_) {}
@@ -95,21 +97,57 @@ export default function ReportTransferOrderModal({
         teamSnap.forEach(d => {
           const data = d.data();
           if (data && ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(data.role)) {
-            if (data.phone) managementPhones.add(data.phone);
+            if (data.phone) managementPhones.add(String(data.phone).replace(/\D/g, '').trim());
           }
         });
       } catch (_) {}
 
-      // Driver users
-      const driverDocs: Array<{ phone: string; data: any }> = [];
+      // Collect all driver candidates in a combined map
+      const driverMap = new Map<string, any>();
+
+      // A. Read driver_users
       try {
         const driverSnap = await getDocs(collection(db, 'driver_users'));
         driverSnap.forEach(d => {
-          driverDocs.push({ phone: d.id, data: d.data() });
+          if (d.id && d.data()) {
+            const cleanId = String(d.id).replace(/\D/g, '').trim();
+            if (cleanId) {
+              driverMap.set(cleanId, { phone: cleanId, ...d.data() });
+            }
+          }
         });
       } catch (_) {}
 
-      if (driverDocs.length === 0) {
+      // B. Read squad_members
+      try {
+        const squadSnap = await getDocs(collection(db, 'squad_members'));
+        squadSnap.forEach(d => {
+          if (d.id && d.data()) {
+            const cleanId = String(d.id).replace(/\D/g, '').trim();
+            if (cleanId) {
+              const existing = driverMap.get(cleanId) || {};
+              driverMap.set(cleanId, { ...existing, ...d.data(), phone: cleanId });
+            }
+          }
+        });
+      } catch (_) {}
+
+      // C. Read driver_locations for real-time online status and GPS
+      try {
+        const locSnap = await getDocs(collection(db, 'driver_locations'));
+        locSnap.forEach(d => {
+          if (d.id && d.data()) {
+            const cleanId = String(d.id).replace(/\D/g, '').trim();
+            if (cleanId) {
+              const existing = driverMap.get(cleanId) || {};
+              driverMap.set(cleanId, { ...existing, ...d.data(), phone: cleanId });
+            }
+          }
+        });
+      } catch (_) {}
+
+      // D. Fallback to API if driverMap is empty
+      if (driverMap.size === 0) {
         try {
           const baseUrl = getBaseApiUrl();
           const res = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
@@ -117,8 +155,9 @@ export default function ReportTransferOrderModal({
             const json = await res.json();
             const rawList = Array.isArray(json) ? json : (json?.docs || json?.data || []);
             rawList.forEach((item: any) => {
-              if (item && item.id) {
-                driverDocs.push({ phone: item.id, data: item.data || item });
+              const dId = item?.id ? String(item.id).replace(/\D/g, '').trim() : '';
+              if (dId) {
+                driverMap.set(dId, { phone: dId, ...(item.data || item) });
               }
             });
           }
@@ -128,38 +167,74 @@ export default function ReportTransferOrderModal({
       // Filter candidates (Strictly EXCLUDING current reporter driver!)
       const candidates: Array<{ phone: string; name: string; lat: number; lng: number; distKm: number }> = [];
 
-      driverDocs.forEach(({ phone, data }) => {
+      const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+      const originLat = isValidCoords(pLat, pLng) ? pLat : reporterLat;
+      const originLng = isValidCoords(pLat, pLng) ? pLng : reporterLng;
+
+      driverMap.forEach((data, rawPhone) => {
         if (!data || data.isBanned) return;
 
-        // 绝不能派给自己！同时也排除乘客手机号（若正好是某个注册账户）
-        if (userPhone && (phone === userPhone || phone === cleanPhone)) return;
+        const targetPhone = String(rawPhone || data.phone || '').replace(/\D/g, '').trim();
 
-        const isOnline = Boolean(data.isOnline || data.onlineOrdersEnabled);
-        if (!isOnline) return;
+        // 1. 绝不能派给自己！同时也排除乘客手机号（若正好是某个注册账户）
+        if (!targetPhone || targetPhone.length !== 11) return;
+        if (targetPhone === cleanUserPhone) return;
+        if (targetPhone === cleanPhone) return;
 
-        const isSquadMember = squadPhones.has(phone) || managementPhones.has(phone) || phone === '15509601222';
-        if (!isSquadMember) return;
-
-        // Check if driver is free (not busy in serving state)
-        const isBusy = Boolean(data.hasActiveOrder || data.currentStatus === 'serving');
-        if (isBusy) return;
-
-        let dLat = Number(data.lat);
-        let dLng = Number(data.lng);
-
-        if (!isValidCoords(dLat, dLng)) {
-          dLat = DEFAULT_YINCHUAN_COORDS.lat;
-          dLng = DEFAULT_YINCHUAN_COORDS.lng;
+        // 2. 排除纯商家/商户角色（商家不能作为司机接单）
+        const dRole = String(data.role || data.userRole || data.approvedRole || '').trim();
+        if ((dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理')) {
+          return;
         }
 
-        // Calculate distance from the reporter driver's location
-        const distKm = calculateHaversineDistanceKm(reporterLat, reporterLng, dLat, dLng);
+        // 3. 必须属于小队成员、管理人员或入职司机
+        const isSquadOrManagement = squadPhones.has(targetPhone) || managementPhones.has(targetPhone) || targetPhone === '15509601222';
+        if (!isSquadOrManagement) return;
 
-        // Only candidates within 3.0 km radius from reporter driver
+        // 4. 必须审核通过（未被拒绝或待审核）
+        const st = String(data.status || data.approvalStatus || '已通过').trim();
+        if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
+          return;
+        }
+
+        // 5. 严格验证是否【上线】！
+        // 关键：必须明确 isOnline === true，绝对不可使用 onlineOrdersEnabled（其仅代表权限设置，不代表当前处于上线听单状态）！
+        const isOnline = data.isOnline === true || data.isOnline === 'true';
+        if (!isOnline) return;
+
+        // 6. 心跳活跃时间检查（Heartbeat Check）
+        // 上线司机每20秒上报一次位置；如果心跳超过5分钟（300秒）未更新，判定为已离线/掉线
+        const lastTime = Number(data.lastLocationTime || 0);
+        if (lastTime > 0 && (Date.now() - lastTime > 5 * 60 * 1000)) {
+          return;
+        }
+
+        // 7. 必须处于【空闲】状态（未在服务中/无正在进行中的行程与订单）
+        const isBusy = data.isBusy === true || data.isBusy === 'true' || Boolean(data.hasActiveOrder) || data.currentStatus === 'serving' || Boolean(data.currentTrip);
+        if (isBusy) return;
+
+        // 8. 必须拥有真实、有效的当前GPS经纬度坐标！
+        // 关键：绝对不能用银川默认坐标填充！缺失坐标视为无法计算距离并排除！
+        const dLat = Number(data.lat);
+        const dLng = Number(data.lng);
+        if (!isValidCoords(dLat, dLng)) {
+          return;
+        }
+
+        // 9. 计算与报单转单起点（或发单司机）之间的直线距离
+        const distKm = calculateHaversineDistanceKm(originLat, originLng, dLat, dLng);
+
+        // 10. 严格限制在直线距离 3.0 公里之内！
         if (distKm <= 3.0) {
+          const dName = (data.driverName && data.driverName !== '代驾司机' && data.driverName !== '在线代驾司机') 
+            ? data.driverName 
+            : (data.name && data.name !== '代驾司机' && data.name !== '在线代驾司机') 
+              ? data.name 
+              : `司机${targetPhone.slice(-4)}`;
+
           candidates.push({
-            phone,
-            name: data.driverName || '小队司机',
+            phone: targetPhone,
+            name: dName,
             lat: dLat,
             lng: dLng,
             distKm
@@ -185,6 +260,8 @@ export default function ReportTransferOrderModal({
         })()
       ) : '') || '';
 
+      let chosenDriver: any = null;
+
       if (candidates.length > 0) {
         // Find closest distance
         const minDist = Math.min(...candidates.map(c => c.distKm));
@@ -192,6 +269,7 @@ export default function ReportTransferOrderModal({
         const sameMinDistCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) < 0.001);
         // If multiple drivers have same distance, randomly select one
         const selectedDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
+        chosenDriver = selectedDriver;
 
         const calculatedDistText = selectedDriver.distKm < 0.05 ? '0米' : formatDistance(selectedDriver.distKm);
 
@@ -253,6 +331,7 @@ export default function ReportTransferOrderModal({
 
       } else {
         // No driver within 3km -> Enter Order Lobby (选单大厅)
+        const reporterPhoneNum = cleanUserPhone || (userPhone ? String(userPhone).replace(/\D/g, '').trim() : '');
         const hallOrderPayload = {
           id: orderId,
           orderId: orderId,
@@ -278,10 +357,12 @@ export default function ReportTransferOrderModal({
           approxPrice: '未知',
           scheduledTime: '现在出发',
           needScooter: false,
-          merchantPhone: userPhone || '',
-          reporterPhone: userPhone || '',
-          dispatchedByPhone: userPhone || '',
-          dispatchedBy: userPhone || '',
+          merchantPhone: reporterPhoneNum,
+          reporterPhone: reporterPhoneNum,
+          dispatchedByPhone: reporterPhoneNum,
+          dispatchedBy: reporterPhoneNum,
+          creatorPhone: reporterPhoneNum,
+          userPhone: reporterPhoneNum,
           paymentQrCode: myQrCode,
           merchantPaymentQrCode: myQrCode,
           merchantName: '报单转单'
@@ -294,22 +375,62 @@ export default function ReportTransferOrderModal({
           body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: hallOrderPayload })
         }).catch(() => {});
 
-        // Sync local storage and trigger event for Order Lobby
-        try {
-          const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-          saved.unshift(hallOrderPayload);
-          localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(saved));
-        } catch (_) {}
-
+        // Note: Do NOT add to current driver's own local dd_merchant_orders_v2, and do NOT announce voice on reporting driver's device!
+        // Other drivers listening to merchant_orders will receive this order in their 选单大厅 and hear the voice alert.
         window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
-        speakText('选单大厅有新订单了');
 
         setDispatchResultMsg({
           title: '订单已转入选单大厅',
-          desc: '方圆3公里内暂无在线空闲司机，报单转单已自动转入【选单大厅】，本小队内的司机均可进行抢单！',
+          desc: '附近直线距离3公里内暂无在线空闲司机，报单转单已自动转入【选单大厅】供其他司机抢单！此订单不会显示在您的选单大厅中。',
           isHall: true
         });
       }
+
+      // Record this 报单转单 in driver's order history so it counts toward 当月接单, 全部单数, 总成单量, 今日成单
+      try {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+
+        const driverOrderRecord = {
+          id: orderId,
+          orderId: orderId,
+          timeStr: `${year}-${month}-${day} ${hours}:${minutes}`,
+          fullTimeStr: `${year}-${month}-${day} ${hours}:${minutes}`,
+          timestamp: Date.now(),
+          amount: 0,
+          startLocation: currentPickup,
+          endLocation: chosenDriver ? `报单转单 (派给${chosenDriver.name})` : '报单转单 (选单大厅)',
+          destination: chosenDriver ? `报单转单 (派给${chosenDriver.name})` : '报单转单 (选单大厅)',
+          passengerPhone: cleanPhone,
+          distance: 0,
+          type: '报单转单',
+          orderType: '报单转单',
+          orderRemark: '报单转单',
+          status: '已转单',
+          isTransferIssuer: true,
+          isReporter: true,
+          dispatchedDriverName: chosenDriver ? chosenDriver.name : '',
+          dispatchedDriverPhone: chosenDriver ? chosenDriver.phone : '',
+          reporterPhone: userPhone || ''
+        };
+
+        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
+        const existingStr = localStorage.getItem(ordersKey);
+        let orders = existingStr ? JSON.parse(existingStr) : [];
+        if (!Array.isArray(orders)) orders = [];
+        orders.unshift(driverOrderRecord);
+        // 当全部单数到达9999时，自动归0，同时软件app自动删除订单中心容器里的所有订单信息
+        if (orders.length >= 9999) {
+          orders = [];
+        }
+        localStorage.setItem(ordersKey, JSON.stringify(orders));
+        localStorage.setItem('dd_driver_orders', JSON.stringify(orders));
+        window.dispatchEvent(new CustomEvent('driver_orders_updated'));
+      } catch (_) {}
 
       setIsSubmitting(false);
       setShowSuccessToast(true);

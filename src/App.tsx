@@ -458,9 +458,63 @@ export default function App() {
     }
   });
 
+/**
+ * Calculates the most recent 05:59:00 AM timestamp in the past.
+ * If current time is earlier than 05:59 AM today, the most recent cutoff was yesterday's 05:59 AM.
+ * If current time is 05:59 AM or later today, the most recent cutoff was today's 05:59 AM.
+ */
+const getMostRecent559AMCutoff = (now = new Date()): number => {
+  const cutoff = new Date(now);
+  cutoff.setHours(5, 59, 0, 0);
+  if (now.getTime() < cutoff.getTime()) {
+    cutoff.setDate(cutoff.getDate() - 1);
+  }
+  return cutoff.getTime();
+};
+
+/**
+ * Checks if the stored online session is still valid (started after the latest 05:59 AM cutoff).
+ */
+const checkIsOnlineSessionValid = (now = new Date()): boolean => {
+  if (typeof window === 'undefined') return false;
+  const isOnlineStr = localStorage.getItem('dd_is_online');
+  if (isOnlineStr !== 'true') return false;
+
+  const cutoff = getMostRecent559AMCutoff(now);
+  const sessionTimeStr = localStorage.getItem('dd_online_session_time');
+  const sessionTime = sessionTimeStr ? Number(sessionTimeStr) : 0;
+
+  if (sessionTime > 0) {
+    return sessionTime >= cutoff;
+  }
+
+  // If no session time recorded (e.g. from previous session or yesterday night):
+  // Check if current time is past today's 05:59 AM
+  const isPast559Today = (now.getHours() > 5 || (now.getHours() === 5 && now.getMinutes() >= 59));
+  if (isPast559Today) {
+    return false;
+  }
+
+  return false;
+};
+
   const [isOnline, setIsOnline] = useState<boolean>(() => {
-    const cached = localStorage.getItem('dd_is_online');
-    return cached === 'true';
+    if (typeof window === 'undefined') return false;
+    const valid = checkIsOnlineSessionValid();
+    if (!valid) {
+      try {
+        localStorage.setItem('dd_is_online', 'false');
+        localStorage.removeItem('dd_online_session_time');
+      } catch (_) {}
+      return false;
+    }
+    return true;
+  });
+
+  const [countdown559Sec, setCountdown559Sec] = useState<number | null>(null);
+  const [isPending559Offline, setIsPending559Offline] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('dd_pending_559_offline') === 'true';
   });
 
   const [currentView, setCurrentView] = useState<string>('home');
@@ -756,6 +810,7 @@ export default function App() {
         const isDriverBusy = !!currentTrip || !!activeOnlineOrder || currentView === 'create_order';
         const timestampIso = new Date().toISOString();
         const currentAppVersion = sysVersion || 'V2.0';
+        const currentTodayOrders = Number(stats?.todayOrders || 0);
         const payload = {
           phone: userPhone,
           driverName: (settings.driverName && settings.driverName !== '代驾司机' && settings.driverName !== '在线代驾司机') ? settings.driverName : '吴彦祖',
@@ -764,6 +819,7 @@ export default function App() {
           isOnline: true,
           onlineOrdersEnabled: true,
           isBusy: isDriverBusy,
+          todayOrders: currentTodayOrders,
           city: city,
           version: currentAppVersion,
           appVersion: currentAppVersion,
@@ -792,6 +848,7 @@ export default function App() {
               lng: longitude,
               isOnline: true,
               isBusy: isDriverBusy,
+              todayOrders: currentTodayOrders,
               timestamp: Date.now()
             })
           }).catch(() => {});
@@ -840,74 +897,218 @@ export default function App() {
     // Setup 20s recurring interval timer
     const timer20s = setInterval(report20sLocation, 20000);
     return () => clearInterval(timer20s);
-  }, [userPhone, isOnline, isSquadApprovedOrManagement, settings?.city, currentTrip]);
+  }, [userPhone, isOnline, isSquadApprovedOrManagement, settings?.city, currentTrip, stats?.todayOrders, currentView]);
+
+  // Helper to execute offline state transition and push to Mainland China Aliyun Baota backend
+  const executeDirectOffline = (reason: string) => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    try {
+      localStorage.setItem('dd_last_559am_offline_date', todayStr);
+      localStorage.setItem('dd_is_online', 'false');
+      localStorage.removeItem('dd_online_session_time');
+      localStorage.removeItem('dd_pending_559_offline');
+      localStorage.removeItem('dd_notified_559_active_trip');
+    } catch (_) {}
+    setIsPending559Offline(false);
+    setCountdown559Sec(null);
+    setIsOnline(false);
+
+    const targetPhone = userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : null);
+    if (targetPhone) {
+      const offlinePayload = {
+        isOnline: false,
+        onlineOrdersEnabled: false,
+        lastOfflineReason: reason,
+        lastUpdatedTime: new Date().toISOString()
+      };
+
+      const baseUrl = getBaseApiUrl();
+      // 100% Mainland China Aliyun Baota REST endpoints
+      fetch(`${baseUrl}/api/driver/offline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: targetPhone, reason })
+      }).catch(() => {});
+
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_users', docId: targetPhone, data: offlinePayload, merge: true })
+      }).catch(() => {});
+
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_members', docId: targetPhone, data: offlinePayload, merge: true })
+      }).catch(() => {});
+
+      fetch(`${baseUrl}/api/driver/location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: targetPhone,
+          isOnline: false,
+          timestamp: Date.now()
+        })
+      }).catch(() => {});
+    }
+
+    if (settings?.voiceBroadcast !== '静音播报') {
+      speakText('系统已自动下线，停止报单。');
+    }
+    triggerToast('⏰ 已到达每日凌晨5:59，系统已自动将您的状态切换为下线状态');
+  };
+
+  // 5-second countdown timer for auto-offline after order ends at 05:59
+  // 需求：如果有订单正在进行时，先让司机做单，订单结束后，恢复到软件app首页后等待5秒自动下线
+  useEffect(() => {
+    if (countdown559Sec === null) return;
+
+    if (countdown559Sec <= 0) {
+      // 5 seconds reached on home screen! Execute auto offline
+      executeDirectOffline('daily_559_after_order_5s');
+      triggerToast('⏰ 订单已结束，系统已等待5秒并自动为您切换为下线状态');
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setCountdown559Sec((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [countdown559Sec, userPhone, settings?.voiceBroadcast]);
 
   // Daily 5:59 AM automatic force offline mechanism for any online driver
   useEffect(() => {
     const checkDaily559AM = () => {
-      if (!isOnline || !userPhone) return;
+      if (!isOnline) return;
+
       const now = new Date();
-      const hours = now.getHours();
-      const minutes = now.getMinutes();
-      const todayStr = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-      const lastResetDate = localStorage.getItem('dd_last_559am_offline_date');
+      const cutoff = getMostRecent559AMCutoff(now);
+      const sessionTime = Number(localStorage.getItem('dd_online_session_time') || 0);
 
-      // Trigger if clock hits 05:59 AM while online
-      const is559AM = (hours === 5 && minutes >= 59);
+      // Trigger if online and session started before the latest 05:59 AM cutoff
+      const isExpired = isOnline && (!sessionTime || sessionTime < cutoff);
+      if (!isExpired) return;
 
-      if (is559AM && lastResetDate !== todayStr) {
-        localStorage.setItem('dd_last_559am_offline_date', todayStr);
-        setIsOnline(false);
-        const offlinePayload = {
-          isOnline: false,
-          onlineOrdersEnabled: false,
-          lastUpdatedTime: new Date().toISOString()
-        };
+      // Check if driver is currently in an active trip or online order
+      const hasActiveTripOrOrder = Boolean(
+        (currentTrip && currentTrip.currentStatus !== 'idle' && currentTrip.currentStatus !== 'completed') ||
+        activeOnlineOrder ||
+        (typeof window !== 'undefined' && (
+          localStorage.getItem('dd_current_trip') ||
+          localStorage.getItem('dd_current_order')
+        ))
+      );
 
-        try {
-          setDoc(doc(db, 'driver_users', userPhone), offlinePayload, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'squad_members', userPhone), offlinePayload, { merge: true }).catch(() => {});
-
-          // Realtime sync to Mainland China Aliyun / Baota server (/api/db/set)
-          const baseUrl = getBaseApiUrl();
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: offlinePayload })
-          }).catch(() => {});
-
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: offlinePayload })
-          }).catch(() => {});
-
-          fetch(`${baseUrl}/api/driver/location`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              phone: userPhone,
-              isOnline: false,
-              timestamp: Date.now()
-            })
-          }).catch(() => {});
-        } catch (_) {}
-
-        triggerToast('⏰ 已到达每日凌晨5:59，系统已自动将您的状态切换为下线状态');
+      if (hasActiveTripOrOrder) {
+        // 1. If an order is currently in progress: Let the driver finish the order first!
+        if (!isPending559Offline) {
+          setIsPending559Offline(true);
+          try {
+            localStorage.setItem('dd_pending_559_offline', 'true');
+          } catch (_) {}
+        }
+        if (!localStorage.getItem('dd_notified_559_active_trip')) {
+          localStorage.setItem('dd_notified_559_active_trip', 'true');
+          triggerToast('⏰ 提示：已到达每日凌晨05:59下线时间。您当前有进行中的订单，请专注做单，订单结束后返回首页将等待5秒自动下线。');
+        }
+        return;
       }
+
+      // 2. Driver has no active order.
+      const isDeferred = isPending559Offline || (typeof window !== 'undefined' && localStorage.getItem('dd_pending_559_offline') === 'true');
+
+      if (isDeferred) {
+        // Driver was deferred due to active order, and order has now ended!
+        // "恢复到软件app首页后等待5秒自动下线"
+        if (currentView === 'home') {
+          if (countdown559Sec === null) {
+            setCountdown559Sec(5);
+            if (settings?.voiceBroadcast !== '静音播报') {
+              speakText('订单已结束，因已过凌晨5点59分下线时间，软件将在5秒后自动下线。');
+            }
+          }
+        }
+        return;
+      }
+
+      // 3. Driver was idle (no active order) when 05:59 arrived:
+      // "每天凌晨05:59分所有上线的司机全部自动下线"
+      executeDirectOffline('daily_559_scheduled_idle');
     };
 
     checkDaily559AM();
-    const interval = setInterval(checkDaily559AM, 10000);
-    return () => clearInterval(interval);
-  }, [isOnline, userPhone]);
+    const interval = setInterval(checkDaily559AM, 3000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkDaily559AM();
+      }
+    };
+    const handleFocus = () => checkDaily559AM();
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [isOnline, userPhone, currentTrip, activeOnlineOrder, currentView, isPending559Offline, countdown559Sec, settings?.voiceBroadcast]);
+
+  // Sync offline status to Mainland China Aliyun Baota database on mount if session is not valid
+  useEffect(() => {
+    if (!checkIsOnlineSessionValid()) {
+      const hasActive = Boolean(
+        (currentTrip && currentTrip.currentStatus !== 'idle' && currentTrip.currentStatus !== 'completed') ||
+        activeOnlineOrder ||
+        (typeof window !== 'undefined' && (
+          localStorage.getItem('dd_current_trip') ||
+          localStorage.getItem('dd_current_order')
+        ))
+      );
+      if (!hasActive) {
+        executeDirectOffline('daily_559_expired_on_mount');
+      }
+    }
+  }, [userPhone]);
 
   const handleLogout = () => {
     if (userPhone) {
       clearDeviceSession(userPhone);
+      const offlinePayload = {
+        isOnline: false,
+        onlineOrdersEnabled: false,
+        isBusy: false,
+        lastOfflineReason: 'user_logout',
+        lastOfflineTime: new Date().toISOString()
+      };
+      if (db) {
+        setDoc(doc(db, 'driver_locations', userPhone), offlinePayload, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'driver_users', userPhone), offlinePayload, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'squad_members', userPhone), offlinePayload, { merge: true }).catch(() => {});
+      }
+      try {
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/driver/location`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: userPhone,
+            isOnline: false,
+            isBusy: false,
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      } catch (_) {}
     }
     // Clear all settings keys from localStorage
     try {
+      localStorage.setItem('dd_is_online', 'false');
+      localStorage.removeItem('dd_online_session_time');
       localStorage.removeItem('dd_user_phone');
       localStorage.removeItem('isAdminAuthenticated');
       localStorage.removeItem('dd_settings');
@@ -923,6 +1124,7 @@ export default function App() {
       }
     } catch (_) {}
 
+    setIsOnline(false);
     setIsAdminAuthenticated(false);
     setUserPhone(null);
     setSettings({
@@ -991,9 +1193,9 @@ export default function App() {
 
   // One-time automatic clean-up of legacy QR codes from user session/database to eliminate old center logos/text
   useEffect(() => {
-    const isCleaned = localStorage.getItem('dd_qr_clean_v3') === 'true';
+    const isCleaned = localStorage.getItem('dd_qr_clean_v4') === 'true';
     if (!isCleaned) {
-      localStorage.setItem('dd_qr_clean_v3', 'true');
+      localStorage.setItem('dd_qr_clean_v4', 'true');
       const cleanLegacyQrs = async () => {
         let updated = false;
         const newSettings = { ...settings };
@@ -1058,14 +1260,16 @@ export default function App() {
         } catch (_) {
           setSettings({
             ...DEFAULT_SETTINGS,
-            customAppName: 'XX代驾'
+            customAppName: userPhone === '15509601222' ? '滴滴代驾' : 'XX代驾',
+            vipExpiry: DEFAULT_SETTINGS.vipExpiry
           });
         }
       } else {
         setSettings(prev => ({
           ...DEFAULT_SETTINGS,
           ...prev,
-          customAppName: prev.customAppName || 'XX代驾'
+          customAppName: userPhone === '15509601222' ? '滴滴代驾' : (prev.customAppName || 'XX代驾'),
+          vipExpiry: prev.vipExpiry || DEFAULT_SETTINGS.vipExpiry
         }));
       }
     }
@@ -1106,10 +1310,18 @@ export default function App() {
             let nextSettings = { ...prev };
             let changed = false;
 
-            if (data.vipExpiry !== undefined && prev.vipExpiry !== data.vipExpiry) {
-              nextSettings.vipExpiry = data.vipExpiry;
+            const incomingVip = data.vipExpiry;
+            if (incomingVip !== undefined && prev.vipExpiry !== incomingVip) {
+              nextSettings.vipExpiry = incomingVip;
               changed = true;
             }
+
+            const incomingAppName = data.customAppName;
+            if (incomingAppName !== undefined && prev.customAppName !== incomingAppName) {
+              nextSettings.customAppName = incomingAppName;
+              changed = true;
+            }
+
             if (data.onlineOrdersEnabled !== undefined && prev.onlineOrdersEnabled !== data.onlineOrdersEnabled) {
               nextSettings.onlineOrdersEnabled = data.onlineOrdersEnabled;
               changed = true;
@@ -1120,10 +1332,6 @@ export default function App() {
             }
             if (data.isBanned !== undefined && prev.isBanned !== data.isBanned) {
               nextSettings.isBanned = data.isBanned;
-              changed = true;
-            }
-            if (data.customAppName !== undefined && prev.customAppName !== data.customAppName) {
-              nextSettings.customAppName = data.customAppName;
               changed = true;
             }
             if (data.billingTemplateName !== undefined && prev.billingTemplateName !== data.billingTemplateName) {
@@ -1154,9 +1362,38 @@ export default function App() {
               nextSettings.homepageColorway = data.homepageColorway;
               changed = true;
             }
-            if (data.deviationMitigation !== undefined && prev.deviationMitigation !== data.deviationMitigation) {
-              nextSettings.deviationMitigation = data.deviationMitigation;
-              changed = true;
+            const isVipNow = checkVipActive(nextSettings.vipExpiry || prev.vipExpiry);
+            const locallyTurnedOn = typeof window !== 'undefined' && userPhone
+              ? localStorage.getItem(`dd_deviation_mitigation_${userPhone}`) === 'true'
+              : false;
+
+            if (!isVipNow) {
+              // 会员到期，会员有效期为0和待激活自动关闭纠偏功能
+              if (nextSettings.deviationMitigation) {
+                nextSettings.deviationMitigation = false;
+                changed = true;
+              }
+              if (typeof window !== 'undefined' && userPhone) {
+                localStorage.setItem(`dd_deviation_mitigation_${userPhone}`, 'false');
+                localStorage.setItem('dd_deviation_mitigation', 'false');
+              }
+            } else {
+              // 只要打开了就不要自动关闭，除非司机自己手动关闭
+              const localFlag = typeof window !== 'undefined' && userPhone
+                ? (localStorage.getItem(`dd_deviation_mitigation_${userPhone}`) ?? localStorage.getItem('dd_deviation_mitigation'))
+                : null;
+
+              if (localFlag === 'true' || prev.deviationMitigation === true || data.deviationMitigation === true) {
+                if (!nextSettings.deviationMitigation) {
+                  nextSettings.deviationMitigation = true;
+                  changed = true;
+                }
+              } else if (localFlag === 'false' || data.deviationMitigation === false) {
+                if (nextSettings.deviationMitigation) {
+                  nextSettings.deviationMitigation = false;
+                  changed = true;
+                }
+              }
             }
             if (data.deviationKm !== undefined && prev.deviationKm !== data.deviationKm) {
               nextSettings.deviationKm = data.deviationKm;
@@ -1307,13 +1544,13 @@ export default function App() {
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: payload })
+        body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: payload, merge: true })
       }).catch(() => {});
 
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: payload })
+        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: payload, merge: true })
       }).catch(() => {});
     }
   }, [isOnline, userPhone]);
@@ -1356,7 +1593,7 @@ export default function App() {
         const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
 
         // Validate if order is already completed / cancelled / ended
-        const ended = await isOrderAlreadyEnded(data, userPhone);
+        const ended = data.isDirectClaim ? false : await isOrderAlreadyEnded(data, userPhone);
         if (ended) {
           clearPendingOrderCache();
           setIncomingOrder(null);
@@ -1450,7 +1687,12 @@ export default function App() {
       if (docSnap.exists()) {
         processIncomingData(docSnap.data());
       } else {
-        setIncomingOrder(null);
+        setIncomingOrder((prev: any) => {
+          if (prev && (prev.isDirectClaim || (Date.now() - (prev.timestamp || 0) < 30000))) {
+            return prev;
+          }
+          return null;
+        });
       }
     }, (err) => {
       console.warn('[Baota DB] passenger_links snapshot error:', err);
@@ -1564,6 +1806,9 @@ export default function App() {
     setMobileActiveTab('app');
     setCurrentView('create_order');
     setIncomingOrder(null);
+    try {
+      localStorage.removeItem('dd_active_incoming_order');
+    } catch (_) {}
     triggerToast('✓ 成功确认接单！已自动为您规划骑行前往接客起点的路线。');
     // Clear/delete the passenger link doc to finish the session
     deleteDoc(doc(db, 'passenger_links', userPhone)).catch(err => {
@@ -1583,7 +1828,11 @@ export default function App() {
         status: 'hall',
         in_hall: true,
         statusCategory: '呼叫中',
-        dispatchedDriverPhone: ''
+        dispatchedDriverPhone: '',
+        dispatchedDriverName: '',
+        claimedDriverPhone: '',
+        claimedDriverName: '',
+        driverName: ''
       };
 
       if (orderId) {
@@ -1617,9 +1866,38 @@ export default function App() {
         localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
       } catch (_) {}
 
+      try {
+        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
+        const savedDrv = JSON.parse(localStorage.getItem(ordersKey) || '[]');
+        if (Array.isArray(savedDrv)) {
+          let drvChanged = false;
+          const updatedDrv = savedDrv.map((o: any) => {
+            if (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) {
+              drvChanged = true;
+              return {
+                ...o,
+                endLocation: '报单转单 (选单大厅)',
+                destination: '报单转单 (选单大厅)',
+                dispatchedDriverName: '',
+                dispatchedDriverPhone: ''
+              };
+            }
+            return o;
+          });
+          if (drvChanged) {
+            localStorage.setItem(ordersKey, JSON.stringify(updatedDrv));
+            localStorage.setItem('dd_driver_orders', JSON.stringify(updatedDrv));
+            window.dispatchEvent(new CustomEvent('driver_orders_updated'));
+          }
+        }
+      } catch (_) {}
+
       window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
     }
     setIncomingOrder(null);
+    try {
+      localStorage.removeItem('dd_active_incoming_order');
+    } catch (_) {}
     triggerToast('已放弃接单，订单已重置回【选单大厅】。');
     // Clear/delete the passenger link doc to finish the session
     if (db && userPhone) {
@@ -1650,9 +1928,22 @@ export default function App() {
 
   // --- 2. Action Flow Responders ---
   const handleStartTrip = (trip: TripState) => {
-    setCurrentTrip(trip);
+    const mergedTrip: TripState = {
+      ...(activeOnlineOrder || {}),
+      ...trip,
+      paymentQrCode: (activeOnlineOrder as any)?.paymentQrCode || (activeOnlineOrder as any)?.merchantPaymentQrCode || (trip as any)?.paymentQrCode || '',
+      merchantPaymentQrCode: (activeOnlineOrder as any)?.merchantPaymentQrCode || (activeOnlineOrder as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || '',
+      orderChannel: (activeOnlineOrder as any)?.orderChannel || (trip as any)?.orderChannel || 'web',
+      dispatchChannel: (activeOnlineOrder as any)?.dispatchChannel || (trip as any)?.dispatchChannel || 'web',
+      sourceChannel: (activeOnlineOrder as any)?.sourceChannel || (trip as any)?.sourceChannel || 'web',
+      isStandaloneMerchantWeb: (activeOnlineOrder as any)?.isStandaloneMerchantWeb ?? (trip as any)?.isStandaloneMerchantWeb ?? true,
+      dispatchedByPhone: (activeOnlineOrder as any)?.dispatchedByPhone || (activeOnlineOrder as any)?.merchantPhone || (activeOnlineOrder as any)?.adminPhone || (trip as any)?.dispatchedByPhone || '',
+      merchantPhone: (activeOnlineOrder as any)?.merchantPhone || (activeOnlineOrder as any)?.dispatchedByPhone || (activeOnlineOrder as any)?.adminPhone || (trip as any)?.merchantPhone || '',
+      reporterPhone: (activeOnlineOrder as any)?.reporterPhone || (trip as any)?.reporterPhone || ''
+    };
+    setCurrentTrip(mergedTrip);
     try {
-      localStorage.setItem('dd_current_trip', JSON.stringify(trip));
+      localStorage.setItem('dd_current_trip', JSON.stringify(mergedTrip));
     } catch (_) {}
     if (incomingOrder) {
       const orderKey = incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || 0}`;
@@ -1717,7 +2008,14 @@ export default function App() {
         currentTrip?.orderType === '商户代叫' ||
         (currentTrip as any)?.orderRemark === '商户代叫' ||
         (currentTrip as any)?.isMerchantValetOrder ||
-        (currentTrip as any)?.isMerchantValet
+        (currentTrip as any)?.isMerchantValet ||
+        currentTrip?.orderType === '报单转单' ||
+        (currentTrip as any)?.orderRemark === '报单转单' ||
+        (currentTrip as any)?.type === '报单转单' ||
+        (currentTrip as any)?.isReportTransfer ||
+        (currentTrip as any)?.isReportTransferOrder ||
+        ((currentTrip as any)?.destination && String((currentTrip as any).destination).includes('报单转单')) ||
+        (currentTrip?.startLocation && String(currentTrip.startLocation).includes('报单转单'))
       );
 
       if (isMerchantValetOrder) {
@@ -1786,11 +2084,24 @@ export default function App() {
           finalStartLoc = '运祥小区';
         }
 
+        const orderStartMs = currentTrip.startTimestamp || Date.now();
+        const startDate = new Date(orderStartMs);
+        const startYear = startDate.getFullYear();
+        const startMonth = String(startDate.getMonth() + 1).padStart(2, '0');
+        const startDay = String(startDate.getDate()).padStart(2, '0');
+        const startHours = String(startDate.getHours()).padStart(2, '0');
+        const startMinutes = String(startDate.getMinutes()).padStart(2, '0');
+
         const newOrder = {
+          ...currentTrip,
           id: currentTrip.id || Date.now().toString(),
-          timeStr: `${year}-${month}-${day} ${hours}:${minutes}`,
-          fullTimeStr: `${year}-${month}-${day} ${hours}:${minutes}`,
-          timestamp: Date.now(),
+          timeStr: `${startYear}-${startMonth}-${startDay} ${startHours}:${startMinutes}`,
+          fullTimeStr: `${startYear}-${startMonth}-${startDay} ${startHours}:${startMinutes}`,
+          timestamp: orderStartMs,
+          startTimestamp: orderStartMs,
+          endTimestamp: Date.now(),
+          calculatedBaseFee: currentTrip.calculatedBaseFee,
+          startPrice: currentTrip.calculatedBaseFee,
           amount: amount,
           startLocation: finalStartLoc,
           endLocation: finalEndLoc,
@@ -1802,6 +2113,15 @@ export default function App() {
           extraBridgeFee: (currentTrip as any).extraBridgeFee ?? 0,
           extraParkingFee: (currentTrip as any).extraParkingFee ?? 0,
           extraOtherFee: (currentTrip as any).extraOtherFee ?? 0,
+          paymentQrCode: (currentTrip as any).paymentQrCode || (currentTrip as any).merchantPaymentQrCode || '',
+          merchantPaymentQrCode: (currentTrip as any).merchantPaymentQrCode || (currentTrip as any).paymentQrCode || '',
+          orderChannel: (currentTrip as any).orderChannel || (currentTrip as any).dispatchChannel || (currentTrip as any).sourceChannel || 'web',
+          dispatchChannel: (currentTrip as any).dispatchChannel || 'web',
+          sourceChannel: (currentTrip as any).sourceChannel || 'web',
+          isStandaloneMerchantWeb: (currentTrip as any).isStandaloneMerchantWeb ?? true,
+          dispatchedByPhone: (currentTrip as any).dispatchedByPhone || (currentTrip as any).merchantPhone || (currentTrip as any).adminPhone || (currentTrip as any).creatorPhone || '',
+          merchantPhone: (currentTrip as any).merchantPhone || (currentTrip as any).dispatchedByPhone || (currentTrip as any).adminPhone || '',
+          reporterPhone: (currentTrip as any).reporterPhone || '',
           type: (() => {
             const ot = currentTrip.orderType;
             const remark = (currentTrip as any).orderRemark;
@@ -1815,7 +2135,7 @@ export default function App() {
             );
             if (isReportTransfer) return '报单转单';
             if (ot === '商户代叫' || ot === '后台指派订单' || remark === '商户代叫') return '商户代叫';
-            if (ot === '二维码开单' || ot === '二维码报单' || ot === '乘客下单' || currentTrip.isOnlineOrder) return '二维码开单';
+            if (ot === '二维码开单' || ot === '二维码报单' || ot === '二维码创单' || ot === '乘客下单' || currentTrip.isOnlineOrder) return '二维码创单';
             return ot || '报单';
           })(),
           orderType: currentTrip.orderType || ((currentTrip as any).orderRemark === '报单转单' ? '报单转单' : undefined),
@@ -1823,19 +2143,46 @@ export default function App() {
           status: '已支付'
         };
         orders.unshift(newOrder);
+        // 当全部单数到达9999时，自动归0，同时软件app自动删除订单中心容器里的所有订单信息
+        if (orders.length >= 9999) {
+          orders = [];
+        }
         localStorage.setItem(ordersKey, JSON.stringify(orders));
+        localStorage.setItem('dd_driver_orders', JSON.stringify(orders));
 
         // Sync merchant order status to 'completed' / '已完成'
         const merchantOrderId = currentTrip.orderNumber || currentTrip.id;
         if (merchantOrderId) {
+          let myDriverName = (settings as any)?.driverName || (settings as any)?.name || '';
+          if (!myDriverName || myDriverName === '张三') {
+            try {
+              const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+              const me = savedSq.find((m: any) => String(m.phone || '').trim() === String(userPhone || '').trim());
+              if (me && me.name) myDriverName = me.name;
+            } catch (_) {}
+          }
+          if (!myDriverName) myDriverName = userPhone ? `司机${String(userPhone).slice(-4)}` : '司机';
+
+          const compPayload = {
+            status: 'completed',
+            statusCategory: '已完成',
+            completedAt: Date.now(),
+            dispatchedDriverPhone: userPhone || '',
+            dispatchedDriverName: myDriverName,
+            driverName: myDriverName,
+            completedByDriverName: myDriverName
+          };
+
           try {
             if (db) {
-              setDoc(doc(db, 'merchant_orders', merchantOrderId), {
-                status: 'completed',
-                statusCategory: '已完成',
-                completedAt: Date.now()
-              }, { merge: true }).catch(() => {});
+              setDoc(doc(db, 'merchant_orders', merchantOrderId), compPayload, { merge: true }).catch(() => {});
             }
+            const baseUrl = getBaseApiUrl();
+            fetch(`${baseUrl}/api/db/set`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: 'merchant_orders', docId: merchantOrderId, data: compPayload })
+            }).catch(() => {});
           } catch (_) {}
 
           try {
@@ -1844,9 +2191,7 @@ export default function App() {
               if (o.id === merchantOrderId || o.orderId === merchantOrderId || o.orderNo === merchantOrderId) {
                 return {
                   ...o,
-                  status: 'completed',
-                  statusCategory: '已完成',
-                  completedAt: Date.now()
+                  ...compPayload
                 };
               }
               return o;
@@ -1861,17 +2206,44 @@ export default function App() {
     }
 
     // Add up stats securely
-    const nextPoints = (stats.myPoints || 0) + 1;
+    // 当全部单数到达9999时，自动归0，同时软件app自动删除订单中心容器里的所有订单信息
+    const formatOrderCount9999 = (count: number): number => {
+      const n = Math.max(0, Number(count) || 0);
+      return n >= 9999 ? (n % 9999) : n;
+    };
+
+    const rawPoints = (stats.myPoints || 0) + 1;
+    const rawToday = (stats.todayOrders || 0) + 1;
     const updatedStats = {
-      todayOrders: stats.todayOrders + 1,
+      todayOrders: formatOrderCount9999(rawToday),
       todayIncome: Number((stats.todayIncome + amount).toFixed(2)),
-      myPoints: nextPoints,
+      myPoints: formatOrderCount9999(rawPoints),
       lastResetDate: stats.lastResetDate || getCurrent6AmDay()
     };
     clearPendingOrderCache();
     setStats(updatedStats);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('driver_orders_updated'));
+    }
     setCurrentTrip(null);
     setCurrentView('home');
+
+    // Check if 05:59 automatic daily offline was deferred due to active trip
+    const cutoff = getMostRecent559AMCutoff();
+    const sessionTime = Number(localStorage.getItem('dd_online_session_time') || 0);
+    const isPast559 = isOnline && (!sessionTime || sessionTime < cutoff);
+    const isDeferred = isPending559Offline || (typeof window !== 'undefined' && localStorage.getItem('dd_pending_559_offline') === 'true');
+
+    if (isPast559 || isDeferred) {
+      setIsPending559Offline(true);
+      try {
+        localStorage.setItem('dd_pending_559_offline', 'true');
+      } catch (_) {}
+      setCountdown559Sec(5);
+      if (settings?.voiceBroadcast !== '静音播报') {
+        speakText('订单已结束，因已过凌晨5点59分下线时间，软件将在5秒后自动下线。');
+      }
+    }
 
     const isVip = checkVipActive(settings.vipExpiry);
     if (!isVip && updatedStats.todayOrders >= 2) {
@@ -1909,12 +2281,21 @@ export default function App() {
     setIsOnline(online);
     localStorage.setItem('dd_is_online', online ? 'true' : 'false');
 
+    setIsPending559Offline(false);
+    setCountdown559Sec(null);
+    try {
+      localStorage.removeItem('dd_pending_559_offline');
+      localStorage.removeItem('dd_notified_559_active_trip');
+    } catch (_) {}
+
+    const now = Date.now();
     if (online) {
-      const now = new Date();
-      const todayStr = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
-      if (now.getHours() > 5 || (now.getHours() === 5 && now.getMinutes() >= 59)) {
-        localStorage.setItem('dd_last_559am_offline_date', todayStr);
-      }
+      localStorage.setItem('dd_online_session_time', String(now));
+      const nowDate = new Date(now);
+      const todayStr = `${nowDate.getFullYear()}-${nowDate.getMonth() + 1}-${nowDate.getDate()}`;
+      localStorage.setItem('dd_last_559am_offline_date', todayStr);
+    } else {
+      localStorage.removeItem('dd_online_session_time');
     }
 
     // Voice announcement for online / offline toggle on gesture
@@ -1946,20 +2327,32 @@ export default function App() {
       setDoc(doc(db, 'driver_locations', userPhone), onlinePayload, { merge: true }).catch(() => {});
 
       const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/set`, {
+      if (!online) {
+        fetch(`${baseUrl}/api/driver/offline`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: userPhone, reason: 'manual_toggle' })
+        }).catch(() => {});
+      }
+      fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: onlinePayload })
+        body: JSON.stringify({ phone: userPhone, isOnline: online, timestamp: Date.now() })
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload })
+        body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: onlinePayload, merge: true })
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'driver_locations', docId: userPhone, data: onlinePayload })
+        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload, merge: true })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_locations', docId: userPhone, data: onlinePayload, merge: true })
       }).catch(() => {});
     }
   };
@@ -1968,9 +2361,25 @@ export default function App() {
     setSettings(newSettings);
     if (userPhone) {
       localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(newSettings));
+      localStorage.setItem('dd_settings', JSON.stringify(newSettings));
+      if (newSettings.deviationMitigation !== undefined) {
+        localStorage.setItem(`dd_deviation_mitigation_${userPhone}`, newSettings.deviationMitigation ? 'true' : 'false');
+      }
+      
+      const baseUrl = getBaseApiUrl();
+
       if (newSettings.wechatQrCode) {
         localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, newSettings.wechatQrCode);
+        localStorage.setItem('dd_dispatch_wechat_qr', newSettings.wechatQrCode);
+        localStorage.setItem('dd_user_wechat_qr', newSettings.wechatQrCode);
+      } else {
+        localStorage.removeItem(`dd_dispatch_wechat_qr_${userPhone}`);
+        localStorage.removeItem(`dd_dispatch_fee_qr_${userPhone}`);
+        localStorage.removeItem('dd_dispatch_wechat_qr');
+        localStorage.removeItem('dd_user_wechat_qr');
+        localStorage.removeItem('dd_last_payment_qr');
       }
+
       if (isUserDataLoaded) {
         const userDocRef = doc(db, 'driver_users', userPhone);
         setDoc(userDocRef, {
@@ -2007,16 +2416,37 @@ export default function App() {
             updatedAt: Date.now()
           };
           setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).catch(() => {});
-          const baseUrl = getBaseApiUrl();
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'dispatch_qrs', docId: userPhone, data: qrPayload })
+            body: JSON.stringify({ collection: 'dispatch_qrs', docId: userPhone, data: qrPayload, merge: true })
           }).catch(() => {});
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: newSettings.wechatQrCode, qrCode: newSettings.wechatQrCode } })
+            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: newSettings.wechatQrCode, qrCode: newSettings.wechatQrCode }, merge: true })
+          }).catch(() => {});
+        } else {
+          // Explicitly delete from server collections and disk
+          fetch(`${baseUrl}/api/delete-wechat-qr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: userPhone })
+          }).catch(() => {});
+          fetch(`${baseUrl}/api/db/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ col: 'dispatch_qrs', id: userPhone })
+          }).catch(() => {});
+          fetch(`${baseUrl}/api/db/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ col: 'dispatch_qrcodes', id: userPhone })
+          }).catch(() => {});
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: '', qrCode: '' }, merge: true })
           }).catch(() => {});
         }
       }
@@ -2047,6 +2477,10 @@ export default function App() {
       if (settings.deviationMitigation) {
         updatedSettings.deviationMitigation = false;
         needsUpdate = true;
+      }
+      if (typeof window !== 'undefined' && userPhone) {
+        localStorage.setItem(`dd_deviation_mitigation_${userPhone}`, 'false');
+        localStorage.setItem('dd_deviation_mitigation', 'false');
       }
       if (needsUpdate) {
         handleUpdateSettings(updatedSettings);
@@ -2233,6 +2667,8 @@ export default function App() {
             onNavigateToBilling={() => setCurrentView('mileage')}
             onLogout={handleLogout}
             systemVersion={sysVersion}
+            userPhone={userPhone}
+            userRole={userRole}
           />
         );
 
@@ -2295,6 +2731,22 @@ export default function App() {
               }
               setActiveOnlineOrder(null);
               setCurrentView('home');
+
+              const cutoff = getMostRecent559AMCutoff();
+              const sessionTime = Number(localStorage.getItem('dd_online_session_time') || 0);
+              const isPast559 = isOnline && (!sessionTime || sessionTime < cutoff);
+              const isDeferred = isPending559Offline || (typeof window !== 'undefined' && localStorage.getItem('dd_pending_559_offline') === 'true');
+
+              if (isPast559 || isDeferred) {
+                setIsPending559Offline(true);
+                try {
+                  localStorage.setItem('dd_pending_559_offline', 'true');
+                } catch (_) {}
+                setCountdown559Sec(5);
+                if (settings?.voiceBroadcast !== '静音播报') {
+                  speakText('订单已结束，因已过凌晨5点59分下线时间，软件将在5秒后自动下线。');
+                }
+              }
             }}
             driverCoords={driverCoords}
           />
@@ -2421,6 +2873,22 @@ export default function App() {
       default:
         return (
           <>
+            {countdown559Sec !== null && countdown559Sec > 0 && (
+              <div id="countdown_559_banner" className="fixed top-12 left-3 right-3 z-[99999] bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 text-slate-950 font-bold px-4 py-3 rounded-2xl shadow-2xl flex items-center justify-between border-2 border-amber-300 animate-pulse">
+                <div className="flex items-center gap-2.5 text-sm">
+                  <span className="text-2xl animate-bounce">⏰</span>
+                  <div className="flex flex-col">
+                    <span className="text-[11px] text-amber-950 font-bold tracking-wide">每日05:59定时下线规则</span>
+                    <span className="text-sm font-black text-slate-950">
+                      订单已完成，将在 <span className="text-red-700 font-extrabold text-base bg-white/60 px-1.5 py-0.5 rounded-md mx-0.5">{countdown559Sec}</span> 秒后自动下线
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-slate-950 text-amber-400 text-xs px-2.5 py-1 rounded-full font-mono font-black">{countdown559Sec}s</span>
+                </div>
+              </div>
+            )}
             <HomeView
               settings={settings}
               stats={stats}
@@ -2438,14 +2906,15 @@ export default function App() {
               onLogout={handleLogout}
               driverCoords={driverCoords}
               xianyuUrl={sysXianyuUrl}
+              onClaimIncomingOrder={(orderPayload) => {
+                const rawTime = Number(orderPayload.timestamp || Date.now());
+                const orderKey = orderPayload.orderId || orderPayload.id || `${orderPayload.passengerPhone || 'p'}_${rawTime}`;
+                dismissedIncomingOrderKeysRef.current.delete(orderKey);
+                triggerBackgroundOrderAlert(orderPayload);
+                setIncomingOrder(orderPayload);
+              }}
               onOpenMerchantValetPayment={(trip) => {
-                const effectiveQr = trip?.paymentQrCode || trip?.merchantPaymentQrCode || trip?.qrCode || trip?.wechatQrCode || settings?.wechatQrCode || '';
-                const mergedTrip = {
-                  ...trip,
-                  paymentQrCode: effectiveQr,
-                  merchantPaymentQrCode: effectiveQr
-                };
-                setMerchantValetPaymentTrip(mergedTrip);
+                setMerchantValetPaymentTrip(trip);
               }}
             />
             {merchantValetPaymentTrip && (
