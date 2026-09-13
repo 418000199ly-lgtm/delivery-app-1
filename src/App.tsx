@@ -954,10 +954,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }).catch(() => {});
     }
 
-    if (settings?.voiceBroadcast !== '静音播报') {
-      speakText('系统已自动下线，停止报单。');
-    }
-    triggerToast('⏰ 已到达每日凌晨5:59，系统已自动将您的状态切换为下线状态');
+    // Daily 05:59 silent offline transition
   };
 
   // 5-second countdown timer for auto-offline after order ends at 05:59
@@ -966,9 +963,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (countdown559Sec === null) return;
 
     if (countdown559Sec <= 0) {
-      // 5 seconds reached on home screen! Execute auto offline
+      // 5 seconds reached on home screen! Execute auto offline silently
       executeDirectOffline('daily_559_after_order_5s');
-      triggerToast('⏰ 订单已结束，系统已等待5秒并自动为您切换为下线状态');
       return;
     }
 
@@ -1026,9 +1022,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (currentView === 'home') {
           if (countdown559Sec === null) {
             setCountdown559Sec(5);
-            if (settings?.voiceBroadcast !== '静音播报') {
-              speakText('订单已结束，因已过凌晨5点59分下线时间，软件将在5秒后自动下线。');
-            }
           }
         }
         return;

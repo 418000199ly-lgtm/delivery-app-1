@@ -336,7 +336,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     <div className="absolute inset-0 z-[999] bg-gray-50 flex flex-col justify-between overflow-hidden select-none w-full h-full">
       
       {/* HEADER SECTION */}
-      <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative pt-4 pb-14 sm:pt-5 sm:pb-16 shrink-0">
+      <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative pt-[calc(max(env(safe-area-inset-top,0px),24px)+12px)] pb-14 sm:pb-16 shrink-0 shadow-sm">
         <div className="w-full flex justify-between items-center mb-2 sm:mb-3">
           <span className="text-white/80 font-semibold text-xs tracking-wider">
             {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'
@@ -345,7 +345,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           </span>
           <button 
             onClick={onDecline}
-            className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/10 px-2.5 py-1 rounded-full transition-all"
+            className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/10 px-2.5 py-1 rounded-full transition-all cursor-pointer"
           >
             取消订单
           </button>
@@ -463,7 +463,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       </main>
 
       {/* STICKY FOOTER ACTIONS */}
-      <footer className="shrink-0 w-full pt-1.5 px-4 pb-3 sm:pb-4 bg-white border-t border-gray-100 flex flex-col items-center z-[1000] relative shadow-[0_-4px_16px_rgba(0,0,0,0.06)]">
+      <footer className="shrink-0 w-full pt-2 px-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),24px))] bg-white border-t border-gray-100 flex flex-col items-center z-[1000] relative shadow-[0_-4px_16px_rgba(0,0,0,0.06)] android-nav-safe-pb">
         {/* Countdown message */}
         <div className="w-full flex justify-center items-center py-1.5 text-center">
           <span className="text-xs sm:text-sm font-bold text-[#e61a1a] animate-pulse">

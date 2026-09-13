@@ -12,6 +12,13 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>黑湾代驾 MAX</title>
+    <!-- Gaode AMap JS API v2.0 Pre-configuration (Must precede AMap scripts) -->
+    <script type="text/javascript">
+      window._AMapSecurityConfig = {
+        securityJsCode: '0aa3912e6a88fe59f9e5f0275524feba'
+      };
+    </script>
+    <script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=4143e567d55bbc1855231f9637efd6b0&plugin=AMap.Geocoder,AMap.Geolocation,AMap.Driving,AMap.AutoComplete,AMap.PlaceSearch,AMap.CitySearch,AMap.GeometryUtil"></script>
     <script>
       // Android System Font Size & Display Zoom Immunity Engine (Neutralizes system font/display scaling)
       (function() {

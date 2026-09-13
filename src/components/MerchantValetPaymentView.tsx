@@ -342,7 +342,7 @@ export default function MerchantValetPaymentView({
   return (
     <div className="w-full h-full bg-[#f9f9f9] text-[#1a1c1c] select-none font-sans flex flex-col justify-between overflow-hidden relative z-50">
       {/* TopAppBar */}
-      <header className="sticky top-0 left-0 w-full z-50 flex items-center px-4 h-14 bg-white border-b border-[#dfc0af]/40 backdrop-blur-md shrink-0 shadow-xs header-safe-pt-sm">
+      <header className="sticky top-0 left-0 w-full z-50 flex items-center px-4 pt-[calc(max(env(safe-area-inset-top,0px),22px)+10px)] pb-3.5 bg-white border-b border-[#dfc0af]/40 backdrop-blur-md shrink-0 shadow-xs">
         <button 
           type="button"
           onClick={onNavigateBack}
@@ -352,7 +352,7 @@ export default function MerchantValetPaymentView({
           <ArrowLeft className="w-6 h-6" />
         </button>
         <h1 className="flex-grow text-center font-bold text-lg text-[#984800] tracking-wide">
-          {isReportTransfer ? '报单转单代叫费收款' : '商户代叫费收款'}
+          {isReportTransfer ? '报单转单代叫费收款' : '商户代叫代驾费收款'}
         </h1>
         <div className="w-10"></div> {/* Spacer for centering */}
       </header>

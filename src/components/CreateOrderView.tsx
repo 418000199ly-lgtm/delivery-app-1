@@ -908,9 +908,17 @@ export default function CreateOrderView({
 
     const scriptId = 'amap-js-api-v2';
 
+    let initAttempts = 0;
     const initializeMap = () => {
       const AMap = (window as any).AMap;
-      if (!AMap || !mapContainerRef.current) return;
+      if (!AMap || !mapContainerRef.current) {
+        if (initAttempts < 30) {
+          initAttempts++;
+          setTimeout(initializeMap, 100);
+        }
+        return;
+      }
+      if (mapInstanceRef.current) return;
 
       try {
         const cachedLat = localStorage.getItem('dd_bg_driver_coords_lat');

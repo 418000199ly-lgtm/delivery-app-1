@@ -250,8 +250,8 @@ export default function ActiveTripView({
   const handlePositionUpdateRef = useRef<(lng: number, lat: number, accuracy: number, speed: number | null) => void>(() => {});
 
   const handlePositionUpdate = (lng: number, lat: number, accuracy: number, speed: number | null = null) => {
-    // 1. Filter out extreme cell tower leaps (> 80m)
-    if (accuracy > 80) {
+    // 1. Filter out completely invalid or extreme cell tower / geo-IP anomalies (> 400m)
+    if (accuracy > 400) {
       console.log(`⚠️ [GPS Tracker] Coarse position filtered out due to accuracy: ${accuracy}m`);
       return;
     }
@@ -284,9 +284,8 @@ export default function ActiveTripView({
 
     const calculatedSpeed = distanceInMeters / dt; // m/s
 
-    // 2. Stationary / Parking check: update anchor timestamp & position when stationary or crawling (< 8m movement over short time)
-    // to keep anchor point fresh without accumulating fake stationary drift
-    if (distanceInMeters < 8 && (speed !== null && speed < 0.5)) {
+    // 2. Stationary jitter filter: if movement is tiny (< 3.0m) and speed is very low, simply refresh anchor without accumulating fake jitter
+    if (distanceInMeters < 3.0 && (speed !== null ? speed < 0.3 : calculatedSpeed < 0.3)) {
       lastCoordsRef.current = { lng, lat, timestamp: now };
       return;
     }
@@ -298,7 +297,7 @@ export default function ActiveTripView({
       return;
     }
 
-    // 4. Accumulate real vehicular movement distance in kilometers continuously (works across multiple stops and destinations A -> B)
+    // 4. Accumulate real vehicular movement distance in kilometers continuously
     const addedKm = distanceInMeters / 1000;
     preciseDistanceRef.current += addedKm;
 
@@ -427,9 +426,47 @@ export default function ActiveTripView({
       window.addEventListener('pageshow', handleAppResumeSync);
       window.addEventListener('focus', handleAppResumeSync);
 
+      // Also integrate AMap Geolocation high precision background watcher
+      let amapGeoWatchId: any = null;
+      const AMap = (window as any).AMap;
+      if (AMap && AMap.plugin) {
+        try {
+          AMap.plugin('AMap.Geolocation', () => {
+            try {
+              const geolocation = new AMap.Geolocation({
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0,
+                convert: true,
+                showButton: false,
+                showMarker: false,
+                showCircle: false,
+                panToLocation: false,
+                zoomToAccuracy: false
+              });
+              amapGeoWatchId = geolocation.watchPosition((status: string, result: any) => {
+                if (status === 'complete' && result && result.position) {
+                  const lng = result.position.lng;
+                  const lat = result.position.lat;
+                  const accuracy = result.accuracy || 10;
+                  handlePositionUpdateRef.current(lng, lat, accuracy, null);
+                }
+              });
+            } catch (e) {
+              console.warn('[ActiveTripView] AMap Geolocation watchPosition init error:', e);
+            }
+          });
+        } catch (e) {}
+      }
+
       return () => {
         if (watchId !== null) navigator.geolocation.clearWatch(watchId);
         if (pollInterval) clearInterval(pollInterval);
+        if (amapGeoWatchId && (window as any).AMap && typeof (window as any).AMap.Geolocation?.clearWatch === 'function') {
+          try {
+            (window as any).AMap.Geolocation.clearWatch(amapGeoWatchId);
+          } catch (_) {}
+        }
         document.removeEventListener('visibilitychange', handleAppResumeSync);
         window.removeEventListener('pageshow', handleAppResumeSync);
         window.removeEventListener('focus', handleAppResumeSync);

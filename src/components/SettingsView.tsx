@@ -967,7 +967,7 @@ export default function SettingsView({
 
           {!isPhotoAlbumOpen ? (
             /* SUB-VIEW 1: MY QR CODE OVERVIEW (Image 2 & 4 style) */
-            <div className="flex-1 flex flex-col justify-between p-5 overflow-y-auto select-none">
+            <div className="flex-1 flex flex-col justify-between p-5 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),24px))] overflow-y-auto select-none android-nav-safe-pb">
               
               {/* Inner container to center everything beautifully */}
               <div className="flex-1 flex flex-col items-center justify-center py-4">
@@ -1089,12 +1089,14 @@ export default function SettingsView({
               </div>
 
               {/* Back Button to close everything at the bottom */}
-              <button 
-                onClick={() => setActiveModal('none')}
-                className="w-full bg-[#273046] hover:bg-[#1a2130] text-white text-sm font-semibold py-3.5 rounded-2xl shadow-md active:scale-98 transition-all shrink-0 font-sans text-center"
-              >
-                保存设置并返回
-              </button>
+              <div className="pt-2 shrink-0">
+                <button 
+                  onClick={() => setActiveModal('none')}
+                  className="w-full bg-[#273046] hover:bg-[#1a2130] active:bg-[#151b27] text-white text-sm font-semibold py-3.5 rounded-2xl shadow-md active:scale-98 transition-all shrink-0 font-sans text-center"
+                >
+                  保存设置并返回
+                </button>
+              </div>
 
               {/* SLIDE-UP WECHAT ACTION SHEET (Bottom Sheet styled matching Image 2) */}
               {isBottomSheetOpen && (

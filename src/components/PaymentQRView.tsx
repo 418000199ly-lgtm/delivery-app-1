@@ -230,45 +230,45 @@ export default function PaymentQRView({
             </div>
 
             {isWechat ? (
-              <div className="flex flex-col items-center w-full mt-0.5">
-                <div className="flex items-center gap-1.5 mb-1.5" data-purpose="active-payment-method">
-                  <svg fill="none" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg">
+              <div className="flex flex-col items-center w-full mt-1">
+                <div className="flex items-center gap-1.5 mb-2" data-purpose="active-payment-method">
+                  <svg fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg">
                     <path d="M12 2C6.477 2 2 6.015 2 10.97c0 2.81 1.442 5.315 3.69 6.963l-.46 1.72a.5.5 0 0 0 .668.59l2.12-.96c1.233.454 2.585.717 3.982.717 5.523 0 10-4.015 10-10.97C22 6.015 17.523 2 12 2z" fill="#07C160"></path>
                     <path d="M7.5 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0z" fill="white"></path>
                   </svg>
-                  <span className="text-gray-800 text-xs sm:text-sm font-bold">微信支付</span>
+                  <span className="text-gray-800 text-sm font-bold">微信支付</span>
                 </div>
                 <button 
                   type="button"
                   onClick={() => setIsWechat(false)}
-                  className="flex items-center gap-1.5 px-5 py-1.5 border border-[#00A591] text-[#00A591] rounded-xl text-xs font-semibold active:bg-[#F0FBFA] hover:bg-[#F0FBFA]/50 transition-colors cursor-pointer" 
+                  className="flex items-center gap-2 px-6 py-2 border-2 border-[#00A591] text-[#00A591] rounded-2xl text-sm font-bold active:bg-[#F0FBFA] hover:bg-[#F0FBFA]/70 shadow-xs transition-all cursor-pointer select-none active:scale-98" 
                   data-purpose="switch-payment-action"
                 >
-                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2"></path>
                   </svg>
-                  切换支付宝收款
+                  <span>切换支付宝收款</span>
                 </button>
               </div>
             ) : (
-              <div className="flex flex-col items-center w-full mt-0.5">
-                <div className="flex items-center gap-1.5 mb-1.5" data-purpose="active-payment-method">
-                  <svg fill="none" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg">
+              <div className="flex flex-col items-center w-full mt-1">
+                <div className="flex items-center gap-1.5 mb-2" data-purpose="active-payment-method">
+                  <svg fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg">
                     <rect width="24" height="24" rx="12" fill="#108EE9"/>
                     <text x="12" y="16.5" fill="white" fontSize="14" fontWeight="bold" textAnchor="middle" fontFamily="system-ui, -apple-system, sans-serif">支</text>
                   </svg>
-                  <span className="text-gray-800 text-xs sm:text-sm font-bold">支付宝支付</span>
+                  <span className="text-gray-800 text-sm font-bold">支付宝支付</span>
                 </div>
                 <button 
                   type="button"
                   onClick={() => setIsWechat(true)}
-                  className="flex items-center gap-1.5 px-5 py-1.5 border border-[#108EE9] text-[#108EE9] rounded-xl text-xs font-semibold active:bg-[#F0F7FB] hover:bg-[#F0F7FB]/50 transition-colors cursor-pointer" 
+                  className="flex items-center gap-2 px-6 py-2 border-2 border-[#108EE9] text-[#108EE9] rounded-2xl text-sm font-bold active:bg-[#F0F7FB] hover:bg-[#F0F7FB]/70 shadow-xs transition-all cursor-pointer select-none active:scale-98" 
                   data-purpose="switch-payment-action"
                 >
-                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2"></path>
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2"></path>
                   </svg>
-                  切换微信收款
+                  <span>切换微信收款</span>
                 </button>
               </div>
             )}
