@@ -2430,7 +2430,7 @@ export default function MobileDispatchValetOrder({
             applyFallback();
           }
         },
-        { enableHighAccuracy: true, timeout: 3500, maximumAge: 300000 }
+        { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
       );
     } else {
       setIsLocatingGPS(false);
@@ -3560,7 +3560,10 @@ export default function MobileDispatchValetOrder({
       />
 
       {/* TopAppBar */}
-      <header className="sticky top-0 w-full z-40 bg-[#f9f9f9] border-b border-[#e2e2e2] flex items-center justify-between px-3 sm:px-5 h-14 shadow-sm shrink-0 relative">
+      <header 
+        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 36px)' }}
+        className="sticky top-0 w-full z-40 bg-[#f9f9f9] border-b border-[#e2e2e2] flex items-center justify-between px-3 sm:px-5 pb-3 shadow-sm shrink-0 relative"
+      >
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
@@ -4931,7 +4934,10 @@ export default function MobileDispatchValetOrder({
       {selectedOrderDetail && (
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
           {/* TopAppBar */}
-          <header className="bg-[#f9f9f9] sticky top-0 z-50 border-b border-[#e2e2e2] flex items-center justify-between px-5 h-14 shrink-0">
+          <header 
+            style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 32px)' }}
+            className="bg-[#f9f9f9] sticky top-0 z-50 border-b border-[#e2e2e2] flex items-center justify-between px-5 pb-3 shrink-0"
+          >
             <div className="flex items-center gap-3">
               <button 
                 type="button"

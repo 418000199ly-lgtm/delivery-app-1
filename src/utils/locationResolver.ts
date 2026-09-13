@@ -236,22 +236,25 @@ export async function autoUpdateOrderDestinationIfUnset(
   const currentDest = trip.endLocation || (trip as any).destination || (trip as any).dropoffName || '';
   let resolvedName = '';
 
-  // If trip distance is small (<= 0.3km) or ended in-place, and startLocation is valid, default destination to startLocation
-  if (trip.startLocation && !isUnsetDestination(trip.startLocation) && (trip.currentDistance <= 0.3 || isUnsetDestination(currentDest) || currentDest.includes('宁夏博物馆'))) {
-    resolvedName = trip.startLocation.includes('宁夏博物馆') ? '运祥小区' : trip.startLocation;
-  } else if (!isUnsetDestination(currentDest) && !currentDest.includes('宁夏博物馆')) {
-    // Driver already specified a valid destination, return untouched
+  // 1. If destination is already a valid specific location, keep it untouched
+  if (!isUnsetDestination(currentDest) && !currentDest.includes('宁夏博物馆')) {
     return trip;
+  }
+
+  // 2. If destination was unset / negotiated / Ningxia Museum artifact:
+  // Check if trip actually travelled (> 0.05 km) or if we can get real-time GPS location
+  const gpsResult = await resolveCurrentGpsLocationName();
+  if (gpsResult && gpsResult.name && !gpsResult.name.includes('宁夏博物馆') && !isUnsetDestination(gpsResult.name)) {
+    resolvedName = gpsResult.name;
+  } else if ((trip as any).driverCurrentLocationName && !isUnsetDestination((trip as any).driverCurrentLocationName) && !(trip as any).driverCurrentLocationName.includes('宁夏博物馆')) {
+    resolvedName = (trip as any).driverCurrentLocationName;
+  } else if (trip.currentDistance <= 0.05 && trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
+    // Only if trip did not actually move (<= 50 meters), default to start location
+    resolvedName = trip.startLocation;
+  } else if (trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
+    resolvedName = trip.startLocation;
   } else {
-    // Destination was unset or Ningxia Museum artifact! Auto fetch current GPS location and geocode landmark name
-    const gpsResult = await resolveCurrentGpsLocationName();
-    if (gpsResult && gpsResult.name && !gpsResult.name.includes('宁夏博物馆')) {
-      resolvedName = gpsResult.name;
-    } else if (trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
-      resolvedName = trip.startLocation;
-    } else {
-      resolvedName = '运祥小区';
-    }
+    resolvedName = '运祥小区';
   }
 
   // Build updated trip

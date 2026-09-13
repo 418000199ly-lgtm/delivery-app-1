@@ -45,6 +45,14 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.5120, lng: 106.2180 } // 悦海新天地 ~ 3.3km
   },
   {
+    keywords: ['德隆楼', '德隆楼德鼎逸品', '德鼎逸品', '北京中路德隆楼', '森林公园'],
+    coords: { lat: 38.4965, lng: 106.2110 } // 金凤区北京中路德隆楼德鼎逸品
+  },
+  {
+    keywords: ['西桥巷', '西桥巷粉条大盘鸡', '凤凰北街', '凤凰北街西桥巷'],
+    coords: { lat: 38.4875, lng: 106.2620 } // 兴庆区凤凰北街/西桥巷
+  },
+  {
     keywords: ['铂金大厦', '北京东路', '玉皇阁北街', '长相忆宾馆'],
     coords: { lat: 38.4825, lng: 106.2315 } // ~ 0.5km
   },

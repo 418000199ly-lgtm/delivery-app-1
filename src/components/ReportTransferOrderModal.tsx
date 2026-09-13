@@ -168,8 +168,13 @@ export default function ReportTransferOrderModal({
       const candidates: Array<{ phone: string; name: string; lat: number; lng: number; distKm: number }> = [];
 
       const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
-      const originLat = isValidCoords(pLat, pLng) ? pLat : reporterLat;
-      const originLng = isValidCoords(pLat, pLng) ? pLng : reporterLng;
+      // 报单转单测距起点：严格以当前转单司机的实时GPS经纬度为起点！
+      const originLat = isValidCoords(reporterLat, reporterLng) 
+        ? reporterLat 
+        : (isValidCoords(pLat, pLng) ? pLat : DEFAULT_YINCHUAN_COORDS.lat);
+      const originLng = isValidCoords(reporterLat, reporterLng) 
+        ? reporterLng 
+        : (isValidCoords(pLat, pLng) ? pLng : DEFAULT_YINCHUAN_COORDS.lng);
 
       driverMap.forEach((data, rawPhone) => {
         if (!data || data.isBanned) return;
@@ -451,12 +456,15 @@ export default function ReportTransferOrderModal({
   return (
     <div className="absolute inset-0 z-[100] bg-[#f9f9f9] text-[#1a1c1c] flex flex-col font-sans select-none overflow-hidden animate-in fade-in duration-200">
       
-      {/* TopAppBar - Fixed Height Header */}
-      <header className="sticky top-0 z-10 bg-white flex items-center justify-between px-4 h-12 border-b border-[#e2e2e2] shrink-0 shadow-2xs">
+      {/* TopAppBar - Fixed Height Header with Safe Area for Android/iOS */}
+      <header 
+        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 36px)' }}
+        className="sticky top-0 z-10 bg-white flex items-center justify-between px-4 pb-3 border-b border-[#e2e2e2] shrink-0 shadow-2xs"
+      >
         <button 
           type="button"
           onClick={onClose}
-          className="text-[#584235] hover:bg-[#e2e2e2] p-1.5 rounded-full flex items-center justify-center transition-colors cursor-pointer"
+          className="text-[#584235] hover:bg-[#e2e2e2] p-1.5 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95"
           title="返回"
         >
           <ArrowLeft className="w-5 h-5 text-gray-800" />

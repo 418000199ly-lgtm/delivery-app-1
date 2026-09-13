@@ -375,9 +375,9 @@ export default function MerchantValetPaymentView({
                 代叫订单收款金额
               </div>
 
-              <div className="mb-3 flex items-baseline justify-center">
+              <div className="mb-3 flex items-baseline justify-center" data-purpose="price-display">
                 <span className="text-xl font-bold text-[#1a1c1c] mr-1">¥</span>
-                <span className="text-3xl sm:text-4xl font-black text-[#1a1c1c] tracking-tight font-mono">
+                <span className="text-3xl sm:text-4xl font-black text-[#1a1c1c] tracking-tight font-sans [font-variant-numeric:normal] [font-feature-settings:'zero'_0]">
                   {((trip as any)?.dispatchFee || (trip as any)?.valetFee || 12).toFixed(2)}
                 </span>
               </div>

@@ -18,7 +18,8 @@ import PassengerOrderView from './components/PassengerOrderView';
 import WeChatAuthMobile from './components/WeChatAuthMobile';
 import WeChatMiniSimulator from './components/WeChatMiniSimulator';
 import AlipayMiniSimulator from './components/AlipayMiniSimulator';
-import { isUnsetDestination, autoUpdateOrderDestinationIfUnset } from './utils/locationResolver';
+import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName } from './utils/locationResolver';
+import { calculateOrderTripCost } from './utils/billingUtils';
 
 import { 
   ChauffeurSettings, 
@@ -1559,6 +1560,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   // Active VIP Limit & State Reset Listener moved after handleUpdateSettings to avoid TDZ issues.
 
   const dismissedIncomingOrderKeysRef = useRef<Set<string>>(new Set());
+  const lastAlertedOrderKeyRef = useRef<string>('');
+  const lastAlertedOrderTimeRef = useRef<number>(0);
 
   // Initialize native background notification system and register app resume listeners
   useEffect(() => {
@@ -1656,8 +1659,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             data.type === '后台指派订单'
           );
           if (isValet) {
-            // Trigger high-priority system alert for background / lockscreen
-            triggerBackgroundOrderAlert(data);
+            // Trigger high-priority system alert for background / lockscreen (deduplicated)
+            const now = Date.now();
+            if (lastAlertedOrderKeyRef.current !== orderKey || now - lastAlertedOrderTimeRef.current > 15000) {
+              lastAlertedOrderKeyRef.current = orderKey;
+              lastAlertedOrderTimeRef.current = now;
+              triggerBackgroundOrderAlert(data);
+            }
             setIncomingOrder(data);
           } else {
             dismissedIncomingOrderKeysRef.current.add(orderKey);
@@ -1674,7 +1682,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
     };
 
-    // 1. Primary Baota DB Proxy realtime listener
+    // 1. Primary Baota DB Proxy realtime listener (handles low-latency updates via dbProxy)
     const docRef = doc(db, 'passenger_links', cleanPhone);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -1691,61 +1699,52 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       console.warn('[Baota DB] passenger_links snapshot error:', err);
     });
 
-    // 2. High-availability HTTP polling directly to Baota/MySQL deployment (/api/db/get)
-    const pollInterval = setInterval(async () => {
-      try {
-        const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/db/get?collection=passenger_links&docId=${cleanPhone}`);
-        if (res.ok) {
-          const json = await res.json();
-          if (json && json.data) {
-            processIncomingData(json.data);
-          }
-        }
-      } catch (e) {
-        // Silent catch for network jitter
-      }
-    }, 2000);
-
     return () => {
       unsubscribe();
-      clearInterval(pollInterval);
     };
   }, [userPhone, currentView, isOnline]);
 
   // Listen for real-time cancellation of driver's active online order
   useEffect(() => {
     if (!activeOnlineOrder) return;
-    const activeOrderId = activeOnlineOrder.id || activeOnlineOrder.orderId || activeOnlineOrder.orderNo;
+    const activeOrderId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || activeOnlineOrder.orderNo || '').trim();
     if (!activeOrderId) return;
+
+    const acceptedAt = Number(activeOnlineOrder.acceptedAt || activeOnlineOrder.claimedAt || activeOnlineOrder.timestamp || Date.now());
 
     let isTriggered = false;
     const handleOrderCancelled = () => {
       if (isTriggered) return;
+      // Protect newly accepted orders within 8 seconds from false cache cancellation
+      if (Date.now() - acceptedAt < 8000) {
+        return;
+      }
       isTriggered = true;
       setActiveOnlineOrder(null);
       setCurrentView('home');
       triggerToast('⚠️ 该订单已取消');
     };
 
-    // 1. Realtime Firestore listener on merchant_orders
+    // 1. Realtime listener on merchant_orders via Baota DB Proxy
     const unsubscribe = onSnapshot(doc(db, 'merchant_orders', activeOrderId), (docSnap) => {
-      if (docSnap.exists() && (docSnap.data()?.status === 'cancelled' || docSnap.data()?.statusCategory === '已取消')) {
-        handleOrderCancelled();
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data?.status === 'cancelled' || data?.statusCategory === '已取消') {
+          handleOrderCancelled();
+        }
       }
     }, (err) => {
       console.warn("Error listening to active order status:", err);
     });
 
-    // 2. Fallback check for local storage / HTTP API sync
+    // 2. Fallback check for local storage / HTTP API sync (STRICT ORDER ID MATCHING ONLY - NEVER match by passengerPhone)
     const checkCancellationLocal = async () => {
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
         const match = saved.find((o: any) => 
-          o.id === activeOrderId || 
-          o.orderId === activeOrderId || 
-          (o.orderNo && activeOnlineOrder?.orderNo && o.orderNo === activeOnlineOrder?.orderNo) ||
-          (o.passengerPhone && activeOnlineOrder?.passengerPhone && o.passengerPhone === activeOnlineOrder?.passengerPhone)
+          (o.id && String(o.id).trim() === activeOrderId) || 
+          (o.orderId && String(o.orderId).trim() === activeOrderId) || 
+          (o.orderNo && activeOnlineOrder?.orderNo && String(o.orderNo).trim() === String(activeOnlineOrder.orderNo).trim())
         );
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           handleOrderCancelled();
@@ -1765,7 +1764,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (e) {}
     };
 
-    const pollInterval = setInterval(checkCancellationLocal, 1500);
+    const pollInterval = setInterval(checkCancellationLocal, 2500);
     window.addEventListener('merchant_orders_updated', checkCancellationLocal);
 
     return () => {
@@ -1979,8 +1978,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     speakText('已到达目的地，行程结束');
 
     let finalEndLocation = currentTrip.endLocation;
-    if ((currentTrip.currentDistance <= 0.3 || isUnsetDestination(finalEndLocation) || (finalEndLocation && finalEndLocation.includes('宁夏博物馆'))) && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
-      finalEndLocation = currentTrip.startLocation.includes('宁夏博物馆') ? '运祥小区' : currentTrip.startLocation;
+    if (isUnsetDestination(finalEndLocation) || (finalEndLocation && finalEndLocation.includes('宁夏博物馆'))) {
+      if ((currentTrip as any).driverCurrentLocationName && !isUnsetDestination((currentTrip as any).driverCurrentLocationName)) {
+        finalEndLocation = (currentTrip as any).driverCurrentLocationName;
+      } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+        finalEndLocation = currentTrip.startLocation;
+      } else if (currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+        finalEndLocation = currentTrip.startLocation;
+      } else {
+        finalEndLocation = '运祥小区';
+      }
     }
     if (!finalEndLocation || finalEndLocation.includes('宁夏博物馆')) {
       finalEndLocation = '运祥小区';
@@ -1999,6 +2006,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       safeSetItem('dd_current_trip', JSON.stringify(endedTrip));
     } catch (_) {}
     setCurrentView('cost');
+
+    // Async trigger high precision geocoding to resolve exact end landmark if needed
+    if (isUnsetDestination(finalEndLocation) || finalEndLocation === currentTrip.startLocation) {
+      resolveCurrentGpsLocationName().then(res => {
+        if (res && res.name && !res.name.includes('宁夏博物馆') && !isUnsetDestination(res.name)) {
+          setCurrentTrip(prev => prev ? {
+            ...prev,
+            endLocation: res.name,
+            destination: res.name,
+            dropoffName: res.name
+          } : prev);
+        }
+      }).catch(() => {});
+    }
   };
 
   const handleGoToCollection = (finalizedTrip: TripState) => {
@@ -2094,10 +2115,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const hours = String(now.getHours()).padStart(2, '0');
         const minutes = String(now.getMinutes()).padStart(2, '0');
         
-        let finalEndLoc = ((!currentTrip.endLocation || isUnsetDestination(currentTrip.endLocation) || currentTrip.currentDistance <= 0.3 || currentTrip.endLocation.includes('宁夏博物馆')) && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation))
-          ? (currentTrip.startLocation.includes('宁夏博物馆') ? '运祥小区' : currentTrip.startLocation)
-          : (currentTrip.endLocation?.replace('宁夏博物馆(南门)', '运祥小区').replace('宁夏博物馆', '运祥小区') || '未定位终点');
-
+        let finalEndLoc = currentTrip.endLocation;
+        if (!finalEndLoc || isUnsetDestination(finalEndLoc) || finalEndLoc.includes('宁夏博物馆')) {
+          if ((currentTrip as any).driverCurrentLocationName && !isUnsetDestination((currentTrip as any).driverCurrentLocationName)) {
+            finalEndLoc = (currentTrip as any).driverCurrentLocationName;
+          } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+            finalEndLoc = currentTrip.startLocation;
+          } else if (currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+            finalEndLoc = currentTrip.startLocation;
+          } else {
+            finalEndLoc = '运祥小区';
+          }
+        }
         if (finalEndLoc.includes('宁夏博物馆')) {
           finalEndLoc = '运祥小区';
         }
@@ -2115,6 +2144,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const startHours = String(startDate.getHours()).padStart(2, '0');
         const startMinutes = String(startDate.getMinutes()).padStart(2, '0');
 
+        const finalDist = Number(currentTrip.currentDistance ?? 0);
+        const finalWait = Number(currentTrip.currentWaitingTime ?? 0);
+        const tripCostDetail = calculateOrderTripCost(
+          finalDist,
+          finalWait,
+          billingRules,
+          orderStartMs,
+          currentTrip.weatherMultiplier || 1.0,
+          currentTrip.calculatedBaseFee
+        );
+
+        const extraSum = Number((currentTrip as any).extraBridgeFee ?? 0) + 
+                         Number((currentTrip as any).extraParkingFee ?? 0) + 
+                         Number((currentTrip as any).extraOtherFee ?? 0);
+
+        const finalCalculatedTotal = Number((tripCostDetail.total + extraSum).toFixed(2));
+        const finalOrderAmount = amount > 0 ? amount : finalCalculatedTotal;
+
         const newOrder = {
           ...currentTrip,
           id: currentTrip.id || Date.now().toString(),
@@ -2123,16 +2170,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           timestamp: orderStartMs,
           startTimestamp: orderStartMs,
           endTimestamp: Date.now(),
-          calculatedBaseFee: currentTrip.calculatedBaseFee,
-          startPrice: currentTrip.calculatedBaseFee,
-          amount: amount,
+          calculatedBaseFee: tripCostDetail.base,
+          startPrice: tripCostDetail.base,
+          distanceFee: tripCostDetail.distanceCost,
+          waitFee: tripCostDetail.waitingFee,
+          returnFee: tripCostDetail.returnFee,
+          amount: finalOrderAmount,
+          calculatedTotalFee: finalOrderAmount,
           startLocation: finalStartLoc,
           endLocation: finalEndLoc,
           passengerPhone: currentTrip.passengerPhone ? currentTrip.passengerPhone.trim() : '',
-          distance: currentTrip.currentDistance ?? 0,
-          currentDistance: currentTrip.currentDistance ?? 0,
-          currentWaitingTime: currentTrip.currentWaitingTime ?? 0,
-          waitTime: currentTrip.currentWaitingTime ?? 0,
+          distance: finalDist,
+          currentDistance: finalDist,
+          currentWaitingTime: finalWait,
+          waitTime: finalWait,
           extraBridgeFee: (currentTrip as any).extraBridgeFee ?? 0,
           extraParkingFee: (currentTrip as any).extraParkingFee ?? 0,
           extraOtherFee: (currentTrip as any).extraOtherFee ?? 0,
@@ -2940,7 +2991,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const rawTime = Number(orderPayload.timestamp || Date.now());
                 const orderKey = orderPayload.orderId || orderPayload.id || `${orderPayload.passengerPhone || 'p'}_${rawTime}`;
                 dismissedIncomingOrderKeysRef.current.delete(orderKey);
-                triggerBackgroundOrderAlert(orderPayload);
+                // When driver explicitly claims an order from the hall in foreground,
+                // mount the overlay directly without firing background system alert or duplicate voice
                 setIncomingOrder(orderPayload);
               }}
               onOpenMerchantValetPayment={(trip) => {

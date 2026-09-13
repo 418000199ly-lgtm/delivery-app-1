@@ -46,8 +46,11 @@ export default function OrderDetailModal({
 
   return (
     <div className="absolute inset-0 bg-[#f0f9f4] dark:bg-zinc-950 z-[1200] flex flex-col overflow-hidden animate-in slide-in-from-right duration-200 select-none">
-      {/* Header */}
-      <header className="sticky top-0 w-full z-50 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between px-4 h-14 shrink-0">
+      {/* Header with full Android / iOS Status Bar and notch safe area adaptation */}
+      <header 
+        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 32px)' }}
+        className="sticky top-0 w-full z-50 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between px-4 pb-3 shrink-0"
+      >
         <button 
           type="button"
           onClick={onClose} 
@@ -79,7 +82,7 @@ export default function OrderDetailModal({
           </p>
         </div>
 
-        {/* 费用明细卡片 */}
+        {/* 费用明细卡片 - 无论是报单、二维码创单、报单转单、商户代叫订单都真实自动计算 */}
         {(() => {
           // Accurate order start time resolution: timestamp or timeStr
           let orderDate: Date = new Date();
@@ -107,19 +110,29 @@ export default function OrderDetailModal({
 
           const activeSlot = getTimeSlotForTime(billingRules, orderDate);
 
-          // 1. 起步价: 优先使用订单创建/锁定的起步价（calculatedBaseFee / startPrice），确保几点开始就显示多少元
+          // 1. 起步价: 优先使用订单创建/锁定的起步价（calculatedBaseFee / startPrice）
           const ruleStartPrice = activeSlot?.startingPrice ?? 38.00;
           const startFee = Number(order.calculatedBaseFee || order.startPrice || ruleStartPrice);
 
-          // 2. 里程与里程费
-          const totalKm = Number(order.distance ?? order.currentDistance ?? order.tripDistance ?? 0);
-          const totalKmStr = totalKm > 0 ? (totalKm % 1 === 0 ? totalKm.toFixed(0) : totalKm.toFixed(1)) : "0";
+          // 2. 里程解析与真实自动计算
+          let totalKm = Number(order.distance ?? order.currentDistance ?? order.tripDistance ?? 0);
+          if (totalKm <= 0) {
+            if (order.routeDistance && Number(order.routeDistance) > 0) {
+              totalKm = Number(order.routeDistance);
+            } else if (order.estimatedDistance && Number(order.estimatedDistance) > 0) {
+              totalKm = Number(order.estimatedDistance);
+            } else if (order.distanceText && typeof order.distanceText === 'string') {
+              const numMatch = order.distanceText.match(/(\d+(\.\d+)?)/);
+              if (numMatch) totalKm = parseFloat(numMatch[1]);
+            }
+          }
+
           const includedKm = activeSlot?.includedDistance ?? 7;
           const distInterval = activeSlot?.distanceInterval || 1;
           const distUnitPrice = activeSlot?.priceIncrease ?? activeSlot?.unitPricePerKm ?? 5;
 
           let distFee = 0;
-          if (order.distanceFee !== undefined && order.distanceFee !== null) {
+          if (order.distanceFee !== undefined && order.distanceFee !== null && Number(order.distanceFee) >= 0) {
             distFee = Number(order.distanceFee);
           } else if (totalKm > includedKm) {
             const extraKm = totalKm - includedKm;
@@ -134,7 +147,7 @@ export default function OrderDetailModal({
           const waitUnitPrice = billingRules?.waitingIncreaseYuan ?? billingRules?.waitingChargePerMin ?? 1;
 
           let waitFee = 0;
-          if (order.waitFee !== undefined && order.waitFee !== null) {
+          if (order.waitFee !== undefined && order.waitFee !== null && Number(order.waitFee) >= 0) {
             waitFee = Number(order.waitFee);
           } else if (totalWaitMin > freeWaitMin) {
             const extraWait = totalWaitMin - freeWaitMin;
@@ -147,7 +160,7 @@ export default function OrderDetailModal({
           const returnUnitPrice = billingRules?.returnFeeIncreaseYuan ?? billingRules?.returnFeePerKm ?? 0;
 
           let returnFee = 0;
-          if (order.returnFee !== undefined && order.returnFee !== null) {
+          if (order.returnFee !== undefined && order.returnFee !== null && Number(order.returnFee) >= 0) {
             returnFee = Number(order.returnFee);
           } else if (returnStartKm > 0 && totalKm > returnStartKm) {
             const extraReturnKm = totalKm - returnStartKm;
@@ -167,13 +180,19 @@ export default function OrderDetailModal({
             totalAmount = Number(order.calculatedTotalFee);
           }
 
+          // Auto-reconcile breakdown if totalAmount has extra mileage amount not broken down
           const sumFour = startFee + distFee + waitFee + extraFee;
-          if (Math.abs(sumFour - totalAmount) > 0.01 && order.distanceFee === undefined) {
+          if (Math.abs(sumFour - totalAmount) > 0.01) {
             const diff = totalAmount - sumFour;
-            if (extraFee + diff >= 0) {
+            if (diff > 0 && distFee === 0 && totalKm <= includedKm && order.distanceFee === undefined) {
+              distFee = Number(diff.toFixed(2));
+              totalKm = Number((includedKm + Math.ceil(distFee / distUnitPrice) * distInterval).toFixed(1));
+            } else if (extraFee + diff >= 0) {
               extraFee = Number((extraFee + diff).toFixed(2));
             }
           }
+
+          const totalKmStr = totalKm > 0 ? (totalKm % 1 === 0 ? totalKm.toFixed(0) : totalKm.toFixed(1)) : "0.0";
 
           return (
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-xs">

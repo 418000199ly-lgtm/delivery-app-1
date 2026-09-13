@@ -507,14 +507,41 @@ export default function HomeView({
       if (isCancelled || isCompleted || isClaimed || isDispatched) return false;
       if (data.in_hall === false) return false;
 
-      // 报单转单订单：转入选单大厅供所有其他司机抢单，但是订单绝对不要进入报单转单下单司机的选单大厅！
+      // 规则：选单大厅仅接收【报单转单】与【商户代叫】订单！
+      // 司机自建的【报单】和乘客扫码自接单的【二维码创单】都是自己给自己开单，绝不进入选单大厅！
       const isTransferOrder = Boolean(
         data.orderType === '报单转单' ||
         data.orderRemark === '报单转单' ||
         data.type === '报单转单' ||
         String(data.orderRemark || '').includes('报单转单') ||
-        String(data.merchantName || '').includes('报单转单')
+        String(data.merchantName || '').includes('报单转单') ||
+        String(data.destination || '').includes('报单转单')
       );
+
+      const isValetOrder = Boolean(
+        data.isValetOrder ||
+        data.isPlatformDispatch ||
+        data.orderRemark === '商户代叫' ||
+        data.orderType === '商户代叫' ||
+        data.type === '商户代叫' ||
+        data.orderType === '后台指派订单' ||
+        data.isMerchantValetOrder ||
+        data.isMerchantValet ||
+        (data.merchantPhone && !isTransferOrder) ||
+        (data.merchantName && !isTransferOrder)
+      );
+
+      // 非报单转单且非商户代叫（如报单、二维码创单/开单），绝对不进入选单大厅
+      if (!isTransferOrder && !isValetOrder) {
+        return false;
+      }
+
+      // 如果明确是二维码开单/创单或普通报单，且没有标记转单/代叫，排除
+      if ((data.orderType === '二维码开单' || data.orderType === '二维码创单' || data.orderType === '报单' || data.type === '二维码创单' || data.type === '报单') && !isTransferOrder && !isValetOrder) {
+        return false;
+      }
+
+      // 报单转单订单：转入选单大厅供所有其他司机抢单，但是订单绝对不要进入报单转单下单司机的选单大厅！
       if (isTransferOrder) {
         const myPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
         const issuerPhones = [
@@ -901,8 +928,9 @@ export default function HomeView({
       // INSTANTLY trigger the full-screen Incoming Order Overlay modal on driver's screen!
       if (onClaimIncomingOrder) {
         onClaimIncomingOrder(orderPayload);
+      } else {
+        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
       }
-      window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
 
       triggerToast('✓ 抢单成功！已为您弹出新来单确认界面');
     } catch (err: any) {
@@ -3447,7 +3475,7 @@ export default function HomeView({
                           if (e.key === 'Escape') setIsEditingName(false);
                         }}
                         maxLength={10}
-                        className="bg-white/15 text-white border border-white/30 rounded-lg px-2 py-0.5 text-sm font-bold focus:outline-hidden focus:ring-1 focus:ring-amber-400 w-28 text-center"
+                        className="bg-white/15 text-white border border-white/30 rounded-lg px-2 py-0.5 text-sm font-bold focus:outline-hidden focus:ring-1 focus:ring-white w-28 text-center"
                         autoFocus
                       />
                     );
@@ -3458,7 +3486,7 @@ export default function HomeView({
                           setTempName(currentDisplayName);
                           setIsEditingName(true);
                         }}
-                        className="text-white text-xl font-bold tracking-tight cursor-pointer hover:text-amber-200 inline-flex items-center group transition-colors select-none"
+                        className="text-white text-[#ffffff] text-xl font-bold tracking-tight cursor-pointer hover:opacity-90 inline-flex items-center group transition-opacity select-none"
                         title="点击修改代驾品牌名称"
                       >
                         {currentDisplayName}
@@ -3476,7 +3504,7 @@ export default function HomeView({
                         setShowRedeemModal(true);
                         setRedeemCode('');
                       }}
-                      className="text-white text-xl font-bold tracking-tight cursor-pointer hover:text-white/80 transition-opacity select-none"
+                      className="text-white text-[#ffffff] text-xl font-bold tracking-tight cursor-pointer hover:opacity-90 transition-opacity select-none"
                       title="激活VIP解锁自定义名称"
                     >
                       {currentDisplayName}
@@ -3848,8 +3876,26 @@ export default function HomeView({
                 ord.orderRemark === '报单转单' ||
                 ord.type === '报单转单' ||
                 String(ord.orderRemark || '').includes('报单转单') ||
-                String(ord.merchantName || '').includes('报单转单')
+                String(ord.merchantName || '').includes('报单转单') ||
+                String(ord.destination || '').includes('报单转单')
               );
+              const isValetOrder = Boolean(
+                ord.isValetOrder ||
+                ord.isPlatformDispatch ||
+                ord.orderRemark === '商户代叫' ||
+                ord.orderType === '商户代叫' ||
+                ord.type === '商户代叫' ||
+                ord.orderType === '后台指派订单' ||
+                ord.isMerchantValetOrder ||
+                ord.isMerchantValet ||
+                (ord.merchantPhone && !isTransferOrder) ||
+                (ord.merchantName && !isTransferOrder)
+              );
+
+              // 仅保留【报单转单】与【商户代叫】
+              if (!isTransferOrder && !isValetOrder) return false;
+
+              // 报单转单不能展示给下单司机本人
               if (isTransferOrder && myCurrentPhone) {
                 const issuerPhones = [
                   ord.reporterPhone,
@@ -3887,7 +3933,46 @@ export default function HomeView({
                     ? driverCoords
                     : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
 
-                  const isReportTransfer = ord.orderType === '报单转单' || ord.orderRemark === '报单转单' || ord.type === '报单转单';
+                  const isReportTransfer = ord.orderType === '报单转单' || ord.orderRemark === '报单转单' || ord.type === '报单转单' || String(ord.destination || '').includes('报单转单');
+
+                  let typeBadgeText = '【商户代叫】';
+                  let typeBadgeClass = 'bg-orange-100 text-[#ff7d00] border-orange-200';
+                  if (isReportTransfer) {
+                    typeBadgeText = '【报单转单】';
+                    typeBadgeClass = 'bg-amber-100 text-amber-800 border-amber-300';
+                  } else {
+                    typeBadgeText = '【商户代叫】';
+                    typeBadgeClass = 'bg-orange-100 text-[#ff7d00] border-orange-200';
+                  }
+
+                  // Standardized order time formatted as YYYY-MM-DD HH:mm (e.g. 2026-09-13 19:00)
+                  const orderTimeFormatted = (() => {
+                    let dateObj: Date | null = null;
+                    if (ord.startTimestamp && !isNaN(Number(ord.startTimestamp))) {
+                      dateObj = new Date(Number(ord.startTimestamp));
+                    } else if (ord.timestamp && !isNaN(Number(ord.timestamp))) {
+                      dateObj = new Date(Number(ord.timestamp));
+                    } else if (ord.createdAt && !isNaN(Number(ord.createdAt))) {
+                      dateObj = new Date(Number(ord.createdAt));
+                    } else if (ord.id && !isNaN(Number(ord.id)) && Number(ord.id) > 1600000000000) {
+                      dateObj = new Date(Number(ord.id));
+                    } else if (ord.timeStr || ord.fullTimeStr) {
+                      const rawStr = ord.fullTimeStr || ord.timeStr;
+                      const match = String(rawStr).match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})/);
+                      if (match) {
+                        return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')} ${match[4].padStart(2, '0')}:${match[5]}`;
+                      }
+                    }
+                    if (!dateObj || isNaN(dateObj.getTime())) {
+                      dateObj = new Date();
+                    }
+                    const y = dateObj.getFullYear();
+                    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+                    const d = String(dateObj.getDate()).padStart(2, '0');
+                    const h = String(dateObj.getHours()).padStart(2, '0');
+                    const min = String(dateObj.getMinutes()).padStart(2, '0');
+                    return `${y}-${m}-${d} ${h}:${min}`;
+                  })();
 
                   const { displayDistText, resolvedLat, resolvedLng } = calculateOrderDriverDistance(
                     ord.startLocation,
@@ -3911,15 +3996,14 @@ export default function HomeView({
                       {/* Horizontal details */}
                       <div className="flex-1 min-w-0 flex flex-col gap-1">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black border shrink-0 ${
-                            isReportTransfer 
-                              ? 'bg-amber-100 text-amber-800 border-amber-300' 
-                              : 'bg-orange-100 text-[#ff7d00] border-orange-200'
-                          }`}>
-                            {isReportTransfer ? '【报单转单】' : '【商户代叫】'}
+                          <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black border shrink-0 ${typeBadgeClass}`}>
+                            {typeBadgeText}
                           </span>
-                          <span className="text-xs font-black text-slate-800 tracking-wider truncate max-w-[180px]">
+                          <span className="text-xs font-black text-slate-800 tracking-wider shrink-0">
                             起点：****
+                          </span>
+                          <span className="text-[11px] font-bold text-slate-600 font-mono shrink-0 ml-0.5">
+                            {orderTimeFormatted}
                           </span>
                         </div>
 

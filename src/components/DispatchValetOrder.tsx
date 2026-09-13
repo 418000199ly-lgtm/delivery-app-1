@@ -2987,7 +2987,10 @@ export default function DispatchValetOrder({
       />
 
       {/* TopAppBar */}
-      <header className="sticky top-0 w-full z-40 bg-[#f9f9f9] border-b border-[#e2e2e2] flex items-center justify-between px-3 sm:px-5 h-14 shadow-sm shrink-0 relative">
+      <header 
+        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 36px)' }}
+        className="sticky top-0 w-full z-40 bg-[#f9f9f9] border-b border-[#e2e2e2] flex items-center justify-between px-3 sm:px-5 pb-3 shadow-sm shrink-0 relative"
+      >
         <div className="flex items-center gap-1.5 shrink-0">
           <h1 className="font-bold text-sm sm:text-base text-[#984800] tracking-tight">商户代叫</h1>
         </div>
@@ -4452,7 +4455,10 @@ export default function DispatchValetOrder({
       {selectedOrderDetail && (
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
           {/* TopAppBar */}
-          <header className="bg-[#f9f9f9] sticky top-0 z-50 border-b border-[#e2e2e2] flex items-center justify-between px-5 h-14 shrink-0">
+          <header 
+            style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 32px)' }}
+            className="bg-[#f9f9f9] sticky top-0 z-50 border-b border-[#e2e2e2] flex items-center justify-between px-5 pb-3 shrink-0"
+          >
             <div className="flex items-center gap-3">
               <button 
                 type="button"

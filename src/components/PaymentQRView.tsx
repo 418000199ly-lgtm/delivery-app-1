@@ -139,29 +139,35 @@ export default function PaymentQRView({
 
       {/* MAIN CONTENT */}
       <div className="flex-1 flex flex-col overflow-y-auto py-1">
-        <section className="bg-[#E9F9F8] px-5 py-3 flex justify-between items-center relative overflow-hidden shrink-0 mx-3 rounded-2xl mb-1.5" data-purpose="service-status-banner">
-          <div className="z-10 flex flex-col gap-0.5">
-            <h2 className="text-[#00A591] text-base sm:text-lg font-bold leading-tight">服务完成</h2>
-            <h2 className="text-[#00A591] text-xs sm:text-sm font-medium leading-tight opacity-90">期待下次再见</h2>
-          </div>
-          <div className="relative flex items-center justify-end">
-            <DriverIllustration size={56} className="relative z-10" />
+        {/* Top Banner: fuwu.png */}
+        <section className="px-3 sm:px-4 pt-1.5 pb-1 shrink-0" data-purpose="service-status-banner">
+          <div className="w-full rounded-2xl overflow-hidden shadow-2xs border border-[#00A591]/15 bg-[#E8F8F5]">
+            <img 
+              src="/fuwu.png" 
+              onError={(e) => {
+                (e.target as HTMLImageElement).src = '/fuwu.svg';
+              }}
+              alt="服务完成 期待下次再见" 
+              className="w-full h-auto object-cover max-h-[135px] sm:max-h-[155px] block select-none"
+            />
           </div>
         </section>
 
         <section className="px-3 sm:px-4 my-auto py-1">
-          <div className="bg-white rounded-2xl p-4 sm:p-5 flex flex-col items-center shadow-[0_4px_20px_rgba(0,0,0,0.05)] w-full max-w-xs mx-auto border border-gray-100/80">
-            <div className="flex items-baseline gap-1 mb-1" data-purpose="price-display">
-              <span className="text-base font-semibold text-gray-600">共</span>
-              <span className="text-4xl sm:text-5xl font-black tracking-tight font-mono text-gray-950">
+          <div className="bg-white rounded-2xl sm:rounded-3xl px-5 py-4 sm:py-5 flex flex-col items-center shadow-[0_4px_24px_rgba(0,0,0,0.06)] w-full max-w-[340px] sm:max-w-[360px] mx-auto border border-gray-100/90">
+            {/* Total Fee Header */}
+            <div className="flex items-baseline gap-1.5 mb-1" data-purpose="price-display">
+              <span className="text-lg font-bold text-gray-800">共</span>
+              <span className="text-5xl sm:text-[54px] font-black tracking-tight font-sans text-gray-950 [font-variant-numeric:normal] [font-feature-settings:'zero'_0]">
                 {trip.calculatedTotalFee.toFixed(2)}
               </span>
-              <span className="text-base font-semibold text-gray-600">元</span>
+              <span className="text-lg font-bold text-gray-800">元</span>
             </div>
             
-            <p className="text-gray-500 text-xs mb-3">客人扫码支付，支持微信/支付宝</p>
+            <p className="text-gray-400 text-xs font-medium mb-3.5">客人扫码支付，支持微信/支付宝</p>
             
-            <div className="w-full max-w-[170px] sm:max-w-[200px] aspect-square flex items-center justify-center shrink-0 mb-3 animate-in fade-in zoom-in-95 bg-gray-50/50 rounded-2xl border border-dashed border-gray-200 overflow-hidden" data-purpose="qr-code-display">
+            {/* Enlarged QR Code Container (matched to w4.png) */}
+            <div className="w-full max-w-[240px] sm:max-w-[260px] aspect-square flex items-center justify-center shrink-0 mb-3.5 animate-in fade-in zoom-in-95 bg-gray-50/50 rounded-2xl border border-dashed border-gray-200/90 overflow-hidden p-1.5" data-purpose="qr-code-display">
               {(() => {
                 const driverOwnWechat = wechatClean || settings?.wechatQrCode || (() => {
                   try {
@@ -194,7 +200,7 @@ export default function PaymentQRView({
                     <img 
                       src={driverOwnWechat} 
                       alt="微信收款码" 
-                      className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
+                      className="w-full h-full object-contain rounded-xl p-0.5" 
                     />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 rounded-2xl gap-1.5">
@@ -212,7 +218,7 @@ export default function PaymentQRView({
                     <img 
                       src={driverOwnAlipay} 
                       alt="支付宝收款码" 
-                      className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
+                      className="w-full h-full object-contain rounded-xl p-0.5" 
                     />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center bg-gray-50/90 text-gray-600 text-center px-3 py-3 rounded-2xl gap-1.5">
@@ -230,9 +236,9 @@ export default function PaymentQRView({
             </div>
 
             {isWechat ? (
-              <div className="flex flex-col items-center w-full mt-1">
-                <div className="flex items-center gap-1.5 mb-2" data-purpose="active-payment-method">
-                  <svg fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg">
+              <div className="flex flex-col items-center w-full mt-0.5">
+                <div className="flex items-center gap-1.5 mb-2.5" data-purpose="active-payment-method">
+                  <svg fill="none" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg">
                     <path d="M12 2C6.477 2 2 6.015 2 10.97c0 2.81 1.442 5.315 3.69 6.963l-.46 1.72a.5.5 0 0 0 .668.59l2.12-.96c1.233.454 2.585.717 3.982.717 5.523 0 10-4.015 10-10.97C22 6.015 17.523 2 12 2z" fill="#07C160"></path>
                     <path d="M7.5 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0z" fill="white"></path>
                   </svg>
@@ -241,19 +247,19 @@ export default function PaymentQRView({
                 <button 
                   type="button"
                   onClick={() => setIsWechat(false)}
-                  className="flex items-center gap-2 px-6 py-2 border-2 border-[#00A591] text-[#00A591] rounded-2xl text-sm font-bold active:bg-[#F0FBFA] hover:bg-[#F0FBFA]/70 shadow-xs transition-all cursor-pointer select-none active:scale-98" 
+                  className="flex items-center gap-1.5 px-5 py-1.5 border-[1.5px] border-[#00A591] text-[#00A591] rounded-xl text-xs sm:text-sm font-bold active:bg-[#00A591]/5 hover:bg-[#00A591]/5 shadow-2xs transition-all cursor-pointer select-none active:scale-98" 
                   data-purpose="switch-payment-action"
                 >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2"></path>
                   </svg>
                   <span>切换支付宝收款</span>
                 </button>
               </div>
             ) : (
-              <div className="flex flex-col items-center w-full mt-1">
-                <div className="flex items-center gap-1.5 mb-2" data-purpose="active-payment-method">
-                  <svg fill="none" height="22" viewBox="0 0 24 24" width="22" xmlns="http://www.w3.org/2000/svg">
+              <div className="flex flex-col items-center w-full mt-0.5">
+                <div className="flex items-center gap-1.5 mb-2.5" data-purpose="active-payment-method">
+                  <svg fill="none" height="20" viewBox="0 0 24 24" width="20" xmlns="http://www.w3.org/2000/svg">
                     <rect width="24" height="24" rx="12" fill="#108EE9"/>
                     <text x="12" y="16.5" fill="white" fontSize="14" fontWeight="bold" textAnchor="middle" fontFamily="system-ui, -apple-system, sans-serif">支</text>
                   </svg>
@@ -262,10 +268,10 @@ export default function PaymentQRView({
                 <button 
                   type="button"
                   onClick={() => setIsWechat(true)}
-                  className="flex items-center gap-2 px-6 py-2 border-2 border-[#108EE9] text-[#108EE9] rounded-2xl text-sm font-bold active:bg-[#F0F7FB] hover:bg-[#F0F7FB]/70 shadow-xs transition-all cursor-pointer select-none active:scale-98" 
+                  className="flex items-center gap-1.5 px-5 py-1.5 border-[1.5px] border-[#108EE9] text-[#108EE9] rounded-xl text-xs sm:text-sm font-bold active:bg-[#108EE9]/5 hover:bg-[#108EE9]/5 shadow-2xs transition-all cursor-pointer select-none active:scale-98" 
                   data-purpose="switch-payment-action"
                 >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                     <path d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2"></path>
                   </svg>
                   <span>切换微信收款</span>

@@ -112,6 +112,19 @@ export function clearPendingOrderCache() {
   }
 }
 
+// Global deduplication cache to prevent repeated notifications/voice broadcasts for the same order
+const notifiedOrderAlertMap = new Map<string, number>();
+
+// Generate stable positive integer notification ID from order key string
+function getStableNotificationId(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash % 900000) + 100000;
+}
+
 /**
  * Trigger high-priority system alert (Sound, Voice, Vibration, System Banner, Lockscreen Popup)
  * when a new order arrives while the app is in the background or locked.
@@ -119,8 +132,40 @@ export function clearPendingOrderCache() {
 export async function triggerBackgroundOrderAlert(order: any) {
   if (!order) return;
 
+  const orderKey = String(
+    order.id || 
+    order.orderId || 
+    order.orderNo || 
+    `${order.passengerPhone || 'p'}_${order.timestamp || order.updatedAt || ''}`
+  );
+  const now = Date.now();
+  const lastAlertTime = notifiedOrderAlertMap.get(orderKey) || 0;
+
+  // Prevent duplicate notifications within 60 seconds for the exact same order
+  if (now - lastAlertTime < 60000) {
+    return;
+  }
+  notifiedOrderAlertMap.set(orderKey, now);
+
+  // Periodic cleanup of stale alert keys
+  if (notifiedOrderAlertMap.size > 100) {
+    for (const [k, time] of notifiedOrderAlertMap.entries()) {
+      if (now - time > 120000) {
+        notifiedOrderAlertMap.delete(k);
+      }
+    }
+  }
+
   // Cache order so app foreground reload instantly opens overlay
   setPendingOrderCache(order);
+
+  // Check if the application is currently visible in foreground
+  const isForeground = typeof document !== 'undefined' && document.visibilityState === 'visible';
+  // If the driver is actively looking at the app in foreground, the IncomingOrderOverlay
+  // directly mounts on screen with full UI & TTS loop. DO NOT fire system banner notifications or overlapping voice!
+  if (isForeground) {
+    return;
+  }
 
   const startLoc = order.startLocation || '起点位置';
   const destLoc = order.destination || '终点位置';
@@ -135,7 +180,7 @@ export async function triggerBackgroundOrderAlert(order: any) {
   const notifTitle = isValet ? '🚖 收到新的代叫/派单！' : '⚡ 收到新来单，请确认接单！';
   const notifBody = `从 [${startLoc}] 到 [${destLoc}]。手机后台已为您抢先锁定，请点击立即接单！`;
 
-  // 1. Loud Voice TTS Alert ("注意，收到新代驾分配订单，起点：...")
+  // 1. Voice TTS Alert (ONLY when app is in background/locked)
   const speechText = `注意！收到新的代驾派单，起点：${startLoc}，请及时查看并确认接单！`;
   speakText(speechText);
 
@@ -146,10 +191,11 @@ export async function triggerBackgroundOrderAlert(order: any) {
     } catch (_) {}
   }
 
-  // 3. Send Native Local Notification (Android / iOS)
+  // 3. Send Native Local Notification with STABLE ID to prevent multi-notification stacking
+  const notifId = getStableNotificationId(orderKey);
+
   if (Capacitor.isNativePlatform()) {
     try {
-      const notifId = Math.floor(Math.random() * 899999) + 100000;
       await LocalNotifications.schedule({
         notifications: [
           {
@@ -177,7 +223,7 @@ export async function triggerBackgroundOrderAlert(order: any) {
         const notif = new Notification(notifTitle, {
           body: notifBody,
           icon: '/hwdjtb.png',
-          tag: 'incoming_order_' + (order.id || order.orderId || Date.now()),
+          tag: 'incoming_order_' + orderKey,
           requireInteraction: true
         });
         notif.onclick = () => {

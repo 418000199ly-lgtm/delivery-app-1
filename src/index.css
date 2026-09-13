@@ -121,4 +121,13 @@ button:focus, button:focus-visible, button:active {
   overflow: hidden !important;
 }
 
+/* Ensure clean standard digit 0 without slash or strike-through across price & numeric displays */
+[data-purpose="price-display"],
+[data-purpose="price-display"] *,
+.clean-num {
+  font-variant-numeric: normal !important;
+  font-feature-settings: "zero" 0 !important;
+}
+
+
 

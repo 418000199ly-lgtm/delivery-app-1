@@ -73,13 +73,6 @@ export default function NearbyMapView({
     '15509601222'
   ).trim();
 
-  const isMeMember = (phoneOrId?: string) => {
-    const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
-    const myClean = String(effectiveMyPhone || '').replace(/\D/g, '').trim();
-    if (!clean) return true;
-    return clean === myClean;
-  };
-
   const [mySquadName, setMySquadName] = useState<string>('');
 
   // Resolve current driver's name based on squad application, Baota database, or settings
@@ -93,6 +86,30 @@ export default function NearbyMapView({
     (settings as any)?.driverName ||
     (settings as any)?.name ||
     (effectiveMyPhone === '15509601222' ? '吴彦祖' : `司机${effectiveMyPhone.slice(-4)}`);
+
+  const isMeMember = (phoneOrId?: string, name?: string) => {
+    const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
+    const myClean = String(effectiveMyPhone || '').replace(/\D/g, '').trim();
+    if (clean && myClean) {
+      if (clean === myClean || clean.endsWith(myClean) || myClean.endsWith(clean)) {
+        return true;
+      }
+    }
+
+    const n = String(name || '').trim();
+    if (n) {
+      if (n === '吴彦祖' || n === '吴彦祖 (我)' || (currentDriverName && n === currentDriverName)) {
+        return true;
+      }
+    }
+
+    const raw = String(phoneOrId || '').trim();
+    if (raw.includes('15509601222') || raw.includes('吴彦祖')) {
+      return true;
+    }
+
+    return false;
+  };
 
   // Realtime busy status calculation:
   // 红色: 报单中、接单做单中、有进行中行程；绿色: 空闲空车接单状态 (严禁使用紫色)
@@ -164,17 +181,42 @@ export default function NearbyMapView({
   const handleHubbleSearchDriver = (query: string) => {
     const trimmed = query.trim().toLowerCase();
     if (!trimmed) return;
+    const cleanQuery = trimmed.replace(/\D/g, '');
 
-    // Search in squadList or realtimeLocations
+    // 1. Check if user is searching for myself (吴彦祖 / 我 / 15509601222 / cleanMyPhone)
+    const isSearchingMe =
+      (cleanQuery && cleanMyPhone && (cleanQuery === cleanMyPhone || cleanMyPhone.includes(cleanQuery) || cleanQuery.includes(cleanMyPhone))) ||
+      trimmed === '15509601222' ||
+      trimmed.includes('15509601222') ||
+      trimmed === '吴彦祖' ||
+      trimmed.includes('吴彦祖') ||
+      trimmed === '我' ||
+      (currentDriverName && trimmed.includes(currentDriverName.toLowerCase()));
+
+    if (isSearchingMe) {
+      const myLng = gpsLocation.lng || driverCoords?.lng || 106.23091;
+      const myLat = gpsLocation.lat || driverCoords?.lat || 38.487167;
+      if (mapInstanceRef.current && myLng && myLat) {
+        mapInstanceRef.current.setZoomAndCenter(17, [myLng, myLat]);
+        setHubbleSearchFeedback(`已定位至司机: ${currentDriverName} (我)`);
+        triggerDevToast(`已定位至司机: ${currentDriverName} (我)`);
+        setShowHubbleSettingsDialog(false);
+        return;
+      }
+    }
+
+    // 2. Search in squadList or realtimeLocations for OTHER drivers
     let targetPhone: string | null = null;
     let targetCoords: { lat: number; lng: number } | null = null;
     let targetDriverName: string = '';
 
-    // Check squadList first
+    // Check squadList first (excluding myself)
     for (const member of squadList) {
       const p = String(member.phone || member.id || '').replace(/\D/g, '');
       const name = String(member.name || member.driverName || '').toLowerCase();
-      if (p === trimmed || p.includes(trimmed) || name.includes(trimmed)) {
+      if (isMeMember(p, name)) continue;
+
+      if ((cleanQuery && p.includes(cleanQuery)) || (trimmed && name.includes(trimmed))) {
         targetPhone = p;
         targetDriverName = member.name || member.driverName || p;
         if (member.lat && member.lng && !isNaN(Number(member.lat)) && !isNaN(Number(member.lng))) {
@@ -187,7 +229,7 @@ export default function NearbyMapView({
     // Check realtimeLocations
     if (!targetCoords && targetPhone && realtimeLocations[targetPhone]) {
       const loc = realtimeLocations[targetPhone];
-      if (loc.lat && loc.lng) {
+      if (loc.lat && loc.lng && !isMeMember(targetPhone, loc.driverName || loc.name)) {
         targetCoords = { lat: Number(loc.lat), lng: Number(loc.lng) };
       }
     }
@@ -197,7 +239,9 @@ export default function NearbyMapView({
       for (const [phoneKey, loc] of Object.entries(realtimeLocations)) {
         const p = String(phoneKey || '').replace(/\D/g, '');
         const name = String((loc as any)?.driverName || (loc as any)?.name || '').toLowerCase();
-        if (p === trimmed || p.includes(trimmed) || name.includes(trimmed)) {
+        if (isMeMember(p, name)) continue;
+
+        if ((cleanQuery && p.includes(cleanQuery)) || (trimmed && name.includes(trimmed))) {
           targetPhone = p;
           targetDriverName = (loc as any)?.driverName || (loc as any)?.name || p;
           if ((loc as any)?.lat && (loc as any)?.lng) {
@@ -244,9 +288,9 @@ export default function NearbyMapView({
           const data = docSnap.data();
           const phone = String(data?.phone || docSnap.id || '').trim();
           const name = String(data?.name || data?.driverName || '').trim();
-          if (isMeMember(phone)) {
+          if (isMeMember(phone, name)) {
             if (name) setMySquadName(name);
-          } else if (phone && name && !isMeMember(phone)) {
+          } else if (phone && name && !isMeMember(phone, name)) {
             list.push({ id: docSnap.id, phone, name, ...data });
           }
         });
@@ -262,13 +306,14 @@ export default function NearbyMapView({
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.list)) {
-            const myEntry = data.list.find((m: any) => isMeMember(m?.phone || m?.id));
+            const myEntry = data.list.find((m: any) => isMeMember(m?.phone || m?.id, m?.name || m?.driverName));
             if (myEntry && (myEntry.name || myEntry.driverName)) {
               setMySquadName(myEntry.name || myEntry.driverName);
             }
             const filtered = data.list.filter((m: any) => {
               const phone = String(m?.phone || m?.id || '').trim();
-              return phone && !isMeMember(phone);
+              const name = String(m?.name || m?.driverName || '').trim();
+              return phone && !isMeMember(phone, name);
             });
             setSquadList(filtered);
           }
@@ -601,8 +646,8 @@ export default function NearbyMapView({
     // Collect from squadList
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
-      if (!phone || isMeMember(phone)) return;
-      const name = member.name || member.driverName || '';
+      const name = String(member.name || member.driverName || '').trim();
+      if (!phone || isMeMember(phone, name) || name === '吴彦祖' || name === '吴彦祖 (我)' || (currentDriverName && name === currentDriverName)) return;
       candidateDriversMap.set(phone, {
         phone,
         name,
@@ -616,10 +661,11 @@ export default function NearbyMapView({
 
     // Merge/Overlay live locations from Baota / Firestore (primary source of truth)
     Object.keys(realtimeLocations).forEach((phoneKey) => {
-      const phone = String(phoneKey || '').replace(/\D/g, '').trim();
-      if (!phone || isMeMember(phone)) return;
       const liveLoc = realtimeLocations[phoneKey];
       if (!liveLoc) return;
+      const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
+      const name = String(liveLoc.driverName || liveLoc.name || '').trim();
+      if (!phone || isMeMember(phone, name) || name === '吴彦祖' || name === '吴彦祖 (我)' || (currentDriverName && name === currentDriverName)) return;
 
       const existing = candidateDriversMap.get(phone) || {
         phone,
@@ -642,11 +688,11 @@ export default function NearbyMapView({
       const uploadTime = liveLoc.timestamp
         ? Number(liveLoc.timestamp)
         : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : existing.uploadTime);
-      const name = liveLoc.driverName || liveLoc.name || existing.name;
+      const resolvedName = name || existing.name;
 
       candidateDriversMap.set(phone, {
         phone,
-        name,
+        name: resolvedName,
         lat,
         lng,
         isOnline,
@@ -657,8 +703,8 @@ export default function NearbyMapView({
 
     // Render other drivers according to Hubble settings
     candidateDriversMap.forEach((driver) => {
-      // 1. Strictly exclude current driver "我"
-      if (isMeMember(driver.phone)) return;
+      // 1. Strictly exclude current driver "我" & "吴彦祖"
+      if (isMeMember(driver.phone, driver.name) || driver.name === '吴彦祖' || driver.name === '吴彦祖 (我)' || (currentDriverName && driver.name === currentDriverName)) return;
 
       // 2. 必须有真实有效GPS坐标
       if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng)) return;

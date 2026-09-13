@@ -193,7 +193,10 @@ export default function ActiveTripView({
               ...currentTripValue,
               currentWaitingTime: wMins,
               calculatedBaseFee: cost.base,
-              calculatedTotalFee: cost.total
+              calculatedTotalFee: cost.total,
+              distanceFee: cost.distanceCost,
+              waitFee: cost.waitingFee,
+              returnFee: cost.returnFee
             });
           }
         }
@@ -326,7 +329,10 @@ export default function ActiveTripView({
         ...currentTripValue,
         currentDistance: nextDist,
         calculatedBaseFee: cost.base,
-        calculatedTotalFee: cost.total
+        calculatedTotalFee: cost.total,
+        distanceFee: cost.distanceCost,
+        waitFee: cost.waitingFee,
+        returnFee: cost.returnFee
       });
     }
 
@@ -631,7 +637,10 @@ export default function ActiveTripView({
       ...safeTrip,
       currentDistance: nextDist,
       calculatedBaseFee: cost.base,
-      calculatedTotalFee: cost.total
+      calculatedTotalFee: cost.total,
+      distanceFee: cost.distanceCost,
+      waitFee: cost.waitingFee,
+      returnFee: cost.returnFee
     });
     // Actual rectification logic executed
   };
@@ -655,7 +664,10 @@ export default function ActiveTripView({
       ...safeTrip,
       currentWaitingTime: nextWaitingTime,
       calculatedBaseFee: cost.base,
-      calculatedTotalFee: cost.total
+      calculatedTotalFee: cost.total,
+      distanceFee: cost.distanceCost,
+      waitFee: cost.waitingFee,
+      returnFee: cost.returnFee
     });
   };
 
@@ -751,7 +763,7 @@ export default function ActiveTripView({
 
           {/* Price & Duration Info Display */}
           <div className="text-center relative z-10 py-1 sm:py-2">
-            <div className="text-5xl font-black tracking-tight mb-1 animate-pulse font-mono">
+            <div className="text-5xl font-black tracking-tight mb-1 animate-pulse font-sans [font-variant-numeric:normal] [font-feature-settings:'zero'_0]">
               {(safeTrip?.calculatedTotalFee ?? safeTrip?.calculatedBaseFee ?? 0).toFixed(2)}
             </div>
             <div className="text-[11px] opacity-90 mb-4 font-medium tracking-wide">
@@ -762,7 +774,7 @@ export default function ActiveTripView({
             
             <div className="flex items-center justify-center space-x-1.5 text-xs text-white/95">
               <span className="opacity-90 font-medium">开车时长:</span>
-              <span className="font-bold tracking-widest font-mono text-sm bg-teal-800/20 px-2 py-0.5 rounded-md">
+              <span className="font-bold tracking-widest font-sans text-sm bg-teal-800/20 px-2 py-0.5 rounded-md [font-variant-numeric:normal]">
                 {formatHms(drivingSeconds)}
               </span>
             </div>
@@ -794,7 +806,7 @@ export default function ActiveTripView({
 
             {/* Centered Overlay Badge: Show current distance value and status label */}
             <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none select-none z-10 flex flex-col items-center justify-center min-w-[100px] ${!settings.deviationMitigation ? 'opacity-80' : ''}`}>
-              <div className="text-2xl font-black text-[#26a69a] font-mono leading-none mb-1">
+              <div className="text-2xl font-black text-[#26a69a] font-sans [font-variant-numeric:normal] [font-feature-settings:'zero'_0] leading-none mb-1">
                 {(safeTrip?.currentDistance ?? 0).toFixed(2)}
               </div>
               <div className="text-[10px] text-gray-500 font-bold tracking-wider leading-none whitespace-nowrap uppercase">
@@ -826,7 +838,7 @@ export default function ActiveTripView({
 
             {/* Centered Overlay Badge: Show current waiting metrics and status labels */}
             <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none select-none z-10 flex flex-col items-center justify-center min-w-[124px] ${!settings.deviationMitigation ? 'opacity-80' : ''}`}>
-              <div className="text-2xl font-black text-[#26a69a] font-mono leading-none text-center">
+              <div className="text-2xl font-black text-[#26a69a] font-sans [font-variant-numeric:normal] [font-feature-settings:'zero'_0] leading-none text-center">
                 {formatHms(waitingSeconds)}
               </div>
             </div>

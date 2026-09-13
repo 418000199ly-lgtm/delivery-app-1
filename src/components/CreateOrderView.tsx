@@ -1392,6 +1392,13 @@ export default function CreateOrderView({
               };
 
               const resolveDest = (cb: (destParam: any) => void) => {
+                const rawDestLat = Number(activeOnlineOrder?.startLat ?? activeOnlineOrder?.passengerLat ?? activeOnlineOrder?.lat ?? activeOnlineOrder?.startCoords?.lat ?? activeOnlineOrder?.originCoords?.lat ?? activeOnlineOrder?.startLocationCoords?.lat);
+                const rawDestLng = Number(activeOnlineOrder?.startLng ?? activeOnlineOrder?.passengerLng ?? activeOnlineOrder?.lng ?? activeOnlineOrder?.startCoords?.lng ?? activeOnlineOrder?.originCoords?.lng ?? activeOnlineOrder?.startLocationCoords?.lng);
+                if (!isNaN(rawDestLat) && !isNaN(rawDestLng) && rawDestLat > 0 && rawDestLng > 0 && !isDefaultYinchuanCoords({ lat: rawDestLat, lng: rawDestLng })) {
+                  cb(new AMap.LngLat(rawDestLng, rawDestLat));
+                  return;
+                }
+
                 const orderCoords = activeOnlineOrder?.startCoords || activeOnlineOrder?.originCoords || activeOnlineOrder?.startLocationCoords;
                 if (orderCoords && typeof orderCoords.lng === 'number' && typeof orderCoords.lat === 'number' && !isDefaultYinchuanCoords(orderCoords)) {
                   cb(new AMap.LngLat(orderCoords.lng, orderCoords.lat));

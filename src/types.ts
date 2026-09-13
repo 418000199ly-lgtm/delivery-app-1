@@ -61,6 +61,12 @@ export interface TripState {
   extraOtherFee: number;
   calculatedBaseFee: number;
   calculatedTotalFee: number;
+  distanceFee?: number;
+  waitFee?: number;
+  returnFee?: number;
+  startPrice?: number;
+  estimatedDistance?: number;
+  routeDistance?: number;
   weatherMultiplier?: number;
   isOnlineOrder?: boolean;
   orderType?: '后台指派订单' | '报单' | '二维码报单' | '乘客下单' | '商户代叫' | '二维码开单' | string;
