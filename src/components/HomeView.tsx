@@ -4251,7 +4251,7 @@ export default function HomeView({
           </div>
 
           {/* Page Footer Action Bar */}
-          <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2">
+          <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),24px))] bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
             <button
               onClick={() => {
                 setShowMessagesModal(false);

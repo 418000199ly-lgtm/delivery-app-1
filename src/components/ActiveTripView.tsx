@@ -83,6 +83,9 @@ export default function ActiveTripView({
   const tripRef = useRef(safeTrip);
   const billingRulesRef = useRef(safeBillingRules);
   const onUpdateTripRef = useRef(onUpdateTrip);
+  const isEndedRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const amapGeoInstanceRef = useRef<any>(null);
 
   useEffect(() => {
     tripRef.current = safeTrip;
@@ -250,6 +253,14 @@ export default function ActiveTripView({
   const handlePositionUpdateRef = useRef<(lng: number, lat: number, accuracy: number, speed: number | null) => void>(() => {});
 
   const handlePositionUpdate = (lng: number, lat: number, accuracy: number, speed: number | null = null) => {
+    // If the trip has ended, the component unmounted, or status is not 'serving', STOP all updates immediately!
+    if (!isMountedRef.current || isEndedRef.current) {
+      return;
+    }
+    if (tripRef.current && tripRef.current.currentStatus && tripRef.current.currentStatus !== 'serving') {
+      return;
+    }
+
     // 1. Filter out completely invalid or extreme cell tower / geo-IP anomalies (> 400m)
     if (accuracy > 400) {
       console.log(`⚠️ [GPS Tracker] Coarse position filtered out due to accuracy: ${accuracy}m`);
@@ -444,7 +455,9 @@ export default function ActiveTripView({
                 panToLocation: false,
                 zoomToAccuracy: false
               });
+              amapGeoInstanceRef.current = geolocation;
               amapGeoWatchId = geolocation.watchPosition((status: string, result: any) => {
+                if (!isMountedRef.current || isEndedRef.current) return;
                 if (status === 'complete' && result && result.position) {
                   const lng = result.position.lng;
                   const lat = result.position.lat;
@@ -460,11 +473,12 @@ export default function ActiveTripView({
       }
 
       return () => {
+        isMountedRef.current = false;
         if (watchId !== null) navigator.geolocation.clearWatch(watchId);
         if (pollInterval) clearInterval(pollInterval);
-        if (amapGeoWatchId && (window as any).AMap && typeof (window as any).AMap.Geolocation?.clearWatch === 'function') {
+        if (amapGeoWatchId && amapGeoInstanceRef.current && typeof amapGeoInstanceRef.current.clearWatch === 'function') {
           try {
-            (window as any).AMap.Geolocation.clearWatch(amapGeoWatchId);
+            amapGeoInstanceRef.current.clearWatch(amapGeoWatchId);
           } catch (_) {}
         }
         document.removeEventListener('visibilitychange', handleAppResumeSync);
@@ -551,6 +565,7 @@ export default function ActiveTripView({
 
     // If dragged to the end (over 88%), trigger trip ending!
     if (pos >= maxDrag * 0.88) {
+      isEndedRef.current = true;
       setIsSliding(false);
       setSliderPos(0);
       onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59);
@@ -572,6 +587,7 @@ export default function ActiveTripView({
       let pos = Math.max(0, Math.min(diffX, maxDrag));
       setSliderPos(pos);
       if (pos >= maxDrag * 0.88) {
+        isEndedRef.current = true;
         setIsSliding(false);
         setSliderPos(0);
         onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59);

@@ -7,6 +7,7 @@ import { speakText } from '../utils/speech';
 import PassengerOrderView from './PassengerOrderView';
 import ReportTransferOrderModal from './ReportTransferOrderModal';
 import QRCode from 'qrcode';
+import { ensureAMapLoaded } from '../utils/amapLoader';
 
 const MULTIPLIER_OPTIONS = Array.from({ length: 11 }, (_, i) => Number((1.0 + i * 0.1).toFixed(1))); // [1.0, 1.1, ..., 2.0]
 
@@ -906,18 +907,12 @@ export default function CreateOrderView({
       securityJsCode: '0aa3912e6a88fe59f9e5f0275524feba'
     };
 
-    const scriptId = 'amap-js-api-v2';
-
+    let isDisposed = false;
+    let pollTimer: any = null;
     let initAttempts = 0;
-    const initializeMap = () => {
-      const AMap = (window as any).AMap;
-      if (!AMap || !mapContainerRef.current) {
-        if (initAttempts < 30) {
-          initAttempts++;
-          setTimeout(initializeMap, 100);
-        }
-        return;
-      }
+
+    const initializeMap = (AMap: any) => {
+      if (isDisposed || !mapContainerRef.current) return;
       if (mapInstanceRef.current) return;
 
       try {
@@ -1156,30 +1151,35 @@ export default function CreateOrderView({
         });
       } catch (err) {
         console.error('Failed to initialize Gaode AMap:', err);
+        if (initAttempts < 60 && !isDisposed) {
+          initAttempts++;
+          pollTimer = setTimeout(startLoading, 200);
+        }
       }
     };
 
-    let script = document.getElementById(scriptId) as HTMLScriptElement || document.querySelector('script[src*="webapi.amap.com"]');
+    const startLoading = () => {
+      ensureAMapLoaded().then((AMap) => {
+        if (isDisposed) return;
+        if (AMap && AMap.Map && mapContainerRef.current) {
+          initializeMap(AMap);
+        } else if (initAttempts < 60) {
+          initAttempts++;
+          pollTimer = setTimeout(startLoading, 150);
+        }
+      }).catch(() => {
+        if (initAttempts < 60 && !isDisposed) {
+          initAttempts++;
+          pollTimer = setTimeout(startLoading, 200);
+        }
+      });
+    };
 
-    if (!script) {
-      script = document.createElement('script');
-      script.id = scriptId;
-      script.src = 'https://webapi.amap.com/maps?v=2.0&key=4143e567d55bbc1855231f9637efd6b0';
-      script.async = true;
-      script.defer = true;
-      script.onload = () => {
-        initializeMap();
-      };
-      document.head.appendChild(script);
-    } else {
-      if ((window as any).AMap) {
-        initializeMap();
-      } else {
-        script.addEventListener('load', initializeMap);
-      }
-    }
+    startLoading();
 
     return () => {
+      isDisposed = true;
+      if (pollTimer) clearTimeout(pollTimer);
       if (mapInstanceRef.current) {
         try {
           mapInstanceRef.current.destroy();

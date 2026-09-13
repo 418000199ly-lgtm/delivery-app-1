@@ -2753,6 +2753,30 @@ export default function MobileDispatchValetOrder({
               }, { merge: true });
             } catch (_) {}
           }
+
+          // Sync newly uploaded QR code to all existing merchant orders
+          try {
+            const rawOrders = localStorage.getItem('dd_merchant_orders_v2');
+            if (rawOrders) {
+              const parsed = JSON.parse(rawOrders);
+              if (Array.isArray(parsed)) {
+                let changed = false;
+                parsed.forEach((o: any) => {
+                  if (o && (o.merchantPhone === activePhone || o.dispatchedByPhone === activePhone || o.creatorPhone === activePhone || !o.paymentQrCode)) {
+                    o.paymentQrCode = uploadData.url;
+                    o.merchantPaymentQrCode = uploadData.url;
+                    changed = true;
+                  }
+                });
+                if (changed) {
+                  localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(parsed));
+                }
+              }
+            }
+            // Also notify driver order listeners
+            window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+          } catch (_) {}
+
           onShowToast('✓ 代叫费微信收款码已保存（格式PNG）');
           return;
         }
@@ -2782,6 +2806,28 @@ export default function MobileDispatchValetOrder({
           }
         })
       }).catch(() => {});
+
+      // Sync fallback QR to local merchant orders
+      try {
+        const rawOrders = localStorage.getItem('dd_merchant_orders_v2');
+        if (rawOrders) {
+          const parsed = JSON.parse(rawOrders);
+          if (Array.isArray(parsed)) {
+            let changed = false;
+            parsed.forEach((o: any) => {
+              if (o && (o.merchantPhone === activePhone || o.dispatchedByPhone === activePhone || o.creatorPhone === activePhone || !o.paymentQrCode)) {
+                o.paymentQrCode = pngDataUrl;
+                o.merchantPaymentQrCode = pngDataUrl;
+                changed = true;
+              }
+            });
+            if (changed) {
+              localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(parsed));
+            }
+          }
+        }
+        window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+      } catch (_) {}
 
       onShowToast('✓ 代叫费微信收款码已保存（格式PNG）');
     } catch (err) {

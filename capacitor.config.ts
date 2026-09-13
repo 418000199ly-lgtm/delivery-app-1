@@ -13,7 +13,11 @@ const config: CapacitorConfig = {
       'lyheiwandaijiamax.com',
       '*.lyheiwandaijiamax.com',
       '*.run.app',
-      '*.aliyuncs.com'
+      '*.aliyuncs.com',
+      '*.amap.com',
+      'amap.com',
+      '*.autonavi.com',
+      'autonavi.com'
     ]
   }
 };

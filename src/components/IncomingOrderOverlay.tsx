@@ -336,7 +336,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     <div className="absolute inset-0 z-[999] bg-gray-50 flex flex-col justify-between overflow-hidden select-none w-full h-full">
       
       {/* HEADER SECTION */}
-      <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative pt-[calc(max(env(safe-area-inset-top,0px),24px)+12px)] pb-14 sm:pb-16 shrink-0 shadow-sm">
+      <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative pt-[calc(max(env(safe-area-inset-top,0px),var(--android-status-bar-height,0px),48px)+12px)] pb-14 sm:pb-16 shrink-0 shadow-sm">
         <div className="w-full flex justify-between items-center mb-2 sm:mb-3">
           <span className="text-white/80 font-semibold text-xs tracking-wider">
             {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'

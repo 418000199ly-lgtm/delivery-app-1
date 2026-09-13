@@ -18,6 +18,7 @@ import { formatDriverMaskedName } from '../utils/nameResolver';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
 import HubbleSettingsDialog, { HubbleFilterSettings } from './HubbleSettingsDialog';
+import { ensureAMapLoaded } from '../utils/amapLoader';
 
 interface NearbyMapViewProps {
   userPhone?: string;
@@ -323,68 +324,100 @@ export default function NearbyMapView({
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Security config for Gaode Map
-    (window as any)._AMapSecurityConfig = {
-      securityJsCode: '0aa3912e6a88fe59f9e5f0275524feba'
-    };
+    let isDisposed = false;
+    let pollTimer: any = null;
 
-    const initMap = () => {
-      const AMap = (window as any).AMap;
-      if (!AMap || !mapContainerRef.current) return;
+    const initMap = (AMap: any) => {
+      if (isDisposed || !mapContainerRef.current) return;
 
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.destroy();
+        try {
+          mapInstanceRef.current.destroy();
+        } catch (_) {}
+        mapInstanceRef.current = null;
       }
 
-      const centerLng = gpsLocation.lng;
-      const centerLat = gpsLocation.lat;
+      const centerLng = gpsLocation.lng || 106.2350;
+      const centerLat = gpsLocation.lat || 38.4830;
 
-      const map = new AMap.Map(mapContainerRef.current, {
-        zoom: 15.5,
-        center: [centerLng, centerLat],
-        viewMode: '2D',
-        resizeEnable: true,
-        mapStyle: 'amap://styles/fresh' // Clean, pleasant light green/blue map styling
-      });
+      let map: any = null;
+      try {
+        map = new AMap.Map(mapContainerRef.current, {
+          zoom: 15.5,
+          center: [centerLng, centerLat],
+          viewMode: '2D',
+          resizeEnable: true,
+          mapStyle: 'amap://styles/normal'
+        });
+      } catch (err) {
+        console.warn('Fallback initializing basic AMap without style:', err);
+        try {
+          map = new AMap.Map(mapContainerRef.current, {
+            zoom: 15.5,
+            center: [centerLng, centerLat],
+            viewMode: '2D',
+            resizeEnable: true
+          });
+        } catch (e2) {
+          console.error('Failed to create AMap instance in NearbyMapView:', e2);
+          return;
+        }
+      }
 
       mapInstanceRef.current = map;
 
-      // Geolocation for high precision GPS
-      AMap.plugin(['AMap.Geolocation'], () => {
-        const geolocation = new AMap.Geolocation({
-          enableHighAccuracy: true,
-          timeout: 8000,
-          showButton: false,
-          showMarker: false,
-          showCircle: false
-        });
+      // Ensure map re-measures container layout on screen after paint
+      setTimeout(() => {
+        if (!isDisposed && mapInstanceRef.current) {
+          try {
+            window.dispatchEvent(new Event('resize'));
+          } catch (_) {}
+        }
+      }, 300);
 
-        geolocation.getCurrentPosition((status: string, result: any) => {
-          if (status === 'complete' && result && result.position) {
-            const curLng = result.position.lng;
-            const curLat = result.position.lat;
-            setGpsLocation({ lng: curLng, lat: curLat });
-            if (mapInstanceRef.current) {
-              mapInstanceRef.current.setCenter([curLng, curLat]);
-            }
+      // Geolocation for high precision GPS
+      if (AMap.plugin) {
+        AMap.plugin(['AMap.Geolocation'], () => {
+          if (isDisposed || !mapInstanceRef.current) return;
+          try {
+            const geolocation = new AMap.Geolocation({
+              enableHighAccuracy: true,
+              timeout: 8000,
+              showButton: false,
+              showMarker: false,
+              showCircle: false
+            });
+
+            geolocation.getCurrentPosition((status: string, result: any) => {
+              if (isDisposed) return;
+              if (status === 'complete' && result && result.position) {
+                const curLng = result.position.lng;
+                const curLat = result.position.lat;
+                setGpsLocation({ lng: curLng, lat: curLat });
+                if (mapInstanceRef.current) {
+                  mapInstanceRef.current.setCenter([curLng, curLat]);
+                }
+              }
+            });
+          } catch (geoErr) {
+            console.warn('AMap.Geolocation init warning:', geoErr);
           }
         });
-      });
+      }
 
       setMapLoaded(true);
 
-      // Clean up any Gaode AMap logo, icon or copyright text in the container
+      // Clean up Gaode AMap logo and copyright watermark safely without removing map tiles
       const purgeAmapLogos = () => {
         if (!mapContainerRef.current) return;
         const targets = mapContainerRef.current.querySelectorAll(
-          '.amap-logo, .amap-copyright, [class*="amap-logo"], [class*="amap-copyright"], a[href*="amap.com"], img[src*="autonavi.com"]'
+          '.amap-logo, .amap-copyright, [class*="amap-logo"], [class*="amap-copyright"]'
         );
         targets.forEach((el: any) => {
-          if (el && el.parentNode) {
+          if (el) {
             el.style.setProperty('display', 'none', 'important');
             el.style.setProperty('visibility', 'hidden', 'important');
             el.style.setProperty('opacity', '0', 'important');
-            el.remove();
           }
         });
       };
@@ -395,26 +428,33 @@ export default function NearbyMapView({
       setTimeout(() => clearInterval(timer), 5000);
     };
 
-    if ((window as any).AMap) {
-      initMap();
-    } else {
-      const scriptId = 'amap-js-api-v2-main';
-      let script = document.getElementById(scriptId) as HTMLScriptElement;
-      if (!script) {
-        script = document.createElement('script');
-        script.id = scriptId;
-        script.src = 'https://webapi.amap.com/maps?v=2.0&key=4143e567d55bbc1855231f9637efd6b0';
-        script.async = true;
-        script.onload = () => initMap();
-        document.head.appendChild(script);
-      } else {
-        script.onload = () => initMap();
-      }
-    }
+    let attempts = 0;
+    const startLoading = () => {
+      ensureAMapLoaded().then((AMap) => {
+        if (isDisposed) return;
+        if (AMap && AMap.Map && mapContainerRef.current) {
+          initMap(AMap);
+        } else if (attempts < 50) {
+          attempts++;
+          pollTimer = setTimeout(startLoading, 150);
+        }
+      }).catch(() => {
+        if (attempts < 50 && !isDisposed) {
+          attempts++;
+          pollTimer = setTimeout(startLoading, 200);
+        }
+      });
+    };
+
+    startLoading();
 
     return () => {
+      isDisposed = true;
+      if (pollTimer) clearTimeout(pollTimer);
       if (mapInstanceRef.current) {
-        mapInstanceRef.current.destroy();
+        try {
+          mapInstanceRef.current.destroy();
+        } catch (_) {}
         mapInstanceRef.current = null;
       }
     };

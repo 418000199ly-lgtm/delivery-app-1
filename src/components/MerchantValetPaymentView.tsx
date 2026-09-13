@@ -85,46 +85,35 @@ export default function MerchantValetPaymentView({
       (trip as any)?.creatorPhone,
       (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_login_phone') : ''),
       (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_phone') : ''),
-      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : ''),
-      '15509601222'
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : '')
     ].map(p => (p || '').toString().trim()).filter(Boolean)));
 
     // Check initial QR code matching the channel from localStorage immediately if not direct on trip
     if (!initialDirectQr) {
       for (const phone of candidatePhones) {
         if (!phone) continue;
-        if (isWebChannel) {
-          const webCached = localStorage.getItem(`dd_web_valet_wechat_qr_${phone}`) ||
-                            localStorage.getItem(`dd_dispatch_wechat_qr_${phone}`) ||
-                            localStorage.getItem(`dd_dispatch_fee_qr_${phone}`) ||
-                            localStorage.getItem(`dd_merchant_user_qr_${phone}`);
-          if (webCached) {
-            setDispatcherQr(webCached);
-            break;
-          }
-        } else {
-          const appCached = localStorage.getItem(`dd_app_valet_wechat_qr_${phone}`) ||
-                            localStorage.getItem(`dd_dispatch_wechat_qr_${phone}`) ||
-                            (() => {
-                              try {
-                                const s = localStorage.getItem(`dd_settings_${phone}`);
-                                if (s) return JSON.parse(s)?.wechatQrCode || '';
-                              } catch (_) {}
-                              return '';
-                            })();
-          if (appCached) {
-            setDispatcherQr(appCached);
-            break;
-          }
+        const webCached = localStorage.getItem(`dd_web_valet_wechat_qr_${phone}`) ||
+                          localStorage.getItem(`dd_dispatch_wechat_qr_${phone}`) ||
+                          localStorage.getItem(`dd_dispatch_fee_qr_${phone}`) ||
+                          localStorage.getItem(`dd_merchant_user_qr_${phone}`) ||
+                          localStorage.getItem(`dd_app_valet_wechat_qr_${phone}`) ||
+                          (() => {
+                            try {
+                              const s = localStorage.getItem(`dd_settings_${phone}`);
+                              if (s) return JSON.parse(s)?.wechatQrCode || '';
+                            } catch (_) {}
+                            return '';
+                          })();
+        if (webCached) {
+          setDispatcherQr(webCached);
+          break;
         }
       }
 
       if (!dispatcherQr) {
         const fallbackGlobal = localStorage.getItem('dd_web_valet_wechat_qr') ||
                                localStorage.getItem('dd_dispatch_fee_qr_global') ||
-                               localStorage.getItem('dd_merchant_web_qr') ||
-                               localStorage.getItem('dd_dispatch_wechat_qr_15509601222') ||
-                               localStorage.getItem('dd_dispatch_wechat_qr');
+                               localStorage.getItem('dd_merchant_web_qr');
         if (fallbackGlobal) {
           setDispatcherQr(fallbackGlobal);
         }
@@ -293,38 +282,29 @@ export default function MerchantValetPaymentView({
       (trip as any)?.creatorPhone,
       (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_login_phone') : ''),
       (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_phone') : ''),
-      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : ''),
-      '15509601222'
+      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : '')
     ].map(p => (p || '').toString().trim()).filter(Boolean)));
 
     for (const p of phones) {
-      if (isWebChannel) {
-        const q = localStorage.getItem(`dd_web_valet_wechat_qr_${p}`) ||
-                  localStorage.getItem(`dd_dispatch_wechat_qr_${p}`) ||
-                  localStorage.getItem(`dd_dispatch_fee_qr_${p}`) ||
-                  localStorage.getItem(`dd_merchant_user_qr_${p}`);
-        if (q) return q;
-      } else {
-        const q = localStorage.getItem(`dd_app_valet_wechat_qr_${p}`) ||
-                  localStorage.getItem(`dd_dispatch_wechat_qr_${p}`) ||
-                  (() => {
-                    try {
-                      const s = localStorage.getItem(`dd_settings_${p}`);
-                      if (s) return JSON.parse(s)?.wechatQrCode || '';
-                    } catch (_) {}
-                    return '';
-                  })();
-        if (q) return q;
-      }
+      const q = localStorage.getItem(`dd_web_valet_wechat_qr_${p}`) ||
+                localStorage.getItem(`dd_dispatch_wechat_qr_${p}`) ||
+                localStorage.getItem(`dd_dispatch_fee_qr_${p}`) ||
+                localStorage.getItem(`dd_merchant_user_qr_${p}`) ||
+                localStorage.getItem(`dd_app_valet_wechat_qr_${p}`) ||
+                (() => {
+                  try {
+                    const s = localStorage.getItem(`dd_settings_${p}`);
+                    if (s) return JSON.parse(s)?.wechatQrCode || '';
+                  } catch (_) {}
+                  return '';
+                })();
+      if (q) return q;
     }
 
     // Fallback to global web / dispatch QR cache if available
     return localStorage.getItem('dd_web_valet_wechat_qr') ||
            localStorage.getItem('dd_dispatch_fee_qr_global') ||
            localStorage.getItem('dd_merchant_web_qr') ||
-           localStorage.getItem('dd_dispatch_wechat_qr_15509601222') ||
-           localStorage.getItem('dd_dispatch_wechat_qr') ||
-           localStorage.getItem('dd_dispatch_fee_qr') ||
            '';
   })();
 

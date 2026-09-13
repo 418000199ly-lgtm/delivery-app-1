@@ -1910,14 +1910,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   useEffect(() => {
     if (currentTrip) {
       if (currentTrip.currentStatus === 'serving') {
-        setCurrentView('navigation');
+        if (currentView !== 'navigation') {
+          setCurrentView('navigation');
+        }
       } else if (currentTrip.currentStatus === 'ended') {
-        setCurrentView('cost');
+        if (currentView !== 'cost' && currentView !== 'payment_qr') {
+          setCurrentView('cost');
+        }
       } else if (currentTrip.currentStatus === 'payment_pending') {
-        setCurrentView('payment_qr');
+        if (currentView !== 'payment_qr') {
+          setCurrentView('payment_qr');
+        }
       }
     }
-  }, [currentTrip]);
+  }, [currentTrip?.currentStatus]);
 
   // --- 2. Action Flow Responders ---
   const handleStartTrip = (trip: TripState) => {
@@ -1954,6 +1960,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   };
 
   const handleUpdateTrip = (updated: TripState) => {
+    if (!currentTrip) return;
+    // Guard against late GPS background pings resurrecting an ended or payment-pending trip back to 'serving'
+    if (currentTrip.currentStatus === 'ended' || currentTrip.currentStatus === 'payment_pending' || currentTrip.currentStatus === 'completed') {
+      if (updated.currentStatus === 'serving') {
+        setCurrentTrip({
+          ...updated,
+          currentStatus: currentTrip.currentStatus
+        });
+        return;
+      }
+    }
     setCurrentTrip(updated);
   };
 
@@ -1978,15 +1995,28 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       currentStatus: 'ended' as const
     };
     setCurrentTrip(endedTrip);
+    try {
+      safeSetItem('dd_current_trip', JSON.stringify(endedTrip));
+    } catch (_) {}
     setCurrentView('cost');
   };
 
   const handleGoToCollection = (finalizedTrip: TripState) => {
-    setCurrentTrip(finalizedTrip);
+    const pendingTrip: TripState = {
+      ...finalizedTrip,
+      currentStatus: 'payment_pending' as const
+    };
+    setCurrentTrip(pendingTrip);
+    try {
+      safeSetItem('dd_current_trip', JSON.stringify(pendingTrip));
+    } catch (_) {}
     setCurrentView('payment_qr');
-    if (isUnsetDestination(finalizedTrip.endLocation)) {
-      autoUpdateOrderDestinationIfUnset(finalizedTrip, userPhone, (updated) => {
-        setCurrentTrip(updated);
+    if (isUnsetDestination(pendingTrip.endLocation)) {
+      autoUpdateOrderDestinationIfUnset(pendingTrip, userPhone, (updated) => {
+        setCurrentTrip({
+          ...updated,
+          currentStatus: 'payment_pending'
+        });
       });
     }
   };
@@ -2219,6 +2249,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       window.dispatchEvent(new CustomEvent('driver_orders_updated'));
     }
     setCurrentTrip(null);
+    try {
+      safeRemoveItem('dd_current_trip');
+      localStorage.removeItem('dd_current_trip');
+      if (currentTrip && currentTrip.id) {
+        localStorage.removeItem(`active_trip_gps_${currentTrip.id}`);
+      }
+    } catch (_) {}
     setCurrentView('home');
 
     // Check if 05:59 automatic daily offline was deferred due to active trip
