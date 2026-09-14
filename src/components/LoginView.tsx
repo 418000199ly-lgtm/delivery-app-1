@@ -121,8 +121,13 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
       return;
     }
 
-    if (!smsCode) {
+    const codeTrimmed = smsCode.trim();
+    if (!codeTrimmed) {
       setErrorMsg('请输入短信验证码');
+      return;
+    }
+    if (codeTrimmed.length !== 4) {
+      setErrorMsg('请输入4位短信验证码');
       return;
     }
 
@@ -257,16 +262,18 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
                   <div className="relative flex-1">
                     <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
                     <input
-                      type="text"
+                      type="tel"
+                      inputMode="numeric"
                       id="driver-sms-code-input"
-                      maxLength={6}
+                      maxLength={4}
                       value={smsCode}
                       onChange={(e) => {
-                        setSmsCode(e.target.value.trim());
+                        const cleanVal = e.target.value.replace(/\D/g, '').slice(0, 4);
+                        setSmsCode(cleanVal);
                         setErrorMsg('');
                         setInfoMsg('');
                       }}
-                      placeholder="请输入验证码"
+                      placeholder="请输入4位验证码"
                       className="w-full pl-10 pr-4 py-3 bg-[#0e1017] border border-slate-900 rounded-2xl text-xs font-black focus:outline-hidden focus:border-[#189F95] text-slate-200 placeholder:text-slate-600 font-mono tracking-widest text-center"
                     />
                   </div>

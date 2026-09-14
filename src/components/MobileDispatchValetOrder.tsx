@@ -3413,11 +3413,12 @@ export default function MobileDispatchValetOrder({
                 <label className="sr-only">验证码</label>
                 <div className="flex w-full items-center border border-[#e2dfde] rounded-xl bg-[#f9f9f9] focus-within:border-[#ff7d00] focus-within:ring-2 focus-within:ring-[#ff7d00]/20 transition-all">
                   <input 
-                    type="text"
-                    maxLength={6}
+                    type="tel"
+                    inputMode="numeric"
+                    maxLength={4}
                     value={loginCode}
-                    onChange={(e) => setLoginCode(e.target.value)}
-                    placeholder="请输入验证码" 
+                    onChange={(e) => setLoginCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    placeholder="请输入4位验证码" 
                     className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-sm text-[#1a1c1c] pl-4 py-3 w-full"
                   />
                   <button 

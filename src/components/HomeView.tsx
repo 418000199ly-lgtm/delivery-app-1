@@ -1294,11 +1294,22 @@ export default function HomeView({
 
   const renderPendingResultView = (onCloseModal: () => void) => (
     <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
-      <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-5 shrink-0">
+      {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+      <div 
+        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+        style={{ 
+          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
+          minHeight: '44px'
+        }} 
+      />
+
+      <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-4 sm:px-5 shrink-0">
         <button 
           type="button"
           onClick={onCloseModal}
-          className="p-1 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c]"
+          className="p-2 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c] -ml-2"
+          title="返回"
+          aria-label="返回"
         >
           <ArrowLeft className="w-6 h-6" />
         </button>
@@ -1350,12 +1361,23 @@ export default function HomeView({
   const renderApprovedResultView = (onCloseModal: () => void) => {
     return (
       <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
+        {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+        <div 
+          className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+          style={{ 
+            height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
+            minHeight: '44px'
+          }} 
+        />
+
         {/* Top AppBar */}
-        <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-5 shrink-0">
+        <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-4 sm:px-5 shrink-0">
           <button 
             type="button"
             onClick={onCloseModal}
-            className="p-1 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c]"
+            className="p-2 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c] -ml-2"
+            title="返回"
+            aria-label="返回"
           >
             <ArrowLeft className="w-6 h-6" />
           </button>
@@ -1470,13 +1492,24 @@ export default function HomeView({
 
   const renderRejectedResultView = (onCloseModal: () => void) => (
     <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
+      {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+      <div 
+        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+        style={{ 
+          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
+          minHeight: '44px'
+        }} 
+      />
+
       {/* Header */}
-      <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-5 shrink-0">
+      <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-4 sm:px-5 shrink-0">
         <div className="flex items-center gap-3">
           <button 
             type="button"
             onClick={onCloseModal}
-            className="p-1 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c]"
+            className="p-2 rounded-full hover:bg-slate-200/60 transition-colors active:scale-95 cursor-pointer text-[#1a1c1c] -ml-2"
+            title="返回"
+            aria-label="返回"
           >
             <ArrowLeft className="w-6 h-6" />
           </button>
@@ -4457,6 +4490,15 @@ export default function HomeView({
           </div>
         ) : (
           <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">
+            {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+            <div 
+              className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+              style={{ 
+                height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
+                minHeight: '44px'
+              }} 
+            />
+
             {/* TopAppBar Header */}
             <header className="sticky top-0 w-full z-50 h-16 flex items-center justify-between px-5 bg-[#f9f9f9] border-b border-[#dfc0af] shrink-0">
               <div className="flex items-center gap-4">
@@ -4641,6 +4683,15 @@ export default function HomeView({
             renderRejectedResultView(() => setShowApplySquadModal(false))
           ) : (
             <>
+              {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+              <div 
+                className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+                style={{ 
+                  height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
+                  minHeight: '44px'
+                }} 
+              />
+
               {/* TopAppBar Header */}
               <header className="sticky top-0 w-full z-50 h-16 flex items-center justify-between px-5 bg-[#f9f9f9] border-b border-[#dfc0af] shrink-0">
                 <div className="flex items-center gap-4">

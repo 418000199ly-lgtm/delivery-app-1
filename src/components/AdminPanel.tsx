@@ -1517,8 +1517,13 @@ export default function AdminPanel({
         return;
       }
 
-      if (!adminSmsCode) {
+      const cleanCode = adminSmsCode.trim();
+      if (!cleanCode) {
         setLoginError('请输入验证码');
+        return;
+      }
+      if (cleanCode.length !== 4) {
+        setLoginError('请输入4位短信验证码');
         return;
       }
 
@@ -1657,15 +1662,17 @@ export default function AdminPanel({
                 <div className="relative flex-1">
                   <KeyRound className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-600" />
                   <input
-                    type="text"
-                    maxLength={6}
+                    type="tel"
+                    inputMode="numeric"
+                    maxLength={4}
                     required
                     value={adminSmsCode}
                     onChange={(e) => {
-                      setAdminSmsCode(e.target.value.trim());
+                      const cleanVal = e.target.value.replace(/\D/g, '').slice(0, 4);
+                      setAdminSmsCode(cleanVal);
                       setLoginError('');
                     }}
-                    placeholder="请输入验证码"
+                    placeholder="请输入4位验证码"
                     className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-2xl text-slate-100 text-xs font-bold focus:outline-none focus:border-teal-500 transition-all placeholder:text-slate-600 font-mono tracking-widest text-center"
                   />
                 </div>

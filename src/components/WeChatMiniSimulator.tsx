@@ -2349,11 +2349,12 @@ Page({
                           <div className="flex items-center border-b border-gray-200 focus-within:border-[#FF741F] transition-all">
                             <input 
                               className="flex-grow bg-transparent border-0 py-1.5 px-0 text-slate-900 text-sm font-bold placeholder-gray-300 focus:ring-0 focus:outline-none" 
-                              placeholder="请输入验证码" 
-                              type="text"
-                              maxLength={6}
+                              placeholder="请输入4位验证码" 
+                              type="tel"
+                              inputMode="numeric"
+                              maxLength={4}
                               value={registerCode}
-                              onChange={(e) => setRegisterCode(e.target.value.replace(/\D/g, ''))}
+                              onChange={(e) => setRegisterCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
                             />
                             <button 
                               onClick={async () => {
