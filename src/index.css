@@ -55,9 +55,21 @@ button:focus, button:focus-visible, button:active {
   outline-style: none !important;
 }
 
+:root {
+  --android-status-bar-height: 48px;
+  --status-bar-height: 48px;
+  --android-nav-bar-height: 0px;
+}
+
 /* Safe area padding utilities for Capacitor native mobile apps & Android navigation bars */
+.status-bar-safe-spacer {
+  height: 48px;
+  height: max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px);
+  min-height: 44px;
+}
+
 .pt-safe {
-  padding-top: env(safe-area-inset-top, 0px);
+  padding-top: max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px);
 }
 
 .pb-safe {
@@ -65,15 +77,15 @@ button:focus, button:focus-visible, button:active {
 }
 
 .mt-safe {
-  margin-top: env(safe-area-inset-top, 0px);
+  margin-top: max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px);
 }
 
 .header-safe-pt {
-  padding-top: calc(0.875rem + max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 36px)) !important;
+  padding-top: calc(0.875rem + max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px)) !important;
 }
 
 .header-safe-pt-sm {
-  padding-top: calc(0.5rem + max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 36px)) !important;
+  padding-top: calc(0.5rem + max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px)) !important;
 }
 
 .footer-safe-pb {

@@ -46,10 +46,18 @@ export default function OrderDetailModal({
 
   return (
     <div className="absolute inset-0 bg-[#f0f9f4] dark:bg-zinc-950 z-[1200] flex flex-col overflow-hidden animate-in slide-in-from-right duration-200 select-none">
+      {/* 手机顶部电量/信号/状态栏安全占位区 */}
+      <div 
+        className="w-full shrink-0 bg-white dark:bg-zinc-900 select-none pointer-events-none status-bar-safe-spacer"
+        style={{ 
+          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
+          minHeight: '44px'
+        }} 
+      />
+
       {/* Header with full Android / iOS Status Bar and notch safe area adaptation */}
       <header 
-        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 32px)' }}
-        className="sticky top-0 w-full z-50 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between px-4 pb-3 shrink-0"
+        className="sticky top-0 w-full z-50 bg-white dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between px-4 py-2.5 sm:py-3 shrink-0"
       >
         <button 
           type="button"

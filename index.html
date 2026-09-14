@@ -76,7 +76,7 @@
         window.addEventListener('resize', normalizeSystemFontScale);
         window.addEventListener('pageshow', normalizeSystemFontScale);
 
-        // 3. Android System Navigation Bar Auto-Adapter Engine
+        // 3. Android System Navigation Bar & Status Bar Auto-Adapter Engine
         function updateAndroidNavInsets() {
           try {
             var docEl = document.documentElement;
@@ -93,14 +93,39 @@
           } catch (e) {}
         }
 
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', updateAndroidNavInsets);
-        } else {
-          updateAndroidNavInsets();
+        function updateAndroidStatusBarInsets() {
+          try {
+            var docEl = document.documentElement;
+            var isAndroid = /android/i.test(navigator.userAgent || '');
+            var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent || '');
+            var statusBarHeight = 48; // Safe 48px baseline for Android hole-punch / notch screens
+
+            if (window.screen && typeof window.screen.availTop === 'number' && window.screen.availTop >= 24 && window.screen.availTop <= 80) {
+              statusBarHeight = Math.max(statusBarHeight, window.screen.availTop);
+            } else if (isAndroid) {
+              statusBarHeight = 48;
+            } else if (isIOS) {
+              statusBarHeight = 47;
+            }
+
+            docEl.style.setProperty('--android-status-bar-height', statusBarHeight + 'px');
+            docEl.style.setProperty('--status-bar-height', statusBarHeight + 'px');
+          } catch (e) {}
         }
-        window.addEventListener('resize', updateAndroidNavInsets);
-        window.addEventListener('pageshow', updateAndroidNavInsets);
-        window.addEventListener('orientationchange', updateAndroidNavInsets);
+
+        function updateAllInsets() {
+          updateAndroidNavInsets();
+          updateAndroidStatusBarInsets();
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', updateAllInsets);
+        } else {
+          updateAllInsets();
+        }
+        window.addEventListener('resize', updateAllInsets);
+        window.addEventListener('pageshow', updateAllInsets);
+        window.addEventListener('orientationchange', updateAllInsets);
 
         // 4. Disable multi-touch gesture zoom & double-tap zoom
         document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false });

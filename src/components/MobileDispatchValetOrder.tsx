@@ -3559,10 +3559,18 @@ export default function MobileDispatchValetOrder({
         className="hidden"
       />
 
+      {/* 手机顶部电量/信号/状态栏安全占位区 */}
+      <div 
+        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+        style={{ 
+          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
+          minHeight: '44px'
+        }} 
+      />
+
       {/* TopAppBar */}
       <header 
-        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 36px)' }}
-        className="sticky top-0 w-full z-40 bg-[#f9f9f9] border-b border-[#e2e2e2] flex items-center justify-between px-3 sm:px-5 pb-3 shadow-sm shrink-0 relative"
+        className="sticky top-0 w-full z-40 bg-[#f9f9f9] border-b border-[#e2e2e2] flex items-center justify-between px-3 sm:px-5 py-2.5 sm:py-3 shadow-sm shrink-0 relative"
       >
         <div className="flex items-center gap-1.5 shrink-0">
           <button
@@ -4933,10 +4941,18 @@ export default function MobileDispatchValetOrder({
       {/* Order Detail View Modal */}
       {selectedOrderDetail && (
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
+          {/* 手机顶部电量/信号/状态栏安全占位区 */}
+          <div 
+            className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
+            style={{ 
+              height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
+              minHeight: '44px'
+            }} 
+          />
+
           {/* TopAppBar */}
           <header 
-            style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 32px)' }}
-            className="bg-[#f9f9f9] sticky top-0 z-50 border-b border-[#e2e2e2] flex items-center justify-between px-5 pb-3 shrink-0"
+            className="bg-[#f9f9f9] sticky top-0 z-50 border-b border-[#e2e2e2] flex items-center justify-between px-5 py-2.5 sm:py-3 shrink-0"
           >
             <div className="flex items-center gap-3">
               <button 

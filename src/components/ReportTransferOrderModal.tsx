@@ -456,20 +456,29 @@ export default function ReportTransferOrderModal({
   return (
     <div className="absolute inset-0 z-[100] bg-[#f9f9f9] text-[#1a1c1c] flex flex-col font-sans select-none overflow-hidden animate-in fade-in duration-200">
       
-      {/* TopAppBar - Fixed Height Header with Safe Area for Android/iOS */}
+      {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+      <div 
+        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer"
+        style={{ 
+          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
+          minHeight: '44px'
+        }} 
+      />
+
+      {/* TopAppBar - Fixed Height Header positioned safely below status bar */}
       <header 
-        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 36px)' }}
-        className="sticky top-0 z-10 bg-white flex items-center justify-between px-4 pb-3 border-b border-[#e2e2e2] shrink-0 shadow-2xs"
+        className="sticky top-0 z-10 bg-white flex items-center justify-between px-4 py-2.5 sm:py-3 border-b border-[#e2e2e2] shrink-0 shadow-2xs"
       >
         <button 
           type="button"
           onClick={onClose}
-          className="text-[#584235] hover:bg-[#e2e2e2] p-1.5 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95"
+          className="text-[#584235] hover:bg-[#e2e2e2] p-2 rounded-full flex items-center justify-center transition-colors cursor-pointer active:scale-95 -ml-1.5"
           title="返回"
+          aria-label="返回"
         >
           <ArrowLeft className="w-5 h-5 text-gray-800" />
         </button>
-        <h1 className="text-base font-bold text-[#984800] tracking-wide">报单转单</h1>
+        <h1 className="text-base sm:text-lg font-bold text-[#984800] tracking-wide">报单转单</h1>
         <div className="w-8" /> {/* Spacer */}
       </header>
 

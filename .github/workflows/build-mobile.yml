@@ -10,6 +10,16 @@ on:
       - main
       - master
   workflow_dispatch:
+    inputs:
+      build_target:
+        description: '🎯 选择构建目标 (Build Target)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - android
+          - ios
 
 jobs:
   # ==========================================
@@ -17,6 +27,7 @@ jobs:
   # ==========================================
   build-android:
     name: 🤖 打包 手机端（司机）Android APK
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'android' || !github.event.inputs.build_target }}
     runs-on: ubuntu-latest
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
@@ -85,6 +96,7 @@ jobs:
   # ==========================================
   build-ios:
     name: 🍏 打包 手机端（司机）iOS IPA 应用
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'ios' || !github.event.inputs.build_target }}
     runs-on: macos-14
     env:
       ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'

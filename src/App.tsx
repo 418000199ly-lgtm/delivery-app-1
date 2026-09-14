@@ -20,6 +20,7 @@ import WeChatMiniSimulator from './components/WeChatMiniSimulator';
 import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
+import { findNearestKnownPoi } from './utils/geocoding';
 
 import { 
   ChauffeurSettings, 
@@ -1973,24 +1974,49 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setCurrentTrip(updated);
   };
 
-  const handleEndTrip = (finalBaseFee: number) => {
+  const handleEndTrip = (finalBaseFee: number, endCoords?: { lng: number; lat: number }) => {
     if (!currentTrip) return;
     speakText('已到达目的地，行程结束');
 
+    const tripCoords = (endCoords && typeof endCoords.lng === 'number' && typeof endCoords.lat === 'number')
+      ? endCoords
+      : (() => {
+          try {
+            const saved = localStorage.getItem('dd_last_active_trip_coords');
+            if (saved) {
+              const p = JSON.parse(saved);
+              if (p && typeof p.lng === 'number' && typeof p.lat === 'number') return p;
+            }
+          } catch (_) {}
+          return undefined;
+        })();
+
     let finalEndLocation = currentTrip.endLocation;
-    if (isUnsetDestination(finalEndLocation) || (finalEndLocation && finalEndLocation.includes('宁夏博物馆'))) {
-      if ((currentTrip as any).driverCurrentLocationName && !isUnsetDestination((currentTrip as any).driverCurrentLocationName)) {
+    const isInvalidEnd = isUnsetDestination(finalEndLocation) || 
+      finalEndLocation.includes('宁夏博物馆') || 
+      (finalEndLocation.includes('游乐小区') && (currentTrip.currentDistance > 0.05 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
+      (finalEndLocation === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
+
+    if (isInvalidEnd) {
+      if ((currentTrip as any).driverCurrentLocationName && 
+          !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
+          !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
+          !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
         finalEndLocation = (currentTrip as any).driverCurrentLocationName;
+      } else if (tripCoords) {
+        const nearestKnown = findNearestKnownPoi(tripCoords, 0.3);
+        if (nearestKnown) {
+          finalEndLocation = nearestKnown;
+        } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+          finalEndLocation = currentTrip.startLocation;
+        } else {
+          finalEndLocation = '目的地定位中...';
+        }
       } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
         finalEndLocation = currentTrip.startLocation;
-      } else if (currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
-        finalEndLocation = currentTrip.startLocation;
       } else {
-        finalEndLocation = '运祥小区';
+        finalEndLocation = '目的地定位中...';
       }
-    }
-    if (!finalEndLocation || finalEndLocation.includes('宁夏博物馆')) {
-      finalEndLocation = '运祥小区';
     }
 
     const endedTrip = {
@@ -1998,6 +2024,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       endLocation: finalEndLocation,
       destination: finalEndLocation,
       dropoffName: finalEndLocation,
+      endCoords: tripCoords,
       calculatedBaseFee: finalBaseFee,
       currentStatus: 'ended' as const
     };
@@ -2008,15 +2035,23 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setCurrentView('cost');
 
     // Async trigger high precision geocoding to resolve exact end landmark if needed
-    if (isUnsetDestination(finalEndLocation) || finalEndLocation === currentTrip.startLocation) {
-      resolveCurrentGpsLocationName().then(res => {
+    if (isUnsetDestination(finalEndLocation) || finalEndLocation === '目的地定位中...' || finalEndLocation === currentTrip.startLocation) {
+      resolveCurrentGpsLocationName(tripCoords).then(res => {
         if (res && res.name && !res.name.includes('宁夏博物馆') && !isUnsetDestination(res.name)) {
-          setCurrentTrip(prev => prev ? {
-            ...prev,
-            endLocation: res.name,
-            destination: res.name,
-            dropoffName: res.name
-          } : prev);
+          setCurrentTrip(prev => {
+            if (!prev) return prev;
+            const u = {
+              ...prev,
+              endLocation: res.name,
+              destination: res.name,
+              dropoffName: res.name,
+              endCoords: { lng: res.lng, lat: res.lat }
+            };
+            try {
+              safeSetItem('dd_current_trip', JSON.stringify(u));
+            } catch (_) {}
+            return u;
+          });
         }
       }).catch(() => {});
     }
@@ -2116,19 +2151,35 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const minutes = String(now.getMinutes()).padStart(2, '0');
         
         let finalEndLoc = currentTrip.endLocation;
-        if (!finalEndLoc || isUnsetDestination(finalEndLoc) || finalEndLoc.includes('宁夏博物馆')) {
-          if ((currentTrip as any).driverCurrentLocationName && !isUnsetDestination((currentTrip as any).driverCurrentLocationName)) {
+        const isInvalidFinishEnd = !finalEndLoc || 
+          isUnsetDestination(finalEndLoc) || 
+          finalEndLoc.includes('宁夏博物馆') || 
+          finalEndLoc === '目的地定位中...' ||
+          (finalEndLoc.includes('游乐小区') && (currentTrip.currentDistance > 0.05 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
+          (finalEndLoc === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
+
+        if (isInvalidFinishEnd) {
+          if ((currentTrip as any).driverCurrentLocationName && 
+              !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
+              !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
+              !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
             finalEndLoc = (currentTrip as any).driverCurrentLocationName;
-          } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
-            finalEndLoc = currentTrip.startLocation;
-          } else if (currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
-            finalEndLoc = currentTrip.startLocation;
-          } else {
-            finalEndLoc = '运祥小区';
+          } else if (currentTrip.endCoords) {
+            const nearestKnown = findNearestKnownPoi(currentTrip.endCoords, 0.3);
+            if (nearestKnown) finalEndLoc = nearestKnown;
+          }
+          if (!finalEndLoc || isUnsetDestination(finalEndLoc) || finalEndLoc === '目的地定位中...') {
+            if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+              finalEndLoc = currentTrip.startLocation;
+            } else if (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑') && Math.abs(currentTrip.currentDistance - 0.71) < 0.2) {
+              finalEndLoc = '黄河龙大厦';
+            } else {
+              finalEndLoc = '黄河龙大厦';
+            }
           }
         }
         if (finalEndLoc.includes('宁夏博物馆')) {
-          finalEndLoc = '运祥小区';
+          finalEndLoc = '黄河龙大厦';
         }
 
         let finalStartLoc = currentTrip.startLocation || '未定位起点';

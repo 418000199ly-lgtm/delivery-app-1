@@ -93,6 +93,18 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.4908, lng: 106.2123 } // ~ 1.8km
   },
   {
+    keywords: ['黄河龙大厦', '黄河龙', '上海东路中山北街', '上海东路与中山北街', '百通苑', '华苑小区'],
+    coords: { lat: 38.4892, lng: 106.2435 }
+  },
+  {
+    keywords: ['五宝苑', '北寺巷五宝苑', '北关清真寺'],
+    coords: { lat: 38.4828, lng: 106.2415 }
+  },
+  {
+    keywords: ['游乐小区', '阳光巷游乐小区', '阳光花园'],
+    coords: { lat: 38.4872, lng: 106.2309 }
+  },
+  {
     keywords: ['温州商城'],
     coords: { lat: 38.4750, lng: 106.2380 } // ~ 1.5km
   },
@@ -109,6 +121,26 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.3220, lng: 106.3920 } // ~ 23km
   }
 ];
+
+/**
+ * Finds the nearest known POI landmark from coordinates if within maxDistKm (default 0.2 km = 200m)
+ */
+export function findNearestKnownPoi(coords?: { lat?: number; lng?: number } | null, maxDistKm = 0.2): string | null {
+  if (!coords || !isValidCoords(coords.lat, coords.lng)) return null;
+  const lat = Number(coords.lat);
+  const lng = Number(coords.lng);
+  let nearestName: string | null = null;
+  let minDist = maxDistKm;
+
+  for (const poi of YINCHUAN_POI_MAP) {
+    const d = calculateHaversineDistanceKm(lat, lng, poi.coords.lat, poi.coords.lng);
+    if (d < minDist) {
+      minDist = d;
+      nearestName = poi.keywords[0];
+    }
+  }
+  return nearestName;
+}
 
 /**
  * Validates if coordinates are within standard valid China geography range

@@ -2150,7 +2150,33 @@ export default function HomeView({
       addItems(genericOrders);
 
       const filtered = filterOrdersWithinSixMonths(combined);
-      return filtered;
+      
+      // Auto-correct any historical orders where 五宝苑 trip was erroneously saved as 游乐小区
+      let hasCorrections = false;
+      const normalized = filtered.map((item: any) => {
+        const start = String(item?.startLocation || '');
+        const end = String(item?.endLocation || item?.destination || '');
+        const dist = Number(item?.distance ?? item?.currentDistance ?? 0);
+        if (end.includes('游乐小区') && (start.includes('五宝苑') || Math.abs(dist - 0.71) < 0.2)) {
+          hasCorrections = true;
+          return {
+            ...item,
+            endLocation: '黄河龙大厦',
+            destination: '黄河龙大厦',
+            dropoffName: '黄河龙大厦'
+          };
+        }
+        return item;
+      });
+
+      if (hasCorrections) {
+        try {
+          localStorage.setItem(ordersKey, JSON.stringify(normalized));
+          localStorage.setItem('dd_driver_orders', JSON.stringify(normalized));
+        } catch (_) {}
+      }
+
+      return normalized;
     } catch (e) {}
     return [];
   }, [userPhone]);

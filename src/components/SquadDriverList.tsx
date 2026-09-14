@@ -412,9 +412,10 @@ export default function SquadDriverList({
     >
       {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
       <div 
-        className="w-full shrink-0 bg-white select-none pointer-events-none"
+        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer"
         style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--status-bar-height, 0px), 36px)' 
+          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
+          minHeight: '44px'
         }} 
       />
 

@@ -83,6 +83,10 @@ export interface TripState {
   isValetOrder?: boolean;
   isPlatformDispatch?: boolean;
   orderRemark?: string;
+  driverCurrentLocationName?: string;
+  endCoords?: { lat: number; lng: number };
+  destination?: string;
+  dropoffName?: string;
 }
 
 export interface DriverStats {

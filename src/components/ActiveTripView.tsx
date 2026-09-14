@@ -41,7 +41,7 @@ interface ActiveTripViewProps {
   billingRules: BillingRules;
   driverCoords?: { lat: number; lng: number } | null;
   onUpdateTrip: (updated: TripState) => void;
-  onEndTrip: (baseFee: number) => void;
+  onEndTrip: (baseFee: number, endCoords?: { lng: number; lat: number }) => void;
 }
 
 export default function ActiveTripView({
@@ -339,8 +339,11 @@ export default function ActiveTripView({
     // Advance last coordinate anchor
     lastCoordsRef.current = { lng, lat, timestamp: now };
 
-    // Save active GPS state to localStorage for background/lock-screen recovery
+    // Save active GPS state to localStorage for background/lock-screen recovery and landmark resolution
     try {
+      localStorage.setItem('dd_last_active_trip_coords', JSON.stringify({ lng, lat, timestamp: now }));
+      localStorage.setItem('dd_bg_driver_coords_lng', String(lng));
+      localStorage.setItem('dd_bg_driver_coords_lat', String(lat));
       localStorage.setItem(`active_trip_gps_${currentTripValue.id}`, JSON.stringify({
         lastCoords: lastCoordsRef.current,
         preciseDistance: preciseDistanceRef.current
@@ -574,7 +577,8 @@ export default function ActiveTripView({
       isEndedRef.current = true;
       setIsSliding(false);
       setSliderPos(0);
-      onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59);
+      const endCoords = lastCoordsRef.current ? { lng: lastCoordsRef.current.lng, lat: lastCoordsRef.current.lat } : undefined;
+      onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59, endCoords);
     }
   };
 
@@ -596,7 +600,8 @@ export default function ActiveTripView({
         isEndedRef.current = true;
         setIsSliding(false);
         setSliderPos(0);
-        onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59);
+        const endCoords = lastCoordsRef.current ? { lng: lastCoordsRef.current.lng, lat: lastCoordsRef.current.lat } : undefined;
+        onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59, endCoords);
       }
     };
 
