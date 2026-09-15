@@ -2139,7 +2139,7 @@ export default function CreateOrderView({
       {/* END: MapMarkerSection */}
 
       {/* BEGIN: OrderDetailsCard */}
-      <div className="bg-white rounded-t-3xl shadow-2xl z-20 px-4 sm:px-6 pt-3 sm:pt-3.5 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px))] shrink-0 border-t border-gray-100 max-w-full overflow-hidden android-nav-safe-pb" data-purpose="order-form-container">
+      <div className="bg-white rounded-t-3xl shadow-2xl z-20 px-4 sm:px-6 pt-3 sm:pt-3.5 pb-2.5 shrink-0 border-t border-gray-100 max-w-full overflow-hidden android-nav-safe-pb" data-purpose="order-form-container">
         {((scanSuccessMsg || (activeOnlineOrder && !isMerchantValetOrder)) && !scanBannerDismissed) && (
           <div className="mb-2.5 bg-[#e8f8f2] border border-[#07c160]/30 rounded-2xl p-2.5 sm:p-3 flex items-center justify-between gap-2 animate-in slide-in-from-top-3 duration-200 shadow-xs max-w-full overflow-hidden">
             <div className="flex items-center gap-2 sm:gap-2.5 min-w-0 flex-1 overflow-hidden">
@@ -2685,7 +2685,7 @@ export default function CreateOrderView({
           </div>
 
           {/* Bottom Action Footer */}
-          <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
+          <div className="p-4 pb-2.5 border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
             <button
               onClick={() => {
                 if (searchText.trim()) {

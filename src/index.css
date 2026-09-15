@@ -56,48 +56,47 @@ button:focus, button:focus-visible, button:active {
 }
 
 :root {
-  --android-status-bar-height: 48px;
-  --status-bar-height: 48px;
+  --android-status-bar-height: 0px;
+  --status-bar-height: 0px;
   --android-nav-bar-height: 0px;
 }
 
-/* Safe area padding utilities for Capacitor native mobile apps & Android navigation bars */
+/* Safe area padding utilities for native mobile apps & mobile web - compact and precise */
 .status-bar-safe-spacer {
-  height: 48px;
-  height: max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px);
-  min-height: 44px;
+  height: env(safe-area-inset-top, 0px);
+  min-height: 0px;
 }
 
 .pt-safe {
-  padding-top: max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px);
+  padding-top: calc(env(safe-area-inset-top, 0px) + 8px);
 }
 
 .pb-safe {
-  padding-bottom: calc(0.75rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 24px)) !important;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
 }
 
 .mt-safe {
-  margin-top: max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px);
+  margin-top: calc(env(safe-area-inset-top, 0px) + 8px);
 }
 
 .header-safe-pt {
-  padding-top: calc(0.875rem + max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px)) !important;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 10px) !important;
 }
 
 .header-safe-pt-sm {
-  padding-top: calc(0.5rem + max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 0px), 44px)) !important;
+  padding-top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
 }
 
 .footer-safe-pb {
-  padding-bottom: calc(1rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 30px)) !important;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
 }
 
 .android-nav-safe-pb {
-  padding-bottom: calc(1.5rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 34px)) !important;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
 }
 
 .bottom-sheet-safe-pb {
-  padding-bottom: calc(1.75rem + max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 36px)) !important;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
 }
 
 /* Custom scrollbar to resemble standard mobile app list views */

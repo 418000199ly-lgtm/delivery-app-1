@@ -185,7 +185,7 @@ export default function OnlineOrderApplicationModal({
       </div>
 
       {/* Page Main Content area with relative scrolling */}
-      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-[calc(2rem+max(env(safe-area-inset-bottom,0px),28px))] space-y-4 android-nav-safe-pb">
+      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-4 space-y-4 android-nav-safe-pb">
         {loadingApp ? (
           <div className="flex flex-col items-center justify-center py-20 space-y-3">
             <div className="w-8 h-8 border-3 border-teal-500 border-t-transparent rounded-full animate-spin"></div>

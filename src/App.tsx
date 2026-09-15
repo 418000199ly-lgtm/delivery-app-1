@@ -551,7 +551,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return params.get('driver');
   });
   const [userPhone, setUserPhone] = useState<string | null>(() => {
-    return localStorage.getItem('dd_user_phone') || '15509601222';
+    return localStorage.getItem('dd_user_phone') || null;
   });
   const [isUserDataLoaded, setIsUserDataLoaded] = useState<boolean>(false);
 

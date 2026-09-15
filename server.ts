@@ -507,7 +507,7 @@ async function startServer() {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
             return { id: r.doc_id, data };
           });
-          return res.json({ docs });
+          return res.json({ docs, list: docs, data: docs });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy LIST MySQL Error]:', mysqlErr);
         }
@@ -520,7 +520,7 @@ async function startServer() {
         id: k,
         data: colData[k]
       }));
-      return res.json({ docs });
+      return res.json({ docs, list: docs, data: docs });
     } catch (err: any) {
       console.error('[DB Proxy LIST Exception]:', err);
       res.status(500).json({ docs: [], error: err.message });
@@ -695,6 +695,11 @@ async function startServer() {
 
       if (!col || !docId) {
         return res.status(400).json({ success: false, error: 'Missing col or id' });
+      }
+
+      // 保护最高权限开发者 15509601222：任何人都不能删除开发者
+      if (docId === '15509601222' && (col === 'squad_members' || col === 'driver_users' || col === 'squad_applications')) {
+        return res.status(403).json({ success: false, error: '开发者 15509601222 拥有最高系统权限，禁止删除！' });
       }
 
       if (isMySQLEnabled && mysqlPool) {
@@ -2113,7 +2118,7 @@ async function startServer() {
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const buffer = Buffer.from(base64Data, 'base64');
       
-      const isWeb = channel === 'web' || channel === 'mobile_web';
+      const isWeb = channel === 'web' || channel === 'mobile_web' || cleanPhone.endsWith('A') || cleanPhone.endsWith('a');
       const filename = isWeb ? `${cleanPhone}_web.png` : `${cleanPhone}.png`;
       const filepath = path.join(qrsDir, filename);
       
@@ -2179,7 +2184,7 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Missing phone' });
       }
 
-      const isWeb = channel === 'web' || channel === 'mobile_web';
+      const isWeb = channel === 'web' || channel === 'mobile_web' || phone.endsWith('A') || phone.endsWith('a');
       const webFilename = `${phone}_web.png`;
       const appFilename = `${phone}.png`;
       const appSpecificFilename = `${phone}_app.png`;

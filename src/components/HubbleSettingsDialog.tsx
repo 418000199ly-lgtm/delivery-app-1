@@ -96,11 +96,7 @@ export default function HubbleSettingsDialog({
     >
       {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
       <div 
-        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer"
-        style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-          minHeight: '44px'
-        }} 
+        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer" 
       />
 
       {/* Top Mobile App Page Header */}
@@ -275,10 +271,7 @@ export default function HubbleSettingsDialog({
 
       {/* Page Bottom Buttons: 取消 / 确定 (Sticky fixed at bottom, fully visible, auto-adapted to all Android nav bars) */}
       <footer 
-        className="p-3 bg-white border-t border-slate-200/80 flex items-center justify-between space-x-3 shrink-0 z-30 shadow-lg"
-        style={{
-          paddingBottom: 'calc(max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 28px) + 10px)'
-        }}
+        className="p-3 pb-3 bg-white border-t border-slate-200/80 flex items-center justify-between space-x-3 shrink-0 z-30 shadow-lg android-nav-safe-pb"
       >
         <button
           type="button"

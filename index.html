@@ -76,40 +76,19 @@
         window.addEventListener('resize', normalizeSystemFontScale);
         window.addEventListener('pageshow', normalizeSystemFontScale);
 
-        // 3. Android System Navigation Bar & Status Bar Auto-Adapter Engine
+        // 3. Android System Navigation Bar & Status Bar Auto-Adapter Engine (Clean 0px default, let env(safe-area-inset-*) handle native notches)
         function updateAndroidNavInsets() {
           try {
             var docEl = document.documentElement;
-            var screenHeight = window.screen ? window.screen.height : 0;
-            var windowHeight = window.innerHeight;
-            var navHeight = 0;
-            if (screenHeight > 0 && windowHeight > 0 && screenHeight > windowHeight) {
-              var diff = screenHeight - windowHeight;
-              if (diff >= 16 && diff <= 120) {
-                navHeight = diff;
-              }
-            }
-            docEl.style.setProperty('--android-nav-bar-height', navHeight + 'px');
+            docEl.style.setProperty('--android-nav-bar-height', '0px');
           } catch (e) {}
         }
 
         function updateAndroidStatusBarInsets() {
           try {
             var docEl = document.documentElement;
-            var isAndroid = /android/i.test(navigator.userAgent || '');
-            var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent || '');
-            var statusBarHeight = 48; // Safe 48px baseline for Android hole-punch / notch screens
-
-            if (window.screen && typeof window.screen.availTop === 'number' && window.screen.availTop >= 24 && window.screen.availTop <= 80) {
-              statusBarHeight = Math.max(statusBarHeight, window.screen.availTop);
-            } else if (isAndroid) {
-              statusBarHeight = 48;
-            } else if (isIOS) {
-              statusBarHeight = 47;
-            }
-
-            docEl.style.setProperty('--android-status-bar-height', statusBarHeight + 'px');
-            docEl.style.setProperty('--status-bar-height', statusBarHeight + 'px');
+            docEl.style.setProperty('--android-status-bar-height', '0px');
+            docEl.style.setProperty('--status-bar-height', '0px');
           } catch (e) {}
         }
 

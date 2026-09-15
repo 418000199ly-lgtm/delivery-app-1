@@ -913,7 +913,7 @@ export default function ActiveTripView({
         {/* END: ActionButtons */}
 
         {/* BEGIN: FooterNote */}
-        <footer className="pt-2 pb-[calc(2.5rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),36px))] android-nav-safe-pb">
+        <footer className="pt-2 pb-2 android-nav-safe-pb">
           <p className="text-center text-slate-400 text-[10px] tracking-wide leading-relaxed">
             请确认行驶路线安全无误，结束工作后根据实际费率跟乘客结算费用
           </p>
@@ -1044,7 +1044,7 @@ export default function ActiveTripView({
           </div>
 
           {/* Bottom Action Footer */}
-          <div className="px-4 pt-3.5 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),34px))] border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
+          <div className="px-4 pt-3.5 pb-2.5 border-t border-gray-100 bg-white shrink-0 android-nav-safe-pb">
             <button
               onClick={() => {
                 const finalDest = searchText.trim();

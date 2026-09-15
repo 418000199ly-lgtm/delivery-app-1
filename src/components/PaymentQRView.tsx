@@ -283,7 +283,7 @@ export default function PaymentQRView({
       </div>
 
       {/* FOOTER */}
-      <footer className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px))] bg-white sm:bg-transparent shrink-0 android-nav-safe-pb">
+      <footer className="p-4 bg-white sm:bg-transparent shrink-0 android-nav-safe-pb">
         <button 
           type="button"
           onClick={handleConfirmPayment}

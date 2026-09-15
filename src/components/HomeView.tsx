@@ -400,9 +400,9 @@ export default function HomeView({
         if (removedSet.has(phone) || removedSet.has(name) || removedSet.has(String(m.id))) return;
       }
 
-      // 仅剔除明确为商户、商家的角色账号
+      // 仅剔除明确为商户、商家的角色账号或带A的商户手机号
       const roleStr = String(m.role || m.userRole || '').trim();
-      const isMerchant = roleStr.includes('商户') || roleStr.includes('商家');
+      const isMerchant = phone.toUpperCase().endsWith('A') || roleStr.includes('商户') || roleStr.includes('商家');
       if (isMerchant) return;
 
       // 只有明确审核通过的司机才计入小队人数！未通过审核或状态为待审核/已拒绝的一律不计入！
@@ -413,6 +413,29 @@ export default function HomeView({
 
       activeDriverPhones.add(phone);
     });
+
+    // 检查已审核通过的申请人
+    try {
+      const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+      if (Array.isArray(savedApps)) {
+        savedApps.forEach((a: any) => {
+          const phone = String(a.phone || a.id || '').trim();
+          const name = String(a.name || '').trim();
+          if (!phone) return;
+          if (phone !== '15509601222') {
+            if (removedSet.has(phone) || removedSet.has(name) || removedSet.has(String(a.id))) return;
+          }
+          const roleStr = String(a.role || a.userRole || '').trim();
+          const isMerchant = phone.toUpperCase().endsWith('A') || roleStr.includes('商户') || roleStr.includes('商家');
+          if (isMerchant) return;
+
+          const st = String(a.status || a.approvalStatus || '').trim();
+          if (phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st)) {
+            activeDriverPhones.add(phone);
+          }
+        });
+      }
+    } catch (_) {}
 
     // 包含默认团队管理/开发者账号 15509601222 (永不剔除，默认自动加入)
     activeDriverPhones.add('15509601222');
@@ -1296,11 +1319,7 @@ export default function HomeView({
     <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
       {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
       <div 
-        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-        style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-          minHeight: '44px'
-        }} 
+        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
       />
 
       <header className="sticky top-0 w-full z-50 h-14 bg-[#f9f9f9] border-b border-[#dfc0af]/60 flex items-center justify-between px-4 sm:px-5 shrink-0">
@@ -1363,11 +1382,7 @@ export default function HomeView({
       <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
         {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
         <div 
-          className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-          style={{ 
-            height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-            minHeight: '44px'
-          }} 
+          className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
         />
 
         {/* Top AppBar */}
@@ -1437,7 +1452,7 @@ export default function HomeView({
         </main>
 
         {/* Sticky Bottom Actions */}
-        <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-[#dfc0af]/60 flex flex-col gap-2 w-full max-w-md mx-auto android-nav-safe-pb">
+        <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-3 border-t border-[#dfc0af]/60 flex flex-col gap-2 w-full max-w-md mx-auto android-nav-safe-pb">
           <button 
             type="button"
             onClick={onCloseModal}
@@ -1494,11 +1509,7 @@ export default function HomeView({
     <div className="flex flex-col h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto">
       {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
       <div 
-        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-        style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-          minHeight: '44px'
-        }} 
+        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
       />
 
       {/* Header */}
@@ -1561,7 +1572,7 @@ export default function HomeView({
       </main>
 
       {/* Sticky Footer */}
-      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] border-t border-[#dfc0af]/60 flex flex-col gap-3 w-full max-w-md mx-auto android-nav-safe-pb">
+      <footer className="sticky bottom-0 bg-[#f9f9f9]/90 backdrop-blur-md px-5 pt-3 border-t border-[#dfc0af]/60 flex flex-col gap-3 w-full max-w-md mx-auto android-nav-safe-pb">
         <button 
           type="button"
           onClick={() => setLocalAlert({
@@ -1750,25 +1761,87 @@ export default function HomeView({
       let apiMembers: any[] = [];
       if (resMembers.ok) {
         const data = await resMembers.json();
-        if (Array.isArray(data)) apiMembers = data;
+        if (Array.isArray(data)) {
+          apiMembers = data;
+        } else if (Array.isArray(data?.docs)) {
+          apiMembers = data.docs;
+        } else if (Array.isArray(data?.list)) {
+          apiMembers = data.list;
+        } else if (Array.isArray(data?.data)) {
+          apiMembers = data.data;
+        }
       }
 
       const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store' });
       let apiApps: any[] = [];
       if (resApps.ok) {
         const data = await resApps.json();
-        if (Array.isArray(data)) apiApps = data;
+        if (Array.isArray(data)) {
+          apiApps = data;
+        } else if (Array.isArray(data?.docs)) {
+          apiApps = data.docs;
+        } else if (Array.isArray(data?.list)) {
+          apiApps = data.list;
+        } else if (Array.isArray(data?.data)) {
+          apiApps = data.data;
+        }
       }
 
+      const isMerchantItem = (item: any) => {
+        const p = String(item?.phone || item?.id || '').trim();
+        const r = String(item?.role || item?.userRole || '').trim();
+        return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
+      };
+
       const map = new Map<string, any>();
+
+      // 1. Load from apiMembers (Firestore / JSON DB)
       apiMembers.forEach(m => {
+        if (isMerchantItem(m)) return;
         const phone = String(m.phone || m.id || '').trim();
         const st = String(m.status || '').trim();
         // 只有审核通过的成员才作为小队成员！
         if (phone && (phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st))) {
-          map.set(phone, { ...m, status: '已通过' });
+          map.set(phone, { ...m, phone, status: '已通过' });
         }
       });
+
+      // 2. Load approved applicants from apiApps
+      apiApps.forEach(app => {
+        if (isMerchantItem(app)) return;
+        const phone = String(app.phone || app.id || '').trim();
+        const st = String(app.status || '').trim();
+        if (phone && (phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st))) {
+          const existing = map.get(phone);
+          map.set(phone, {
+            id: app.id || phone,
+            phone,
+            name: app.name || app.driverName || existing?.name || (phone === '15509601222' ? '吴彦祖' : (phone === '15121904440' ? '李扬' : `司机${phone.slice(-4)}`)),
+            role: app.role || app.userRole || existing?.role || '普通司机',
+            userRole: app.role || app.userRole || existing?.userRole || '普通司机',
+            status: '已通过',
+            approvedBy: app.approvedBy || existing?.approvedBy || '',
+            approvedRole: app.approvedRole || existing?.approvedRole || ''
+          });
+        }
+      });
+
+      // 3. Merge from local storage if available
+      try {
+        const savedMembers = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+        if (Array.isArray(savedMembers)) {
+          savedMembers.forEach((sm: any) => {
+            if (isMerchantItem(sm)) return;
+            const phone = String(sm.phone || sm.id || '').trim();
+            const st = String(sm.status || '').trim();
+            if (phone && (phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st))) {
+              if (!map.has(phone)) {
+                map.set(phone, { ...sm, phone, status: '已通过' });
+              }
+            }
+          });
+        }
+      } catch (_) {}
 
       // 保证 15509601222 (开发者司机/超级管理员) 始终在列表中，绝不丢失
       const masterPhone = '15509601222';
@@ -1791,9 +1864,32 @@ export default function HomeView({
         const myRecord = mergedList.find(item => String(item.phone || item.id).trim() === currentPhone);
         const myStatus = String(myRecord?.status || '').trim();
         const isApprovedInCloud = ['已通过', 'approved', '通过'].includes(myStatus);
-        const isPendingInCloud = ['待审核', 'pending', '审核中'].includes(myStatus);
+        const isPendingInCloud = !isApprovedInCloud && apiApps.some(a => String(a.phone || a.id).trim() === currentPhone && ['待审核', 'pending', '审核中'].includes(String(a.status || '').trim()));
 
-        if (isPendingInCloud) {
+        if (isApprovedInCloud) {
+          // 当前用户已成功通过审核：绝不处于重新申请模式，清空移除标记
+          setIsReapplying(false);
+          try {
+            const savedR = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
+            const cleanR = savedR.filter((p: any) => String(p).trim() !== currentPhone);
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(cleanR));
+            setRemovedMemberPhones(cleanR);
+
+            const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+            const idxM = savedM.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
+            if (idxM >= 0) savedM[idxM] = { ...savedM[idxM], ...myRecord };
+            else savedM.push(myRecord);
+            localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedM));
+
+            localStorage.setItem(`dd_squad_member_${currentPhone}`, JSON.stringify(myRecord));
+            localStorage.setItem(`dd_approved_${currentPhone}`, 'true');
+
+            if (myRecord.role) {
+              setUserRole(myRecord.role);
+              localStorage.setItem('dd_user_role', myRecord.role);
+            }
+          } catch (_) {}
+        } else if (isPendingInCloud) {
           // 当前用户正在待审核状态：清空黑名单记录，保留申请记录
           try {
             const savedR = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
@@ -1817,25 +1913,6 @@ export default function HomeView({
             localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
 
             window.dispatchEvent(new CustomEvent('user_role_updated'));
-          } catch (_) {}
-        } else if (myRecord && myRecord.status) {
-          try {
-            const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-            const idxM = savedM.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
-            if (idxM >= 0) savedM[idxM] = { ...savedM[idxM], ...myRecord };
-            else savedM.push(myRecord);
-            localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedM));
-
-            const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-            const idxA = savedA.findIndex((item: any) => String(item.phone || item.id).trim() === currentPhone);
-            if (idxA >= 0) savedA[idxA] = { ...savedA[idxA], ...myRecord };
-            else savedA.push(myRecord);
-            localStorage.setItem('dd_applicants_v2', JSON.stringify(savedA));
-
-            if (myRecord.role) {
-              setUserRole(myRecord.role);
-              localStorage.setItem('dd_user_role', myRecord.role);
-            }
           } catch (_) {}
         }
       }
@@ -3502,7 +3579,7 @@ export default function HomeView({
       )}
       
       {/* 1. Header (Dark Navy Section - Custom colorways supported) */}
-      <div className={`header-safe-pt pb-12 px-6 rounded-b-[32px] shadow-lg relative transition-all duration-300 ${
+      <div className={`header-safe-pt pb-8 px-6 rounded-b-[28px] shadow-lg relative transition-all duration-300 ${
         settings.homepageColorway === 'blue' ? 'bg-[#1e3a8a]' :
         settings.homepageColorway === 'slate' ? 'bg-[#334155]' : 'bg-[#273046]'
       }`}>
@@ -4097,7 +4174,7 @@ export default function HomeView({
 
 
       {/* 5. Bottom System Controls (Matching Screen 4) */}
-      <div className="bg-white border-t border-gray-200/80 px-4 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] flex items-center justify-between gap-3 shadow-inner shrink-0 relative z-30 android-nav-safe-pb">
+      <div className="bg-white border-t border-gray-200/80 px-4 pt-2.5 flex items-center justify-between gap-3 shadow-inner shrink-0 relative z-30 android-nav-safe-pb">
         
         {/* Settings button on left side */}
         <button
@@ -4394,7 +4471,7 @@ export default function HomeView({
           </div>
 
           {/* Page Footer Action Bar */}
-          <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),24px))] bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
+          <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
             <button
               onClick={() => {
                 setShowMessagesModal(false);
@@ -4492,11 +4569,7 @@ export default function HomeView({
           <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">
             {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
             <div 
-              className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-              style={{ 
-                height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-                minHeight: '44px'
-              }} 
+              className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
             />
 
             {/* TopAppBar Header */}
@@ -4523,7 +4596,7 @@ export default function HomeView({
             </header>
 
             {/* Main Content Canvas */}
-            <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-[calc(2.5rem+max(env(safe-area-inset-bottom,0px),28px))] android-nav-safe-pb">
+            <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-4 android-nav-safe-pb">
               {/* Team Identity Hero Card */}
               <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 mb-6 shadow-xs overflow-hidden relative group border border-[#E0E0E0]">
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
@@ -4685,11 +4758,7 @@ export default function HomeView({
             <>
               {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
               <div 
-                className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-                style={{ 
-                  height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-                  minHeight: '44px'
-                }} 
+                className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
               />
 
               {/* TopAppBar Header */}
@@ -4714,7 +4783,7 @@ export default function HomeView({
               </header>
 
               {/* Main Content Canvas */}
-              <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-[calc(2.5rem+max(env(safe-area-inset-bottom,0px),28px))] android-nav-safe-pb">
+              <main className="mt-4 px-5 flex-grow max-w-lg mx-auto w-full overflow-y-auto pb-4 android-nav-safe-pb">
                 {/* Team Identity Hero Card */}
                 <div className="bg-white/95 backdrop-blur-md rounded-xl p-6 mb-6 shadow-xs overflow-hidden relative group border border-[#E0E0E0]">
                   <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
@@ -5122,7 +5191,7 @@ export default function HomeView({
               </div>
 
               {/* Footer Action Area */}
-              <div className="p-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
+              <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
                 <button
                   onClick={() => {
                     setShowVipPurchaseModal(false);
@@ -5290,7 +5359,7 @@ export default function HomeView({
           </div>
 
           {/* Footer Action */}
-          <div className="p-4 pb-[calc(1rem+max(env(safe-area-inset-bottom,0px),28px))] bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
+          <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
             <button
               onClick={() => {
                 setShowBuyPage(false);
@@ -5336,7 +5405,7 @@ export default function HomeView({
           </div>
 
           {/* Page Main Content area with relative scrolling */}
-          <div className="flex-1 overflow-y-auto px-4 pt-4 pb-[calc(2rem+max(env(safe-area-inset-bottom,0px),28px))] space-y-4 android-nav-safe-pb">
+          <div className="flex-1 overflow-y-auto px-4 pt-4 pb-4 space-y-4 android-nav-safe-pb">
             
             {loadingApp ? (
               <div className="flex flex-col items-center justify-center py-20 space-y-3">

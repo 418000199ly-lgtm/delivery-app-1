@@ -412,11 +412,7 @@ export default function SquadDriverList({
     >
       {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
       <div 
-        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer"
-        style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), var(--status-bar-height, 48px), 48px)',
-          minHeight: '44px'
-        }} 
+        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer" 
       />
 
       {/* Top Mobile App Header with Safe Area spacing */}
@@ -574,10 +570,7 @@ export default function SquadDriverList({
 
       {/* Bottom Safe Area Navigation - 自动适配所有安卓手机底部导航栏与手势条，防止遮挡 */}
       <footer 
-        className="w-full bg-white border-t border-slate-200/70 px-4 py-3 shrink-0 flex items-center justify-center"
-        style={{
-          paddingBottom: 'calc(max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 28px) + 10px)'
-        }}
+        className="w-full bg-white border-t border-slate-200/70 px-4 pt-3 pb-3 shrink-0 flex items-center justify-center android-nav-safe-pb"
       >
         <button
           type="button"

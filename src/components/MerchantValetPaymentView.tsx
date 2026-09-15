@@ -37,16 +37,18 @@ export default function MerchantValetPaymentView({
 }: MerchantValetPaymentViewProps) {
   const [dispatcherQr, setDispatcherQr] = useState<string>('');
 
-  const rawDispatchedBy = (
-    (trip as any)?.reporterPhone ||
-    (trip as any)?.dispatchedByPhone ||
-    (trip as any)?.dispatchedBy ||
-    (trip as any)?.dispatcherPhone ||
-    (trip as any)?.adminPhone ||
+  const orderMerchantPhone = (
     (trip as any)?.merchantPhone ||
     (trip as any)?.creatorPhone ||
+    (trip as any)?.dispatchedByPhone ||
+    (trip as any)?.reporterPhone ||
+    (trip as any)?.adminPhone ||
+    (trip as any)?.dispatcherPhone ||
+    (trip as any)?.dispatchedBy ||
     ''
   ).toString().trim();
+
+  const rawDispatchedBy = orderMerchantPhone;
 
   useEffect(() => {
     const activeDest = trip.endLocation || (trip as any).destination || (trip as any).dropoffName;
@@ -56,14 +58,24 @@ export default function MerchantValetPaymentView({
   }, [trip?.id]);
 
   const isWebChannel = Boolean(
+    orderMerchantPhone.endsWith('A') ||
+    orderMerchantPhone.endsWith('a') ||
     (trip as any)?.orderChannel === 'web' ||
     (trip as any)?.dispatchChannel === 'web' ||
     (trip as any)?.sourceChannel === 'web' ||
-    (trip as any)?.isStandaloneMerchantWeb ||
-    (trip as any)?.orderType === '商户代叫' ||
-    (trip as any)?.type === '商户代叫' ||
-    (trip as any)?.orderRemark === '商户代叫'
+    (trip as any)?.isStandaloneMerchantWeb
   );
+
+  // Exact target phone for resolving the QR code
+  const targetMerchantPhone = (() => {
+    if (orderMerchantPhone) {
+      if (isWebChannel && !orderMerchantPhone.endsWith('A') && !orderMerchantPhone.endsWith('a')) {
+        return orderMerchantPhone + 'A';
+      }
+      return orderMerchantPhone;
+    }
+    return '';
+  })();
 
   useEffect(() => {
     let isMounted = true;
@@ -74,144 +86,83 @@ export default function MerchantValetPaymentView({
       setDispatcherQr(initialDirectQr);
     }
 
-    const candidatePhones = Array.from(new Set([
-      rawDispatchedBy,
-      (trip as any)?.merchantPhone,
-      (trip as any)?.dispatchedByPhone,
-      (trip as any)?.dispatchedBy,
-      (trip as any)?.dispatcherPhone,
-      (trip as any)?.reporterPhone,
-      (trip as any)?.adminPhone,
-      (trip as any)?.creatorPhone,
-      (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_login_phone') : ''),
-      (typeof window !== 'undefined' ? localStorage.getItem('dd_merchant_phone') : ''),
-      (typeof window !== 'undefined' ? localStorage.getItem('dd_admin_phone') : '')
-    ].map(p => (p || '').toString().trim()).filter(Boolean)));
-
-    // Check initial QR code matching the channel from localStorage immediately if not direct on trip
-    if (!initialDirectQr) {
-      for (const phone of candidatePhones) {
-        if (!phone) continue;
-        const webCached = localStorage.getItem(`dd_web_valet_wechat_qr_${phone}`) ||
-                          localStorage.getItem(`dd_dispatch_wechat_qr_${phone}`) ||
-                          localStorage.getItem(`dd_dispatch_fee_qr_${phone}`) ||
-                          localStorage.getItem(`dd_merchant_user_qr_${phone}`) ||
-                          localStorage.getItem(`dd_app_valet_wechat_qr_${phone}`) ||
+    if (!initialDirectQr && targetMerchantPhone) {
+      if (isWebChannel) {
+        const webCached = localStorage.getItem(`dd_web_valet_wechat_qr_${targetMerchantPhone}`) ||
+                          localStorage.getItem(`dd_dispatch_wechat_qr_${targetMerchantPhone}`) ||
+                          localStorage.getItem(`dd_dispatch_fee_qr_${targetMerchantPhone}`);
+        if (webCached) {
+          setDispatcherQr(webCached);
+        }
+      } else {
+        const appCached = localStorage.getItem(`dd_app_valet_wechat_qr_${targetMerchantPhone}`) ||
+                          localStorage.getItem(`dd_dispatch_wechat_qr_${targetMerchantPhone}`) ||
                           (() => {
                             try {
-                              const s = localStorage.getItem(`dd_settings_${phone}`);
+                              const s = localStorage.getItem(`dd_settings_${targetMerchantPhone}`);
                               if (s) return JSON.parse(s)?.wechatQrCode || '';
                             } catch (_) {}
                             return '';
                           })();
-        if (webCached) {
-          setDispatcherQr(webCached);
-          break;
-        }
-      }
-
-      if (!dispatcherQr) {
-        const fallbackGlobal = localStorage.getItem('dd_web_valet_wechat_qr') ||
-                               localStorage.getItem('dd_dispatch_fee_qr_global') ||
-                               localStorage.getItem('dd_merchant_web_qr');
-        if (fallbackGlobal) {
-          setDispatcherQr(fallbackGlobal);
+        if (appCached) {
+          setDispatcherQr(appCached);
         }
       }
     }
 
     // High-availability Baota Node DB API polling for Mainland China direct server storage (No Firebase)
     const queryBaotaQr = async () => {
-      if (!isMounted) return;
+      if (!isMounted || !targetMerchantPhone) return;
       const baseUrl = getBaseApiUrl();
       const timeToken = Date.now();
       const orderId = (trip as any)?.orderId || (trip as any)?.orderNumber || trip?.id;
 
-      // 1. First attempt: Query merchant_orders on Baota server using orderId / orderNumber
-      const orderCandidates = Array.from(new Set([orderId, (trip as any)?.orderNumber, trip?.id].filter(Boolean)));
-      for (const candidateId of orderCandidates) {
+      // 1. Query dedicated /api/get-wechat-qr endpoint with channel constraint
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetMerchantPhone)}&channel=${isWebChannel ? 'web' : 'app'}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const json = await res.json();
+          if (isMounted && json?.success && json?.url && typeof json.url === 'string' && json.url.trim()) {
+            setDispatcherQr(json.url);
+            if (isWebChannel) {
+              localStorage.setItem(`dd_web_valet_wechat_qr_${targetMerchantPhone}`, json.url);
+            } else {
+              localStorage.setItem(`dd_app_valet_wechat_qr_${targetMerchantPhone}`, json.url);
+            }
+            return;
+          }
+        }
+      } catch (_) {}
+
+      // 2. Query collections on Baota server matching channel
+      const targetCols = isWebChannel 
+        ? ['web_valet_qrs', 'dispatch_qrs_web', 'merchant_users']
+        : ['app_valet_qrs', 'driver_users', 'dispatch_qrs', 'dispatch_qrcodes'];
+
+      for (const colName of targetCols) {
         if (!isMounted) return;
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 2500);
-          const resOrder = await fetch(`${baseUrl}/api/db/get?col=merchant_orders&id=${encodeURIComponent(candidateId)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
-          clearTimeout(timeoutId);
-          if (resOrder.ok) {
-            const jsonOrder = await resOrder.json();
-            if (isMounted && jsonOrder?.data) {
-              const orderData = jsonOrder.data;
-              const foundOrderQr = orderData.paymentQrCode || orderData.merchantPaymentQrCode || orderData.qrCode || orderData.wechatQrCode;
-              if (foundOrderQr && foundOrderQr.trim()) {
-                setDispatcherQr(foundOrderQr);
-                return;
-              }
-              if (orderData.dispatchedByPhone || orderData.adminPhone || orderData.dispatchedBy) {
-                const fetchedPhone = (orderData.dispatchedByPhone || orderData.adminPhone || orderData.dispatchedBy).toString().trim();
-                if (fetchedPhone && !candidatePhones.includes(fetchedPhone)) {
-                  candidatePhones.unshift(fetchedPhone);
-                }
-              }
-            }
-          }
-        } catch (_) {}
-      }
-
-      // 2. Query dedicated /api/get-wechat-qr endpoint which checks server disk files and all DB collections
-      for (const targetPhone of candidatePhones) {
-        if (!targetPhone || !isMounted) continue;
-        try {
-          const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 2000);
-          const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetPhone)}&channel=${isWebChannel ? 'web' : 'app'}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+          const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetMerchantPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
           clearTimeout(timeoutId);
           if (res.ok) {
             const json = await res.json();
-            if (isMounted && json?.success && json?.url && typeof json.url === 'string' && json.url.trim()) {
-              setDispatcherQr(json.url);
+            const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
+            if (isMounted && foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+              setDispatcherQr(foundQr);
               if (isWebChannel) {
-                localStorage.setItem(`dd_web_valet_wechat_qr_${targetPhone}`, json.url);
+                localStorage.setItem(`dd_web_valet_wechat_qr_${targetMerchantPhone}`, foundQr);
               } else {
-                localStorage.setItem(`dd_app_valet_wechat_qr_${targetPhone}`, json.url);
-                localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, json.url);
+                localStorage.setItem(`dd_app_valet_wechat_qr_${targetMerchantPhone}`, foundQr);
               }
               return;
             }
           }
         } catch (_) {}
-      }
-
-      // 3. Loop through candidate phones to query channel-specific QR codes from Baota collections
-      const targetCols = isWebChannel 
-        ? ['web_valet_qrs', 'dispatch_qrs_web', 'merchant_users', 'dispatch_qrs', 'dispatch_qrcodes']
-        : ['app_valet_qrs', 'driver_users', 'dispatch_qrs', 'dispatch_qrcodes', 'web_valet_qrs'];
-
-      for (const targetPhone of candidatePhones) {
-        if (!targetPhone || !isMounted) continue;
-
-        // Try query collections on Baota server
-        for (const colName of targetCols) {
-          if (!isMounted) return;
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000);
-            const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-              const json = await res.json();
-              const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
-              if (isMounted && foundQr && typeof foundQr === 'string' && foundQr.trim()) {
-                setDispatcherQr(foundQr);
-                if (isWebChannel) {
-                  localStorage.setItem(`dd_web_valet_wechat_qr_${targetPhone}`, foundQr);
-                } else {
-                  localStorage.setItem(`dd_app_valet_wechat_qr_${targetPhone}`, foundQr);
-                  localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, foundQr);
-                }
-                return;
-              }
-            }
-          } catch (_) {}
-        }
       }
     };
 
@@ -224,7 +175,7 @@ export default function MerchantValetPaymentView({
       isMounted = false;
       clearInterval(intervalId);
     };
-  }, [trip, rawDispatchedBy, isWebChannel]);
+  }, [trip, targetMerchantPhone, isWebChannel]);
 
   const handleConfirmSent = () => {
     onFinishTrip(trip.calculatedTotalFee);
@@ -322,7 +273,7 @@ export default function MerchantValetPaymentView({
   return (
     <div className="w-full h-full bg-[#f9f9f9] text-[#1a1c1c] select-none font-sans flex flex-col justify-between overflow-hidden relative z-50">
       {/* TopAppBar */}
-      <header className="sticky top-0 left-0 w-full z-50 flex items-center px-4 pt-[calc(max(env(safe-area-inset-top,0px),22px)+10px)] pb-3.5 bg-white border-b border-[#dfc0af]/40 backdrop-blur-md shrink-0 shadow-xs">
+      <header className="sticky top-0 left-0 w-full z-50 flex items-center px-4 header-safe-pt pb-2.5 bg-white border-b border-[#dfc0af]/40 backdrop-blur-md shrink-0 shadow-xs">
         <button 
           type="button"
           onClick={onNavigateBack}
@@ -432,7 +383,7 @@ export default function MerchantValetPaymentView({
       </div>
 
       {/* Footer Fixed Action Area (Considers Android Nav Bar) */}
-      <footer className="shrink-0 px-4 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),34px))] bg-white border-t border-gray-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] backdrop-blur-md z-20 android-nav-safe-pb">
+      <footer className="shrink-0 px-4 pt-3 pb-2.5 bg-white border-t border-gray-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.06)] backdrop-blur-md z-20 android-nav-safe-pb">
         <button 
           type="button"
           onClick={handleConfirmSent}

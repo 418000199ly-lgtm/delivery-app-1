@@ -69,9 +69,9 @@ export default function NearbyMapView({
 
   const effectiveMyPhone = String(
     userPhone || 
-    (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || 
-    '15509601222'
-  ).trim();
+    (typeof window !== 'undefined' ? (localStorage.getItem('dd_user_phone') || localStorage.getItem('user_phone')) : '') || 
+    ''
+  ).trim() || '15509601222';
 
   const [mySquadName, setMySquadName] = useState<string>('');
 
@@ -85,7 +85,7 @@ export default function NearbyMapView({
     localStorage.getItem('dd_applicant_name') ||
     (settings as any)?.driverName ||
     (settings as any)?.name ||
-    (effectiveMyPhone === '15509601222' ? '吴彦祖' : `司机${effectiveMyPhone.slice(-4)}`);
+    (effectiveMyPhone === '15509601222' ? '吴彦祖' : (effectiveMyPhone === '15121904440' ? '李扬' : `司机${effectiveMyPhone.slice(-4)}`));
 
   const isMeMember = (phoneOrId?: string, name?: string) => {
     const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
@@ -97,15 +97,10 @@ export default function NearbyMapView({
     }
 
     const n = String(name || '').trim();
-    if (n) {
-      if (n === '吴彦祖' || n === '吴彦祖 (我)' || (currentDriverName && n === currentDriverName)) {
+    if (n && currentDriverName) {
+      if (n === currentDriverName || n === `${currentDriverName} (我)` || n === `${currentDriverName}(我)`) {
         return true;
       }
-    }
-
-    const raw = String(phoneOrId || '').trim();
-    if (raw.includes('15509601222') || raw.includes('吴彦祖')) {
-      return true;
     }
 
     return false;
@@ -647,7 +642,7 @@ export default function NearbyMapView({
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
-      if (!phone || isMeMember(phone, name) || name === '吴彦祖' || name === '吴彦祖 (我)' || (currentDriverName && name === currentDriverName)) return;
+      if (!phone || isMeMember(phone, name)) return;
       candidateDriversMap.set(phone, {
         phone,
         name,
@@ -665,7 +660,7 @@ export default function NearbyMapView({
       if (!liveLoc) return;
       const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
       const name = String(liveLoc.driverName || liveLoc.name || '').trim();
-      if (!phone || isMeMember(phone, name) || name === '吴彦祖' || name === '吴彦祖 (我)' || (currentDriverName && name === currentDriverName)) return;
+      if (!phone || isMeMember(phone, name)) return;
 
       const existing = candidateDriversMap.get(phone) || {
         phone,
@@ -703,8 +698,8 @@ export default function NearbyMapView({
 
     // Render other drivers according to Hubble settings
     candidateDriversMap.forEach((driver) => {
-      // 1. Strictly exclude current driver "我" & "吴彦祖"
-      if (isMeMember(driver.phone, driver.name) || driver.name === '吴彦祖' || driver.name === '吴彦祖 (我)' || (currentDriverName && driver.name === currentDriverName)) return;
+      // 1. Strictly exclude current driver "我"
+      if (isMeMember(driver.phone, driver.name)) return;
 
       // 2. 必须有真实有效GPS坐标
       if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng)) return;
@@ -775,7 +770,10 @@ export default function NearbyMapView({
 
         {/* Floating Right Controls Panel (Top positioned below status bar space - hidden when sub-pages/modals are active) */}
         {!showHubbleSettingsDialog && !showHubbleModal && !showSquadDriverList && (
-          <aside className="absolute top-12 right-2.5 z-20 flex flex-col items-end space-y-3">
+          <aside 
+            className="absolute right-2.5 z-20 flex flex-col items-end space-y-3"
+            style={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)' }}
+          >
             {/* Primary Modes Stack: 大厅 / 司机 / 商家 (点击显示开发中) */}
             <div className="w-[50px] bg-white rounded-xl shadow-lg flex flex-col items-center divide-y divide-gray-100 overflow-hidden py-0.5 border border-slate-100">
               {/* 哈勃 (Hubble / Telescope) */}
@@ -867,10 +865,7 @@ export default function NearbyMapView({
 
       {/* Bottom Navigation Bar (Enhanced Safe Area for All Android Navigation Bars) */}
       <nav 
-        className="relative z-30 bg-white border-t border-gray-200/80 pt-2 px-6 sm:px-12 flex justify-between items-center select-none shrink-0"
-        style={{
-          paddingBottom: 'calc(max(env(safe-area-inset-bottom, 0px), var(--android-nav-bar-height, 0px), 16px) + 8px)'
-        }}
+        className="relative z-30 bg-white border-t border-gray-200/80 pt-2 px-6 sm:px-12 pb-2 flex justify-between items-center select-none shrink-0 android-nav-safe-pb"
       >
         {/* Tab: 首页 (Home) */}
         <button 

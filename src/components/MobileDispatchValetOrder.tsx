@@ -365,12 +365,26 @@ export default function MobileDispatchValetOrder({
     }
   });
 
+  // Helpers to isolate web merchant accounts with hidden 'A' suffix
+  const toMerchantWebPhone = (p: string) => {
+    const clean = (p || '').trim();
+    if (!clean) return '';
+    if (clean.endsWith('A') || clean.endsWith('a')) return clean.slice(0, -1) + 'A';
+    return clean + 'A';
+  };
+
+  const getDisplayPhone = (p: string) => {
+    return (p || '').replace(/A$/i, '');
+  };
+
   // Login Form States
   const [loginPhone, setLoginPhone] = useState<string>(() => {
     return localStorage.getItem('dd_dispatch_user_phone') || '';
   });
   
-  const activePhone = isDispatchLoggedIn && loginPhone ? loginPhone : (userPhone || '');
+  const activePhone = isDispatchLoggedIn && loginPhone 
+    ? toMerchantWebPhone(loginPhone) 
+    : (userPhone ? toMerchantWebPhone(userPhone) : '');
 
   // Real-time asynchronous parallel resolver for current dispatcher's WeChat QR code via Baota Server (Web Channel)
   useEffect(() => {
@@ -645,13 +659,18 @@ export default function MobileDispatchValetOrder({
         } catch (_) {}
       }
 
+      // Automatically append hidden suffix 'A' to isolate web merchant from app driver
+      const merchantPhoneKey = toMerchantWebPhone(trimmedPhone);
+
       // Auto-register merchant in merchant_users collection in Firestore & localStorage
-      if (db && trimmedPhone) {
+      if (db && merchantPhoneKey) {
         try {
-          await setDoc(doc(db, 'merchant_users', trimmedPhone), {
-            phone: trimmedPhone,
+          await setDoc(doc(db, 'merchant_users', merchantPhoneKey), {
+            phone: merchantPhoneKey,
+            rawPhone: trimmedPhone,
             name: '商户、商家',
             role: '商户、商家',
+            userRole: '商户、商家',
             status: '已通过',
             approvedBy: '系统自动审批',
             approvedRole: '系统自动',
@@ -664,16 +683,16 @@ export default function MobileDispatchValetOrder({
 
       try {
         localStorage.setItem('dd_dispatch_logged_in', 'true');
-        localStorage.setItem('dd_dispatch_user_phone', trimmedPhone);
-        localStorage.setItem('dd_user_phone', trimmedPhone);
+        localStorage.setItem('dd_dispatch_user_phone', merchantPhoneKey);
         const savedMerchants = localStorage.getItem('dd_merchant_users_v2');
         let mList: any[] = savedMerchants ? JSON.parse(savedMerchants) : [];
-        if (!mList.some((m: any) => m.phone === trimmedPhone)) {
-          mList.push({ phone: trimmedPhone, name: '商户、商家', role: '商户、商家', status: '已通过', approvedBy: '系统自动审批' });
+        if (!mList.some((m: any) => m.phone === merchantPhoneKey)) {
+          mList.push({ phone: merchantPhoneKey, rawPhone: trimmedPhone, name: '商户、商家', role: '商户、商家', status: '已通过', approvedBy: '系统自动审批' });
           localStorage.setItem('dd_merchant_users_v2', JSON.stringify(mList));
         }
       } catch (_) {}
 
+      setLoginPhone(merchantPhoneKey);
       setIsDispatchLoggedIn(true);
       onShowToast(`🎉 欢迎登录商户代叫系统 (${trimmedPhone})！`);
     } catch (err: any) {
@@ -1001,12 +1020,21 @@ export default function MobileDispatchValetOrder({
     }
 
     const applicantObj = applicants.find(a => a.id === id);
-    const targetPhone = applicantObj?.phone || '';
+    const targetPhone = String(applicantObj?.phone || applicantObj?.id || id || '').trim();
     const currentAdminName = (adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机') ? adminProfile.name : '吴彦祖';
     const currentAdminRole = adminProfile.role || userRole || '开发者司机';
 
+    // 0. Remove from removedMemberPhones so approved driver is active immediately
+    setRemovedMemberPhones(prev => {
+      const updated = prev.filter(p => p !== targetPhone);
+      try {
+        localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
+      } catch (_) {}
+      return updated;
+    });
+
     // 1. Update applicants status
-    setApplicants(prev => prev.map(a => a.id === id ? { 
+    setApplicants(prev => prev.map(a => (a.id === id || a.phone === targetPhone) ? { 
       ...a, 
       status: '已通过',
       approvedBy: currentAdminName,
@@ -1021,7 +1049,8 @@ export default function MobileDispatchValetOrder({
         return prev.map(m => (m.phone === targetPhone || m.id === id) ? {
           ...m,
           name,
-          role: m.role || '普通司机',
+          role: '普通司机',
+          userRole: '普通司机',
           status: '已通过',
           approvedBy: currentAdminName,
           approvedRole: currentAdminRole,
@@ -1036,6 +1065,7 @@ export default function MobileDispatchValetOrder({
           phone: targetPhone,
           name,
           role: '普通司机',
+          userRole: '普通司机',
           status: '已通过',
           approvedBy: currentAdminName,
           approvedRole: currentAdminRole,
@@ -1045,6 +1075,47 @@ export default function MobileDispatchValetOrder({
         }
       ];
     });
+
+    // Sync to local storage immediately
+    try {
+      const savedMembers = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+      const mIdx = savedMembers.findIndex((m: any) => String(m.phone || m.id).trim() === targetPhone);
+      const newMemberItem = {
+        id: targetPhone,
+        phone: targetPhone,
+        name,
+        role: '普通司机',
+        userRole: '普通司机',
+        status: '已通过',
+        approvedBy: currentAdminName,
+        approvedRole: currentAdminRole,
+        note: applicantObj?.note || '',
+        city: userTeamCity || currentCity || '银川市',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      if (mIdx >= 0) savedMembers[mIdx] = { ...savedMembers[mIdx], ...newMemberItem };
+      else savedMembers.push(newMemberItem);
+      localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedMembers));
+
+      const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+      const aIdx = savedApps.findIndex((a: any) => String(a.phone || a.id).trim() === targetPhone);
+      if (aIdx >= 0) {
+        savedApps[aIdx] = {
+          ...savedApps[aIdx],
+          status: '已通过',
+          approvedBy: currentAdminName,
+          approvedRole: currentAdminRole,
+          approvalTime: new Date().toLocaleString()
+        };
+      }
+      localStorage.setItem('dd_applicants_v2', JSON.stringify(savedApps));
+
+      localStorage.setItem(`dd_squad_member_${targetPhone}`, JSON.stringify(newMemberItem));
+      localStorage.setItem(`dd_approved_${targetPhone}`, 'true');
+    } catch (_) {}
+
+    window.dispatchEvent(new CustomEvent('squad_member_approved', { detail: { phone: targetPhone, name } }));
 
     // 3. Save to Firestore & HTTP API Backend
     if (targetPhone) {
@@ -1676,6 +1747,27 @@ export default function MobileDispatchValetOrder({
       return false;
     }
 
+    return false;
+  };
+
+  // Check who can delete a squad member:
+  // 1. 任何人都不能删除 15509601222（包括自己也不删除自己），因为15509601222是开发者（拥有最高权限）
+  // 2. 城市派单员司机不可以删除任何司机
+  // 3. 只有开发者司机、城市老板司机、城市管理司机才可以删除司机
+  const canDeleteMember = (targetMember: any) => {
+    if (!targetMember) return false;
+    const targetPhone = String(targetMember.phone || targetMember.id || '').trim();
+    if (targetPhone === '15509601222') return false; // 严禁删除开发者
+
+    const isCurrentDev = userPhone === '15509601222' || userRole === '开发者司机' || userRole === '开发者' || userRole === '总指挥官' || adminProfile.role === '开发者司机';
+    const isCurrentManagerOrBoss = userRole === '城市管理司机' || userRole === '城市管理' || userRole === '城市老板司机' || userRole === '城市老板' || adminProfile.role === '城市管理司机' || adminProfile.role === '城市老板司机';
+
+    if (isCurrentDev) return true;
+    if (isCurrentManagerOrBoss) {
+      const targetRole = String(targetMember.role || targetMember.userRole || '').trim();
+      if (targetRole.includes('开发者')) return false;
+      return true;
+    }
     return false;
   };
 
@@ -3562,11 +3654,7 @@ export default function MobileDispatchValetOrder({
 
       {/* 手机顶部电量/信号/状态栏安全占位区 */}
       <div 
-        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-        style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
-          minHeight: '44px'
-        }} 
+        className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
       />
 
       {/* TopAppBar */}
@@ -3832,7 +3920,7 @@ export default function MobileDispatchValetOrder({
       </main>
 
       {/* Bottom Action Bar */}
-      <footer className="sticky bottom-0 left-0 right-0 z-40 bg-white border-t border-[#e2e2e2] px-5 pt-3 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),28px))] shadow-lg shrink-0 mt-auto android-nav-safe-pb">
+      <footer className="sticky bottom-0 left-0 right-0 z-40 bg-white border-t border-[#e2e2e2] px-5 pt-2.5 shadow-lg shrink-0 mt-auto android-nav-safe-pb">
         <div className="max-w-xl mx-auto space-y-2">
           
           <div className="flex items-center justify-between">
@@ -4390,8 +4478,14 @@ export default function MobileDispatchValetOrder({
             };
           });
 
-        const driverMembersList = allMembersList.filter(item => !(item.role?.includes('商户') || item.role?.includes('商家')));
-        const merchantMembersList = allMembersList.filter(item => item.role?.includes('商户') || item.role?.includes('商家'));
+        const isMerchantMember = (item: any) => {
+          const p = String(item?.phone || item?.id || '').trim();
+          const r = String(item?.role || item?.userRole || '').trim();
+          return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
+        };
+
+        const driverMembersList = allMembersList.filter(item => !isMerchantMember(item));
+        const merchantMembersList = allMembersList.filter(item => isMerchantMember(item));
 
         const driverCount = driverMembersList.length;
         const merchantCount = merchantMembersList.length;
@@ -4399,10 +4493,28 @@ export default function MobileDispatchValetOrder({
         return (
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
           
+          {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底适配所有安卓与苹果手机) */}
+          <div 
+            className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none"
+            style={{ 
+              height: 'max(env(safe-area-inset-top, 0px), 54px)',
+              minHeight: '54px'
+            }} 
+          />
+
           {/* TopAppBar Header */}
-          <header className="w-full sticky top-0 z-50 flex items-center justify-between px-5 h-16 bg-[#f9f9f9] border-b border-[#dfc0af] shrink-0 relative">
+          <header className="w-full sticky top-0 z-50 flex items-center justify-between px-4 sm:px-5 h-14 bg-[#f9f9f9] border-b border-[#dfc0af] shrink-0 relative">
             <div className="flex items-center gap-2">
-              <h1 className="text-lg font-bold text-[#984800] shrink-0">管理团队</h1>
+              <button 
+                type="button"
+                onClick={() => setShowTeamManagementModal(false)}
+                className="w-9 h-9 rounded-full hover:bg-[#e2e2e2] active:scale-95 flex items-center justify-center text-[#584235] transition cursor-pointer -ml-1.5"
+                title="返回"
+                aria-label="返回"
+              >
+                <ArrowLeft className="w-5 h-5 text-gray-800" />
+              </button>
+              <h1 className="text-base sm:text-lg font-bold text-[#984800] shrink-0">管理团队</h1>
             </div>
 
             {/* Centered Member Application & Merchant Management Buttons */}
@@ -4814,13 +4926,18 @@ export default function MobileDispatchValetOrder({
                             >
                               <Phone className="w-4 h-4 fill-current" />
                             </a>
-                            {isManagementRole && (
+                            {canDeleteMember(member) && (
                               <button 
                                 type="button"
                                 onClick={async () => {
                                   const targetPhone = member.phone;
                                   const targetId = member.id;
                                   const targetName = member.name;
+
+                                  if (targetPhone === '15509601222' || targetId === '15509601222') {
+                                    onShowToast('❌ 任何人都不能删除开发者司机 15509601222！');
+                                    return;
+                                  }
 
                                   // 1. Mark as removed locally in state & localStorage
                                   setRemovedMemberPhones(prev => {
@@ -4944,11 +5061,7 @@ export default function MobileDispatchValetOrder({
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
           {/* 手机顶部电量/信号/状态栏安全占位区 */}
           <div 
-            className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer"
-            style={{ 
-              height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
-              minHeight: '44px'
-            }} 
+            className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none status-bar-safe-spacer" 
           />
 
           {/* TopAppBar */}
@@ -5443,6 +5556,14 @@ export default function MobileDispatchValetOrder({
       {/* Applicant Approval Modal (团队审核 - 申请审批) */}
       {showApplicantApprovalModal && (
         <div className="absolute inset-0 z-50 bg-[#f9f9f9] text-[#1a1c1c] flex flex-col overflow-hidden animate-in fade-in duration-200">
+          {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底适配所有安卓与苹果手机) */}
+          <div 
+            className="w-full shrink-0 bg-[#f9f9f9] select-none pointer-events-none"
+            style={{ 
+              height: 'max(env(safe-area-inset-top, 0px), 54px)',
+              minHeight: '54px'
+            }} 
+          />
           {/* TopAppBar */}
           <header className="bg-[#f9f9f9] w-full sticky top-0 z-50 border-b border-[#e2e2e2] flex justify-between items-center px-4 sm:px-5 h-14 shrink-0">
             <div className="flex items-center gap-3">

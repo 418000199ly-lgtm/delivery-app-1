@@ -456,18 +456,18 @@ export default function ReportTransferOrderModal({
   return (
     <div className="absolute inset-0 z-[100] bg-[#f9f9f9] text-[#1a1c1c] flex flex-col font-sans select-none overflow-hidden animate-in fade-in duration-200">
       
-      {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底避免遮挡) */}
+      {/* 手机顶部电量/信号/状态栏安全占位区 (保留系统电量、网络信号、时间与打孔屏空间，彻底适配所有安卓与苹果手机) */}
       <div 
-        className="w-full shrink-0 bg-white select-none pointer-events-none status-bar-safe-spacer"
+        className="w-full shrink-0 bg-white select-none pointer-events-none"
         style={{ 
-          height: 'max(env(safe-area-inset-top, 0px), var(--android-status-bar-height, 48px), 48px)',
-          minHeight: '44px'
+          height: 'max(env(safe-area-inset-top, 0px), 54px)',
+          minHeight: '54px'
         }} 
       />
 
       {/* TopAppBar - Fixed Height Header positioned safely below status bar */}
       <header 
-        className="sticky top-0 z-10 bg-white flex items-center justify-between px-4 py-2.5 sm:py-3 border-b border-[#e2e2e2] shrink-0 shadow-2xs"
+        className="w-full bg-white flex items-center justify-between px-4 py-3 border-b border-[#e2e2e2] shrink-0 shadow-2xs"
       >
         <button 
           type="button"

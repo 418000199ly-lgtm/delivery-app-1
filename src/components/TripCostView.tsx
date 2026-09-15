@@ -212,7 +212,7 @@ export default function TripCostView({
       </div>
 
       {/* Action triggers button at bottom */}
-      <div className="p-4 pb-[calc(1.25rem+max(env(safe-area-inset-bottom,0px),var(--android-nav-bar-height,0px),28px))] bg-white border-t border-gray-200/60 shadow-lg select-none android-nav-safe-pb">
+      <div className="p-4 pb-2.5 bg-white border-t border-gray-200/60 shadow-lg select-none android-nav-safe-pb">
         <button
           onClick={handleProceed}
           className="w-full py-3.5 bg-[#1da39b] hover:bg-teal-600 text-white font-bold rounded-2xl shadow-xl shadow-teal-500/20 active:scale-98 transition-all text-center text-sm flex items-center justify-center space-x-1"
