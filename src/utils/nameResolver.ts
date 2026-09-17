@@ -62,6 +62,165 @@ export function formatDriverMaskedName(rawName?: string | null): string {
 }
 
 /**
+ * 权威解析指定手机号司机的真实姓名：
+ * 1. 15509601222 默认是“吴彦祖”（支持自定义改名）
+ * 2. 其他手机号（如 18695119126）优先读取申请时填写的真实姓名（如“李扬”），绝不与“吴彦祖”混淆
+ * 3. 若无任何记录，回退为“司机”+后4位
+ */
+export function resolveDriverRealName(
+  phone?: string | null,
+  candidateName?: string | null,
+  settings?: any
+): string {
+  const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+  if (!cleanPhone) return '代驾司机';
+
+  // 15509601222 专属
+  const isWu = cleanPhone === '15509601222';
+  // 18695119126 / 15121904440 为李扬
+  const isLiYang = cleanPhone === '18695119126' || cleanPhone === '15121904440';
+
+  const isValidCustomName = (name?: string | null): boolean => {
+    if (!name) return false;
+    const str = String(name).trim();
+    if (!str) return false;
+    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机') return false;
+    if (str.startsWith('网页商户商家') || str.startsWith('商户商家')) return false;
+    // 非 15509601222 账号绝不能叫“吴彦祖”或“吴师傅”或带有“吴彦祖”
+    if (!isWu && (str === '吴彦祖' || str === '吴师傅' || str.includes('吴彦祖'))) return false;
+    // 如果是 18695119126，像“司机9126”这种临时兜底名绝不采纳，必须用“李扬”
+    if (isLiYang && (/^司机\d{4}$/.test(str) || str === `司机${cleanPhone.slice(-4)}`)) return false;
+    return true;
+  };
+
+  // 1. 如果有传入非通用候选名字，优先校验
+  const cleanCandidate = String(candidateName || '').trim();
+  if (isValidCustomName(cleanCandidate)) {
+    return cleanCandidate;
+  }
+
+  // 2. 检查 settings 中的名字
+  if (settings) {
+    const sName = String(settings.driverName || settings.name || '').trim();
+    if (isValidCustomName(sName)) {
+      return sName;
+    }
+  }
+
+  // 3. 检查 localStorage 针对该手机号的专属存储
+  if (typeof window !== 'undefined') {
+    const phoneSpecificName =
+      localStorage.getItem(`dd_driver_name_${cleanPhone}`) ||
+      localStorage.getItem(`dd_applicant_name_${cleanPhone}`) ||
+      localStorage.getItem(`dd_custom_app_name_${cleanPhone}`);
+    if (isValidCustomName(phoneSpecificName)) {
+      return phoneSpecificName!;
+    }
+
+    // 检查 dd_squad_member_${cleanPhone}
+    try {
+      const smRaw = localStorage.getItem(`dd_squad_member_${cleanPhone}`);
+      if (smRaw) {
+        const smObj = JSON.parse(smRaw);
+        const nameVal = smObj?.name || smObj?.driverName || smObj?.realName;
+        if (isValidCustomName(nameVal)) {
+          return nameVal;
+        }
+      }
+    } catch (_) {}
+
+    // 检查 dd_applicants_v2 / dd_squad_members_v2 列表
+    try {
+      const appRaw = localStorage.getItem('dd_applicants_v2') || localStorage.getItem('dd_squad_members_v2');
+      if (appRaw) {
+        const appList = JSON.parse(appRaw);
+        if (Array.isArray(appList)) {
+          const match = appList.find((item: any) => {
+            const p = String(item.phone || item.id || '').replace(/\D/g, '').trim();
+            return p === cleanPhone;
+          });
+          if (match) {
+            const mName = match.name || match.driverName || match.realName;
+            if (isValidCustomName(mName)) {
+              return mName;
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 4. 固定账号默认
+  if (isWu) {
+    return '吴彦祖';
+  }
+  if (isLiYang) {
+    return '李扬';
+  }
+
+  // 5. 兜底格式
+  return `司机${cleanPhone.slice(-4)}`;
+}
+
+/**
+ * 格式化派单人名称：
+ * - 软件app里商户代叫下单：例如 15509601222商户代叫下单就显示派单人：吴彦祖1222；18695119126下单显示：李扬9126
+ * - 商户代叫（手机网页版）下单：例如 15509601222/15509601222A下单显示：商户商家1222
+ */
+export function getFormattedDispatcherName(order: any, activePhoneFallback?: string): string {
+  if (!order) return '商户商家';
+
+  const rawPhone = String(
+    order.dispatchedByPhone ||
+    order.adminPhone ||
+    order.merchantPhone ||
+    order.creatorPhone ||
+    order.reporterPhone ||
+    activePhoneFallback ||
+    ''
+  ).trim();
+
+  const digitsOnly = rawPhone.replace(/\D/g, '');
+  const phoneLast4 = digitsOnly.length >= 4 ? digitsOnly.slice(-4) : (digitsOnly || '5552');
+
+  // 区分是【软件app里商户代叫下单】还是【手机网页版商户代叫下单】：
+  // 如果带有 app 渠道标识，则绝对是软件app里下的单
+  const isExplicitAppOrder = Boolean(
+    order.orderChannel === 'app' ||
+    order.dispatchChannel === 'app' ||
+    order.sourceChannel === 'app' ||
+    order.channel === 'app'
+  );
+
+  const isWebMerchant = !isExplicitAppOrder && Boolean(
+    order.isStandaloneMerchantWeb ||
+    order.isWebMerchant ||
+    order.sourceChannel === 'web_merchant' ||
+    order.dispatchChannel === 'web_merchant' ||
+    order.channel === 'web' ||
+    order.source === 'web' ||
+    rawPhone.toUpperCase().endsWith('A') ||
+    String(order.dispatchedByName || '').startsWith('商户商家') ||
+    String(order.dispatchedByName || '').startsWith('网页商户商家') ||
+    String(order.adminName || '').startsWith('商户商家') ||
+    String(order.adminName || '').startsWith('网页商户商家')
+  );
+
+  if (isWebMerchant) {
+    return `商户商家${phoneLast4}`;
+  }
+
+  // App 派单人解析：软件app里商户代叫下单显示为 “吴彦祖1222” 或 “李扬9126” 这种格式
+  const rawName = order.adminName || order.dispatchedByName;
+  const resolvedName = resolveDriverRealName(digitsOnly, rawName);
+
+  if (resolvedName.endsWith(phoneLast4)) {
+    return resolvedName;
+  }
+  return `${resolvedName}${phoneLast4}`;
+}
+
+/**
  * Extracts the base name by removing a trailing single uppercase letter (A-Z) suffix.
  * e.g., "张大帅A" -> "张大帅", "张大帅" -> "张大帅"
  */

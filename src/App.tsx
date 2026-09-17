@@ -21,6 +21,7 @@ import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
 import { findNearestKnownPoi } from './utils/geocoding';
+import { resolveDriverRealName } from './utils/nameResolver';
 
 import { 
   ChauffeurSettings, 
@@ -813,9 +814,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const timestampIso = new Date().toISOString();
         const currentAppVersion = sysVersion || 'V2.0';
         const currentTodayOrders = Number(stats?.todayOrders || 0);
+        const resolvedSelfName = resolveDriverRealName(userPhone, settings.driverName, settings);
         const payload = {
           phone: userPhone,
-          driverName: (settings.driverName && settings.driverName !== '代驾司机' && settings.driverName !== '在线代驾司机') ? settings.driverName : '吴彦祖',
+          driverName: resolvedSelfName,
           lat: latitude,
           lng: longitude,
           isOnline: true,
@@ -1332,6 +1334,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             if (data.billingTemplateName !== undefined && prev.billingTemplateName !== data.billingTemplateName) {
               nextSettings.billingTemplateName = data.billingTemplateName;
               changed = true;
+            }
+            if (data.driverName !== undefined && data.driverName && data.driverName !== '代驾司机' && data.driverName !== '在线代驾司机') {
+              if (userPhone === '15509601222' || data.driverName !== '吴彦祖') {
+                if (prev.driverName !== data.driverName) {
+                  nextSettings.driverName = data.driverName;
+                  changed = true;
+                }
+              }
             }
             if (data.voiceBroadcast !== undefined && prev.voiceBroadcast !== data.voiceBroadcast) {
               nextSettings.voiceBroadcast = data.voiceBroadcast;
@@ -2441,9 +2451,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     }
     if (userPhone) {
       const timestampIso = new Date().toISOString();
+      const resolvedSelfName = resolveDriverRealName(userPhone, settings.driverName, settings);
       const onlinePayload = {
         phone: userPhone,
-        driverName: (settings.driverName && settings.driverName !== '代驾司机' && settings.driverName !== '在线代驾司机') ? settings.driverName : '吴彦祖',
+        driverName: resolvedSelfName,
         isOnline: online,
         onlineOrdersEnabled: online,
         lastOnlineTime: online ? timestampIso : null,

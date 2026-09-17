@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
-import { formatDriverMaskedName } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName } from '../utils/nameResolver';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
 import HubbleSettingsDialog, { HubbleFilterSettings } from './HubbleSettingsDialog';
@@ -73,19 +73,20 @@ export default function NearbyMapView({
     ''
   ).trim() || '15509601222';
 
-  const [mySquadName, setMySquadName] = useState<string>('');
+  const [mySquadName, setMySquadName] = useState<string>(() => {
+    return resolveDriverRealName(
+      effectiveMyPhone,
+      (settings as any)?.driverName || (settings as any)?.name,
+      settings
+    );
+  });
 
   // Resolve current driver's name based on squad application, Baota database, or settings
-  const currentDriverName = 
-    mySquadName ||
-    realtimeLocations[effectiveMyPhone]?.name ||
-    realtimeLocations[effectiveMyPhone]?.driverName ||
-    localStorage.getItem(`dd_custom_app_name_${effectiveMyPhone}`) ||
-    localStorage.getItem('dd_admin_name') ||
-    localStorage.getItem('dd_applicant_name') ||
-    (settings as any)?.driverName ||
-    (settings as any)?.name ||
-    (effectiveMyPhone === '15509601222' ? '吴彦祖' : (effectiveMyPhone === '15121904440' ? '李扬' : `司机${effectiveMyPhone.slice(-4)}`));
+  const currentDriverName = resolveDriverRealName(
+    effectiveMyPhone,
+    mySquadName || (settings as any)?.driverName || (settings as any)?.name,
+    settings
+  );
 
   const isMeMember = (phoneOrId?: string, name?: string) => {
     const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
@@ -683,7 +684,9 @@ export default function NearbyMapView({
       const uploadTime = liveLoc.timestamp
         ? Number(liveLoc.timestamp)
         : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : existing.uploadTime);
-      const resolvedName = name || existing.name;
+      
+      const candidateName = existing.name || name || '';
+      const resolvedName = resolveDriverRealName(phone, candidateName);
 
       candidateDriversMap.set(phone, {
         phone,
@@ -722,7 +725,7 @@ export default function NearbyMapView({
       }
 
       // 4. 名字显示逻辑：若勾选显示全名，则显示真实全名；否则隐藏为“X师傅”
-      const rawName = driver.name || `代驾司机`;
+      const rawName = resolveDriverRealName(driver.phone, driver.name);
       const displayName = hubbleFilters.showFullName ? rawName : formatDriverMaskedName(rawName);
 
       const driverMarker = new AMap.Marker({

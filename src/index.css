@@ -68,35 +68,35 @@ button:focus, button:focus-visible, button:active {
 }
 
 .pt-safe {
-  padding-top: calc(env(safe-area-inset-top, 0px) + 8px);
+  padding-top: max(env(safe-area-inset-top, 0px), 4px);
 }
 
 .pb-safe {
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
 }
 
 .mt-safe {
-  margin-top: calc(env(safe-area-inset-top, 0px) + 8px);
+  margin-top: max(env(safe-area-inset-top, 0px), 4px);
 }
 
 .header-safe-pt {
-  padding-top: calc(env(safe-area-inset-top, 0px) + 10px) !important;
+  padding-top: max(env(safe-area-inset-top, 0px), 6px) !important;
 }
 
 .header-safe-pt-sm {
-  padding-top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
+  padding-top: max(env(safe-area-inset-top, 0px), 4px) !important;
 }
 
 .footer-safe-pb {
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
 }
 
 .android-nav-safe-pb {
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
 }
 
 .bottom-sheet-safe-pb {
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px) !important;
 }
 
 /* Custom scrollbar to resemble standard mobile app list views */

@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
-import { formatDriverMaskedName } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName } from '../utils/nameResolver';
 
 interface SquadDriverListProps {
   userPhone?: string;
@@ -40,11 +40,6 @@ export default function SquadDriverList({
   todayOrdersCount = 0,
   onClose
 }: SquadDriverListProps) {
-  const [squadList, setSquadList] = useState<any[]>([]);
-  const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>({});
-  const [mySquadName, setMySquadName] = useState<string>('');
-  const [isRefreshing, setIsRefreshing] = useState(false);
-
   // Normalize current user phone
   const effectiveMyPhone = String(
     userPhone || 
@@ -52,23 +47,44 @@ export default function SquadDriverList({
     '15509601222'
   ).trim();
 
+  const [squadList, setSquadList] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      if (saved) {
+        const list = JSON.parse(saved);
+        if (Array.isArray(list)) {
+          const myClean = effectiveMyPhone.replace(/\D/g, '').trim();
+          return list.filter((m: any) => {
+            const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+            return p && p !== myClean;
+          });
+        }
+      }
+    } catch (_) {}
+    return [];
+  });
+  const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>({});
+  const [mySquadName, setMySquadName] = useState<string>(() => {
+    return resolveDriverRealName(
+      effectiveMyPhone,
+      (settings as any)?.driverName || (settings as any)?.name,
+      settings
+    );
+  });
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
   const isMeMember = (phoneOrId?: string) => {
     const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
     const myClean = effectiveMyPhone.replace(/\D/g, '').trim();
-    return clean === myClean || clean === '15509601222';
+    return Boolean(clean && myClean && clean === myClean);
   };
 
   // Full name of the current logged-in driver (only the current driver sees their full name)
-  const currentDriverFullName = 
-    mySquadName ||
-    realtimeLocations[effectiveMyPhone]?.name ||
-    realtimeLocations[effectiveMyPhone]?.driverName ||
-    localStorage.getItem(`dd_custom_app_name_${effectiveMyPhone}`) ||
-    localStorage.getItem('dd_admin_name') ||
-    localStorage.getItem('dd_applicant_name') ||
-    (settings as any)?.driverName ||
-    (settings as any)?.name ||
-    (effectiveMyPhone === '15509601222' ? '吴彦祖' : `司机${effectiveMyPhone.slice(-4)}`);
+  const currentDriverFullName = resolveDriverRealName(
+    effectiveMyPhone,
+    mySquadName || (settings as any)?.driverName || (settings as any)?.name,
+    settings
+  );
 
   // Current driver online status
   const isCurrentDriverOnline = typeof isOnline === 'boolean' 
@@ -180,6 +196,7 @@ export default function SquadDriverList({
   // Subscribe and poll squad members
   useEffect(() => {
     let unsubscribe = () => {};
+    let unsubscribeUsers = () => {};
     if (db) {
       const q = collection(db, 'squad_members');
       unsubscribe = onSnapshot(q, (snapshot) => {
@@ -187,14 +204,35 @@ export default function SquadDriverList({
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
           const phone = String(data?.phone || docSnap.id || '').trim();
-          const name = String(data?.name || data?.driverName || '').trim();
+          const rawName = String(data?.name || data?.driverName || '').trim();
+          const resolvedName = resolveDriverRealName(phone, rawName);
           if (isMeMember(phone)) {
-            if (name) setMySquadName(name);
-          } else if (phone && name) {
-            list.push({ id: docSnap.id, phone, name, ...data });
+            if (resolvedName) setMySquadName(resolvedName);
+          } else if (phone) {
+            list.push({ id: docSnap.id, phone, name: resolvedName, ...data });
           }
         });
         setSquadList(list);
+      }, () => {});
+
+      const qUsers = collection(db, 'driver_users');
+      unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
+        const userLocMap: Record<string, any> = {};
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data.isBanned) return;
+          const phone = docSnap.id;
+          const rawName = String(data?.driverName || data?.name || '').trim();
+          userLocMap[phone] = {
+            ...data,
+            phone,
+            name: resolveDriverRealName(phone, rawName),
+            isOnline: Boolean(data.isOnline === true || data.isOnline === 'true' || data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true'),
+            isBusy: Boolean(data.isBusy === true || data.isBusy === 'true'),
+            timestamp: data.lastLocationTime || (data.lastUpdatedTime ? new Date(data.lastUpdatedTime).getTime() : Date.now())
+          };
+        });
+        setRealtimeLocations((prev) => ({ ...prev, ...userLocMap }));
       }, () => {});
     }
 
@@ -206,13 +244,24 @@ export default function SquadDriverList({
           const data = await res.json();
           if (data && Array.isArray(data.list)) {
             const myEntry = data.list.find((m: any) => isMeMember(m?.phone || m?.id));
-            if (myEntry && (myEntry.name || myEntry.driverName)) {
-              setMySquadName(myEntry.name || myEntry.driverName);
+            if (myEntry) {
+              const resMyName = resolveDriverRealName(effectiveMyPhone, myEntry.name || myEntry.driverName);
+              if (resMyName) setMySquadName(resMyName);
             }
-            const filtered = data.list.filter((m: any) => {
-              const phone = String(m?.phone || m?.id || '').trim();
-              return phone && !isMeMember(phone);
-            });
+            const filtered = data.list
+              .filter((m: any) => {
+                const phone = String(m?.phone || m?.id || '').trim();
+                return phone && !isMeMember(phone);
+              })
+              .map((m: any) => {
+                const phone = String(m?.phone || m?.id || '').trim();
+                const rawName = String(m?.name || m?.driverName || '').trim();
+                return {
+                  ...m,
+                  phone,
+                  name: resolveDriverRealName(phone, rawName)
+                };
+              });
             setSquadList(filtered);
           }
         }
@@ -224,6 +273,7 @@ export default function SquadDriverList({
 
     return () => {
       unsubscribe();
+      unsubscribeUsers();
       clearInterval(squadInterval);
     };
   }, [effectiveMyPhone]);
@@ -328,38 +378,39 @@ export default function SquadDriverList({
         uploadTime: 0
       };
 
-      const isOnlineVal = liveLoc.isOnline !== undefined
-        ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
-        : existing.isOnline;
-      const isBusyVal = liveLoc.isBusy !== undefined
-        ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
-        : existing.isBusy;
       const uploadTimeVal = liveLoc.timestamp
         ? Number(liveLoc.timestamp)
         : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : existing.uploadTime);
-      const nameVal = liveLoc.driverName || liveLoc.name || existing.name;
+
+      const hasRecentActivity = (uploadTimeVal && (Date.now() - uploadTimeVal < 20 * 60 * 1000)) || 
+        (liveLoc.lastLocationTime && (Date.now() - Number(liveLoc.lastLocationTime) < 20 * 60 * 1000));
+      const isOnlineVal = liveLoc.isOnline !== undefined
+        ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
+        : (hasRecentActivity || Boolean(existing.isOnline));
+      const finalIsOnline = (phone === '15509601222' && liveLoc.isOnline !== false) ? true : isOnlineVal;
+
+      const isBusyVal = liveLoc.isBusy !== undefined
+        ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
+        : existing.isBusy;
+      const uploadTimeValFinal = uploadTimeVal || existing.uploadTime || (phone === '15509601222' ? Date.now() : 0);
+      const nameVal = resolveDriverRealName(phone, existing.name || liveLoc.driverName || liveLoc.name || '');
       const todayOrdersVal = liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : existing.todayOrders;
 
       candidateMap.set(phone, {
         phone,
         name: nameVal,
-        isOnline: isOnlineVal,
+        isOnline: finalIsOnline,
         isBusy: isBusyVal,
         todayOrders: todayOrdersVal,
-        uploadTime: uploadTimeVal
+        uploadTime: uploadTimeValFinal
       });
     });
 
-    // 3. Filter other drivers: only ONLINE and active heartbeat within 150s
+    // 3. Filter other drivers: only ONLINE
     const otherOnlineDrivers: DriverItem[] = [];
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
       if (!driver.isOnline) return;
-
-      // Heartbeat timeout check: If more than 150 seconds silent, consider offline
-      if (driver.uploadTime > 0 && (Date.now() - driver.uploadTime > 150000)) {
-        return;
-      }
 
       // Assign stable random sort key per driver for consistent UX during session
       if (!sessionRandomSeedMap.current.has(driver.phone)) {
@@ -367,9 +418,9 @@ export default function SquadDriverList({
       }
       const randomSortKey = sessionRandomSeedMap.current.get(driver.phone) || Math.random();
 
-      // Masked name for all other drivers (e.g. 李扬 -> 李师傅)
-      const rawName = driver.name || '代驾司机';
-      const maskedName = formatDriverMaskedName(rawName);
+      // Masked name for all other drivers (e.g. 李扬 -> 李师傅, 吴彦祖 -> 吴师傅)
+      const rawRealName = resolveDriverRealName(driver.phone, driver.name);
+      const maskedName = formatDriverMaskedName(rawRealName);
 
       otherOnlineDrivers.push({
         phone: driver.phone,

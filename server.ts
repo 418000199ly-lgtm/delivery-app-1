@@ -527,8 +527,8 @@ async function startServer() {
     }
   });
 
-  // 3. SET Document (create or replace/merge)
-  app.post('/api/db/set', async (req, res) => {
+  // 3. SET Document (create or replace/merge) - Supports both /api/db/set and /api/db/save
+  app.post(['/api/db/set', '/api/db/save'], async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || '').trim();
       const docId = String(req.body.id || req.body.docId || '').trim();

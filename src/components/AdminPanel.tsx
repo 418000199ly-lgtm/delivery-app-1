@@ -1228,8 +1228,37 @@ export default function AdminPanel({
         role: memberRole,
         city: targetCity,
         remark: memberRemark.trim(),
-        createdAt: new Date().toISOString()
+        status: 'approved',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
       }, { merge: true });
+
+      // Automatically approve online application & enable driver permissions for team member (including 普通司机)
+      try {
+        await setDoc(doc(db, 'online_applications', phone), {
+          driverPhone: phone,
+          status: 'approved',
+          city: targetCity || '银川市',
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
+        await setDoc(doc(db, 'driver_users', phone), {
+          phoneNumber: phone,
+          onlineOrdersEnabled: true,
+          status: 'approved',
+          role: memberRole,
+          city: targetCity || '',
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
+        await setDoc(doc(db, 'squad_members', phone), {
+          phone: phone,
+          status: '已通过',
+          role: memberRole,
+          city: targetCity || '',
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (_) {}
 
       triggerToast(`✓ 成功设置团队成员手机号 ${phone} 为【${memberRole}】（城市：${targetCity || '全国'}）！`);
       setMemberPhone('');
