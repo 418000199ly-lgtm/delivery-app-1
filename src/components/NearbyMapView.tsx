@@ -663,15 +663,8 @@ export default function NearbyMapView({
       const name = String(liveLoc.driverName || liveLoc.name || '').trim();
       if (!phone || isMeMember(phone, name)) return;
 
-      const existing = candidateDriversMap.get(phone) || {
-        phone,
-        name: '',
-        lat: 0,
-        lng: 0,
-        isOnline: false,
-        isBusy: false,
-        uploadTime: 0
-      };
+      const existing = candidateDriversMap.get(phone);
+      if (!existing) return; // Only display approved squad members on the map
 
       const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : existing.lat;
       const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : existing.lng;

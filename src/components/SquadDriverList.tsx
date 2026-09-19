@@ -32,6 +32,16 @@ interface DriverItem {
   randomSortKey: number;
 }
 
+// Helper: 6 AM Accounting day (e.g. 2026-09-19)
+const getCurrent6AmDay = (): string => {
+  const now = new Date();
+  const adjusted = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+  const yyyy = adjusted.getFullYear();
+  const mm = String(adjusted.getMonth() + 1).padStart(2, '0');
+  const dd = String(adjusted.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 export default function SquadDriverList({
   userPhone = '15509601222',
   settings,
@@ -193,10 +203,9 @@ export default function SquadDriverList({
     return Math.max(count, todayOrdersCount);
   }, [effectiveMyPhone, todayOrdersCount]);
 
-  // Subscribe and poll squad members
+  // Subscribe and poll squad members (strictly real squad_members, no raw driver_users)
   useEffect(() => {
     let unsubscribe = () => {};
-    let unsubscribeUsers = () => {};
     if (db) {
       const q = collection(db, 'squad_members');
       unsubscribe = onSnapshot(q, (snapshot) => {
@@ -213,26 +222,6 @@ export default function SquadDriverList({
           }
         });
         setSquadList(list);
-      }, () => {});
-
-      const qUsers = collection(db, 'driver_users');
-      unsubscribeUsers = onSnapshot(qUsers, (snapshot) => {
-        const userLocMap: Record<string, any> = {};
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          if (data.isBanned) return;
-          const phone = docSnap.id;
-          const rawName = String(data?.driverName || data?.name || '').trim();
-          userLocMap[phone] = {
-            ...data,
-            phone,
-            name: resolveDriverRealName(phone, rawName),
-            isOnline: Boolean(data.isOnline === true || data.isOnline === 'true' || data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true'),
-            isBusy: Boolean(data.isBusy === true || data.isBusy === 'true'),
-            timestamp: data.lastLocationTime || (data.lastUpdatedTime ? new Date(data.lastUpdatedTime).getTime() : Date.now())
-          };
-        });
-        setRealtimeLocations((prev) => ({ ...prev, ...userLocMap }));
       }, () => {});
     }
 
@@ -273,12 +262,11 @@ export default function SquadDriverList({
 
     return () => {
       unsubscribe();
-      unsubscribeUsers();
       clearInterval(squadInterval);
     };
   }, [effectiveMyPhone]);
 
-  // Subscribe and poll realtime locations
+  // Subscribe and poll realtime locations of drivers
   useEffect(() => {
     let unsubscribe = () => {};
     if (db) {
@@ -318,11 +306,12 @@ export default function SquadDriverList({
   const sessionRandomSeedMap = useRef<Map<string, number>>(new Map());
 
   // Merge and calculate driver list according to strict requirements:
-  // 1. 只显示小队内所有上线的司机 (Offline drivers strictly hidden)
-  // 2. 列表中第一名永远是自己 (例如：吴彦祖，今日成单多少)
-  // 3. 然后随机排名其他上线的司机 (第二名，李师傅，今日成单多少)
+  // 1. 只显示小队内所有上线的真实司机 (Offline drivers strictly hidden, no virtual/unapproved drivers)
+  // 2. 列表中第一名永远是自己 (例如：李扬 (我) 或 吴彦祖 (我)，今日成单多少)
+  // 3. 然后随机排名其他上线的真实小队司机 (第二名，吴师傅，今日成单多少)
   // 4. 空闲的司机显示绿色，做单和报单页面的司机显示红色
-  // 5. 只有自己显示全名，其他上线司机显示隐藏名字 (李扬 -> 李师傅，王元平 -> 王师傅)
+  // 5. 只有自己显示全名，其他上线司机显示隐藏名字 (李扬 -> 李师傅，吴彦祖 -> 吴师傅)
+  // 6. 今日成单全部计算真实数据，不展示虚拟数据
   const sortedOnlineDrivers = useMemo(() => {
     const list: DriverItem[] = [];
 
@@ -339,7 +328,7 @@ export default function SquadDriverList({
       });
     }
 
-    // 2. Aggregate other drivers
+    // 2. Candidate map ONLY from squadList (strictly approved members of this squad)
     const candidateMap = new Map<string, {
       phone: string;
       name: string;
@@ -347,70 +336,93 @@ export default function SquadDriverList({
       isBusy: boolean;
       todayOrders: number;
       uploadTime: number;
+      status?: string;
     }>();
+
+    const cur6AmDay = getCurrent6AmDay();
 
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       if (!phone || isMeMember(phone)) return;
+
+      // Membership status check: must be approved in squad_members
+      const status = String(member.status || '').trim();
+      if (status && status !== '已通过') return;
+
       const name = member.name || member.driverName || '';
+      const memberLastUpdated = member.lastUpdatedTime 
+        ? new Date(member.lastUpdatedTime).getTime() 
+        : (member.timestamp ? Number(member.timestamp) : 0);
+
+      const isFromToday = (member.lastResetDate && member.lastResetDate === cur6AmDay) ||
+        (memberLastUpdated > 0 && new Date(memberLastUpdated - 6 * 3600 * 1000).toISOString().slice(0, 10) === cur6AmDay);
+
+      const initialTodayOrders = isFromToday ? Math.max(0, Number(member.todayOrders || 0)) : 0;
+
       candidateMap.set(phone, {
         phone,
         name,
-        isOnline: Boolean(member.isOnline === true || member.isOnline === 'true'),
+        isOnline: Boolean(member.isOnline === true || member.isOnline === 'true' || member.onlineOrdersEnabled === true || member.onlineOrdersEnabled === 'true'),
         isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
-        todayOrders: Number(member.todayOrders || 0),
-        uploadTime: member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0
+        todayOrders: initialTodayOrders,
+        uploadTime: memberLastUpdated,
+        status: member.status
       });
     });
 
+    // 3. Merge live location / heartbeat updates ONLY for drivers already in squadList
     Object.keys(realtimeLocations).forEach((phoneKey) => {
-      const phone = String(phoneKey || '').replace(/\D/g, '').trim();
-      if (!phone || isMeMember(phone)) return;
       const liveLoc = realtimeLocations[phoneKey];
       if (!liveLoc) return;
+      const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
+      if (!phone || isMeMember(phone)) return;
 
-      const existing = candidateMap.get(phone) || {
-        phone,
-        name: '',
-        isOnline: false,
-        isBusy: false,
-        todayOrders: 0,
-        uploadTime: 0
-      };
+      // STRICT SQUAD FILTER: Only update drivers who are ALREADY verified members in squadList!
+      // NEVER create new drivers who are not part of the squad!
+      const existing = candidateMap.get(phone);
+      if (!existing) return;
 
       const uploadTimeVal = liveLoc.timestamp
         ? Number(liveLoc.timestamp)
         : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : existing.uploadTime);
 
-      const hasRecentActivity = (uploadTimeVal && (Date.now() - uploadTimeVal < 20 * 60 * 1000)) || 
-        (liveLoc.lastLocationTime && (Date.now() - Number(liveLoc.lastLocationTime) < 20 * 60 * 1000));
-      const isOnlineVal = liveLoc.isOnline !== undefined
-        ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
-        : (hasRecentActivity || Boolean(existing.isOnline));
-      const finalIsOnline = (phone === '15509601222' && liveLoc.isOnline !== false) ? true : isOnlineVal;
-
       const isBusyVal = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
         : existing.isBusy;
-      const uploadTimeValFinal = uploadTimeVal || existing.uploadTime || (phone === '15509601222' ? Date.now() : 0);
-      const nameVal = resolveDriverRealName(phone, existing.name || liveLoc.driverName || liveLoc.name || '');
-      const todayOrdersVal = liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : existing.todayOrders;
+
+      const isOnlineVal = liveLoc.isOnline !== undefined
+        ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true' || liveLoc.onlineOrdersEnabled === true || liveLoc.onlineOrdersEnabled === 'true')
+        : existing.isOnline;
+
+      const isFromToday = (liveLoc.lastResetDate && liveLoc.lastResetDate === cur6AmDay) ||
+        (uploadTimeVal > 0 && new Date(uploadTimeVal - 6 * 3600 * 1000).toISOString().slice(0, 10) === cur6AmDay);
+
+      const liveOrders = liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : existing.todayOrders;
+      const finalTodayOrders = isFromToday ? Math.max(0, liveOrders) : 0;
 
       candidateMap.set(phone, {
-        phone,
-        name: nameVal,
-        isOnline: finalIsOnline,
+        ...existing,
+        isOnline: isOnlineVal,
         isBusy: isBusyVal,
-        todayOrders: todayOrdersVal,
-        uploadTime: uploadTimeValFinal
+        todayOrders: finalTodayOrders,
+        uploadTime: Math.max(uploadTimeVal, existing.uploadTime)
       });
     });
 
-    // 3. Filter other drivers: only ONLINE
+    // 4. Filter other drivers: only genuinely ONLINE with active heartbeat
     const otherOnlineDrivers: DriverItem[] = [];
+    const now = Date.now();
+    // Inactivity threshold: 10 minutes (600,000 ms)
+    const MAX_INACTIVITY_MS = 10 * 60 * 1000;
+
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
       if (!driver.isOnline) return;
+
+      // Heartbeat validation: if uploadTime is set and is older than 10 minutes, driver has disconnected
+      if (driver.uploadTime > 0 && (now - driver.uploadTime > MAX_INACTIVITY_MS)) {
+        return;
+      }
 
       // Assign stable random sort key per driver for consistent UX during session
       if (!sessionRandomSeedMap.current.has(driver.phone)) {
