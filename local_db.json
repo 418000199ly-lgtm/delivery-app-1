@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-09T09:05:00.149Z"
+      "updatedAt": "2026-09-19T08:16:40.333Z"
     }
   },
   "version_history": {
@@ -46,11 +46,11 @@
       "customAppName": "滴滴代驾",
       "isOnline": false,
       "onlineOrdersEnabled": false,
-      "lastOfflineReason": "daily_0559_expired",
-      "lastOfflineTime": "2026-09-09T05:59:00.000Z",
       "isBanned": false,
       "city": "银川市",
       "updatedAt": "2026-09-07T16:40:37.510Z",
+      "lastOfflineReason": "daily_0559_expired",
+      "lastOfflineTime": "2026-09-09T05:59:00.000Z",
       "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
       "lat": 38.47513,
       "lng": 106.28665,
@@ -59,6 +59,18 @@
       "appVersion": "V1.0",
       "lastUpdatedBy": "Gaode AMap 20s Auto Reporter",
       "lastLocationTime": 1788803793368
+    },
+    "18695119126": {
+      "phone": "18695119126",
+      "driverName": "李扬",
+      "name": "李扬",
+      "role": "普通司机",
+      "userRole": "普通司机",
+      "status": "已通过",
+      "city": "银川市",
+      "updatedAt": "2026-09-19T08:30:00.000Z",
+      "lat": 38.47513,
+      "lng": 106.28665
     }
   },
   "squad_members": {
@@ -70,6 +82,10 @@
       "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
       "phone": "15509601222",
       "driverName": "吴彦祖",
+      "name": "吴彦祖",
+      "role": "开发者司机",
+      "userRole": "开发者司机",
+      "status": "已通过",
       "lat": 38.475121,
       "lng": 106.286642,
       "isBusy": false,
@@ -77,6 +93,34 @@
       "version": "V1.0",
       "appVersion": "V1.0",
       "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
+    },
+    "18695119126": {
+      "phone": "18695119126",
+      "driverName": "李扬",
+      "name": "李扬",
+      "role": "普通司机",
+      "userRole": "普通司机",
+      "status": "已通过",
+      "city": "银川市",
+      "approvedBy": "吴彦祖",
+      "approvedRole": "开发者司机",
+      "approvalTime": "2026-09-19 16:30:00",
+      "lastUpdatedTime": "2026-09-19 16:30:00"
+    }
+  },
+  "squad_applications": {
+    "18695119126": {
+      "id": "18695119126",
+      "phone": "18695119126",
+      "name": "李扬",
+      "driverName": "李扬",
+      "status": "已通过",
+      "role": "普通司机",
+      "userRole": "普通司机",
+      "city": "银川市",
+      "approvedBy": "吴彦祖",
+      "approvedRole": "开发者司机",
+      "approvalTime": "2026-09-19 16:30:00"
     }
   },
   "driver_locations": {

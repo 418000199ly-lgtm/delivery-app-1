@@ -505,7 +505,8 @@ async function startServer() {
           );
           const docs = (rows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-            return { id: r.doc_id, data };
+            const obj = typeof data === 'object' && data !== null ? data : {};
+            return { id: r.doc_id, ...obj, data };
           });
           return res.json({ docs, list: docs, data: docs });
         } catch (mysqlErr: any) {
@@ -516,10 +517,15 @@ async function startServer() {
       // JSON DB Fallback
       const dbData = readLocalJsonDb();
       const colData = dbData[col] || {};
-      const docs = Object.keys(colData).map((k) => ({
-        id: k,
-        data: colData[k]
-      }));
+      const docs = Object.keys(colData).map((k) => {
+        const itemData = colData[k];
+        const obj = typeof itemData === 'object' && itemData !== null ? itemData : {};
+        return {
+          id: k,
+          ...obj,
+          data: itemData
+        };
+      });
       return res.json({ docs, list: docs, data: docs });
     } catch (err: any) {
       console.error('[DB Proxy LIST Exception]:', err);

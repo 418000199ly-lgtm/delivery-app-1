@@ -813,6 +813,15 @@ export default function DispatchValetOrder({
       try {
         localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
       } catch (_) {}
+      if (db) {
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: updated }, { merge: true }).catch(() => {});
+      }
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: updated } })
+      }).catch(() => {});
       return updated;
     });
 
@@ -1663,25 +1672,53 @@ export default function DispatchValetOrder({
       }
       try {
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
+        const updatedMemberObj = updatedList.find(m => m.phone === targetMember.phone);
+        if (updatedMemberObj) {
+          localStorage.setItem(`dd_squad_member_${targetMember.phone}`, JSON.stringify(updatedMemberObj));
+        }
       } catch (_) {}
       return updatedList;
     });
 
     // Also sync to applicants list if present
-    setApplicants(prev => prev.map(a => (a.phone === targetMember.phone || a.id === targetMember.id) ? { ...a, role: newRole } : a));
+    setApplicants(prev => prev.map(a => (a.phone === targetMember.phone || a.id === targetMember.id) ? { ...a, role: newRole, userRole: newRole } : a));
 
     try {
       if (targetMember.phone) {
-        setDoc(doc(db, 'squad_members', targetMember.phone), {
-          role: newRole,
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
+        if (db) {
+          setDoc(doc(db, 'squad_members', targetMember.phone), {
+            role: newRole,
+            userRole: newRole,
+            lastUpdatedTime: new Date().toLocaleString()
+          }, { merge: true }).catch(() => {});
 
-        setDoc(doc(db, 'driver_users', targetMember.phone), {
-          userRole: newRole,
-          role: newRole,
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'driver_users', targetMember.phone), {
+            userRole: newRole,
+            role: newRole,
+            lastUpdatedTime: new Date().toLocaleString()
+          }, { merge: true }).catch(() => {});
+        }
+
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            collection: 'squad_members',
+            docId: targetMember.phone,
+            data: { role: newRole, userRole: newRole, lastUpdatedTime: new Date().toLocaleString() }
+          })
+        }).catch(() => {});
+
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            collection: 'driver_users',
+            docId: targetMember.phone,
+            data: { userRole: newRole, role: newRole, lastUpdatedTime: new Date().toLocaleString() }
+          })
+        }).catch(() => {});
       }
     } catch (_) {}
 
