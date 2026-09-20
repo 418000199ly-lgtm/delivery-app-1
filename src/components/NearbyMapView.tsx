@@ -13,7 +13,7 @@ import {
   Navigation
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
-import { db, collection, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
+import { db, collection, doc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import { formatDriverMaskedName, resolveDriverRealName } from '../utils/nameResolver';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
@@ -67,11 +67,37 @@ export default function NearbyMapView({
     lat: driverCoords?.lat || 38.487167
   });
 
-  const effectiveMyPhone = String(
-    userPhone || 
-    (typeof window !== 'undefined' ? (localStorage.getItem('dd_user_phone') || localStorage.getItem('user_phone')) : '') || 
-    ''
-  ).trim() || '15509601222';
+  const rawPhone = userPhone || 
+    (typeof window !== 'undefined' ? (localStorage.getItem('dd_user_phone') || localStorage.getItem('user_phone') || (settings as any)?.phone) : '') || 
+    '';
+  const effectiveMyPhone = String(rawPhone).trim();
+
+  const [removedPhones, setRemovedPhones] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+      return saved ? JSON.parse(saved) : [];
+    } catch (_) {
+      return [];
+    }
+  });
+
+  // Listen to removed_squad_members in Firestore
+  useEffect(() => {
+    if (!db) return;
+    const unsub = onSnapshot(doc(db, 'config', 'removed_squad_members'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (Array.isArray(data?.phones)) {
+          const list = data.phones.map((p: any) => String(p).trim());
+          setRemovedPhones(list);
+          try {
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(list));
+          } catch (_) {}
+        }
+      }
+    }, () => {});
+    return () => unsub();
+  }, []);
 
   const [mySquadName, setMySquadName] = useState<string>(() => {
     return resolveDriverRealName(
@@ -91,19 +117,11 @@ export default function NearbyMapView({
   const isMeMember = (phoneOrId?: string, name?: string) => {
     const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
     const myClean = String(effectiveMyPhone || '').replace(/\D/g, '').trim();
-    if (clean && myClean) {
-      if (clean === myClean || clean.endsWith(myClean) || myClean.endsWith(clean)) {
+    if (clean && myClean && clean.length >= 7 && myClean.length >= 7) {
+      if (clean === myClean) {
         return true;
       }
     }
-
-    const n = String(name || '').trim();
-    if (n && currentDriverName) {
-      if (n === currentDriverName || n === `${currentDriverName} (我)` || n === `${currentDriverName}(我)`) {
-        return true;
-      }
-    }
-
     return false;
   };
 
@@ -643,7 +661,7 @@ export default function NearbyMapView({
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
-      if (!phone || isMeMember(phone, name)) return;
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
       candidateDriversMap.set(phone, {
         phone,
         name,
@@ -661,24 +679,23 @@ export default function NearbyMapView({
       if (!liveLoc) return;
       const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
       const name = String(liveLoc.driverName || liveLoc.name || '').trim();
-      if (!phone || isMeMember(phone, name)) return;
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
 
       const existing = candidateDriversMap.get(phone);
-      if (!existing) return; // Only display approved squad members on the map
 
-      const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : existing.lat;
-      const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : existing.lng;
+      const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
+      const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : (existing?.lng || 0);
       const isOnline = liveLoc.isOnline !== undefined
         ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
-        : existing.isOnline;
+        : (existing?.isOnline || false);
       const isBusy = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
-        : existing.isBusy;
+        : (existing?.isBusy || false);
       const uploadTime = liveLoc.timestamp
         ? Number(liveLoc.timestamp)
-        : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : existing.uploadTime);
+        : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0));
       
-      const candidateName = existing.name || name || '';
+      const candidateName = existing?.name || name || '';
       const resolvedName = resolveDriverRealName(phone, candidateName);
 
       candidateDriversMap.set(phone, {
@@ -694,18 +711,14 @@ export default function NearbyMapView({
 
     // Render other drivers according to Hubble settings
     candidateDriversMap.forEach((driver) => {
-      // 1. Strictly exclude current driver "我"
-      if (isMeMember(driver.phone, driver.name)) return;
+      // 1. Strictly exclude current driver "我" or removed drivers
+      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone)) return;
 
       // 2. 必须有真实有效GPS坐标
-      if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng)) return;
+      if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) return;
 
       // 3. 状态筛选判断
       if (driver.isOnline) {
-        // 在线司机心跳校验：若超过 150 秒未更新且没有开启下线位置查看，则判定为离线/退出，不显示
-        const isFresh = driver.uploadTime === 0 || (Date.now() - driver.uploadTime <= 150000);
-        if (!isFresh && !hubbleFilters.showOffline) return;
-
         // 在线状态分流
         if (driver.isBusy) {
           if (!hubbleFilters.showBusy) return;
@@ -733,7 +746,7 @@ export default function NearbyMapView({
     });
 
     markersRef.current = newMarkers;
-  }, [mapLoaded, gpsLocation, isCurrentDriverOnline, isCurrentDriverBusy, currentDriverName, squadList, realtimeLocations, effectiveMyPhone, hubbleFilters]);
+  }, [mapLoaded, gpsLocation, isCurrentDriverOnline, isCurrentDriverBusy, currentDriverName, squadList, realtimeLocations, effectiveMyPhone, removedPhones, hubbleFilters]);
 
   // Center map on current GPS location
   const handleRecenter = () => {
@@ -861,7 +874,8 @@ export default function NearbyMapView({
 
       {/* Bottom Navigation Bar (Enhanced Safe Area for All Android Navigation Bars) */}
       <nav 
-        className="relative z-30 bg-white border-t border-gray-200/80 pt-2 px-6 sm:px-12 pb-2 flex justify-between items-center select-none shrink-0 android-nav-safe-pb"
+        className="relative z-30 bg-white border-t border-gray-200/80 pt-2.5 px-6 sm:px-12 flex justify-between items-center select-none shrink-0 android-nav-safe-pb"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 18px)' }}
       >
         {/* Tab: 首页 (Home) */}
         <button 

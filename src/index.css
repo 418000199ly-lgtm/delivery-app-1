@@ -61,42 +61,42 @@ button:focus, button:focus-visible, button:active {
   --android-nav-bar-height: 0px;
 }
 
-/* Safe area padding utilities for native mobile apps & mobile web - compact and precise */
+/* Safe area padding utilities for native mobile apps & mobile web - prevent navigation bar overlap */
 .status-bar-safe-spacer {
   height: env(safe-area-inset-top, 0px);
   min-height: 0px;
 }
 
 .pt-safe {
-  padding-top: max(env(safe-area-inset-top, 0px), 4px);
+  padding-top: max(env(safe-area-inset-top, 0px), 8px);
 }
 
 .pb-safe {
-  padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 16px) !important;
 }
 
 .mt-safe {
-  margin-top: max(env(safe-area-inset-top, 0px), 4px);
+  margin-top: max(env(safe-area-inset-top, 0px), 6px);
 }
 
 .header-safe-pt {
-  padding-top: max(env(safe-area-inset-top, 0px), 6px) !important;
+  padding-top: max(env(safe-area-inset-top, 0px), 10px) !important;
 }
 
 .header-safe-pt-sm {
-  padding-top: max(env(safe-area-inset-top, 0px), 4px) !important;
+  padding-top: max(env(safe-area-inset-top, 0px), 6px) !important;
 }
 
 .footer-safe-pb {
-  padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 18px) !important;
 }
 
 .android-nav-safe-pb {
-  padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 18px) !important;
 }
 
 .bottom-sheet-safe-pb {
-  padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px) !important;
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 22px) !important;
 }
 
 /* Custom scrollbar to resemble standard mobile app list views */

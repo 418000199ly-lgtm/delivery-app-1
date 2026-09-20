@@ -1004,7 +1004,10 @@ export default function NavigationView({
         </div>
 
         {/* BOTTOM ACTION BAR ("退出 | 路线全览 / 恢复导航(25m)") (Adapted to Android bottom navigation bar / gesture bar) */}
-        <div className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-6 pt-3 pb-2.5 shadow-2xl flex items-center justify-between android-nav-safe-pb">
+        <div 
+          className="absolute bottom-0 left-0 right-0 z-30 bg-white border-t border-slate-200 px-6 pt-3 shadow-2xl flex items-center justify-between android-nav-safe-pb"
+          style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 18px)' }}
+        >
           <button
             onClick={handleExit}
             className="text-slate-800 font-bold text-base hover:text-slate-900 px-3 py-1 active:scale-95 transition-transform"

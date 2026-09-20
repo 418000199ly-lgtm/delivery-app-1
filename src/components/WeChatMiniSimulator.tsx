@@ -3,6 +3,7 @@ import TencentMap from './TencentMap';
 import { db, doc, setDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import driverAvatar from '../assets/images/driver_cycling_helmet_avatar_1784017817358.jpg';
 import { DRIVER_AVATAR_BASE64, READY_DRIVER_BASE64, READY_DRIVER_PATH, WECHAT_CARD_BANNER_BASE64, WECHAT_CARD_BANNER_PATH } from '../assets/images/driverImageConstants';
+import { getHighPrecisionLocationName } from '../utils/locationResolver';
 import { 
   Phone, 
   MapPin, 
@@ -90,116 +91,6 @@ const getClosestLocalPoi = (lng: number, lat: number) => {
     }
   }
   return closest;
-};
-
-const getHighPrecisionLocationName = (regeocode: any, fallbackAddress: string, centerLng?: number, centerLat?: number): string => {
-  if (!regeocode) return fallbackAddress || '未知地点';
-  
-  const addressComponent = regeocode.addressComponent;
-  const district = addressComponent ? (addressComponent.district || '') : '';
-  const township = addressComponent ? (addressComponent.township || '') : '';
-  
-  const getPoiLngLat = (poi: any) => {
-    if (!poi || !poi.location) return null;
-    const loc = poi.location;
-    if (typeof loc.getLng === 'function' && typeof loc.getLat === 'function') {
-      return { lng: loc.getLng(), lat: loc.getLat() };
-    }
-    if (typeof loc.lng === 'number' && typeof loc.lat === 'number') {
-      return { lng: loc.lng, lat: loc.lat };
-    }
-    if (typeof loc.lng === 'function' && typeof loc.lat === 'function') {
-      return { lng: loc.lng(), lat: loc.lat() };
-    }
-    if (typeof loc === 'string') {
-      const parts = loc.split(',');
-      if (parts.length === 2) {
-        return { lng: parseFloat(parts[0]), lat: parseFloat(parts[1] || '0') };
-      }
-    }
-    return null;
-  };
-
-  const getPoiDistance = (poi: any, cLng?: number, cLat?: number): number => {
-    if (cLng !== undefined && cLat !== undefined) {
-      const loc = getPoiLngLat(poi);
-      if (loc) {
-        return getDistance(cLng, cLat, loc.lng, loc.lat);
-      }
-    }
-    if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
-      const dist = Number(poi.distance);
-      if (!isNaN(dist)) return dist;
-    }
-    return 999999;
-  };
-
-  const minorStoreKeywords = [
-    '面馆', '砂锅面', '调和', '牛肉面', '羊肉', '饭店', '餐馆', '小吃', '快餐', '便利店', '超市', 
-    '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
-    '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档'
-  ];
-
-  let neighborhoodName = '';
-  if (addressComponent && addressComponent.neighborhood) {
-    neighborhoodName = typeof addressComponent.neighborhood === 'string'
-      ? addressComponent.neighborhood
-      : (addressComponent.neighborhood.name || '');
-  }
-
-  let aoiName = '';
-  if (regeocode.aois && regeocode.aois.length > 0 && regeocode.aois[0] && regeocode.aois[0].name) {
-    aoiName = regeocode.aois[0].name;
-  }
-
-  const communityName = neighborhoodName.trim() || aoiName.trim();
-
-  let poiName = '';
-  if (regeocode.pois && regeocode.pois.length > 0) {
-    const validPois = regeocode.pois.filter((poi: any) => {
-      const name = (poi.name || '').trim();
-      return name !== '银川' && name !== '银川市' && name !== '市辖区' && name !== '兴庆区' && name !== '金凤区' && name !== '西夏区';
-    });
-    const targetPois = validPois.length > 0 ? validPois : regeocode.pois;
-    const sortedPois = [...targetPois].sort((a, b) => {
-      const distA = getPoiDistance(a, centerLng, centerLat);
-      const distB = getPoiDistance(b, centerLng, centerLat);
-
-      const isGenericResA = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(a.name || '');
-      const isGenericResB = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(b.name || '');
-
-      if (!isGenericResA && isGenericResB && distA <= 150) return -1;
-      if (isGenericResA && !isGenericResB && distA <= 150) return 1;
-
-      return distA - distB;
-    });
-
-    const topPoiName = sortedPois[0] ? sortedPois[0].name || '' : '';
-    const isMinorStore = minorStoreKeywords.some(kw => topPoiName.includes(kw));
-
-    if (isMinorStore && communityName) {
-      poiName = communityName;
-    } else if (topPoiName) {
-      poiName = topPoiName;
-    } else if (communityName) {
-      poiName = communityName;
-    }
-  } else if (communityName) {
-    poiName = communityName;
-  }
-
-  if (poiName) {
-    return poiName;
-  }
-
-  const cleanFormat = fallbackAddress
-    .replace('宁夏回族自治区', '')
-    .replace('银川市', '')
-    .replace(district, '')
-    .replace(township, '')
-    .trim();
-
-  return cleanFormat || fallbackAddress;
 };
 
 interface WeChatMiniSimulatorProps {

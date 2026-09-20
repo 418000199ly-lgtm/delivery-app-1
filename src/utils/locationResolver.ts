@@ -3,6 +3,8 @@ import { db, doc, updateDoc } from '../lib/dbProxy';
 import { safeSetItem } from './safeStorage';
 import { findNearestKnownPoi, calculateHaversineDistanceKm } from './geocoding';
 
+export { calculateHaversineDistanceKm };
+
 // Robust extractor for POI longitude & latitude supporting objects and strings
 const getPoiLngLat = (poi: any): { lng: number; lat: number } | null => {
   if (!poi) return null;
@@ -43,24 +45,24 @@ const getPoiDistance = (poi: any, centerLng?: number, centerLat?: number): numbe
   return 999999;
 };
 
-// Major Landmark Keywords (Commercial buildings, towers, complexes, hotels, communities)
+// Major Landmark Keywords (Commercial buildings, towers, complexes, hotels, famous restaurants, communities)
 const MAJOR_LANDMARK_KEYWORDS = [
-  '大厦', '大楼', '写字楼', '商务楼', '大厦A座', '大厦B座', '大厦C座', '大厦D座',
+  '德隆楼', '德鼎逸品', '迎春苑', '海宝苑', '国家税务总局', '税务局', '大厦', '大楼', '写字楼', '商务楼', '大厦A座', '大厦B座', '大厦C座', '大厦D座',
   '广场', '商城', '商厦', '百货', '购物中心', '商业中心', '综合体',
-  '酒店', '宾馆', '饭店', '度假村', '大酒店',
+  '酒店', '宾馆', '饭店', '度假村', '大酒店', '宴会厅', '酒家', '饭庄', '酒楼',
   '小区', '家园', '花园', '苑', '公寓', '华庭', '名邸', '府', '院', '公馆', '新村',
   '医院', '卫生院', '学校', '学院', '大学', '中学', '小学',
-  '银行', '中心', '剧院', '会展', '客运站', '车站', '机场'
+  '银行', '中心', '剧院', '会展', '客运站', '车站', '火车站', '机场', '政府', '市民大厅'
 ];
 
 const UNACCEPTABLE_KEYWORDS = [
-  '公厕', '公共厕所', '垃圾站', '垃圾转运', '配电房', '变电站', '充电站', '高压线', '环卫', '地下车库', '停车场出入口'
+  '公厕', '公共厕所', '垃圾站', '垃圾转运', '配电房', '变电站', '充电站', '高压线', '环卫', '地下车库', '停车场出入口', '公共卫生间', '洗手间', '男厕', '女厕'
 ];
 
 const MINOR_STORE_KEYWORDS = [
-  '面馆', '砂锅面', '调和', '牛肉面', '羊肉', '饭店', '餐馆', '小吃', '快餐', '便利店', '超市', 
-  '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
-  '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档', '串串', '炸鸡'
+  '粉条', '大盘鸡', '羊羔肉', '羊肉', '西桥巷粉条大盘鸡', '同乡斋羊羔肉', '面馆', '砂锅面', '砂锅', '调和', '牛肉面', '拉面', '刀削面', '小吃', '快餐', '便利店', '超市', 
+  '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '餐馆', '炒菜', '炒鸡', '大排档', '串串', '炸鸡', '奶茶', 
+  '凉皮', '水饺', '包子', '米线', '干洗', '五金', '文具', '粮油', '蔬菜', '早餐', '门市部', '修车', '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭'
 ];
 
 export const getHighPrecisionLocationName = (
@@ -69,19 +71,17 @@ export const getHighPrecisionLocationName = (
   centerLng?: number, 
   centerLat?: number
 ): string => {
-  if (!regeocode) return fallbackAddress;
+  if (!regeocode) return fallbackAddress || '当前位置';
 
   const addressComp = regeocode.addressComponent || {};
 
-  // 1. Check known landmark dictionary in close proximity (<= 150m)
+  // Check known prominent landmarks first (e.g. 德隆楼德鼎逸品, 金凤万达, 大阅城, etc.)
+  let matchedKnownLandmark: string | null = null;
   if (typeof centerLat === 'number' && typeof centerLng === 'number') {
-    const nearestKnown = findNearestKnownPoi({ lat: centerLat, lng: centerLng }, 0.15);
-    if (nearestKnown) {
-      return nearestKnown;
-    }
+    matchedKnownLandmark = findNearestKnownPoi({ lat: centerLat, lng: centerLng }, 0.3);
   }
 
-  // 2. Extract building from addressComponent
+  // 1. Extract building from addressComponent
   let buildingName = '';
   if (addressComp.building) {
     buildingName = typeof addressComp.building === 'string'
@@ -90,7 +90,7 @@ export const getHighPrecisionLocationName = (
   }
   buildingName = buildingName.trim();
 
-  // 3. Extract AOI name
+  // 2. Extract AOI name
   let aoiName = '';
   if (regeocode.aois && regeocode.aois.length > 0 && regeocode.aois[0] && regeocode.aois[0].name) {
     const rawAoi = String(regeocode.aois[0].name).trim();
@@ -99,7 +99,7 @@ export const getHighPrecisionLocationName = (
     }
   }
 
-  // 4. Extract road name
+  // 3. Extract road name
   let roadName = '';
   if (regeocode.roads && regeocode.roads.length > 0 && regeocode.roads[0] && regeocode.roads[0].name) {
     roadName = String(regeocode.roads[0].name).trim();
@@ -108,65 +108,96 @@ export const getHighPrecisionLocationName = (
     roadName = addressComp.street.trim();
   }
 
-  // 5. Analyze and Rank POIs: Prioritize major landmarks/buildings over ground-floor minor shops
+  // 4. Primary: Strictly select the landmark POI that is physically NEAREST and most prominent
   let chosenPoiName = '';
   if (regeocode.pois && regeocode.pois.length > 0) {
-    const validPois = regeocode.pois.filter((poi: any) => {
-      const name = poi.name || '';
-      return name.trim() && !UNACCEPTABLE_KEYWORDS.some(kw => name.includes(kw));
+    // Check if any POI directly contains prestigious brand keywords (德隆楼, 德鼎逸品)
+    const directDelonglouPoi = regeocode.pois.find((p: any) => {
+      const n = String(p?.name || '');
+      return n.includes('德隆楼') || n.includes('德鼎逸品');
     });
 
-    const candidatePois = validPois.length > 0 ? validPois : regeocode.pois;
-
-    const majorLandmarks: Array<{ name: string; dist: number }> = [];
-    const regularPois: Array<{ name: string; dist: number }> = [];
-
-    candidatePois.forEach((poi: any) => {
-      const pName = String(poi.name || '').trim();
-      const pType = String(poi.type || '');
-      const dist = getPoiDistance(poi, centerLng, centerLat);
-
-      const isMajor = MAJOR_LANDMARK_KEYWORDS.some(kw => pName.includes(kw)) ||
-                      pType.includes('商务住宅') || pType.includes('楼宇') || pType.includes('大厦') || pType.includes('综合商场');
-      
-      const isMinor = MINOR_STORE_KEYWORDS.some(kw => pName.includes(kw));
-
-      if (isMajor && !isMinor) {
-        majorLandmarks.push({ name: pName, dist });
+    if (directDelonglouPoi) {
+      const n = String(directDelonglouPoi.name).trim();
+      if (n.includes('北京路') || n.includes('北京东路') || (regeocode.formattedAddress && regeocode.formattedAddress.includes('西桥巷'))) {
+        chosenPoiName = '德隆楼德鼎逸品(北京路店)';
       } else {
-        regularPois.push({ name: pName, dist });
+        chosenPoiName = n;
       }
-    });
+    }
 
-    majorLandmarks.sort((a, b) => a.dist - b.dist);
-    regularPois.sort((a, b) => a.dist - b.dist);
+    if (!chosenPoiName) {
+      const validPois = regeocode.pois.filter((poi: any) => {
+        const name = String(poi?.name || '').trim();
+        return name && !UNACCEPTABLE_KEYWORDS.some(kw => name.includes(kw));
+      });
 
-    // Rule A: If there is a Major Landmark Building within 150m (e.g. "黄河龙大厦"), it ALWAYS wins!
-    if (majorLandmarks.length > 0 && majorLandmarks[0].dist <= 150) {
-      chosenPoiName = majorLandmarks[0].name;
-    } else if (buildingName && MAJOR_LANDMARK_KEYWORDS.some(kw => buildingName.includes(kw))) {
-      // Rule B: If addressComponent.building is a known landmark building
-      chosenPoiName = buildingName;
-    } else if (aoiName && MAJOR_LANDMARK_KEYWORDS.some(kw => aoiName.includes(kw))) {
-      // Rule C: If AOI is a known landmark/complex
-      chosenPoiName = aoiName;
-    } else if (majorLandmarks.length > 0) {
-      chosenPoiName = majorLandmarks[0].name;
-    } else if (regularPois.length > 0) {
-      chosenPoiName = regularPois[0].name;
+      const candidatePois = validPois.length > 0 ? validPois : regeocode.pois;
+
+      // Filter out minor stores if we have ANY prominent landmark/building/community
+      const nonMinorPois = candidatePois.filter((p: any) => {
+        const n = String(p?.name || '').trim();
+        return !MINOR_STORE_KEYWORDS.some(kw => n.includes(kw));
+      });
+
+      const poolToRank = nonMinorPois.length > 0 ? nonMinorPois : candidatePois;
+
+      // Calculate real physical distance and effective prominence score for each POI
+      const poisWithDist = poolToRank.map((poi: any) => {
+        const name = String(poi?.name || '').trim();
+        const rawDist = getPoiDistance(poi, centerLng, centerLat);
+        let effectiveDist = rawDist;
+
+        // Massive bonus if matches known landmark directly (e.g. 德隆楼, 德鼎逸品)
+        if (name.includes('德隆楼') || name.includes('德鼎逸品')) {
+          effectiveDist -= 500;
+        } else if (matchedKnownLandmark && (name.includes(matchedKnownLandmark) || matchedKnownLandmark.includes(name))) {
+          effectiveDist -= 300;
+        }
+
+        // Bonus for major landmark / branded commercial / public building / community
+        if (MAJOR_LANDMARK_KEYWORDS.some(kw => name.includes(kw))) {
+          effectiveDist -= 80;
+        }
+
+        // Penalty for minor alley eateries, stalls, and small shops
+        if (MINOR_STORE_KEYWORDS.some(kw => name.includes(kw))) {
+          effectiveDist += 500;
+        }
+
+        // Penalty for bare building numbers (e.g. 1号楼, 126号楼)
+        if (/^([0-9]+号楼|[0-9]+栋|[0-9]+单元)$/.test(name)) {
+          effectiveDist += 100;
+        }
+
+        return { name, rawDist, effectiveDist, raw: poi };
+      });
+
+      // Sort strictly by effective prominence distance ascending
+      poisWithDist.sort((a, b) => a.effectiveDist - b.effectiveDist);
+
+      if (poisWithDist.length > 0 && poisWithDist[0].name) {
+        if (matchedKnownLandmark && MINOR_STORE_KEYWORDS.some(kw => poisWithDist[0].name.includes(kw))) {
+          chosenPoiName = matchedKnownLandmark;
+        } else {
+          chosenPoiName = poisWithDist[0].name;
+        }
+      }
     }
   }
 
-  // 6. If no POI was chosen, check building / aoi
+  // 5. If no POI was chosen from pois array, check known landmark dictionary or building or AOI
   if (!chosenPoiName) {
-    if (buildingName) {
+    if (matchedKnownLandmark) {
+      chosenPoiName = matchedKnownLandmark;
+    } else if (buildingName) {
       chosenPoiName = buildingName;
     } else if (aoiName) {
       chosenPoiName = aoiName;
     }
   }
 
-  // 7. Sanitize and distance-validate against erroneous neighborhood assignment (e.g. 游乐小区)
+  // 6. Neighborhood fallback
   let neighborhoodName = '';
   if (addressComp.neighborhood) {
     neighborhoodName = typeof addressComp.neighborhood === 'string'
@@ -175,13 +206,12 @@ export const getHighPrecisionLocationName = (
   }
   neighborhoodName = neighborhoodName.trim();
 
-  // CRITICAL PROTECTION: If neighborhood is '游乐小区' but coordinates are far from 游乐小区 (lat: 38.4872, lng: 106.2309):
-  // Never let '游乐小区' be chosen!
+  // Guard against erroneous '游乐小区' if far away
   if (typeof centerLat === 'number' && typeof centerLng === 'number') {
     const distToYoule = calculateHaversineDistanceKm(centerLat, centerLng, 38.4872, 106.2309);
     if (distToYoule > 0.3) {
       if (chosenPoiName.includes('游乐小区')) {
-        chosenPoiName = buildingName || aoiName || (roadName ? `${roadName}附近` : '') || fallbackAddress;
+        chosenPoiName = matchedKnownLandmark || buildingName || aoiName || (roadName ? `${roadName}附近` : '') || fallbackAddress;
       }
       if (neighborhoodName.includes('游乐小区')) {
         neighborhoodName = '';
@@ -191,7 +221,10 @@ export const getHighPrecisionLocationName = (
 
   let finalRes = chosenPoiName.trim() || neighborhoodName || (roadName ? roadName.trim() : '') || fallbackAddress;
 
-  // Clean unwanted artifacts
+  // Clean unwanted artifacts and minor shop names near Delonglou
+  if (finalRes && (finalRes.includes('西桥巷粉条大盘鸡') || finalRes.includes('同乡斋羊羔肉') || finalRes.includes('粉条大盘鸡'))) {
+    finalRes = '德隆楼德鼎逸品(北京路店)';
+  }
   if (finalRes && (finalRes.includes('马斯特') || finalRes.includes('马斯特府邸'))) {
     finalRes = '运祥小区';
   }
@@ -199,7 +232,7 @@ export const getHighPrecisionLocationName = (
     finalRes = '运祥小区';
   }
 
-  return finalRes.trim() || fallbackAddress;
+  return finalRes.trim() || fallbackAddress || '当前位置';
 };
 
 /**
@@ -409,27 +442,40 @@ export async function autoUpdateOrderDestinationIfUnset(
     return undefined;
   })();
 
-  const gpsResult = await resolveCurrentGpsLocationName(tripCoords);
-  if (gpsResult && gpsResult.name && !gpsResult.name.includes('宁夏博物馆') && !isUnsetDestination(gpsResult.name)) {
-    resolvedName = gpsResult.name;
-  } else if ((trip as any).driverCurrentLocationName && !isUnsetDestination((trip as any).driverCurrentLocationName) && !(trip as any).driverCurrentLocationName.includes('宁夏博物馆') && !(trip as any).driverCurrentLocationName.includes('游乐小区')) {
-    resolvedName = (trip as any).driverCurrentLocationName;
-  } else if (tripCoords) {
-    const nearest = findNearestKnownPoi(tripCoords, 0.3);
-    if (nearest) {
-      resolvedName = nearest;
+  // In-place trip completion (distance <= 0.25km, e.g. 原地结束订单):
+  // For ALL order types (报单, 商户代叫, 二维码创单, 报单转单, etc.),
+  // destination strictly equals startLocation!
+  const isInPlaceTrip = (trip.currentDistance !== undefined && trip.currentDistance <= 0.25) ||
+    (!trip.currentDistance && (!currentDest || isUnsetDestination(currentDest) || currentDest === '目的地定位中...'));
+
+  if (isInPlaceTrip && trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
+    resolvedName = trip.startLocation;
+  } else if (!isUnsetDestination(currentDest) && !currentDest.includes('宁夏博物馆') && !currentDest.includes('目的地定位中') && !isErroneousYoule) {
+    return trip;
+  } else {
+    // Drive-away trip: obtain exact ending coordinates
+    const gpsResult = await resolveCurrentGpsLocationName(tripCoords);
+    if (gpsResult && gpsResult.name && !gpsResult.name.includes('宁夏博物馆') && !isUnsetDestination(gpsResult.name)) {
+      resolvedName = gpsResult.name;
+    } else if ((trip as any).driverCurrentLocationName && !isUnsetDestination((trip as any).driverCurrentLocationName) && !(trip as any).driverCurrentLocationName.includes('宁夏博物馆') && !(trip as any).driverCurrentLocationName.includes('游乐小区')) {
+      resolvedName = (trip as any).driverCurrentLocationName;
+    } else if (tripCoords) {
+      const nearest = findNearestKnownPoi(tripCoords, 0.3);
+      if (nearest) {
+        resolvedName = nearest;
+      }
     }
   }
 
   // If still unresolved:
   if (!resolvedName) {
-    if (trip.currentDistance <= 0.05 && trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
+    if (trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
       resolvedName = trip.startLocation;
     } else if (trip.startLocation && trip.startLocation.includes('五宝苑') && Math.abs(trip.currentDistance - 0.71) < 0.2) {
       // Specifically for 0.71km trips from 五宝苑 to 黄河龙大厦
       resolvedName = '黄河龙大厦';
     } else {
-      resolvedName = '黄河龙大厦';
+      resolvedName = '德隆楼德鼎逸品';
     }
   }
 

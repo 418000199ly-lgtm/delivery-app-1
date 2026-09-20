@@ -18,7 +18,7 @@ import PassengerOrderView from './components/PassengerOrderView';
 import WeChatAuthMobile from './components/WeChatAuthMobile';
 import WeChatMiniSimulator from './components/WeChatMiniSimulator';
 import AlipayMiniSimulator from './components/AlipayMiniSimulator';
-import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName } from './utils/locationResolver';
+import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName, getHighPrecisionLocationName, calculateHaversineDistanceKm } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
 import { findNearestKnownPoi } from './utils/geocoding';
 import { resolveDriverRealName } from './utils/nameResolver';
@@ -123,161 +123,6 @@ const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => 
   }
 
   return { lat: 38.4830, lng: 106.2350 };
-};
-
-const getPoiLngLat = (poi: any) => {
-  if (!poi || !poi.location) return null;
-  const loc = poi.location;
-  if (typeof loc.getLng === 'function' && typeof loc.getLat === 'function') {
-    return { lng: loc.getLng(), lat: loc.getLat() };
-  }
-  if (typeof loc.lng === 'number' && typeof loc.lat === 'number') {
-    return { lng: loc.lng, lat: loc.lat };
-  }
-  if (typeof loc.lng === 'function' && typeof loc.lat === 'function') {
-    return { lng: loc.lng(), lat: loc.lat() };
-  }
-  if (typeof loc === 'string') {
-    const parts = loc.split(',');
-    if (parts.length === 2) {
-      return { lng: parseFloat(parts[0]), lat: parseFloat(parts[1]) };
-    }
-  }
-  return null;
-};
-
-const getDistance = (lng1: number, lat1: number, lng2: number, lat2: number): number => {
-  const radLat1 = lat1 * Math.PI / 180.0;
-  const radLat2 = lat2 * Math.PI / 180.0;
-  const a = radLat1 - radLat2;
-  const b = lng1 * Math.PI / 180.0 - lng2 * Math.PI / 180.0;
-  const s = 2 * Math.asin(Math.sqrt(Math.pow(Math.sin(a/2), 2) +
-    Math.cos(radLat1) * Math.cos(radLat2) * Math.pow(Math.sin(b/2), 2)));
-  return s * 6378137; // Earth radius in meters
-};
-
-const getPoiDistance = (poi: any, centerLng?: number, centerLat?: number): number => {
-  if (centerLng !== undefined && centerLat !== undefined) {
-    const loc = getPoiLngLat(poi);
-    if (loc) {
-      return getDistance(centerLng, centerLat, loc.lng, loc.lat);
-    }
-  }
-  if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
-    const dist = Number(poi.distance);
-    if (!isNaN(dist)) return dist;
-  }
-  return 999999;
-};
-
-const getHighPrecisionLocationName = (
-  regeocode: any, 
-  fallbackAddress: string, 
-  centerLng?: number, 
-  centerLat?: number
-): string => {
-  if (!regeocode) return fallbackAddress;
-
-  const addressComp = regeocode.addressComponent || {};
-  const unacceptableKeywords = ['公厕', '公共厕所', '垃圾站', '垃圾转运', '配电房', '变电站', '充电站', '高压线', '环卫'];
-  const minorStoreKeywords = [
-    '面馆', '砂锅面', '调和', '牛肉面', '羊肉', '饭店', '餐馆', '小吃', '快餐', '便利店', '超市', 
-    '烟酒', '理发', '美发', '药店', '水果', '熟食', '烧烤', '火锅', '菜馆', '鲜花', '修车', 
-    '洗车', '麻将', '棋牌', '网吧', '足浴', 'SPA', '客栈', '旅馆', '烤鸭', '奶茶', '大排档'
-  ];
-
-  let neighborhoodName = '';
-  if (addressComp.neighborhood) {
-    neighborhoodName = typeof addressComp.neighborhood === 'string'
-      ? addressComp.neighborhood
-      : (addressComp.neighborhood.name || '');
-  }
-
-  let aoiName = '';
-  if (regeocode.aois && regeocode.aois.length > 0 && regeocode.aois[0] && regeocode.aois[0].name) {
-    aoiName = regeocode.aois[0].name;
-  }
-
-  // Identify the closest road name
-  let roadName = '';
-  if (regeocode.roads && regeocode.roads.length > 0) {
-    if (regeocode.roads[0] && regeocode.roads[0].name) {
-      roadName = regeocode.roads[0].name;
-    }
-  }
-
-  if (!roadName && addressComp.street && typeof addressComp.street === 'string' && addressComp.street.trim()) {
-    roadName = addressComp.street.trim();
-  }
-  if (!roadName && addressComp.streetNumber && addressComp.streetNumber.street && typeof addressComp.streetNumber.street === 'string') {
-    roadName = addressComp.streetNumber.street.trim();
-  }
-
-  let poiName = '';
-  const communityName = neighborhoodName.trim() || aoiName.trim();
-
-  // Sort POIs strictly by physical geometric distance to the GPS/center coordinate
-  if (regeocode.pois && regeocode.pois.length > 0) {
-    const validPois = regeocode.pois.filter((poi: any) => {
-      const name = poi.name || '';
-      return !unacceptableKeywords.some(kw => name.includes(kw));
-    });
-    const targetPois = validPois.length > 0 ? validPois : regeocode.pois;
-    const sortedPois = [...targetPois].sort((a, b) => {
-      const distA = getPoiDistance(a, centerLng, centerLat);
-      const distB = getPoiDistance(b, centerLng, centerLat);
-
-      const isGenericResA = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(a.name || '');
-      const isGenericResB = /([0-9]+号楼|[0-9]+栋|[0-9]+单元)/.test(b.name || '');
-
-      if (!isGenericResA && isGenericResB && distA <= 150) return -1;
-      if (isGenericResA && !isGenericResB && distA <= 150) return 1;
-
-      return distA - distB;
-    });
-
-    const topPoiName = sortedPois[0] ? sortedPois[0].name || '' : '';
-    const isMinorStore = minorStoreKeywords.some(kw => topPoiName.includes(kw));
-
-    if (isMinorStore && communityName) {
-      poiName = communityName;
-    } else if (topPoiName) {
-      poiName = topPoiName;
-    } else if (communityName) {
-      poiName = communityName;
-    }
-  } else if (communityName) {
-    poiName = communityName;
-  } else {
-    let buildingName = '';
-    if (addressComp.building) {
-      buildingName = typeof addressComp.building === 'string'
-        ? addressComp.building
-        : (addressComp.building.name || '');
-    }
-    if (buildingName && buildingName.trim()) {
-      poiName = buildingName;
-    } else {
-      const formattedAddress = regeocode.formattedAddress || fallbackAddress;
-      let cleanLabel = formattedAddress;
-      if (addressComp.province) cleanLabel = cleanLabel.replace(addressComp.province, '');
-      if (addressComp.city) cleanLabel = cleanLabel.replace(addressComp.city, '');
-      if (addressComp.district) cleanLabel = cleanLabel.replace(addressComp.district, '');
-      poiName = cleanLabel.trim() ? cleanLabel : formattedAddress;
-    }
-  }
-
-  // Display the exact POI name directly when found
-  if (poiName && poiName.trim()) {
-    return poiName.trim();
-  }
-  if (communityName) {
-    return communityName;
-  }
-  if (roadName && roadName.trim()) {
-    return roadName.trim();
-  }
-  return fallbackAddress;
 };
 
 const getCurrent6AmDay = (): string => {
@@ -746,6 +591,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       return;
     }
 
+    // 0. Listen to removed_squad_members to instantly revoke access if deleted
+    const unsub0 = onSnapshot(doc(db, 'config', 'removed_squad_members'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (Array.isArray(data?.phones)) {
+          const removed = data.phones.map((p: any) => String(p).trim());
+          if (removed.includes(userPhone)) {
+            setIsSquadApprovedOrManagement(false);
+            try {
+              localStorage.removeItem(`dd_approved_${userPhone}`);
+              localStorage.removeItem(`dd_squad_member_${userPhone}`);
+              localStorage.removeItem(`dd_in_squad_${userPhone}`);
+              localStorage.setItem('dd_user_role', '普通司机');
+              window.dispatchEvent(new CustomEvent('user_role_updated'));
+            } catch (_) {}
+          }
+        }
+      }
+    });
+
     const unsub1 = onSnapshot(doc(db, 'driver_users', userPhone), (snap) => {
       if (snap.exists()) {
         const d = snap.data();
@@ -766,22 +631,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           setIsSquadApprovedOrManagement(false);
         }
       } else {
-        try {
-          const saved = localStorage.getItem('dd_squad_members_v2');
-          if (saved) {
-            const members = JSON.parse(saved);
-            const m = members.find((mem: any) => mem.phone === userPhone);
-            if (m && ['已通过', 'approved', '通过'].includes(m.status || m.approvalStatus)) {
-              setIsSquadApprovedOrManagement(true);
-              return;
-            }
-          }
-        } catch (_) {}
         setIsSquadApprovedOrManagement(false);
+        try {
+          localStorage.removeItem(`dd_approved_${userPhone}`);
+          localStorage.removeItem(`dd_squad_member_${userPhone}`);
+        } catch (_) {}
       }
     });
 
     return () => {
+      unsub0();
       unsub1();
       unsub2();
     };
@@ -848,11 +707,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               phone: userPhone,
+              driverName: resolvedSelfName,
               lat: latitude,
               lng: longitude,
               isOnline: true,
               isBusy: isDriverBusy,
               todayOrders: currentTodayOrders,
+              city: city,
+              version: currentAppVersion,
+              appVersion: currentAppVersion,
               timestamp: Date.now()
             })
           }).catch(() => {});
@@ -2002,30 +1865,38 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         })();
 
     let finalEndLocation = currentTrip.endLocation;
-    const isInvalidEnd = isUnsetDestination(finalEndLocation) || 
-      finalEndLocation.includes('宁夏博物馆') || 
-      (finalEndLocation.includes('游乐小区') && (currentTrip.currentDistance > 0.05 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
-      (finalEndLocation === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
+    const isInPlace = (currentTrip.currentDistance <= 0.25) || 
+      (tripCoords && currentTrip.startCoords && calculateHaversineDistanceKm(tripCoords.lat, tripCoords.lng, currentTrip.startCoords.lat, currentTrip.startCoords.lng) <= 0.25);
 
-    if (isInvalidEnd) {
-      if ((currentTrip as any).driverCurrentLocationName && 
-          !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
-          !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
-          !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
-        finalEndLocation = (currentTrip as any).driverCurrentLocationName;
-      } else if (tripCoords) {
-        const nearestKnown = findNearestKnownPoi(tripCoords, 0.3);
-        if (nearestKnown) {
-          finalEndLocation = nearestKnown;
-        } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+    // If in-place completion (currentDistance <= 0.25km or ending at same location), destination strictly mirrors departure:
+    if (isInPlace && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation) && !currentTrip.startLocation.includes('宁夏博物馆')) {
+      finalEndLocation = currentTrip.startLocation;
+    } else {
+      const isInvalidEnd = isUnsetDestination(finalEndLocation) || 
+        finalEndLocation.includes('宁夏博物馆') || 
+        (finalEndLocation.includes('游乐小区') && (currentTrip.currentDistance > 0.25 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
+        (finalEndLocation === currentTrip.startLocation && currentTrip.currentDistance > 0.25);
+
+      if (isInvalidEnd) {
+        if ((currentTrip as any).driverCurrentLocationName && 
+            !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
+            !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
+            !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
+          finalEndLocation = (currentTrip as any).driverCurrentLocationName;
+        } else if (tripCoords) {
+          const nearestKnown = findNearestKnownPoi(tripCoords, 0.3);
+          if (nearestKnown) {
+            finalEndLocation = nearestKnown;
+          } else if (isInPlace && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+            finalEndLocation = currentTrip.startLocation;
+          } else {
+            finalEndLocation = '目的地定位中...';
+          }
+        } else if (isInPlace && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
           finalEndLocation = currentTrip.startLocation;
         } else {
           finalEndLocation = '目的地定位中...';
         }
-      } else if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
-        finalEndLocation = currentTrip.startLocation;
-      } else {
-        finalEndLocation = '目的地定位中...';
       }
     }
 
@@ -2045,7 +1916,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setCurrentView('cost');
 
     // Async trigger high precision geocoding to resolve exact end landmark if needed
-    if (isUnsetDestination(finalEndLocation) || finalEndLocation === '目的地定位中...' || finalEndLocation === currentTrip.startLocation) {
+    // DO NOT asynchronously overwrite in-place trips where distance <= 0.25km!
+    if (!isInPlace && (isUnsetDestination(finalEndLocation) || finalEndLocation === '目的地定位中...' || finalEndLocation === currentTrip.startLocation)) {
       resolveCurrentGpsLocationName(tripCoords).then(res => {
         if (res && res.name && !res.name.includes('宁夏博物馆') && !isUnsetDestination(res.name)) {
           setCurrentTrip(prev => {
@@ -2161,30 +2033,35 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const minutes = String(now.getMinutes()).padStart(2, '0');
         
         let finalEndLoc = currentTrip.endLocation;
-        const isInvalidFinishEnd = !finalEndLoc || 
-          isUnsetDestination(finalEndLoc) || 
-          finalEndLoc.includes('宁夏博物馆') || 
-          finalEndLoc === '目的地定位中...' ||
-          (finalEndLoc.includes('游乐小区') && (currentTrip.currentDistance > 0.05 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
-          (finalEndLoc === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
+        // If in-place trip completion, strictly match valid startLocation!
+        if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation) && !currentTrip.startLocation.includes('宁夏博物馆')) {
+          finalEndLoc = currentTrip.startLocation;
+        } else {
+          const isInvalidFinishEnd = !finalEndLoc || 
+            isUnsetDestination(finalEndLoc) || 
+            finalEndLoc.includes('宁夏博物馆') || 
+            finalEndLoc === '目的地定位中...' ||
+            (finalEndLoc.includes('游乐小区') && (currentTrip.currentDistance > 0.05 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
+            (finalEndLoc === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
 
-        if (isInvalidFinishEnd) {
-          if ((currentTrip as any).driverCurrentLocationName && 
-              !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
-              !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
-              !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
-            finalEndLoc = (currentTrip as any).driverCurrentLocationName;
-          } else if (currentTrip.endCoords) {
-            const nearestKnown = findNearestKnownPoi(currentTrip.endCoords, 0.3);
-            if (nearestKnown) finalEndLoc = nearestKnown;
-          }
-          if (!finalEndLoc || isUnsetDestination(finalEndLoc) || finalEndLoc === '目的地定位中...') {
-            if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
-              finalEndLoc = currentTrip.startLocation;
-            } else if (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑') && Math.abs(currentTrip.currentDistance - 0.71) < 0.2) {
-              finalEndLoc = '黄河龙大厦';
-            } else {
-              finalEndLoc = '黄河龙大厦';
+          if (isInvalidFinishEnd) {
+            if ((currentTrip as any).driverCurrentLocationName && 
+                !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
+                !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
+                !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
+              finalEndLoc = (currentTrip as any).driverCurrentLocationName;
+            } else if (currentTrip.endCoords) {
+              const nearestKnown = findNearestKnownPoi(currentTrip.endCoords, 0.3);
+              if (nearestKnown) finalEndLoc = nearestKnown;
+            }
+            if (!finalEndLoc || isUnsetDestination(finalEndLoc) || finalEndLoc === '目的地定位中...') {
+              if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
+                finalEndLoc = currentTrip.startLocation;
+              } else if (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑') && Math.abs(currentTrip.currentDistance - 0.71) < 0.2) {
+                finalEndLoc = '黄河龙大厦';
+              } else {
+                finalEndLoc = '黄河龙大厦';
+              }
             }
           }
         }
@@ -2452,9 +2329,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (userPhone) {
       const timestampIso = new Date().toISOString();
       const resolvedSelfName = resolveDriverRealName(userPhone, settings.driverName, settings);
+      const city = settings?.city || '银川市';
+      const fallbackGrid = getCityCenterCoords(city);
+      const currentLat = driverCoords?.lat || fallbackGrid.lat;
+      const currentLng = driverCoords?.lng || fallbackGrid.lng;
+
       const onlinePayload = {
         phone: userPhone,
         driverName: resolvedSelfName,
+        lat: currentLat,
+        lng: currentLng,
+        city: city,
         isOnline: online,
         onlineOrdersEnabled: online,
         lastOnlineTime: online ? timestampIso : null,
@@ -2480,7 +2365,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: userPhone, isOnline: online, timestamp: Date.now() })
+        body: JSON.stringify({ 
+          phone: userPhone, 
+          driverName: resolvedSelfName,
+          lat: currentLat,
+          lng: currentLng,
+          city: city,
+          isOnline: online, 
+          timestamp: Date.now() 
+        })
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
@@ -2976,6 +2869,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               }
             }}
             onGoToCollection={handleGoToCollection}
+            onUpdateTrip={handleUpdateTrip}
           />
         );
       }

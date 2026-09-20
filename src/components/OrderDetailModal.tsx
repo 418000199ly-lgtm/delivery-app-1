@@ -355,7 +355,13 @@ export default function OrderDetailModal({
                 <div className="flex flex-col">
                   <span className="text-xs text-slate-400 font-semibold">起点</span>
                   <span className="text-sm text-slate-800 dark:text-slate-200 font-medium">
-                    {order.startLocation || '北京东路（铂金大厦）'}
+                    {(() => {
+                      let s = (order.startLocation || '').toString().trim();
+                      if (s.includes('西桥巷粉条大盘鸡') || s.includes('同乡斋羊羔肉') || s.includes('粉条大盘鸡')) {
+                        return '德隆楼德鼎逸品(北京路店)';
+                      }
+                      return s || '德隆楼德鼎逸品(北京路店)';
+                    })()}
                   </span>
                 </div>
               </div>
@@ -364,7 +370,25 @@ export default function OrderDetailModal({
                 <div className="flex flex-col">
                   <span className="text-xs text-slate-400 font-semibold">终点</span>
                   <span className="text-sm text-slate-800 dark:text-slate-200 font-medium">
-                    {formatTransferOrderEndLocation(order) || order.endLocation || '盈北路'}
+                    {(() => {
+                      const formattedTransfer = formatTransferOrderEndLocation(order);
+                      if (formattedTransfer && formattedTransfer.startsWith('报单转单')) {
+                        return formattedTransfer;
+                      }
+                      let s = (order.startLocation || '').toString().trim();
+                      if (s.includes('西桥巷粉条大盘鸡') || s.includes('同乡斋羊羔肉') || s.includes('粉条大盘鸡')) {
+                        s = '德隆楼德鼎逸品(北京路店)';
+                      }
+                      let e = (order.endLocation || order.destination || order.dropoffName || '').toString().trim();
+                      const dist = Number(order.distance ?? order.currentDistance ?? 0);
+                      if (dist <= 0.25 && s) {
+                        return s;
+                      }
+                      if (e.includes('西桥巷粉条大盘鸡') || e.includes('同乡斋羊羔肉') || e.includes('粉条大盘鸡')) {
+                        return '德隆楼德鼎逸品(北京路店)';
+                      }
+                      return e || s || '德隆楼德鼎逸品(北京路店)';
+                    })()}
                   </span>
                 </div>
               </div>

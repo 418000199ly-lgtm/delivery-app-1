@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Landmark, Car, HelpCircle, Flame, X } from 'lucide-react';
 import { TripState, BillingRules, ChauffeurSettings, checkVipActive, DEFAULT_SLOTS } from '../types';
+import { resolveCurrentGpsLocationName, isUnsetDestination } from '../utils/locationResolver';
 
 interface TripCostViewProps {
   trip: TripState;
@@ -8,6 +9,7 @@ interface TripCostViewProps {
   billingRules: BillingRules;
   onNavigateBack: () => void;
   onGoToCollection: (updatedTrip: TripState) => void;
+  onUpdateTrip?: (updatedTrip: TripState) => void;
 }
 
 export default function TripCostView({
@@ -15,12 +17,62 @@ export default function TripCostView({
   settings,
   billingRules,
   onNavigateBack,
-  onGoToCollection
+  onGoToCollection,
+  onUpdateTrip
 }: TripCostViewProps) {
   // Modal state
   const [showRulesModal, setShowRulesModal] = useState(false);
+  const [resolvedEndLocation, setResolvedEndLocation] = useState<string>(() => {
+    const isInPlace = (trip.currentDistance <= 0.25);
+    if (isInPlace && trip.startLocation && !isUnsetDestination(trip.startLocation)) {
+      return trip.startLocation;
+    }
+    return trip.endLocation || trip.destination || trip.dropoffName || '';
+  });
 
   const isVip = checkVipActive(settings?.vipExpiry);
+  const hasCapturedRef = useRef(false);
+
+  // Automatic high-precision GPS capture upon entering the trip cost overview screen (Image w12)
+  useEffect(() => {
+    if (hasCapturedRef.current) return;
+    hasCapturedRef.current = true;
+
+    const isInPlace = (trip.currentDistance <= 0.25);
+    if (isInPlace) {
+      if (trip.startLocation && !isUnsetDestination(trip.startLocation)) {
+        setResolvedEndLocation(trip.startLocation);
+        const updated: TripState = {
+          ...trip,
+          endLocation: trip.startLocation,
+          destination: trip.startLocation,
+          dropoffName: trip.startLocation
+        };
+        if (onUpdateTrip) onUpdateTrip(updated);
+        try {
+          localStorage.setItem('dd_current_trip', JSON.stringify(updated));
+        } catch (_) {}
+      }
+    } else {
+      // Non-in-place trip: capture current GPS coordinates and resolve the nearest prominent landmark
+      resolveCurrentGpsLocationName(trip.endCoords).then((res) => {
+        if (res && res.name && !isUnsetDestination(res.name) && !res.name.includes('宁夏博物馆')) {
+          setResolvedEndLocation(res.name);
+          const updated: TripState = {
+            ...trip,
+            endLocation: res.name,
+            destination: res.name,
+            dropoffName: res.name,
+            endCoords: { lat: res.lat, lng: res.lng }
+          };
+          if (onUpdateTrip) onUpdateTrip(updated);
+          try {
+            localStorage.setItem('dd_current_trip', JSON.stringify(updated));
+          } catch (_) {}
+        }
+      }).catch(() => {});
+    }
+  }, [trip, onUpdateTrip]);
 
   // Input binders for extra pad fees (Screenshot 1: 高速费, 停车费, 其他费用)
   const [bridgeFeeStr, setBridgeFeeStr] = useState('');
@@ -54,9 +106,13 @@ export default function TripCostView({
   const grandTotal = Number((trip.calculatedBaseFee + bridgeFee + parkingFee + otherFee).toFixed(2));
 
   const handleProceed = () => {
+    const finalEnd = resolvedEndLocation || trip.endLocation || trip.startLocation;
     // Commit the inputs and progress
     const finalizedTripState: TripState = {
       ...trip,
+      endLocation: finalEnd,
+      destination: finalEnd,
+      dropoffName: finalEnd,
       extraBridgeFee: bridgeFee,
       extraParkingFee: parkingFee,
       extraOtherFee: otherFee,

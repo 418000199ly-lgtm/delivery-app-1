@@ -5048,34 +5048,44 @@ export default function MobileDispatchValetOrder({
                                     fetch(`${baseUrl}/api/db/set`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ collection: 'driver_users', docId: targetPhone, data: resetRoleData })
+                                      body: JSON.stringify({ col: 'driver_users', id: targetPhone, data: resetRoleData, collection: 'driver_users', docId: targetPhone, merge: true })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ collection: 'squad_members', docId: targetPhone })
+                                      body: JSON.stringify({ col: 'squad_members', id: targetPhone, collection: 'squad_members', docId: targetPhone })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ collection: 'squad_applications', docId: targetPhone })
+                                      body: JSON.stringify({ col: 'squad_applications', id: targetPhone, collection: 'squad_applications', docId: targetPhone })
+                                    }).catch(() => {});
+                                    fetch(`${baseUrl}/api/db/delete`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'driver_locations', id: targetPhone, collection: 'driver_locations', docId: targetPhone })
                                     }).catch(() => {});
                                   }
                                   if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
                                     fetch(`${baseUrl}/api/db/set`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ collection: 'driver_users', docId: targetId, data: resetRoleData })
+                                      body: JSON.stringify({ col: 'driver_users', id: targetId, data: resetRoleData, collection: 'driver_users', docId: targetId, merge: true })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ collection: 'squad_members', docId: targetId })
+                                      body: JSON.stringify({ col: 'squad_members', id: targetId, collection: 'squad_members', docId: targetId })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ collection: 'squad_applications', docId: targetId })
+                                      body: JSON.stringify({ col: 'squad_applications', id: targetId, collection: 'squad_applications', docId: targetId })
+                                    }).catch(() => {});
+                                    fetch(`${baseUrl}/api/db/delete`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'driver_locations', id: targetId, collection: 'driver_locations', docId: targetId })
                                     }).catch(() => {});
                                   }
 
@@ -5113,7 +5123,7 @@ export default function MobileDispatchValetOrder({
                                   fetch(`${baseUrl}/api/db/set`, {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: updatedRemoved } })
+                                    body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
                                   }).catch(() => {});
 
                                   onShowToast(`已成功彻底删除成员: ${targetName || '司机'}`);
