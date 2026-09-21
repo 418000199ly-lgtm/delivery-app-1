@@ -1126,6 +1126,7 @@ export default function MobileDispatchValetOrder({
     } catch (_) {}
 
     window.dispatchEvent(new CustomEvent('squad_member_approved', { detail: { phone: targetPhone, name } }));
+    window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { approvedPhone: targetPhone, name } }));
 
     // 3. Save to Firestore & HTTP API Backend
     if (targetPhone) {
@@ -5125,6 +5126,8 @@ export default function MobileDispatchValetOrder({
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
                                   }).catch(() => {});
+
+                                  window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { removedPhone: targetPhone, removedList: updatedRemoved } }));
 
                                   onShowToast(`已成功彻底删除成员: ${targetName || '司机'}`);
                                 }}

@@ -374,7 +374,14 @@ export default function HomeView({
   const [showDispatchCityDropdown, setShowDispatchCityDropdown] = useState(false);
 
   // --- Squad Management States ---
-  const [squadMembers, setSquadMembers] = useState<any[]>([]);
+  const [squadMembers, setSquadMembers] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
   const [removedMemberPhones, setRemovedMemberPhones] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('dd_removed_squad_phones_v2');
@@ -389,6 +396,10 @@ export default function HomeView({
       try {
         const saved = localStorage.getItem('dd_removed_squad_phones_v2');
         if (saved) setRemovedMemberPhones(JSON.parse(saved));
+        const savedMembers = localStorage.getItem('dd_squad_members_v2');
+        if (savedMembers && Array.isArray(JSON.parse(savedMembers))) {
+          setSquadMembers(JSON.parse(savedMembers));
+        }
       } catch (_) {}
     };
     window.addEventListener('storage', syncRemoved);
@@ -402,6 +413,12 @@ export default function HomeView({
   }, []);
 
   const getActiveSquadDriverCount = () => {
+    const isMock = (phone: string, name: string) => {
+      const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
+      const mockNames = ['王心凌', '张一山', '李小龙'];
+      return mockPhones.includes(phone) || mockNames.some(mn => name.includes(mn)) || name.includes('虚拟');
+    };
+
     const removedSet = new Set(removedMemberPhones.map(p => String(p).trim()));
     try {
       const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
@@ -413,15 +430,26 @@ export default function HomeView({
       }
     } catch (_) {}
 
+    let localMembers: any[] = [];
+    try {
+      const savedM = localStorage.getItem('dd_squad_members_v2');
+      if (savedM && Array.isArray(JSON.parse(savedM))) {
+        localMembers = JSON.parse(savedM);
+      }
+    } catch (_) {}
+
+    const sourceList = (squadMembers && squadMembers.length > 0) ? squadMembers : localMembers;
     const activeDriverPhones = new Set<string>();
 
     // 开发者最高权限账号永远加入小队
     activeDriverPhones.add('15509601222');
 
-    squadMembers.forEach((m: any) => {
+    sourceList.forEach((m: any) => {
       const phone = String(m.phone || m.id || '').trim();
-      const name = String(m.name || '').trim();
+      const name = String(m.name || m.driverName || '').trim();
       if (!phone) return;
+
+      if (isMock(phone, name)) return;
 
       // 被移出的司机坚决不计入小队人数（开发者除外）
       if (phone !== '15509601222' && (removedSet.has(phone) || (name && removedSet.has(name)) || removedSet.has(String(m.id)))) {
@@ -1852,12 +1880,24 @@ export default function HomeView({
         return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
       };
 
+      const isMockItem = (item: any) => {
+        if (!item) return false;
+        const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
+        const mockNames = ['王心凌', '张一山', '李小龙'];
+        const phone = String(item.phone || item.id || '').trim();
+        const name = String(item.name || item.driverName || '').trim();
+        return Boolean(
+          (phone && mockPhones.includes(phone)) ||
+          (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
+        );
+      };
+
       const map = new Map<string, any>();
 
       // 1. Load from apiMembers (squad_members in Firestore / MySQL / JSON DB)
       apiMembers.forEach(rawM => {
         const m = (rawM?.data && typeof rawM.data === 'object') ? { ...rawM.data, ...rawM, id: rawM.id || rawM.data.id } : rawM;
-        if (isMerchantItem(m)) return;
+        if (isMerchantItem(m) || isMockItem(m)) return;
         const phone = String(m.phone || m.id || '').trim();
         const name = String(m.name || m.driverName || '').trim();
         const st = String(m.status || m.approvalStatus || '').trim();

@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-19T08:16:40.333Z"
+      "updatedAt": "2026-09-20T08:48:27.082Z"
     }
   },
   "version_history": {
@@ -93,36 +93,9 @@
       "version": "V1.0",
       "appVersion": "V1.0",
       "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
-    },
-    "18695119126": {
-      "phone": "18695119126",
-      "driverName": "李扬",
-      "name": "李扬",
-      "role": "普通司机",
-      "userRole": "普通司机",
-      "status": "已通过",
-      "city": "银川市",
-      "approvedBy": "吴彦祖",
-      "approvedRole": "开发者司机",
-      "approvalTime": "2026-09-19 16:30:00",
-      "lastUpdatedTime": "2026-09-19 16:30:00"
     }
   },
-  "squad_applications": {
-    "18695119126": {
-      "id": "18695119126",
-      "phone": "18695119126",
-      "name": "李扬",
-      "driverName": "李扬",
-      "status": "已通过",
-      "role": "普通司机",
-      "userRole": "普通司机",
-      "city": "银川市",
-      "approvedBy": "吴彦祖",
-      "approvedRole": "开发者司机",
-      "approvalTime": "2026-09-19 16:30:00"
-    }
-  },
+  "squad_applications": {},
   "driver_locations": {
     "15509601222": {
       "phone": "15509601222",
