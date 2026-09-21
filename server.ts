@@ -593,6 +593,23 @@ async function startServer() {
             'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             [col, docId, dataStr]
           );
+
+          if (col === 'squad_members' || col === 'squad_applications') {
+            try {
+              const [cfgRows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['config', 'removed_squad_members']
+              );
+              if (cfgRows && cfgRows.length > 0) {
+                const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
+                const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.filter((p: any) => String(p).trim() !== docId) : [];
+                await mysqlPool.query(
+                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                  ['config', 'removed_squad_members', JSON.stringify({ ...prevCfg, phones })]
+                );
+              }
+            } catch (_) {}
+          }
           return res.json({ success: true, id: docId });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy SET MySQL Error]:', mysqlErr);
@@ -634,6 +651,14 @@ async function startServer() {
         }
       }
       dbData[col][docId] = finalData;
+
+      if (col === 'squad_members' || col === 'squad_applications') {
+        if (dbData.config && dbData.config['removed_squad_members']) {
+          const phones: string[] = dbData.config['removed_squad_members'].phones || [];
+          dbData.config['removed_squad_members'].phones = phones.filter((p: any) => String(p).trim() !== docId);
+        }
+      }
+
       writeLocalJsonDb(dbData);
 
       return res.json({ success: true, id: docId });
@@ -672,6 +697,23 @@ async function startServer() {
             'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             [col, docId, dataStr]
           );
+
+          if (col === 'squad_members' || col === 'squad_applications') {
+            try {
+              const [cfgRows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['config', 'removed_squad_members']
+              );
+              if (cfgRows && cfgRows.length > 0) {
+                const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
+                const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.filter((p: any) => String(p).trim() !== docId) : [];
+                await mysqlPool.query(
+                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                  ['config', 'removed_squad_members', JSON.stringify({ ...prevCfg, phones })]
+                );
+              }
+            } catch (_) {}
+          }
           return res.json({ success: true, id: docId });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy UPDATE MySQL Error]:', mysqlErr);
@@ -684,6 +726,14 @@ async function startServer() {
       const prev = dbData[col][docId] || {};
       finalData = { ...prev, ...data };
       dbData[col][docId] = finalData;
+
+      if (col === 'squad_members' || col === 'squad_applications') {
+        if (dbData.config && dbData.config['removed_squad_members']) {
+          const phones: string[] = dbData.config['removed_squad_members'].phones || [];
+          dbData.config['removed_squad_members'].phones = phones.filter((p: any) => String(p).trim() !== docId);
+        }
+      }
+
       writeLocalJsonDb(dbData);
 
       return res.json({ success: true, id: docId });
