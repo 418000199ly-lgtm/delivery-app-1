@@ -75,10 +75,10 @@ export const getHighPrecisionLocationName = (
 
   const addressComp = regeocode.addressComponent || {};
 
-  // Check known prominent landmarks first (e.g. 德隆楼德鼎逸品, 金凤万达, 大阅城, etc.)
+  // Check known prominent landmarks first (e.g. 德隆楼德鼎逸品, 迎春苑1号楼, 过油肉总店, 同乡斋羊羔肉, 金凤万达, 大阅城, etc.)
   let matchedKnownLandmark: string | null = null;
   if (typeof centerLat === 'number' && typeof centerLng === 'number') {
-    matchedKnownLandmark = findNearestKnownPoi({ lat: centerLat, lng: centerLng }, 0.3);
+    matchedKnownLandmark = findNearestKnownPoi({ lat: centerLat, lng: centerLng }, 0.15);
   }
 
   // 1. Extract building from addressComponent
@@ -108,85 +108,61 @@ export const getHighPrecisionLocationName = (
     roadName = addressComp.street.trim();
   }
 
-  // 4. Primary: Strictly select the landmark POI that is physically NEAREST and most prominent
+  // 4. Primary: Strictly select the landmark POI / building / store that is physically NEAREST
   let chosenPoiName = '';
   if (regeocode.pois && regeocode.pois.length > 0) {
-    // Check if any POI directly contains prestigious brand keywords (德隆楼, 德鼎逸品)
-    const directDelonglouPoi = regeocode.pois.find((p: any) => {
-      const n = String(p?.name || '');
-      return n.includes('德隆楼') || n.includes('德鼎逸品');
+    const validPois = regeocode.pois.filter((poi: any) => {
+      const name = String(poi?.name || '').trim();
+      return name && !UNACCEPTABLE_KEYWORDS.some(kw => name.includes(kw));
     });
 
-    if (directDelonglouPoi) {
-      const n = String(directDelonglouPoi.name).trim();
-      if (n.includes('北京路') || n.includes('北京东路') || (regeocode.formattedAddress && regeocode.formattedAddress.includes('西桥巷'))) {
-        chosenPoiName = '德隆楼德鼎逸品(北京路店)';
-      } else {
-        chosenPoiName = n;
+    const candidatePois = validPois.length > 0 ? validPois : regeocode.pois;
+
+    // Calculate real physical distance and effective distance score for each POI
+    const poisWithDist = candidatePois.map((poi: any) => {
+      const name = String(poi?.name || '').trim();
+      const rawDist = getPoiDistance(poi, centerLng, centerLat);
+      let effectiveDist = rawDist;
+
+      // Bonus if matches known landmark dictionary directly
+      if (name.includes('德隆楼') || name.includes('德鼎逸品')) {
+        effectiveDist -= 300;
+      } else if (matchedKnownLandmark && (name.includes(matchedKnownLandmark) || matchedKnownLandmark.includes(name))) {
+        effectiveDist -= 250;
       }
-    }
 
-    if (!chosenPoiName) {
-      const validPois = regeocode.pois.filter((poi: any) => {
-        const name = String(poi?.name || '').trim();
-        return name && !UNACCEPTABLE_KEYWORDS.some(kw => name.includes(kw));
-      });
-
-      const candidatePois = validPois.length > 0 ? validPois : regeocode.pois;
-
-      // Filter out minor stores if we have ANY prominent landmark/building/community
-      const nonMinorPois = candidatePois.filter((p: any) => {
-        const n = String(p?.name || '').trim();
-        return !MINOR_STORE_KEYWORDS.some(kw => n.includes(kw));
-      });
-
-      const poolToRank = nonMinorPois.length > 0 ? nonMinorPois : candidatePois;
-
-      // Calculate real physical distance and effective prominence score for each POI
-      const poisWithDist = poolToRank.map((poi: any) => {
-        const name = String(poi?.name || '').trim();
-        const rawDist = getPoiDistance(poi, centerLng, centerLat);
-        let effectiveDist = rawDist;
-
-        // Massive bonus if matches known landmark directly (e.g. 德隆楼, 德鼎逸品)
-        if (name.includes('德隆楼') || name.includes('德鼎逸品')) {
-          effectiveDist -= 500;
-        } else if (matchedKnownLandmark && (name.includes(matchedKnownLandmark) || matchedKnownLandmark.includes(name))) {
-          effectiveDist -= 300;
-        }
-
-        // Bonus for major landmark / branded commercial / public building / community
-        if (MAJOR_LANDMARK_KEYWORDS.some(kw => name.includes(kw))) {
-          effectiveDist -= 80;
-        }
-
-        // Penalty for minor alley eateries, stalls, and small shops
-        if (MINOR_STORE_KEYWORDS.some(kw => name.includes(kw))) {
-          effectiveDist += 500;
-        }
-
-        // Penalty for bare building numbers (e.g. 1号楼, 126号楼)
-        if (/^([0-9]+号楼|[0-9]+栋|[0-9]+单元)$/.test(name)) {
-          effectiveDist += 100;
-        }
-
-        return { name, rawDist, effectiveDist, raw: poi };
-      });
-
-      // Sort strictly by effective prominence distance ascending
-      poisWithDist.sort((a, b) => a.effectiveDist - b.effectiveDist);
-
-      if (poisWithDist.length > 0 && poisWithDist[0].name) {
-        if (matchedKnownLandmark && MINOR_STORE_KEYWORDS.some(kw => poisWithDist[0].name.includes(kw))) {
-          chosenPoiName = matchedKnownLandmark;
-        } else {
-          chosenPoiName = poisWithDist[0].name;
-        }
+      // Bonus if POI is a specific building number or building block (e.g. 迎春苑1号楼, 迎春苑2号楼, 9号楼, A座)
+      if (/[0-9]+号楼|[0-9]+栋|[0-9]+单元|A座|B座|C座|D座/.test(name)) {
+        effectiveDist -= 180;
       }
+
+      // Bonus for specific store / restaurant / business landmark
+      if (MAJOR_LANDMARK_KEYWORDS.some(kw => name.includes(kw))) {
+        effectiveDist -= 80;
+      }
+
+      // Small penalty if the POI is ONLY a broad neighborhood / AOI area name (e.g. '海宝苑', '游乐小区', '运祥小区') without a specific building/store
+      const isBroadAoiOnly = (
+        name === aoiName || 
+        name === addressComp.neighborhood?.name || 
+        /^([^0-9]+苑|[^0-9]+小区|[^0-9]+花园|[^0-9]+家园)$/.test(name)
+      );
+      if (isBroadAoiOnly) {
+        effectiveDist += 60;
+      }
+
+      return { name, rawDist, effectiveDist, raw: poi };
+    });
+
+    // Sort strictly by effective physical proximity distance ascending
+    poisWithDist.sort((a, b) => a.effectiveDist - b.effectiveDist);
+
+    if (poisWithDist.length > 0 && poisWithDist[0].name) {
+      chosenPoiName = poisWithDist[0].name;
     }
   }
 
-  // 5. If no POI was chosen from pois array, check known landmark dictionary or building or AOI
+  // 5. If no POI was chosen from pois array, check building or matched known landmark or AOI
   if (!chosenPoiName) {
     if (matchedKnownLandmark) {
       chosenPoiName = matchedKnownLandmark;
@@ -221,10 +197,6 @@ export const getHighPrecisionLocationName = (
 
   let finalRes = chosenPoiName.trim() || neighborhoodName || (roadName ? roadName.trim() : '') || fallbackAddress;
 
-  // Clean unwanted artifacts and minor shop names near Delonglou
-  if (finalRes && (finalRes.includes('西桥巷粉条大盘鸡') || finalRes.includes('同乡斋羊羔肉') || finalRes.includes('粉条大盘鸡'))) {
-    finalRes = '德隆楼德鼎逸品(北京路店)';
-  }
   if (finalRes && (finalRes.includes('马斯特') || finalRes.includes('马斯特府邸'))) {
     finalRes = '运祥小区';
   }

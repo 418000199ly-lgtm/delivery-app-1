@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
 import { geocodeAddress, isValidCoords, calculateOrderDriverDistance } from '../utils/geocoding';
+import { getHighPrecisionLocationName } from '../utils/locationResolver';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { 
@@ -308,9 +309,14 @@ export default function DispatchValetOrder({
                 const geocoder = new AMap.Geocoder({ city: currentCity || '银川市' });
                 geocoder.getAddress([searchLng, searchLat], (geoStatus: string, geoResult: any) => {
                   setIsLocatingGPS(false);
-                  if (geoStatus === 'complete' && geoResult?.regeocode?.formattedAddress) {
-                    const formatted = geoResult.regeocode.formattedAddress;
-                    setPassengerAddress(formatted);
+                  if (geoStatus === 'complete' && geoResult?.regeocode) {
+                    const highPrecisionName = getHighPrecisionLocationName(
+                      geoResult.regeocode,
+                      geoResult.regeocode.formattedAddress || '代驾商家起点',
+                      searchLng,
+                      searchLat
+                    );
+                    setPassengerAddress(highPrecisionName);
                   }
                 });
               });
@@ -342,13 +348,19 @@ export default function DispatchValetOrder({
                 noIpLocate: 0
               });
               geolocation.getCurrentPosition((status: string, result: any) => {
-                if (status === 'complete' && result?.formattedAddress) {
-                  setPassengerAddress(result.formattedAddress);
+                if (status === 'complete' && result) {
+                  const highPrecisionName = getHighPrecisionLocationName(
+                    result.regeocode,
+                    result.formattedAddress || '代驾商家起点',
+                    result.position?.lng,
+                    result.position?.lat
+                  );
+                  setPassengerAddress(highPrecisionName);
                   if (result.position) {
                     setPassengerCoords({ lat: result.position.lat, lng: result.position.lng });
                   }
                   if (!silent) {
-                    onShowToast(`📍 高精度定位成功：${result.formattedAddress}`);
+                    onShowToast(`📍 高精度定位成功：${highPrecisionName}`);
                   }
                 } else {
                   applyFallback();
@@ -808,8 +820,20 @@ export default function DispatchValetOrder({
     const currentAdminRole = adminProfile.role || userRole || '开发者司机';
 
     // 0. Remove from removedMemberPhones so approved driver is active immediately
+    const cleanTargetPhone = String(targetPhone || '').replace(/\D/g, '').trim();
+    const targetNameStr = String(name || applicantObj?.name || applicantObj?.applicantName || '').trim();
+    const targetIdStr = String(id || applicantObj?.id || '').trim();
+
     setRemovedMemberPhones(prev => {
-      const updated = prev.filter(p => p !== targetPhone);
+      const updated = prev.filter(p => {
+        const pStr = String(p).trim();
+        if (!pStr) return false;
+        if (cleanTargetPhone && (pStr === cleanTargetPhone || pStr.replace(/\D/g, '') === cleanTargetPhone)) return false;
+        if (targetPhone && pStr === targetPhone) return false;
+        if (targetIdStr && pStr === targetIdStr) return false;
+        if (targetNameStr && pStr === targetNameStr) return false;
+        return true;
+      });
       try {
         localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
       } catch (_) {}
@@ -2267,9 +2291,14 @@ export default function DispatchValetOrder({
             AMap.plugin('AMap.Geocoder', () => {
               const geocoder = new AMap.Geocoder();
               geocoder.getAddress([lng, lat], (status: string, result: any) => {
-                if (status === 'complete' && result.regeocode) {
-                  const addr = result.regeocode.formattedAddress;
-                  if (addr) setPassengerAddress(addr);
+                if (status === 'complete' && result?.regeocode) {
+                  const highPrecisionName = getHighPrecisionLocationName(
+                    result.regeocode,
+                    result.regeocode.formattedAddress || '代驾商家起点',
+                    lng,
+                    lat
+                  );
+                  if (highPrecisionName) setPassengerAddress(highPrecisionName);
                 }
               });
             });
@@ -2793,7 +2822,13 @@ export default function DispatchValetOrder({
           }
         } catch (_) {}
 
-        const isRemoved = removedList.some(p => String(p).trim() === phone || String(p).trim() === String(d.id || '').trim() || String(p).trim() === String(d.name || '').trim());
+        const isRemoved = removedList.some(p => {
+          const pStr = String(p).trim();
+          if (!pStr) return false;
+          if (phone && (pStr === phone || pStr.replace(/\D/g, '') === phone)) return true;
+          if (d.id && pStr === String(d.id).trim()) return true;
+          return false;
+        });
         if (isRemoved) return false;
 
         // 3. MUST be an approved driver in squadMembers
@@ -3005,14 +3040,13 @@ export default function DispatchValetOrder({
 
       window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 
-      const isTargetingCurrentDriver = chosenDriver && (
-        String(chosenDriver.phone).trim() === String(currentPhone).trim() ||
-        String(chosenDriver.phone).trim() === String(effectivePhone).trim() ||
-        String(chosenDriver.phone).trim() === '15509601222' ||
-        String(currentPhone).trim() === '15509601222' ||
-        String(effectivePhone).trim() === '15509601222' ||
-        String(userPhone || '').trim() === '15509601222' ||
-        String(userPhone || '').trim() === String(chosenDriver.phone).trim()
+      const chosenPhone = String(chosenDriver?.phone || '').trim();
+      const isTargetingCurrentDriver = Boolean(
+        chosenDriver && chosenPhone && (
+          chosenPhone === String(currentPhone || '').trim() ||
+          chosenPhone === String(effectivePhone || '').trim() ||
+          chosenPhone === String(userPhone || '').trim()
+        )
       );
 
       if (isTargetingCurrentDriver) {
@@ -3887,12 +3921,16 @@ export default function DispatchValetOrder({
 
         const isRemovedItem = (item: any) => {
           if (!item) return true;
-          const phone = String(item.phone || item.id || '').trim();
+          const phone = String(item.phone || item.id || '').replace(/\D/g, '').trim();
           if (phone === '15509601222') return false;
           if (isMockDriver(item)) return true;
+          const st = String(item.status || item.approvalStatus || '').trim();
+          if (['已通过', 'approved', '通过'].includes(st)) return false;
           return Boolean(
-            (phone && removedMemberPhones.includes(phone)) ||
-            (item.name && removedMemberPhones.includes(item.name))
+            phone && removedMemberPhones.some(p => {
+              const pStr = String(p).trim();
+              return pStr === phone || pStr.replace(/\D/g, '') === phone;
+            })
           );
         };
 
@@ -4572,7 +4610,10 @@ export default function DispatchValetOrder({
                                   }
 
                                   // Sync removed_squad_members to cloud config for multi-device sync
-                                  const updatedRemoved = Array.from(new Set([...removedMemberPhones, targetPhone, targetId, targetName].filter(Boolean)));
+                                  const cleanTargetPhone = String(targetPhone || '').replace(/\D/g, '').trim();
+                                  const updatedRemoved = cleanTargetPhone 
+                                    ? Array.from(new Set([...removedMemberPhones, cleanTargetPhone]))
+                                    : removedMemberPhones;
                                   setRemovedMemberPhones(updatedRemoved);
                                   try {
                                     localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updatedRemoved));

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
+import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS, findNearestKnownPoi } from '../utils/geocoding';
 import { 
   ShoppingBag, 
   Users, 
@@ -143,6 +143,33 @@ export const formatTransferOrderEndLocation = (order: any): string => {
   return '报单转单 (选单大厅)';
 };
 
+const formatLocationShortName = (loc: string, lat?: number, lng?: number): string => {
+  if (!loc) return '';
+  let clean = loc.trim();
+
+  // If coordinates provided, check if it matches a known high-precision landmark
+  if (typeof lat === 'number' && typeof lng === 'number' && isValidCoords(lat, lng)) {
+    const poi = findNearestKnownPoi({ lat, lng }, 0.2);
+    if (poi) return poi;
+  }
+
+  // Strip long province / city / district / street / house number prefixes
+  if (clean.includes('宁夏回族自治区') || clean.includes('银川市')) {
+    clean = clean
+      .replace(/^宁夏回族自治区\s*/, '')
+      .replace(/^银川市\s*/, '')
+      .replace(/^兴庆区\s*/, '')
+      .replace(/^金凤区\s*/, '')
+      .replace(/^西夏区\s*/, '')
+      .replace(/^[^\s]*街道\s*/, '')
+      .replace(/^[^\s]*路[0-9]+号\s*/, '')
+      .replace(/^[^\s]*街[0-9]+号\s*/, '')
+      .replace(/^[^\s]*巷[0-9]+号\s*/, '');
+  }
+
+  return clean.trim() || loc.trim();
+};
+
 const sanitizeOrderLocations = (order: any) => {
   if (!order) return order;
   let sLoc = (order.startLocation || '').toString().trim();
@@ -150,17 +177,17 @@ const sanitizeOrderLocations = (order: any) => {
   const dist = Number(order.distance ?? order.currentDistance ?? 0);
   const isTransfer = (order.type === '报单转单' || order.orderType === '报单转单' || order.isReportTransfer || order.isReportTransferOrder);
 
+  const sLat = Number(order.startLat ?? order.passengerLat ?? order.lat);
+  const sLng = Number(order.startLng ?? order.passengerLng ?? order.lng);
+  const eLat = Number(order.endLat ?? order.destinationLat ?? order.dropoffLat);
+  const eLng = Number(order.endLng ?? order.destinationLng ?? order.dropoffLng);
+
+  sLoc = formatLocationShortName(sLoc, sLat, sLng);
+  eLoc = formatLocationShortName(eLoc, eLat, eLng);
+
   // Clean empty or placeholder values
   if (!sLoc || sLoc === '正在获取当前位置...' || sLoc === '未定位起点') {
-    sLoc = '德隆楼德鼎逸品(北京路店)';
-  }
-
-  // Sanitize minor food stalls and alley shops to the primary landmark
-  if (sLoc.includes('西桥巷粉条大盘鸡') || sLoc.includes('同乡斋羊羔肉') || sLoc.includes('粉条大盘鸡')) {
-    sLoc = '德隆楼德鼎逸品(北京路店)';
-  }
-  if (eLoc.includes('西桥巷粉条大盘鸡') || eLoc.includes('同乡斋羊羔肉') || eLoc.includes('粉条大盘鸡')) {
-    eLoc = '德隆楼德鼎逸品(北京路店)';
+    sLoc = '德隆楼德鼎逸品';
   }
 
   // Handle specific old placeholder artifacts if any
@@ -433,10 +460,34 @@ export default function HomeView({
     const sourceList = (squadMembers && squadMembers.length > 0) ? squadMembers : localMembers;
     const activeDriverPhones = new Set<string>();
 
-    // 开发者最高权限账号永远加入小队（唯一主键）
-    activeDriverPhones.add('15509601222');
+      // 开发者最高权限账号永远加入小队（唯一主键）
+      activeDriverPhones.add('15509601222');
 
-    sourceList.forEach((m: any) => {
+      // 包含 localStorage dd_applicants_v2 中已通过审批的司机
+      try {
+        const savedApps = localStorage.getItem('dd_applicants_v2');
+        if (savedApps) {
+          const appList = JSON.parse(savedApps);
+          if (Array.isArray(appList)) {
+            appList.forEach((a: any) => {
+              if (!a) return;
+              const aPhone = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+              const st = String(a.status || '').trim();
+              if (aPhone && ['已通过', 'approved', '通过'].includes(st)) {
+                const isRemoved = removedMemberPhones.some(p => {
+                  const pStr = String(p).trim();
+                  return pStr === aPhone || pStr.replace(/\D/g, '') === aPhone;
+                });
+                if (!isRemoved) {
+                  activeDriverPhones.add(aPhone);
+                }
+              }
+            });
+          }
+        }
+      } catch (_) {}
+
+      sourceList.forEach((m: any) => {
       if (!m) return;
       let phone = String(m.phone || '').replace(/\D/g, '').trim();
       const rawId = String(m.id || '').trim();
@@ -458,7 +509,7 @@ export default function HomeView({
       if (!isApproved) return;
 
       // 只有被移出且未重新通过审批的司机才跳过
-      if (removedMemberPhones.includes(phone)) return;
+      if (removedMemberPhones.some(p => String(p).trim() === phone || String(p).replace(/\D/g, '') === phone)) return;
 
       const roleStr = String(m.role || m.userRole || '').trim();
       const isMerchant = phone.toUpperCase().endsWith('A') || roleStr.includes('商户') || roleStr.includes('商家');
@@ -1125,7 +1176,10 @@ export default function HomeView({
         }).catch(() => {});
 
         // 重新申请时，将用户从黑名单(removedMemberPhones)中解封移除
-        const cleanRemoved = (removedMemberPhones || []).filter(p => p !== currentPhone && p !== applyName.trim());
+        const cleanRemoved = (removedMemberPhones || []).filter(p => {
+          const pStr = String(p).trim();
+          return pStr !== currentPhone && pStr !== applyName.trim() && pStr.replace(/\D/g, '') !== currentPhone;
+        });
         setRemovedMemberPhones(cleanRemoved);
         try {
           localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(cleanRemoved));
@@ -1133,7 +1187,7 @@ export default function HomeView({
         if (db) {
           setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(() => {});
         }
-        fetch(`${baseUrl}/api/db/save`, {
+        fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: cleanRemoved } })
@@ -1156,7 +1210,7 @@ export default function HomeView({
     if (!phone) return false;
     if (phone === '15509601222') return false; // 开发者账号永不移出
 
-    // 如果小队列表中存在该司机且处于通过状态，则绝不属于被移出状态
+    // 1. 如果小队列表中存在该司机且处于通过状态，则绝不属于被移出状态
     const inSquad = squadMembers.some((m: any) => {
       const mPhone = String(m.phone || m.id || '').trim();
       if (mPhone !== phone) return false;
@@ -1165,8 +1219,28 @@ export default function HomeView({
     });
     if (inSquad) return false;
 
+    // 2. 如果在申请列表中已处于待审核或已通过状态，则绝不属于被移出状态
+    try {
+      const savedApps = localStorage.getItem('dd_applicants_v2');
+      if (savedApps) {
+        const appList = JSON.parse(savedApps);
+        if (Array.isArray(appList)) {
+          const hasActiveApp = appList.some((a: any) => {
+            const aPhone = String(a.phone || a.id || '').trim();
+            if (aPhone !== phone) return false;
+            const st = String(a.status || '').trim();
+            return ['待审核', '已通过', 'approved', '通过'].includes(st);
+          });
+          if (hasActiveApp) return false;
+        }
+      }
+    } catch (_) {}
+
     // 检查是否在被移出黑名单中
-    if (removedMemberPhones.some(p => String(p).trim() === phone)) return true;
+    if (removedMemberPhones.some(p => {
+      const pStr = String(p).trim();
+      return pStr === phone || pStr.replace(/\D/g, '') === phone;
+    })) return true;
     return false;
   };
 
@@ -3182,7 +3256,7 @@ export default function HomeView({
         body: JSON.stringify({ collection: 'passenger_links', docId: closestDriver.phone, data: orderPayload })
       }).catch(() => {});
 
-      if (userPhone && (closestDriver.phone === userPhone || closestDriver.phone === '15509601222')) {
+      if (userPhone && String(closestDriver.phone).trim() === String(userPhone).trim()) {
         window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
       }
 
