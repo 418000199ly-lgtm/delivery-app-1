@@ -416,10 +416,13 @@ export default function HomeView({
     const isMock = (phone: string, name: string) => {
       const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
       const mockNames = ['王心凌', '张一山', '李小龙'];
-      return mockPhones.includes(phone) || mockNames.some(mn => name.includes(mn)) || name.includes('虚拟');
+      return Boolean(
+        (phone && mockPhones.includes(phone)) ||
+        (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
+      );
     };
 
-    const removedSet = new Set(removedMemberPhones.map(p => String(p).trim()));
+    const removedSet = new Set(removedMemberPhones.map(p => String(p).trim()).filter(Boolean));
     try {
       const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
       if (savedR) {
@@ -441,23 +444,33 @@ export default function HomeView({
     const sourceList = (squadMembers && squadMembers.length > 0) ? squadMembers : localMembers;
     const activeDriverPhones = new Set<string>();
 
-    // 开发者最高权限账号永远加入小队
+    // 开发者最高权限账号永远加入小队（唯一主键）
     activeDriverPhones.add('15509601222');
 
     sourceList.forEach((m: any) => {
-      const phone = String(m.phone || m.id || '').trim();
+      if (!m) return;
+      let phone = String(m.phone || '').replace(/\D/g, '').trim();
+      const rawId = String(m.id || '').trim();
+      if (!phone && /^\d{11}$/.test(rawId)) {
+        phone = rawId;
+      }
       const name = String(m.name || m.driverName || '').trim();
-      if (!phone) return;
 
-      if (isMock(phone, name)) return;
+      // 吴彦祖 / 15509601222 统一映射为开发者账号
+      if (phone === '15509601222' || name === '吴彦祖') {
+        activeDriverPhones.add('15509601222');
+        return;
+      }
 
-      // 被移出的司机坚决不计入小队人数（开发者除外）
-      if (phone !== '15509601222' && (removedSet.has(phone) || (name && removedSet.has(name)) || removedSet.has(String(m.id)))) {
+      if (!phone || isMock(phone, name)) return;
+
+      // 被移出的司机坚决不计入小队人数
+      if (removedSet.has(phone) || (name && removedSet.has(name)) || removedSet.has(rawId)) {
         return;
       }
 
       const st = String(m.status || m.approvalStatus || '').trim();
-      const isApproved = phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st);
+      const isApproved = ['已通过', 'approved', '通过'].includes(st);
       if (!isApproved) return;
 
       const roleStr = String(m.role || m.userRole || '').trim();
@@ -468,7 +481,7 @@ export default function HomeView({
     });
 
     // 检查当前登录司机自身是否已被移出
-    const curP = (userPhone || applyPhone || (settings as any)?.phone || '').trim();
+    const curP = String(userPhone || applyPhone || (settings as any)?.phone || '').replace(/\D/g, '').trim();
     if (curP && curP !== '15509601222') {
       if (removedSet.has(curP) || isDriverRemoved(curP)) {
         activeDriverPhones.delete(curP);
@@ -1898,22 +1911,38 @@ export default function HomeView({
       apiMembers.forEach(rawM => {
         const m = (rawM?.data && typeof rawM.data === 'object') ? { ...rawM.data, ...rawM, id: rawM.id || rawM.data.id } : rawM;
         if (isMerchantItem(m) || isMockItem(m)) return;
-        const phone = String(m.phone || m.id || '').trim();
+        let phone = String(m.phone || '').replace(/\D/g, '').trim();
+        const rawId = String(m.id || '').trim();
+        if (!phone && /^\d{11}$/.test(rawId)) {
+          phone = rawId;
+        }
         const name = String(m.name || m.driverName || '').trim();
         const st = String(m.status || m.approvalStatus || '').trim();
-        const isApproved = phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st) || !st;
+        const isApproved = phone === '15509601222' || name === '吴彦祖' || ['已通过', 'approved', '通过'].includes(st) || !st;
 
-        if (phone !== '15509601222') {
-          if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(String(m.id))) {
-            return; // 彻底跳过已被删除的司机
-          }
+        if (phone === '15509601222' || name === '吴彦祖') {
+          map.set('15509601222', {
+            ...m,
+            id: '15509601222',
+            phone: '15509601222',
+            name: '吴彦祖',
+            role: '开发者司机',
+            userRole: '开发者司机',
+            status: '已通过'
+          });
+          return;
         }
+
+        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId)) {
+          return; // 彻底跳过已被删除的司机
+        }
+
         if (phone && isApproved) {
           map.set(phone, {
             ...m,
             id: m.id || phone,
             phone,
-            name: m.name || m.driverName || (phone === '15509601222' ? '吴彦祖' : (phone === '18695119126' ? '李扬' : (phone === '15121904440' ? '李扬' : `司机${phone.slice(-4)}`))),
+            name: m.name || m.driverName || (phone === '18695119126' ? '李扬' : (phone === '15121904440' ? '李扬' : `司机${phone.slice(-4)}`)),
             role: m.role || m.userRole || '普通司机',
             userRole: m.userRole || m.role || '普通司机',
             status: '已通过'
@@ -2044,16 +2073,41 @@ export default function HomeView({
       } catch (_) {}
 
       const curP = (userPhone || applyPhone || (settings as any)?.phone || '').trim();
-      const list: any[] = [];
+      const map = new Map<string, any>();
+
+      const isMerchant = (item: any) => {
+        const p = String(item?.phone || item?.id || '').trim();
+        const r = String(item?.role || item?.userRole || '').trim();
+        return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
+      };
+
+      const isMock = (item: any) => {
+        if (!item) return false;
+        const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
+        const mockNames = ['王心凌', '张一山', '李小龙'];
+        const phone = String(item.phone || item.id || '').trim();
+        const name = String(item.name || item.driverName || '').trim();
+        return Boolean(
+          (phone && mockPhones.includes(phone)) ||
+          (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
+        );
+      };
+
       snapshot.forEach((docSnap) => {
         const data: any = docSnap.data();
-        const phone = String(data?.phone || docSnap.id || '').trim();
+        const m = { ...data, id: docSnap.id };
+        if (isMerchant(m) || isMock(m)) return;
+
+        let phone = String(data?.phone || '').replace(/\D/g, '').trim();
+        if (!phone && /^\d{11}$/.test(docSnap.id)) {
+          phone = docSnap.id;
+        }
         const name = String(data?.name || data?.driverName || '').trim();
         const st = String(data?.status || '').trim();
         const isApproved = phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st);
 
         if (phone !== '15509601222') {
-          if (removedList.includes(phone) || (name && removedList.includes(name))) {
+          if (removedList.includes(phone) || (name && removedList.includes(name)) || removedList.includes(docSnap.id)) {
             return; // 过滤已被删除且未重新通过审核的司机
           }
         }
@@ -2067,7 +2121,7 @@ export default function HomeView({
             userRole: data?.userRole || data?.role || '普通司机',
             status: '已通过'
           };
-          list.push(memberObj);
+          map.set(phone, memberObj);
 
           if (curP && (phone === curP || docSnap.id === curP)) {
             try {
@@ -2084,6 +2138,21 @@ export default function HomeView({
         }
       });
 
+      // 保证 15509601222 (超级管理员) 始终在列表中
+      const masterPhone = '15509601222';
+      if (!map.has(masterPhone)) {
+        map.set(masterPhone, {
+          id: masterPhone,
+          phone: masterPhone,
+          name: '吴彦祖',
+          role: '开发者司机',
+          userRole: '开发者司机',
+          status: '已通过'
+        });
+      }
+
+      const list = Array.from(map.values());
+
       // 如果当前司机不在小队列表里（且不是开发者15509601222），彻底清除本地入队状态并重置为普通司机
       if (curP && curP !== '15509601222') {
         const isCurInSnapshot = list.some(m => String(m.phone || m.id).trim() === curP);
@@ -2099,18 +2168,6 @@ export default function HomeView({
         }
       }
 
-      // 保证 15509601222 (超级管理员) 始终在列表中
-      const masterPhone = '15509601222';
-      if (!list.some(m => String(m.phone || m.id).trim() === masterPhone)) {
-        list.push({
-          id: masterPhone,
-          phone: masterPhone,
-          name: '吴彦祖',
-          role: '开发者司机',
-          userRole: '开发者司机',
-          status: '已通过'
-        });
-      }
       setSquadMembers(list);
     });
 
