@@ -3,6 +3,7 @@ import { ArrowLeft, MoreVertical, CheckCircle2, Receipt, Route, Clock, User, Pho
 import { BillingRules, DEFAULT_SLOTS } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
 import { formatOrderDisplayTime, formatTransferOrderEndLocation } from './HomeView';
+import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
 
 interface OrderDetailModalProps {
   order: any;
@@ -378,7 +379,7 @@ export default function OrderDetailModal({
                       if (dist <= 0.25 && s) {
                         return s;
                       }
-                      return e || s || '德隆楼德鼎逸品';
+                      return formatHighPrecisionDestinationName(e, order) || s || '德隆楼德鼎逸品';
                     })()}
                   </span>
                 </div>

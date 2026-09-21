@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { geocodeAddress, isValidCoords, calculateOrderDriverDistance } from '../utils/geocoding';
-import { getHighPrecisionLocationName } from '../utils/locationResolver';
+import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
@@ -2530,7 +2530,10 @@ export default function MobileDispatchValetOrder({
                 
                 setPassengerCoords({ lat: searchLat, lng: searchLng });
 
-                const geocoder = new AMap.Geocoder({ city: currentCity || '银川市' });
+                const geocoder = new AMap.Geocoder({ 
+                  city: currentCity || '银川市',
+                  extensions: 'all'
+                });
                 geocoder.getAddress([searchLng, searchLat], (geoStatus: string, geoResult: any) => {
                   setIsLocatingGPS(false);
                   if (geoStatus === 'complete' && geoResult?.regeocode) {
@@ -2565,27 +2568,47 @@ export default function MobileDispatchValetOrder({
           };
 
           if (AMap) {
-            AMap.plugin('AMap.Geolocation', () => {
+            AMap.plugin(['AMap.Geolocation', 'AMap.Geocoder'], () => {
               const geolocation = new AMap.Geolocation({
                 enableHighAccuracy: true,
                 timeout: 3000,
                 noIpLocate: 0
               });
               geolocation.getCurrentPosition((status: string, result: any) => {
-                if (status === 'complete' && result) {
-                  const highPrecisionName = getHighPrecisionLocationName(
-                    result.regeocode,
-                    result.formattedAddress || '代驾商家起点',
-                    result.position?.lng,
-                    result.position?.lat
-                  );
-                  setPassengerAddress(highPrecisionName);
-                  if (result.position) {
-                    setPassengerCoords({ lat: result.position.lat, lng: result.position.lng });
-                  }
-                  if (!silent) {
-                    onShowToast(`📍 高精度定位成功：${highPrecisionName}`);
-                  }
+                if (status === 'complete' && result && result.position) {
+                  const pLng = result.position.lng;
+                  const pLat = result.position.lat;
+                  setPassengerCoords({ lat: pLat, lng: pLng });
+
+                  const geocoder = new AMap.Geocoder({
+                    city: currentCity || '银川市',
+                    extensions: 'all'
+                  });
+                  geocoder.getAddress([pLng, pLat], (gStatus: string, gResult: any) => {
+                    if (gStatus === 'complete' && gResult?.regeocode) {
+                      const highPrecisionName = getHighPrecisionLocationName(
+                        gResult.regeocode,
+                        gResult.regeocode.formattedAddress || '代驾商家起点',
+                        pLng,
+                        pLat
+                      );
+                      setPassengerAddress(highPrecisionName);
+                      if (!silent) {
+                        onShowToast(`📍 高精度定位成功：${highPrecisionName}`);
+                      }
+                    } else {
+                      const highPrecisionName = getHighPrecisionLocationName(
+                        result.regeocode,
+                        result.formattedAddress || '代驾商家起点',
+                        pLng,
+                        pLat
+                      );
+                      setPassengerAddress(highPrecisionName);
+                      if (!silent) {
+                        onShowToast(`📍 高精度定位成功：${highPrecisionName}`);
+                      }
+                    }
+                  });
                 } else {
                   applyFallback();
                 }
@@ -2660,7 +2683,10 @@ export default function MobileDispatchValetOrder({
 
             // Reverse Geocode
             AMap.plugin('AMap.Geocoder', () => {
-              const geocoder = new AMap.Geocoder();
+              const geocoder = new AMap.Geocoder({
+                city: currentCity || '银川市',
+                extensions: 'all'
+              });
               geocoder.getAddress([lng, lat], (status: string, result: any) => {
                 if (status === 'complete' && result?.regeocode) {
                   const highPrecisionName = getHighPrecisionLocationName(
@@ -4391,7 +4417,7 @@ export default function MobileDispatchValetOrder({
                           </div>
                           <div className="flex items-center gap-2 text-[#1a1c1c]">
                             <span className="w-2 h-2 rounded-full bg-[#ff7d00] shrink-0" />
-                            <span className="font-bold truncate">{order.destName || order.destination || order.endLocation || '顾客指定目的地'}</span>
+                            <span className="font-bold truncate">{formatHighPrecisionDestinationName(order.destName || order.destination || order.endLocation, order)}</span>
                           </div>
                         </div>
 

@@ -65,15 +65,11 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.4871, lng: 106.2628 }
   },
   {
-    keywords: ['同乡斋羊羔肉'],
-    coords: { lat: 38.4870, lng: 106.2632 }
-  },
-  {
     keywords: ['德隆楼(森林公园店)', '德隆楼(北京中路店)', '北京中路德隆楼', '森林公园德隆楼'],
     coords: { lat: 38.4965, lng: 106.2110 } // 金凤区北京中路德隆楼德鼎逸品
   },
   {
-    keywords: ['铂金大厦', '北京东路', '玉皇阁北街', '长相忆宾馆'],
+    keywords: ['铂金大厦', '长相忆宾馆'],
     coords: { lat: 38.4825, lng: 106.2315 } // ~ 0.5km
   },
   {
@@ -117,7 +113,7 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.4892, lng: 106.2435 }
   },
   {
-    keywords: ['五宝苑', '北寺巷五宝苑', '北关清真寺'],
+    keywords: ['五宝苑', '北关清真寺'],
     coords: { lat: 38.4828, lng: 106.2415 }
   },
   {
@@ -129,7 +125,7 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.4750, lng: 106.2380 } // ~ 1.5km
   },
   {
-    keywords: ['北寺巷', '兴庆区政府住宅区'],
+    keywords: ['兴庆区政府住宅区'],
     coords: { lat: 38.4830, lng: 106.2350 }
   },
   {
@@ -143,9 +139,9 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
 ];
 
 /**
- * Finds the nearest known POI landmark from coordinates if within maxDistKm (default 0.2 km = 200m)
+ * Finds the nearest known POI landmark from coordinates if within maxDistKm (default 0.01 km = 10m)
  */
-export function findNearestKnownPoi(coords?: { lat?: number; lng?: number } | null, maxDistKm = 0.2): string | null {
+export function findNearestKnownPoi(coords?: { lat?: number; lng?: number } | null, maxDistKm = 0.01): string | null {
   if (!coords || !isValidCoords(coords.lat, coords.lng)) return null;
   const lat = Number(coords.lat);
   const lng = Number(coords.lng);

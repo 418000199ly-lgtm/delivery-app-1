@@ -55,6 +55,11 @@ export function getBaseApiUrl(): string {
   } catch (_) {}
   
   if (typeof window !== 'undefined') {
+    // Check if running inside native Capacitor mobile application (Android / iOS)
+    if ((window as any).Capacitor?.isNativePlatform?.() || (window as any).Capacitor?.platform === 'android' || (window as any).Capacitor?.platform === 'ios') {
+      return 'https://api.lyheiwandaijiamax.com';
+    }
+
     const hostname = window.location.hostname || '';
     
     // AI Studio Cloud Run preview environment
