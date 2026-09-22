@@ -499,12 +499,12 @@ export default function HomeView({
         const curP = getCurrentPhone();
         if (curP && curP !== '15509601222' && removedSet.has(curP)) {
           setLocalRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
-          setIsReapplying(prev => (prev ? false : prev));
+          // 移出小队的司机不能使用附近地图、商户代叫和管理派单视图
           setShowNearbyMap(prev => (prev ? false : prev));
-          setShowApplySquadModal(prev => (prev ? false : prev));
-          setShowDispatchModal(prev => (prev ? false : prev));
           setShowMerchantDispatchModal(prev => (prev ? false : prev));
           setShowAdminDispatchView(prev => (prev ? false : prev));
+          // 注意：绝不能在此强制关闭小队申请弹窗(showDispatchModal / showApplySquadModal)或重置 isReapplying！
+          // 因为被移出小队的司机需要通过“小队申请”重新填写并提交申请加入小队！
           try {
             localStorage.setItem('dd_user_role', '普通司机');
             localStorage.removeItem(`dd_squad_member_${curP}`);
@@ -2223,7 +2223,6 @@ export default function HomeView({
             localStorage.removeItem(`dd_approved_${currentPhone}`);
             localStorage.removeItem(`dd_in_squad_${currentPhone}`);
 
-            setIsReapplying(prev => (prev ? false : prev));
             setShowAdminDispatchView(prev => (prev ? false : prev));
 
             if (wasApproved || (oldRole && oldRole !== '普通司机')) {
@@ -2267,7 +2266,6 @@ export default function HomeView({
               const wasApproved = localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true';
               const oldRole = localStorage.getItem('dd_user_role');
               setUserRole('普通司机');
-              setIsReapplying(prev => (prev ? false : prev));
               setSquadMembers(prev => {
                 const hasCur = prev.some(m => String(m.phone || m.id).trim() === curP);
                 if (!hasCur) return prev;
@@ -2322,7 +2320,6 @@ export default function HomeView({
 
           if (isCurRemoved) {
             setUserRole('普通司机');
-            setIsReapplying(false);
             try {
               localStorage.setItem('dd_user_role', '普通司机');
               localStorage.removeItem(`dd_squad_member_${curP}`);
@@ -4581,7 +4578,6 @@ export default function HomeView({
                   setUserRole('普通司机');
                   try {
                     localStorage.setItem('dd_user_role', '普通司机');
-                    window.dispatchEvent(new CustomEvent('user_role_updated'));
                   } catch (_) {}
                 }
                 setShowAdminDispatchView(false);
