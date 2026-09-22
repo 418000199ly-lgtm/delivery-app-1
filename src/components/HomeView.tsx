@@ -342,21 +342,38 @@ export default function HomeView({
     if (phone === '15509601222') return false; // 开发者账号永不移出
 
     // 检查是否在被移出黑名单中
-    let removedList: string[] = [];
+    let removedList: string[] = removedMemberPhones || [];
     try {
       const saved = localStorage.getItem('dd_removed_squad_phones_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          removedList = parsed;
+          removedList = Array.from(new Set([...removedList, ...parsed]));
         }
       }
     } catch (_) {}
 
-    return removedList.some(p => {
+    const inRemoved = removedList.some(p => {
       const pStr = String(p).trim();
       return pStr === phone || pStr.replace(/\D/g, '') === phone;
     });
+
+    if (!inRemoved) return false;
+
+    // 若司机已提交了新申请（待审核）或重新获得审批通过，则不再受历史移出名单限制
+    try {
+      const savedApps = localStorage.getItem('dd_applicants_v2');
+      if (savedApps) {
+        const apps = JSON.parse(savedApps);
+        const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === phone);
+        const st = String(myApp?.status || '').trim();
+        if (myApp && ['待审核', 'pending', '审核中', '已通过', 'approved', '通过'].includes(st)) {
+          return false;
+        }
+      }
+    } catch (_) {}
+
+    return true;
   };
 
   const isDriverInSquad = (phoneToCheck?: string) => {
@@ -1229,138 +1246,147 @@ export default function HomeView({
 
     setIsSubmittingApply(true);
 
-    // 100ms 秒级提交响应
-    setTimeout(() => {
+    try {
+      const noteText = applyRemarks.trim() || '身份信息确认填写正确，申请加入小队！';
+      
+      // 0. 清除可能残留的“审核通过”标记，确保提交后直接进入审核中状态
       try {
-        const noteText = applyRemarks.trim() || '身份信息确认填写正确，申请加入小队！';
-        
-        // 0. 从被删除名单中移除该手机号（重新申请）
-        setRemovedMemberPhones(prev => {
-          const updated = prev.filter(p => String(p).trim() !== currentPhone);
-          try {
-            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
-          } catch (_) {}
-          return updated;
-        });
+        localStorage.removeItem(`dd_approved_${currentPhone}`);
+        localStorage.removeItem(`dd_in_squad_${currentPhone}`);
+        localStorage.removeItem(`dd_squad_member_${currentPhone}`);
+      } catch (_) {}
 
-        // 1. 本地存储更新 dd_applicants_v2
-        const savedApps = localStorage.getItem('dd_applicants_v2');
-        const existingApps = savedApps ? JSON.parse(savedApps) : [];
-        const newApp = {
-          id: `app-${Date.now()}`,
-          name: applyName.trim(),
-          phone: currentPhone,
-          status: '待审核',
-          note: noteText,
-          showReasons: false,
-          selectedReasons: [],
-          createdAt: new Date().toLocaleString()
-        };
-        const updatedApps = [newApp, ...existingApps.filter((a: any) => String(a.phone || a.id || '').trim() !== currentPhone)];
-        localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
+      // 1. 从被删除名单中移除该手机号（重新申请）
+      const cleanRemoved = (removedMemberPhones || []).filter(p => {
+        const pStr = String(p).trim();
+        return pStr !== currentPhone && pStr !== applyName.trim() && pStr.replace(/\D/g, '') !== currentPhone;
+      });
+      setRemovedMemberPhones(cleanRemoved);
+      try {
+        localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(cleanRemoved));
+      } catch (_) {}
 
-        // 2. 本地存储更新 dd_squad_members_v2 (支持国内宝塔面板单机部署)
-        const savedMembers = localStorage.getItem('dd_squad_members_v2');
-        const existingMembers = savedMembers ? JSON.parse(savedMembers) : [];
-        const updatedMembers = [
-          {
-            id: currentPhone,
-            phone: currentPhone,
-            name: applyName.trim(),
-            role: '普通司机',
-            status: '待审核',
-            note: noteText,
-            city: effectiveCity || '银川市',
-            createdAt: Date.now()
-          },
-          ...existingMembers.filter((m: any) => String(m.phone || m.id || '').trim() !== currentPhone)
-        ];
-        localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedMembers));
+      // 2. 本地存储更新 dd_applicants_v2 为待审核
+      const savedApps = localStorage.getItem('dd_applicants_v2');
+      const existingApps = savedApps ? JSON.parse(savedApps) : [];
+      const newApp = {
+        id: `app-${Date.now()}`,
+        name: applyName.trim(),
+        phone: currentPhone,
+        status: '待审核',
+        note: noteText,
+        city: effectiveCity || '银川市',
+        showReasons: false,
+        selectedReasons: [],
+        createdAt: new Date().toLocaleString(),
+        timestamp: Date.now()
+      };
+      const updatedApps = [newApp, ...existingApps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone)];
+      localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
 
-        // 3. 写入 宝塔面板 HTTP REST API 后端 与 Firestore
-        const appPayload = {
-          id: `app-${Date.now()}`,
-          name: applyName.trim(),
+      // 3. 本地存储更新 dd_squad_members_v2
+      const savedMembers = localStorage.getItem('dd_squad_members_v2');
+      const existingMembers = savedMembers ? JSON.parse(savedMembers) : [];
+      const updatedMembers = [
+        {
+          id: currentPhone,
           phone: currentPhone,
-          status: '待审核',
-          note: noteText,
-          city: effectiveCity || '银川市',
-          createdAt: new Date().toLocaleString(),
-          timestamp: Date.now(),
-          approvedBy: '',
-          approvedRole: '',
-          approvalTime: '',
-          rejectedBy: '',
-          rejectedRole: '',
-          rejectionTime: '',
-          selectedReasons: []
-        };
-        const memberPayload = {
           name: applyName.trim(),
-          phone: currentPhone,
           role: '普通司机',
           status: '待审核',
           note: noteText,
           city: effectiveCity || '银川市',
-          lastUpdatedTime: new Date().toLocaleString(),
-          approvedBy: '',
-          approvedRole: '',
-          approvalTime: ''
-        };
+          createdAt: Date.now()
+        },
+        ...existingMembers.filter((m: any) => String(m.phone || m.id || '').replace(/\D/g, '').trim() !== currentPhone)
+      ];
+      localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedMembers));
 
-        if (db) {
-          // 直接全量替换申请记录，擦除原先审批历史
-          setDoc(doc(db, 'squad_applications', currentPhone), appPayload).catch(() => {});
-          setDoc(doc(db, 'squad_members', currentPhone), memberPayload).catch(() => {});
-        }
-
-        const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
-        }).catch(() => {});
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'squad_members', docId: currentPhone, data: memberPayload })
-        }).catch(() => {});
-
-        // 重新申请时，将用户从黑名单(removedMemberPhones)中解封移除
-        const cleanRemoved = (removedMemberPhones || []).filter(p => {
-          const pStr = String(p).trim();
-          return pStr !== currentPhone && pStr !== applyName.trim() && pStr.replace(/\D/g, '') !== currentPhone;
-        });
-        setRemovedMemberPhones(cleanRemoved);
-        try {
-          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(cleanRemoved));
-        } catch (_) {}
-        if (db) {
-          setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(() => {});
-        }
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: cleanRemoved } })
-        }).catch(() => {});
-      } catch (_) {}
-
-      setIsSubmittingApply(false);
-      setIsReapplying(false);
-      fetchLatestSquadData();
-      setLocalAlert({
-        title: '申请提交成功',
-        message: '🎉 您的入队申请已成功提交！后台将会在 1 个工作日内完成审核批复。',
-        type: 'info'
+      // 4. 同步更新 squadMembers state
+      setSquadMembers(prev => {
+        const filtered = prev.filter(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() !== currentPhone);
+        return [...filtered, {
+          id: currentPhone,
+          phone: currentPhone,
+          name: applyName.trim(),
+          role: '普通司机',
+          status: '待审核',
+          note: noteText,
+          city: effectiveCity || '银川市',
+          createdAt: Date.now()
+        }];
       });
-    }, 100);
+
+      // 5. 写入 宝塔面板 HTTP REST API 后端 与 Firestore
+      const appPayload = {
+        id: `app-${Date.now()}`,
+        name: applyName.trim(),
+        phone: currentPhone,
+        status: '待审核',
+        note: noteText,
+        city: effectiveCity || '银川市',
+        createdAt: new Date().toLocaleString(),
+        timestamp: Date.now(),
+        approvedBy: '',
+        approvedRole: '',
+        approvalTime: '',
+        rejectedBy: '',
+        rejectedRole: '',
+        rejectionTime: '',
+        selectedReasons: []
+      };
+      const memberPayload = {
+        name: applyName.trim(),
+        phone: currentPhone,
+        role: '普通司机',
+        status: '待审核',
+        note: noteText,
+        city: effectiveCity || '银川市',
+        lastUpdatedTime: new Date().toLocaleString(),
+        approvedBy: '',
+        approvedRole: '',
+        approvalTime: ''
+      };
+
+      if (db) {
+        setDoc(doc(db, 'squad_applications', currentPhone), appPayload).catch(() => {});
+        setDoc(doc(db, 'squad_members', currentPhone), memberPayload).catch(() => {});
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(() => {});
+      }
+
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_members', docId: currentPhone, data: memberPayload })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: cleanRemoved } })
+      }).catch(() => {});
+
+      try {
+        window.dispatchEvent(new CustomEvent('squad_application_submitted', { detail: { phone: currentPhone } }));
+      } catch (_) {}
+    } catch (_) {}
+
+    setIsSubmittingApply(false);
+    setIsReapplying(false);
+    setShowDispatchModal(true);
+    triggerToast('✓ 您的入队申请已成功提交，正在等待管理审核');
   };
 
   const checkApprovalStatus = () => {
     const currentPhone = getCurrentPhone();
     if (!currentPhone) return false;
 
-    // 开发者 15509601222 拥有最高开发者权限，默认自动加入小队，绝不需要申请
+    // 开发者 15509601222 拥有最高开发者权限，默认自动加入小队，页面永远锁定审核通过页面
     if (currentPhone === '15509601222') {
       return true;
     }
@@ -1381,27 +1407,32 @@ export default function HomeView({
     }
 
     if (isReapplying) return false;
-    if (isSquadApprovedOrManagement) return true;
 
-    // 1. 本地通过标记判定
-    if (localStorage.getItem(`dd_approved_${currentPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${currentPhone}`) === 'true' || localStorage.getItem(`dd_squad_member_${currentPhone}`)) {
-      return true;
-    }
+    // 1. 如果当前处于待审核状态，绝不能显示审核通过，必须显示审核中
+    try {
+      const saved = localStorage.getItem('dd_applicants_v2');
+      if (saved) {
+        const apps = JSON.parse(saved);
+        const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
+        const appSt = String(myApp?.status || myApp?.approvalStatus || '').trim();
+        if (myApp && ['待审核', 'pending', '审核中'].includes(appSt)) {
+          return false;
+        }
+      }
+    } catch (_) {}
 
-    // 2. 检查 state squadMembers (云端/接口实时同步到的最新数据)
     const memberInState = squadMembers.find((m: any) => String(m.phone || m.id).replace(/\D/g, '').trim() === currentPhone);
     if (memberInState) {
       const st = String(memberInState.status || memberInState.approvalStatus || '').trim();
-      if (!st || ['已通过', 'approved', '通过'].includes(st)) {
-        try {
-          localStorage.setItem(`dd_approved_${currentPhone}`, 'true');
-          localStorage.setItem(`dd_in_squad_${currentPhone}`, 'true');
-        } catch (_) {}
+      if (['待审核', 'pending', '审核中'].includes(st)) {
+        return false;
+      }
+      if (['已通过', 'approved', '通过'].includes(st)) {
         return true;
       }
     }
 
-    // 3. 检查 localStorage dd_applicants_v2 中是否已通过审核
+    // 2. 检查 localStorage dd_applicants_v2 中是否已通过审核
     try {
       const saved = localStorage.getItem('dd_applicants_v2');
       if (saved) {
@@ -1417,6 +1448,11 @@ export default function HomeView({
         }
       }
     } catch (_) {}
+
+    // 3. 本地通过标记判定 (必须不是待审核且未被删除)
+    if (localStorage.getItem(`dd_approved_${currentPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${currentPhone}`) === 'true') {
+      return true;
+    }
 
     // 4. 检查是否处于小队
     if (isDriverInSquad(currentPhone)) {
@@ -2060,7 +2096,7 @@ export default function HomeView({
       const allRemovedSet = new Set(
         [...cloudRemovedPhones, ...(removedMemberPhones || [])]
           .map(p => String(p).trim())
-          .filter(p => p && p !== '15509601222')
+          .filter(p => p && p !== '15509601222' && !activeOrPendingPhones.has(p))
       );
 
       setRemovedMemberPhones(Array.from(allRemovedSet));
@@ -2068,11 +2104,10 @@ export default function HomeView({
         localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(Array.from(allRemovedSet)));
       } catch (_) {}
 
-      // 如果当前登录手机号已被移出，强制清退小队状态与本地缓存
+      // 如果当前登录手机号已被移出且没有任何有效新申请，强制清退小队状态与本地缓存
       const curLoggedInPhone = getCurrentPhone();
       if (curLoggedInPhone && curLoggedInPhone !== '15509601222' && allRemovedSet.has(curLoggedInPhone)) {
         setUserRole('普通司机');
-        setIsReapplying(false);
         try {
           localStorage.setItem('dd_user_role', '普通司机');
           localStorage.removeItem(`dd_squad_member_${curLoggedInPhone}`);
@@ -4566,8 +4601,7 @@ export default function HomeView({
               const currentPhone = getCurrentPhone();
               const isSuperDev = currentPhone === '15509601222';
               const isRemoved = !isSuperDev && isDriverRemoved(currentPhone);
-              const inSquad = isSuperDev || isDriverInSquad(currentPhone);
-              const isApproved = inSquad || checkApprovalStatus();
+              const isApproved = isSuperDev || (!isRemoved && checkApprovalStatus());
               const isPending = !isApproved && checkPendingStatus();
               const isRejected = !isApproved && !isPending && checkRejectionStatus();
 
@@ -5214,7 +5248,7 @@ export default function HomeView({
               />
             </div>
           </div>
-        ) : (!isDriverRemoved(getCurrentPhone()) && (checkApprovalStatus() || isDriverInSquad(getCurrentPhone()))) ? (
+        ) : (!isDriverRemoved(getCurrentPhone()) && checkApprovalStatus()) ? (
           <div className="absolute inset-0 bg-[#f9f9f9] z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300 font-sans">
             {renderApprovedResultView(() => setShowDispatchModal(false))}
           </div>
