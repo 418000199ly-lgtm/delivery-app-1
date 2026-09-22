@@ -394,7 +394,7 @@ export default function DispatchValetOrder({
             applyFallback();
           }
         },
-        { enableHighAccuracy: true, timeout: 3500, maximumAge: 300000 }
+        { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
       );
     } else {
       setIsLocatingGPS(false);
@@ -464,7 +464,15 @@ export default function DispatchValetOrder({
   };
 
   // Form states
-  const [passengerAddress, setPassengerAddress] = useState('');
+  const [passengerAddress, setPassengerAddress] = useState(() => {
+    try {
+      const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
+      if (cachedName && cachedName !== '玉皇阁北街铂金大厦' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
+        return cachedName;
+      }
+    } catch (_) {}
+    return '';
+  });
   const [passengerPhone, setPassengerPhone] = useState('');
   const [orderRemark, setOrderRemark] = useState('');
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
@@ -1172,9 +1180,19 @@ export default function DispatchValetOrder({
   const [originSearchText, setOriginSearchText] = useState('');
   const [originSuggestions, setOriginSuggestions] = useState<any[]>([]);
   
-  const [passengerCoords, setPassengerCoords] = useState<{ lat: number; lng: number }>({
-    lat: 38.487167,
-    lng: 106.23091
+  const [passengerCoords, setPassengerCoords] = useState<{ lat: number; lng: number }>(() => {
+    try {
+      const latStr = localStorage.getItem('dd_bg_driver_coords_lat');
+      const lngStr = localStorage.getItem('dd_bg_driver_coords_lng');
+      if (latStr && lngStr) {
+        const lat = parseFloat(latStr);
+        const lng = parseFloat(lngStr);
+        if (!isNaN(lat) && !isNaN(lng) && lat > 0 && lng > 0) {
+          return { lat, lng };
+        }
+      }
+    } catch (_) {}
+    return { lat: 38.487167, lng: 106.23091 };
   });
 
   const amapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1455,6 +1473,57 @@ export default function DispatchValetOrder({
 
   const [isEditingAdminName, setIsEditingAdminName] = useState(false);
   const [tempAdminName, setTempAdminName] = useState('');
+
+  // 仅开发者司机、城市老板司机、城市管理司机可以修改自己的名字
+  // 城市派单员司机、普通司机严禁修改名字
+  const canModifyAdminOwnName = Boolean(
+    userPhone === '15509601222' || 
+    userRole === '开发者司机' || 
+    userRole === '开发者' || 
+    userRole === '总指挥官' || 
+    userRole === '城市老板司机' || 
+    userRole === '城市老板' || 
+    userRole === '城市管理司机' || 
+    userRole === '城市管理' ||
+    (adminProfile?.role && (
+      adminProfile.role.includes('开发者') ||
+      adminProfile.role.includes('老板') ||
+      adminProfile.role.includes('管理') ||
+      adminProfile.role.includes('指挥')
+    ))
+  );
+
+  // 仅开发者司机、城市老板司机、城市管理司机可以修改小队名字
+  // 城市派单员司机、普通司机严禁修改小队名字
+  const canModifySquadName = Boolean(
+    userPhone === '15509601222' || 
+    userRole === '开发者司机' || 
+    userRole === '开发者' || 
+    userRole === '总指挥官' || 
+    userRole === '城市老板司机' || 
+    userRole === '城市老板' || 
+    userRole === '城市管理司机' || 
+    userRole === '城市管理' ||
+    (adminProfile?.role && (
+      adminProfile.role.includes('开发者') ||
+      adminProfile.role.includes('老板') ||
+      adminProfile.role.includes('管理') ||
+      adminProfile.role.includes('指挥')
+    ))
+  );
+
+  // 格式化成员列表中显示的手机号：小队内所有成员看到的开发者司机 15509601222 均隐藏显示为 155****1222，仅 15509601222 自己登录时显示完整 15509601222
+  const formatMemberDisplayPhone = (phone: string, currentViewerPhone?: string) => {
+    const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+    const cleanViewer = String(currentViewerPhone || userPhone || '').replace(/\D/g, '').trim();
+    if (cleanPhone === '15509601222') {
+      if (cleanViewer === '15509601222') {
+        return '15509601222';
+      }
+      return '155****1222';
+    }
+    return phone;
+  };
 
   // Check if user is a management team member: 开发者司机/开发者, 城市老板司机/城市老板, 城市管理司机/城市管理, 城市派单员司机/城市派单员
   const isManagementRole = Boolean(
@@ -1936,8 +2005,106 @@ export default function DispatchValetOrder({
     }
   }, [allDispatchedOrders]);
 
-  // Fetch real drivers & current user profile
+  // Fetch real drivers & current user profile (Supports both Firestore snapshot and Aliyun HTTP polling)
   useEffect(() => {
+    const fetchFromAliyunHttp = async () => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        // 1. Fetch driver_users from Aliyun
+        const res1 = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
+        if (res1.ok) {
+          const json1 = await res1.json();
+          if (json1 && Array.isArray(json1.docs)) {
+            const list = json1.docs
+              .filter((d: any) => d && d.data && !d.data.isBanned)
+              .map((d: any) => {
+                const data = d.data;
+                const dName = resolveDriverRealName(d.id, data.driverName || data.name);
+                return {
+                  phone: d.id,
+                  name: dName,
+                  lat: data.lat,
+                  lng: data.lng,
+                  drivingYears: data.drivingYears || 5,
+                  isOnline: data.isOnline === true || data.isOnline === 'true' || data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true',
+                  isBusy: data.isBusy === true || data.isBusy === 'true',
+                  role: data.role || data.userRole || '',
+                  onlineOrdersEnabled: data.onlineOrdersEnabled === true || data.onlineOrdersEnabled === 'true',
+                  lastUpdatedTime: data.lastUpdatedTime || '',
+                  version: data.version || data.appVersion || 'V2.0'
+                };
+              });
+            if (list.length > 0) {
+              setRealDrivers(prev => {
+                const map = new Map();
+                prev.forEach(item => map.set(item.phone, item));
+                list.forEach(item => map.set(item.phone, { ...map.get(item.phone), ...item }));
+                return Array.from(map.values());
+              });
+            }
+          }
+        }
+
+        // 2. Fetch squad_members from Aliyun
+        const res2 = await fetch(`${baseUrl}/api/db/list?col=squad_members`);
+        if (res2.ok) {
+          const json2 = await res2.json();
+          if (json2 && Array.isArray(json2.docs)) {
+            const phones: string[] = [];
+            const list: any[] = [];
+            json2.docs.forEach((docSnap: any) => {
+              if (docSnap && docSnap.id && docSnap.data) {
+                phones.push(docSnap.id);
+                list.push({
+                  phone: docSnap.id,
+                  ...docSnap.data()
+                });
+              }
+            });
+            if (list.length > 0) {
+              setSquadPhones(prev => Array.from(new Set([...prev, ...phones])));
+              setSquadMembers(prev => {
+                const map = new Map();
+                prev.forEach(item => map.set(item.phone, item));
+                list.forEach(item => map.set(item.phone, { ...map.get(item.phone), ...item }));
+                return Array.from(map.values());
+              });
+            }
+          }
+        }
+
+        // 3. Fetch driver_locations for latest real-time GPS
+        const res3 = await fetch(`${baseUrl}/api/db/list?col=driver_locations`);
+        if (res3.ok) {
+          const json3 = await res3.json();
+          if (json3 && Array.isArray(json3.docs)) {
+            json3.docs.forEach((docSnap: any) => {
+              if (docSnap && docSnap.id && docSnap.data) {
+                const d = docSnap.data;
+                if (d.lat && d.lng && isValidCoords(d.lat, d.lng)) {
+                  setRealDrivers(prev => prev.map(item => item.phone === docSnap.id ? {
+                    ...item,
+                    lat: d.lat,
+                    lng: d.lng,
+                    isOnline: d.isOnline ?? item.isOnline
+                  } : item));
+                  setSquadMembers(prev => prev.map(item => item.phone === docSnap.id ? {
+                    ...item,
+                    lat: d.lat,
+                    lng: d.lng,
+                    isOnline: d.isOnline ?? item.isOnline
+                  } : item));
+                }
+              }
+            });
+          }
+        }
+      } catch (_) {}
+    };
+
+    fetchFromAliyunHttp();
+    const httpInterval = setInterval(fetchFromAliyunHttp, 3000);
+
     const unsubscribe = onSnapshot(collection(db, 'driver_users'), (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
@@ -1968,9 +2135,17 @@ export default function DispatchValetOrder({
           }));
         }
       });
-      setRealDrivers(list);
+      setRealDrivers(prev => {
+        const map = new Map();
+        prev.forEach(item => map.set(item.phone, item));
+        list.forEach(item => map.set(item.phone, { ...map.get(item.phone), ...item }));
+        return Array.from(map.values());
+      });
     });
-    return () => unsubscribe();
+    return () => {
+      clearInterval(httpInterval);
+      unsubscribe();
+    };
   }, [userPhone]);
 
   // Fetch squad members to filter "进入小队的"
@@ -2670,18 +2845,14 @@ export default function DispatchValetOrder({
       }
     });
 
-    // 3. Ensure currently logged-in driver and developer admin are properly registered in driverMap
-    const effectivePhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '15509601222').trim();
+    // 3. Ensure currently logged-in driver is properly registered in driverMap if online
+    const effectivePhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '')).trim();
     const effectiveIsOnline = propIsOnline ?? (typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false);
 
     const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
     const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
-    const effectiveDriverLat = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
-      ? propDriverCoords.lat
-      : (latStr && !isNaN(parseFloat(latStr)) ? parseFloat(latStr) : 38.4830);
-    const effectiveDriverLng = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
-      ? propDriverCoords.lng
-      : (lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : 106.2350);
+    const localLat = latStr && !isNaN(parseFloat(latStr)) ? parseFloat(latStr) : null;
+    const localLng = lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : null;
 
     const hasActiveTrip = typeof window !== 'undefined' && Boolean(
       localStorage.getItem('dd_current_trip') ||
@@ -2691,33 +2862,26 @@ export default function DispatchValetOrder({
     if (effectiveIsOnline && effectivePhone) {
       const existing = driverMap.get(effectivePhone) || {};
       const smSelf = squadMembers.find((m: any) => String(m.phone).trim() === effectivePhone);
-      const selfRealName = smSelf?.name || smSelf?.driverName || smSelf?.realName || (adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' ? adminProfile.name : (effectivePhone === '15509601222' ? '开发者司机' : `司机${effectivePhone.slice(-4)}`));
+      const selfRealName = smSelf?.name || smSelf?.driverName || smSelf?.realName || (adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' ? adminProfile.name : `司机${effectivePhone.slice(-4)}`);
+
+      let selfLat = propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng) ? propDriverCoords.lat : localLat;
+      let selfLng = propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng) ? propDriverCoords.lng : localLng;
+
+      if (!isValidCoords(selfLat, selfLng) && smSelf && isValidCoords(smSelf.lat, smSelf.lng)) {
+        selfLat = smSelf.lat;
+        selfLng = smSelf.lng;
+      }
 
       driverMap.set(effectivePhone, {
         ...existing,
         phone: effectivePhone,
         name: selfRealName,
-        lat: isValidCoords(effectiveDriverLat, effectiveDriverLng) ? effectiveDriverLat : 38.4830,
-        lng: isValidCoords(effectiveDriverLat, effectiveDriverLng) ? effectiveDriverLng : 106.2350,
+        lat: isValidCoords(selfLat, selfLng) ? selfLat : existing.lat,
+        lng: isValidCoords(selfLat, selfLng) ? selfLng : existing.lng,
         isOnline: true,
         isBusy: hasActiveTrip,
         onlineOrdersEnabled: true,
-        role: adminProfile?.role || existing.role || (effectivePhone === '15509601222' ? '开发者司机' : '普通司机')
-      });
-    }
-
-    if (effectiveIsOnline && effectivePhone !== '15509601222') {
-      const existing = driverMap.get('15509601222') || {};
-      driverMap.set('15509601222', {
-        ...existing,
-        phone: '15509601222',
-        name: '开发者司机',
-        lat: 38.4830,
-        lng: 106.2350,
-        isOnline: true,
-        isBusy: false,
-        onlineOrdersEnabled: true,
-        role: '开发者司机'
+        role: adminProfile?.role || existing.role || '普通司机'
       });
     }
 
@@ -2803,17 +2967,8 @@ export default function DispatchValetOrder({
       const formattedOrderNo = `YC${yyyy}${mm}${dd}${hh}${min}${seqStr}`;
       const orderId = 'MO_' + ts;
 
-      const effectivePhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '15509601222').trim();
+      const effectivePhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '')).trim();
       const effectiveIsOnline = propIsOnline ?? (typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false);
-
-      const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
-      const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
-      const effectiveDriverLat = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
-        ? propDriverCoords.lat
-        : (latStr && !isNaN(parseFloat(latStr)) ? parseFloat(latStr) : 38.4830);
-      const effectiveDriverLng = (propDriverCoords && isValidCoords(propDriverCoords.lat, propDriverCoords.lng))
-        ? propDriverCoords.lng
-        : (lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : 106.2350);
 
       // Helper to verify driver eligibility for orders
       const isDriverEligible = (d: any) => {
@@ -2822,21 +2977,25 @@ export default function DispatchValetOrder({
 
         const isCurrentDriver = (
           phone === effectivePhone ||
-          phone === '15509601222' ||
           (userPhone && phone === String(userPhone).trim())
         );
 
-        // Currently logged-in driver / developer driver who is online is ALWAYS eligible!
-        if (isCurrentDriver) {
-          return effectiveIsOnline;
+        // 1. 处于报单页面的司机绝对不能接收商户代叫派单与报单转单派单
+        const inReportView = d.currentView === 'create_order' || d.isInReportView === true || d.isInReportView === 'true';
+        if (inReportView) {
+          return false;
         }
 
-        // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders
+        if (isCurrentDriver) {
+          return effectiveIsOnline && (!d.isBusy && d.isBusy !== 'true');
+        }
+
+        // 2. Merchants/商家 are NEVER eligible as drivers to receive valet orders
         const dRole = (d.role || d.userRole || d.approvedRole || '').trim();
         const isPureMerchant = (dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理');
         if (isPureMerchant) return false;
 
-        // 2. Check if in removedMemberPhones list
+        // 3. Check if in removedMemberPhones list
         let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
         try {
           const savedRemoved = safeGetItem('dd_removed_squad_phones_v2');
@@ -2857,10 +3016,11 @@ export default function DispatchValetOrder({
         });
         if (isRemoved) return false;
 
-        // 3. MUST be an approved driver in squadMembers
+        // 4. Check squad members approval status
         const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
         if (squadMembers && squadMembers.length > 0 && !sm) {
-          return false;
+          const rd = realDrivers.find((m: any) => String(m.phone).trim() === phone);
+          if (!rd) return false;
         }
         if (sm) {
           const st = sm.status || sm.approvalStatus || '已通过';
@@ -2874,7 +3034,7 @@ export default function DispatchValetOrder({
           }
         }
 
-        // 4. Online & free check - MUST strictly be online, NOT just having permission enabled!
+        // 5. Online & free check - MUST strictly be online and not busy
         const isOnline = d.isOnline === true || d.isOnline === 'true';
         if (!isOnline) return false;
 
@@ -2909,6 +3069,13 @@ export default function DispatchValetOrder({
             dLng = sm.lng;
           }
         }
+        if (!isValidCoords(dLat, dLng)) {
+          const rd = realDrivers.find((m: any) => String(m.phone).trim() === String(d.phone).trim());
+          if (rd && isValidCoords(rd.lat, rd.lng)) {
+            dLat = rd.lat;
+            dLng = rd.lng;
+          }
+        }
         const hasValidCoords = isValidCoords(dLat, dLng);
         const dist = hasValidCoords
           ? calculateOrderDriverDistance(
@@ -2926,7 +3093,6 @@ export default function DispatchValetOrder({
         const dPhone = String(d.phone || '').trim();
         const isCurrentDriver = (
           dPhone === effectivePhone ||
-          dPhone === '15509601222' ||
           (userPhone && dPhone === String(userPhone).trim())
         );
 
@@ -2935,12 +3101,7 @@ export default function DispatchValetOrder({
           return false;
         }
 
-        if (isCurrentDriver) {
-          return effectiveIsOnline;
-        }
-        const isFree = !d.isBusy && d.isBusy !== 'true';
-        const isEligible = isDriverEligible(d);
-        return isFree && isEligible;
+        return isDriverEligible(d);
       });
 
       // Filter drivers within 3km (3000m) with valid coordinates
@@ -2952,23 +3113,23 @@ export default function DispatchValetOrder({
       let chosenDriver: any = null;
 
       if (driversWithin3km.length > 0) {
-        // Find minimum distance
-        const minDist = Math.min(...driversWithin3km.map(d => d.distance || 0));
-        // Find all candidates with exact minimum distance
-        const sameMinDistCandidates = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
-        // Randomly pick one among closest candidates
-        chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
-      } else if (!isTransferOrder) {
-        // Fallback ONLY for non-transfer orders: If no other drivers within 3km, but current driver is online and within 3km
-        const currentDriverCandidate = eligibleDrivers.find(d => 
-          d.phone === effectivePhone || 
-          d.phone === '15509601222' || 
-          (userPhone && d.phone === String(userPhone).trim())
-        );
-        if (currentDriverCandidate && (currentDriverCandidate.distance || 0) <= 3.0 && isValidCoords(currentDriverCandidate.lat, currentDriverCandidate.lng)) {
-          chosenDriver = currentDriverCandidate;
+        // Sort strictly by physical distance ascending (closest driver first!)
+        driversWithin3km.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        
+        // Minimum distance candidate
+        const minDist = driversWithin3km[0].distance;
+        
+        // Candidates with practically identical distance (within 10 meters / 0.01km)
+        const sameMinDistCandidates = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.01);
+        
+        if (sameMinDistCandidates.length === 1) {
+          chosenDriver = sameMinDistCandidates[0];
+        } else {
+          // 如果有多名符合资格的小队司机直线距离完全一样，随机派单给这几名司机之一
+          chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
         }
       }
+      // 3公里范围内若没有符合资格的小队司机，chosenDriver 保持为 null，订单自动进入选单大厅供小队司机抢单！
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
         ? scheduledTime.trim()
@@ -3247,17 +3408,19 @@ export default function DispatchValetOrder({
               ) : (
                 <div className="flex items-center gap-0.5 min-w-0">
                   <span className="text-[#584235] text-xs font-normal truncate max-w-[80px]">（{teamName}）</span>
-                  <button 
-                    type="button"
-                    onClick={() => {
-                      setTempTeamName(teamName);
-                      setIsEditingTeamName(true);
-                    }}
-                    className="flex items-center gap-0.5 text-[#ff7d00]/80 hover:text-[#ff7d00] transition-colors shrink-0"
-                  >
-                    <span className="text-[11px] font-semibold">修改</span>
-                    <Edit2 className="w-3 h-3" />
-                  </button>
+                  {canModifySquadName && (
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        setTempTeamName(teamName);
+                        setIsEditingTeamName(true);
+                      }}
+                      className="flex items-center gap-0.5 text-[#ff7d00]/80 hover:text-[#ff7d00] transition-colors shrink-0"
+                    >
+                      <span className="text-[11px] font-semibold">修改</span>
+                      <Edit2 className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
               )}
             </h2>
@@ -3332,7 +3495,7 @@ export default function DispatchValetOrder({
                 ) : (
                   <div className="flex items-center gap-1.5 min-w-0 mt-0.5">
                     <span className="font-bold text-base text-[#1a1c1c] truncate">{adminProfile.name}</span>
-                    {isManagementRole && (
+                    {canModifyAdminOwnName && (
                       <button 
                         type="button"
                         onClick={() => {
@@ -3950,14 +4113,15 @@ export default function DispatchValetOrder({
           const phone = String(item.phone || item.id || '').replace(/\D/g, '').trim();
           if (phone === '15509601222') return false;
           if (isMockDriver(item)) return true;
-          const st = String(item.status || item.approvalStatus || '').trim();
-          if (['已通过', 'approved', '通过'].includes(st)) return false;
-          return Boolean(
+          if (
             phone && removedMemberPhones.some(p => {
-              const pStr = String(p).trim();
-              return pStr === phone || pStr.replace(/\D/g, '') === phone;
+              const pStr = String(p).replace(/\D/g, '').trim();
+              return pStr === phone;
             })
-          );
+          ) {
+            return true;
+          }
+          return false;
         };
 
         const membersMap = new Map<string, any>();
@@ -4215,7 +4379,7 @@ export default function DispatchValetOrder({
                               return `网页商户商家代叫${userPhone ? userPhone.slice(-4) : '5554'}`;
                             })()}
                           </span>
-                          {(userPhone === '15509601222' || ['开发者司机', '开发者', '总指挥官', '城市管理司机', '城市管理', '城市老板司机', '城市老板'].includes(userRole || adminProfile.role || '')) && (
+                          {canModifyAdminOwnName && (
                             <button
                               type="button"
                               onClick={() => {
@@ -4510,7 +4674,7 @@ export default function DispatchValetOrder({
                                 )}
                               </div>
 
-                              <span className="text-sm text-[#584235] font-mono">{member.phone}</span>
+                              <span className="text-sm text-[#584235] font-mono">{formatMemberDisplayPhone(member.phone, userPhone)}</span>
                               <span className="text-[10px] text-[#584235]/70 block truncate">
                                 {member.footprint}
                               </span>
@@ -4529,128 +4693,56 @@ export default function DispatchValetOrder({
                               <button 
                                 type="button"
                                 onClick={async () => {
-                                  const targetPhone = member.phone;
-                                  const targetId = member.id;
-                                  const targetName = member.name;
+                                  const targetPhone = String(member.phone || '').trim();
+                                  const targetId = String(member.id || '').trim();
+                                  const targetName = member.name || '司机';
+                                  const cleanTargetPhone = targetPhone.replace(/\D/g, '');
 
-                                  if (targetPhone === '15509601222' || targetId === '15509601222') {
+                                  if (cleanTargetPhone === '15509601222' || targetPhone === '15509601222' || targetId === '15509601222') {
                                     onShowToast('❌ 任何人都不能删除开发者司机 15509601222！');
                                     return;
                                   }
 
-                                  // 1. Mark as removed locally in state & localStorage
-                                  setRemovedMemberPhones(prev => {
-                                    const updated = Array.from(new Set([...prev, targetPhone, targetId, targetName].filter(Boolean)));
-                                    try {
-                                      localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
-                                    } catch (_) {}
-                                    return updated;
-                                  });
-
-                                  // 2. Directly update React states so UI removes member instantly
-                                  setSquadMembers(prev => {
-                                    const updated = prev.filter((m: any) => 
-                                      m.phone !== targetPhone && m.id !== targetId && m.name !== targetName && m.phone !== targetId
-                                    );
-                                    try {
-                                      localStorage.setItem('dd_squad_members_v2', JSON.stringify(updated));
-                                    } catch (_) {}
-                                    return updated;
-                                  });
-
-                                  setApplicants(prev => {
-                                    const updated = prev.filter((a: any) => 
-                                      a.phone !== targetPhone && a.id !== targetId && a.name !== targetName && a.phone !== targetId
-                                    );
-                                    try {
-                                      localStorage.setItem('dd_applicants_v2', JSON.stringify(updated));
-                                    } catch (_) {}
-                                    return updated;
-                                  });
-
-                                  // 3. Delete from Firestore & HTTP REST API database & Reset userRole
-                                  const resetRoleData = { role: '普通司机', userRole: '普通司机', teamRole: '', status: '未加入小队' };
-                                  if (targetPhone && targetPhone !== '15509601222') {
-                                    try {
-                                      await deleteDoc(doc(db, 'squad_members', targetPhone));
-                                      await deleteDoc(doc(db, 'squad_applications', targetPhone));
-                                      await setDoc(doc(db, 'driver_users', targetPhone), resetRoleData, { merge: true });
-                                    } catch (e) {
-                                      console.error(e);
-                                    }
-                                  }
-                                  if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
-                                    try {
-                                      await deleteDoc(doc(db, 'squad_members', targetId));
-                                      await deleteDoc(doc(db, 'squad_applications', targetId));
-                                      await setDoc(doc(db, 'driver_users', targetId), resetRoleData, { merge: true });
-                                    } catch (e) {
-                                      console.error(e);
-                                    }
-                                  }
-
-                                  const baseUrl = getBaseApiUrl();
-                                  if (targetPhone && targetPhone !== '15509601222') {
-                                    fetch(`${baseUrl}/api/db/set`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'driver_users', id: targetPhone, data: resetRoleData, collection: 'driver_users', docId: targetPhone, merge: true })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'squad_members', id: targetPhone, collection: 'squad_members', docId: targetPhone })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'squad_applications', id: targetPhone, collection: 'squad_applications', docId: targetPhone })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'driver_locations', id: targetPhone, collection: 'driver_locations', docId: targetPhone })
-                                    }).catch(() => {});
-                                  }
-                                  if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
-                                    fetch(`${baseUrl}/api/db/set`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'driver_users', id: targetId, data: resetRoleData, collection: 'driver_users', docId: targetId, merge: true })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'squad_members', id: targetId, collection: 'squad_members', docId: targetId })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'squad_applications', id: targetId, collection: 'squad_applications', docId: targetId })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ col: 'driver_locations', id: targetId, collection: 'driver_locations', docId: targetId })
-                                    }).catch(() => {});
-                                  }
-
-                                  // Sync removed_squad_members to cloud config for multi-device sync
-                                  const cleanTargetPhone = String(targetPhone || '').replace(/\D/g, '').trim();
+                                  // 1. Mark as removed locally in state & localStorage immediately
                                   const updatedRemoved = cleanTargetPhone 
-                                    ? Array.from(new Set([...removedMemberPhones, cleanTargetPhone]))
+                                    ? Array.from(new Set([...removedMemberPhones, cleanTargetPhone, targetPhone, targetId].filter(Boolean)))
                                     : removedMemberPhones;
                                   setRemovedMemberPhones(updatedRemoved);
+
+                                  // 2. Directly update React states so UI removes member instantly
+                                  setSquadMembers(prev => prev.filter((m: any) => {
+                                    const mPhone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+                                    return mPhone !== cleanTargetPhone && m.phone !== targetPhone && m.id !== targetId;
+                                  }));
+
+                                  setApplicants(prev => prev.filter((a: any) => {
+                                    const aPhone = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+                                    return aPhone !== cleanTargetPhone && a.phone !== targetPhone && a.id !== targetId;
+                                  }));
+
+                                  // 3. Update localStorage synchronously
                                   try {
                                     localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updatedRemoved));
+                                    
                                     const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-                                    const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== targetPhone && String(item.phone || item.id).trim() !== targetId);
+                                    const filteredM = savedM.filter((item: any) => {
+                                      const p = String(item.phone || item.id || '').replace(/\D/g, '').trim();
+                                      return p !== cleanTargetPhone && item.phone !== targetPhone && item.id !== targetId;
+                                    });
                                     localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
 
                                     const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-                                    const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== targetPhone && String(item.phone || item.id).trim() !== targetId);
+                                    const filteredA = savedA.filter((item: any) => {
+                                      const p = String(item.phone || item.id || '').replace(/\D/g, '').trim();
+                                      return p !== cleanTargetPhone && item.phone !== targetPhone && item.id !== targetId;
+                                    });
                                     localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
 
+                                    if (cleanTargetPhone) {
+                                      localStorage.removeItem(`dd_squad_member_${cleanTargetPhone}`);
+                                      localStorage.removeItem(`dd_approved_${cleanTargetPhone}`);
+                                      localStorage.removeItem(`dd_in_squad_${cleanTargetPhone}`);
+                                    }
                                     if (targetPhone) {
                                       localStorage.removeItem(`dd_squad_member_${targetPhone}`);
                                       localStorage.removeItem(`dd_approved_${targetPhone}`);
@@ -4662,26 +4754,74 @@ export default function DispatchValetOrder({
                                       localStorage.removeItem(`dd_in_squad_${targetId}`);
                                     }
 
-                                    if (targetPhone === (userPhone || '').trim() || targetId === (userPhone || '').trim()) {
+                                    if (cleanTargetPhone === String(userPhone || '').replace(/\D/g, '').trim()) {
                                       localStorage.setItem('dd_user_role', '普通司机');
                                       window.dispatchEvent(new CustomEvent('user_role_updated'));
                                     }
                                   } catch (_) {}
 
-                                  if (db) {
-                                    setDoc(doc(db, 'config', 'removed_squad_members'), { phones: updatedRemoved }, { merge: true }).catch(() => {});
+                                  // 4. Delete from Firestore & HTTP REST API database & Reset userRole
+                                  const resetRoleData = { role: '普通司机', userRole: '普通司机', teamRole: '', status: '未加入小队' };
+                                  if (cleanTargetPhone && cleanTargetPhone !== '15509601222') {
+                                    try {
+                                      if (db) {
+                                        await deleteDoc(doc(db, 'squad_members', cleanTargetPhone));
+                                        await deleteDoc(doc(db, 'squad_applications', cleanTargetPhone));
+                                        await deleteDoc(doc(db, 'driver_locations', cleanTargetPhone));
+                                        await setDoc(doc(db, 'driver_users', cleanTargetPhone), resetRoleData, { merge: true });
+                                        await setDoc(doc(db, 'config', 'removed_squad_members'), { phones: updatedRemoved }, { merge: true });
+                                      }
+                                    } catch (e) {
+                                      console.error(e);
+                                    }
                                   }
-                                  fetch(`${baseUrl}/api/db/set`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
-                                  }).catch(() => {});
+                                  if (targetPhone && targetPhone !== cleanTargetPhone && targetPhone !== '15509601222') {
+                                    try {
+                                      if (db) {
+                                        await deleteDoc(doc(db, 'squad_members', targetPhone));
+                                        await deleteDoc(doc(db, 'squad_applications', targetPhone));
+                                        await deleteDoc(doc(db, 'driver_locations', targetPhone));
+                                        await setDoc(doc(db, 'driver_users', targetPhone), resetRoleData, { merge: true });
+                                      }
+                                    } catch (e) {
+                                      console.error(e);
+                                    }
+                                  }
+
+                                  const baseUrl = getBaseApiUrl();
+                                  if (cleanTargetPhone && cleanTargetPhone !== '15509601222') {
+                                    fetch(`${baseUrl}/api/db/set`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'driver_users', id: cleanTargetPhone, data: resetRoleData, collection: 'driver_users', docId: cleanTargetPhone, merge: true })
+                                    }).catch(() => {});
+                                    fetch(`${baseUrl}/api/db/delete`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'squad_members', id: cleanTargetPhone, collection: 'squad_members', docId: cleanTargetPhone })
+                                    }).catch(() => {});
+                                    fetch(`${baseUrl}/api/db/delete`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'squad_applications', id: cleanTargetPhone, collection: 'squad_applications', docId: cleanTargetPhone })
+                                    }).catch(() => {});
+                                    fetch(`${baseUrl}/api/db/delete`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'driver_locations', id: cleanTargetPhone, collection: 'driver_locations', docId: cleanTargetPhone })
+                                    }).catch(() => {});
+                                    fetch(`${baseUrl}/api/db/set`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
+                                    }).catch(() => {});
+                                  }
 
                                   try {
                                     window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { removedPhone: targetPhone, removedList: updatedRemoved } }));
                                   } catch (_) {}
 
-                                  onShowToast(`已成功彻底删除成员: ${targetName || '司机'}`);
+                                  onShowToast(`已成功彻底删除成员: ${targetName}`);
                                 }}
                                 className="w-10 h-10 flex items-center justify-center rounded-full bg-[#ffdad6] text-[#ba1a1a] hover:bg-[#ba1a1a] hover:text-white transition-all active:scale-95 cursor-pointer shrink-0"
                                 title="移除成员"

@@ -49,6 +49,14 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.4875, lng: 106.2620 } // 兴庆区北京东路与西桥巷交汇处 德隆楼德鼎逸品
   },
   {
+    keywords: ['蕴辉商店', '南京包子铺'],
+    coords: { lat: 38.4878, lng: 106.2622 } // 西桥巷 蕴辉商店
+  },
+  {
+    keywords: ['同乡斋羊羔肉', '同乡斋', '马小军过油肉拌面'],
+    coords: { lat: 38.4873, lng: 106.2629 } // 北京东路 同乡斋羊羔肉
+  },
+  {
     keywords: ['迎春苑1号楼'],
     coords: { lat: 38.4880, lng: 106.2618 }
   },
@@ -59,6 +67,14 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
   {
     keywords: ['迎春苑'],
     coords: { lat: 38.4882, lng: 106.2616 }
+  },
+  {
+    keywords: ['海宝苑', '海宝苑小区'],
+    coords: { lat: 38.4886, lng: 106.2625 }
+  },
+  {
+    keywords: ['宁祥园', '宁祥园小区'],
+    coords: { lat: 38.4866, lng: 106.2635 }
   },
   {
     keywords: ['过油肉总店'],

@@ -351,7 +351,15 @@ export default function MobileDispatchValetOrder({
   }, []);
 
   // Form states
-  const [passengerAddress, setPassengerAddress] = useState('');
+  const [passengerAddress, setPassengerAddress] = useState(() => {
+    try {
+      const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
+      if (cachedName && cachedName !== '玉皇阁北街铂金大厦' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
+        return cachedName;
+      }
+    } catch (_) {}
+    return '';
+  });
   const [passengerPhone, setPassengerPhone] = useState('');
   const [orderRemark, setOrderRemark] = useState('');
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
@@ -1357,9 +1365,19 @@ export default function MobileDispatchValetOrder({
   const [originSearchText, setOriginSearchText] = useState('');
   const [originSuggestions, setOriginSuggestions] = useState<any[]>([]);
   
-  const [passengerCoords, setPassengerCoords] = useState<{ lat: number; lng: number }>({
-    lat: 38.487167,
-    lng: 106.23091
+  const [passengerCoords, setPassengerCoords] = useState<{ lat: number; lng: number }>(() => {
+    try {
+      const latStr = localStorage.getItem('dd_bg_driver_coords_lat');
+      const lngStr = localStorage.getItem('dd_bg_driver_coords_lng');
+      if (latStr && lngStr) {
+        const lat = parseFloat(latStr);
+        const lng = parseFloat(lngStr);
+        if (!isNaN(lat) && !isNaN(lng) && lat > 0 && lng > 0) {
+          return { lat, lng };
+        }
+      }
+    } catch (_) {}
+    return { lat: 38.487167, lng: 106.23091 };
   });
 
   const amapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2124,11 +2142,12 @@ export default function MobileDispatchValetOrder({
     const fetchFromHttp = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
-        if (res.ok) {
-          const json = await res.json();
-          if (json && Array.isArray(json.docs) && json.docs.length > 0) {
-            const list = json.docs
+        // 1. Fetch driver_users from Aliyun
+        const res1 = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
+        if (res1.ok) {
+          const json1 = await res1.json();
+          if (json1 && Array.isArray(json1.docs) && json1.docs.length > 0) {
+            const list = json1.docs
               .filter((d: any) => d && d.data && !d.data.isBanned)
               .map((d: any) => {
                 const data = d.data;
@@ -2157,11 +2176,66 @@ export default function MobileDispatchValetOrder({
             }
           }
         }
+
+        // 2. Fetch squad_members from Aliyun
+        const res2 = await fetch(`${baseUrl}/api/db/list?col=squad_members`);
+        if (res2.ok) {
+          const json2 = await res2.json();
+          if (json2 && Array.isArray(json2.docs)) {
+            const phones: string[] = [];
+            const list: any[] = [];
+            json2.docs.forEach((docSnap: any) => {
+              if (docSnap && docSnap.id && docSnap.data) {
+                phones.push(docSnap.id);
+                list.push({
+                  phone: docSnap.id,
+                  ...docSnap.data()
+                });
+              }
+            });
+            if (list.length > 0) {
+              setSquadPhones(prev => Array.from(new Set([...prev, ...phones])));
+              setSquadMembers(prev => {
+                const map = new Map();
+                prev.forEach(item => map.set(item.phone, item));
+                list.forEach(item => map.set(item.phone, { ...map.get(item.phone), ...item }));
+                return Array.from(map.values());
+              });
+            }
+          }
+        }
+
+        // 3. Fetch driver_locations for latest real-time GPS
+        const res3 = await fetch(`${baseUrl}/api/db/list?col=driver_locations`);
+        if (res3.ok) {
+          const json3 = await res3.json();
+          if (json3 && Array.isArray(json3.docs)) {
+            json3.docs.forEach((docSnap: any) => {
+              if (docSnap && docSnap.id && docSnap.data) {
+                const d = docSnap.data;
+                if (d.lat && d.lng && isValidCoords(d.lat, d.lng)) {
+                  setRealDrivers(prev => prev.map(item => item.phone === docSnap.id ? {
+                    ...item,
+                    lat: d.lat,
+                    lng: d.lng,
+                    isOnline: d.isOnline ?? item.isOnline
+                  } : item));
+                  setSquadMembers(prev => prev.map(item => item.phone === docSnap.id ? {
+                    ...item,
+                    lat: d.lat,
+                    lng: d.lng,
+                    isOnline: d.isOnline ?? item.isOnline
+                  } : item));
+                }
+              }
+            });
+          }
+        }
       } catch (_) {}
     };
 
     fetchFromHttp();
-    const httpInterval = setInterval(fetchFromHttp, 5000);
+    const httpInterval = setInterval(fetchFromHttp, 3000);
 
     const unsubscribe = onSnapshot(collection(db, 'driver_users'), (snapshot) => {
       const list: any[] = [];
@@ -3063,45 +3137,29 @@ export default function MobileDispatchValetOrder({
       }
     });
 
-    // 3. Ensure developer admin driver 15509601222 is ALWAYS present if online
+    // 3. Ensure currently logged-in driver status is registered accurately if online
     const localIsOnline = typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false;
     const hasActiveTrip = typeof window !== 'undefined' && Boolean(
       localStorage.getItem('dd_current_trip') ||
       localStorage.getItem('dd_current_order')
     );
 
-    if (userPhone && userPhone === '15509601222') {
-      if (localIsOnline) {
-        const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
-        const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
-        const selfLat = latStr ? parseFloat(latStr) : passengerCoords.lat;
-        const selfLng = lngStr ? parseFloat(lngStr) : passengerCoords.lng;
+    const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
+    const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+    const localLat = latStr && !isNaN(parseFloat(latStr)) ? parseFloat(latStr) : null;
+    const localLng = lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : null;
 
-        const existing = driverMap.get('15509601222') || {};
-        driverMap.set('15509601222', {
-          ...existing,
-          phone: '15509601222',
-          name: adminProfile?.name || existing.name || '开发者司机',
-          lat: isValidCoords(selfLat, selfLng) ? selfLat : (isValidCoords(existing.lat, existing.lng) ? existing.lat : passengerCoords.lat),
-          lng: isValidCoords(selfLat, selfLng) ? selfLng : (isValidCoords(existing.lat, existing.lng) ? existing.lng : passengerCoords.lng),
-          isOnline: true,
-          isBusy: hasActiveTrip,
-          onlineOrdersEnabled: true,
-          role: '开发者司机'
-        });
-      }
-    }
-
-    // 4. Ensure currently logged-in driver status is derived strictly from localIsOnline
-    if (userPhone && userPhone !== '15509601222') {
+    if (userPhone) {
       if (localIsOnline) {
-        const latStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
-        const lngStr = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
         const smSelf = squadMembers.find((m: any) => m.phone === userPhone);
         const selfRealName = smSelf?.name || smSelf?.driverName || smSelf?.realName || (adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' ? adminProfile.name : `司机${userPhone.slice(-4)}`);
 
-        const selfLat = latStr ? parseFloat(latStr) : passengerCoords.lat;
-        const selfLng = lngStr ? parseFloat(lngStr) : passengerCoords.lng;
+        let selfLat = localLat;
+        let selfLng = localLng;
+        if (!isValidCoords(selfLat, selfLng) && smSelf && isValidCoords(smSelf.lat, smSelf.lng)) {
+          selfLat = smSelf.lat;
+          selfLng = smSelf.lng;
+        }
 
         const existing = driverMap.get(userPhone) || {};
         driverMap.set(userPhone, {
@@ -3113,27 +3171,12 @@ export default function MobileDispatchValetOrder({
           isOnline: true,
           isBusy: hasActiveTrip,
           onlineOrdersEnabled: true,
-          role: adminProfile?.role || existing.role || '开发者司机'
+          role: adminProfile?.role || existing.role || '普通司机'
         });
       } else {
         // Driver is offline, remove from candidate dispatch map!
         driverMap.delete(userPhone);
       }
-    }
-
-    if (localIsOnline && !driverMap.has('15509601222')) {
-      const existing = driverMap.get('15509601222') || {};
-      driverMap.set('15509601222', {
-        ...existing,
-        phone: '15509601222',
-        name: '开发者司机',
-        lat: 38.4830,
-        lng: 106.2350,
-        isOnline: true,
-        isBusy: false,
-        onlineOrdersEnabled: true,
-        role: '开发者司机'
-      });
     }
 
     const onlineRealDrivers = Array.from(driverMap.values());
@@ -3227,20 +3270,25 @@ export default function MobileDispatchValetOrder({
 
         const isCurrentDriver = (
           phone === activePhone ||
-          phone === '15509601222' ||
           (userPhone && phone === String(userPhone).trim())
         );
 
-        if (isCurrentDriver) {
-          return localIsOnline;
+        // 1. 处于报单页面的司机绝对不能接收商户代叫派单与报单转单派单
+        const inReportView = d.currentView === 'create_order' || d.isInReportView === true || d.isInReportView === 'true';
+        if (inReportView) {
+          return false;
         }
 
-        // 1. Merchants/商家 are NEVER eligible as drivers to receive valet orders
+        if (isCurrentDriver) {
+          return localIsOnline && (!d.isBusy && d.isBusy !== 'true');
+        }
+
+        // 2. Merchants/商家 are NEVER eligible as drivers to receive valet orders
         const dRole = (d.role || d.userRole || d.approvedRole || '').trim();
         const isPureMerchant = (dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理');
         if (isPureMerchant) return false;
 
-        // 2. Check if in removedMemberPhones list
+        // 3. Check if in removedMemberPhones list
         let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
         try {
           const savedRemoved = safeGetItem('dd_removed_squad_phones_v2');
@@ -3261,15 +3309,16 @@ export default function MobileDispatchValetOrder({
         });
         if (isRemoved) return false;
 
-        // 3. MUST be an approved driver in squadMembers
+        // 4. MUST be an approved driver in squadMembers
         const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
         if (squadMembers && squadMembers.length > 0 && !sm) {
-          return false;
+          const rd = realDrivers.find((m: any) => String(m.phone).trim() === phone);
+          if (!rd) return false;
         }
 
         if (sm) {
           const st = sm.status || sm.approvalStatus || '已通过';
-          if (['已拒绝', 'rejected', '拒绝'].includes(st)) {
+          if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
             return false;
           }
           const smRole = (sm.role || sm.approvedRole || sm.userRole || '').trim();
@@ -3279,7 +3328,7 @@ export default function MobileDispatchValetOrder({
           }
         }
 
-        // 4. Online & free check - strictly check isOnline, not onlineOrdersEnabled!
+        // 5. Online & free check - strictly check isOnline and not busy
         const isOnline = d.isOnline === true || d.isOnline === 'true';
         if (!isOnline) return false;
 
@@ -3314,6 +3363,13 @@ export default function MobileDispatchValetOrder({
             dLng = sm.lng;
           }
         }
+        if (!isValidCoords(dLat, dLng)) {
+          const rd = realDrivers.find((m: any) => String(m.phone).trim() === String(d.phone).trim());
+          if (rd && isValidCoords(rd.lat, rd.lng)) {
+            dLat = rd.lat;
+            dLng = rd.lng;
+          }
+        }
         const hasValidCoords = isValidCoords(dLat, dLng);
         const dist = hasValidCoords
           ? calculateOrderDriverDistance(
@@ -3331,7 +3387,6 @@ export default function MobileDispatchValetOrder({
         const dPhone = String(d.phone || '').trim();
         const isCurrentDriver = (
           dPhone === activePhone ||
-          dPhone === '15509601222' ||
           (userPhone && dPhone === String(userPhone).trim())
         );
 
@@ -3340,12 +3395,7 @@ export default function MobileDispatchValetOrder({
           return false;
         }
 
-        if (isCurrentDriver) {
-          return localIsOnline;
-        }
-        const isFree = !d.isBusy && d.isBusy !== 'true';
-        const isEligible = isDriverEligible(d);
-        return isFree && isEligible;
+        return isDriverEligible(d);
       });
 
       // Filter drivers within 3km (3000m) with valid coordinates
@@ -3357,23 +3407,23 @@ export default function MobileDispatchValetOrder({
       let chosenDriver: any = null;
 
       if (driversWithin3km.length > 0) {
-        // Find minimum distance
-        const minDist = Math.min(...driversWithin3km.map(d => d.distance || 0));
-        // Find all candidates with exact minimum distance
-        const sameMinDistCandidates = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.001);
-        // Randomly pick one among closest candidates
-        chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
-      } else if (!isTransferOrder) {
-        // Fallback ONLY for non-transfer orders: If no other drivers within 3km, but current driver (15509601222) is online and within 3km
-        const currentDriverCandidate = eligibleDrivers.find(d => 
-          d.phone === activePhone || 
-          d.phone === '15509601222' || 
-          (userPhone && d.phone === String(userPhone).trim())
-        );
-        if (currentDriverCandidate && (currentDriverCandidate.distance || 0) <= 3.0 && isValidCoords(currentDriverCandidate.lat, currentDriverCandidate.lng)) {
-          chosenDriver = currentDriverCandidate;
+        // Sort strictly by physical distance ascending (closest driver first!)
+        driversWithin3km.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        
+        // Minimum distance candidate
+        const minDist = driversWithin3km[0].distance;
+        
+        // Candidates with practically identical distance (within 10 meters / 0.01km)
+        const sameMinDistCandidates = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.01);
+        
+        if (sameMinDistCandidates.length === 1) {
+          chosenDriver = sameMinDistCandidates[0];
+        } else {
+          // 如果有多名符合资格的小队司机直线距离完全一样，随机派单给这几名司机之一
+          chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
         }
       }
+      // 3公里范围内若没有符合资格的小队司机，chosenDriver 保持为 null，订单自动进入选单大厅供小队司机抢单！
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
         ? scheduledTime.trim()

@@ -914,6 +914,16 @@ export default function AdminPanel({
   const handleApproveApplication = async (app: any) => {
     const phone = app.driverPhone;
     if (!phone) return;
+
+    // Check if operator is authorized: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机
+    const isAuthorized = userPhone === '15509601222' ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(activeRole) ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(userRole || '');
+
+    if (!isAuthorized) {
+      triggerToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核！');
+      return;
+    }
     
     try {
       // 1. Update Application status to Approved
@@ -945,6 +955,17 @@ export default function AdminPanel({
   const handleRejectApplication = async (app: any, reason: string) => {
     const phone = app.driverPhone;
     if (!phone) return;
+
+    // Check if operator is authorized: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机
+    const isAuthorized = userPhone === '15509601222' ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(activeRole) ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(userRole || '');
+
+    if (!isAuthorized) {
+      triggerToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核！');
+      return;
+    }
+
     const finalReason = reason.trim() || '信息资质核验存在偏差，身份证人像页或驾驶执照文字存在模糊遮挡等情况，请重新选取高清合规证照提交。';
 
     try {

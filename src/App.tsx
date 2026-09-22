@@ -511,10 +511,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           const m = members.find((mem: any) => String(mem.phone || mem.id).trim() === userPhone.trim());
           if (m && (m.role || m.userRole)) {
             setSquadRole(m.role || m.userRole);
+          } else {
+            setSquadRole('普通司机');
           }
+        } else {
+          setSquadRole('普通司机');
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      setSquadRole('普通司机');
+    }
 
     // Realtime listeners for squad_members & driver_users
     const unsub1 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
@@ -528,7 +534,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       if (snap.exists()) {
         const sm = snap.data();
         const r = sm?.role || sm?.userRole;
-        if (r) setSquadRole(r);
+        if (r) {
+          setSquadRole(r);
+        } else {
+          setSquadRole('普通司机');
+        }
+      } else {
+        setSquadRole('普通司机');
       }
     }, () => {});
 
@@ -543,7 +555,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       if (snap.exists()) {
         const d = snap.data();
         const r = d?.role || d?.userRole;
-        if (r) setSquadRole(r);
+        if (r) {
+          setSquadRole(r);
+        }
       }
     }, () => {});
 
@@ -692,9 +706,23 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         } catch (_) {}
         if (!isRemoved && userPhone !== '15509601222') {
           const st = sm?.status || sm?.approvalStatus || '';
-          if (!st || ['已通过', 'approved', '通过'].includes(st)) {
+          if (['已通过', 'approved', '通过'].includes(st)) {
             checkAndSetApproved(true);
+          } else {
+            setIsSquadApprovedOrManagement(false);
+            try {
+              localStorage.removeItem(`dd_approved_${userPhone}`);
+              localStorage.removeItem(`dd_in_squad_${userPhone}`);
+            } catch (_) {}
           }
+        }
+      } else {
+        if (userPhone !== '15509601222') {
+          setIsSquadApprovedOrManagement(false);
+          try {
+            localStorage.removeItem(`dd_approved_${userPhone}`);
+            localStorage.removeItem(`dd_in_squad_${userPhone}`);
+          } catch (_) {}
         }
       }
     });
@@ -767,33 +795,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           }
         }
 
-        if (localStorage.getItem(`dd_approved_${userPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true' || localStorage.getItem(`dd_squad_member_${userPhone}`)) {
-          checkAndSetApproved(true);
-          return;
-        }
         const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const resJson = await res.json();
-          const docData = resJson?.data || resJson;
-          const st = docData?.status || '';
-          if (['已通过', 'approved', '通过'].includes(st)) {
-            try {
-              localStorage.setItem(`dd_approved_${userPhone}`, 'true');
-              localStorage.setItem(`dd_in_squad_${userPhone}`, 'true');
-              window.dispatchEvent(new CustomEvent('squad_members_updated'));
-            } catch (_) {}
-            checkAndSetApproved(true);
-            return;
-          }
-        }
-
-        const resMem = await fetch(`${baseUrl}/api/db/get?col=squad_members&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
-        if (resMem.ok) {
-          const memJson = await resMem.json();
-          const memData = memJson?.data || memJson;
-          if (memData) {
-            const st = memData?.status || memData?.approvalStatus || '';
-            if (!st || ['已通过', 'approved', '通过'].includes(st)) {
+          if (resJson && resJson.exists && resJson.data) {
+            const docData = resJson.data;
+            const st = docData?.status || '';
+            if (['已通过', 'approved', '通过'].includes(st)) {
               try {
                 localStorage.setItem(`dd_approved_${userPhone}`, 'true');
                 localStorage.setItem(`dd_in_squad_${userPhone}`, 'true');
@@ -801,6 +809,33 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               } catch (_) {}
               checkAndSetApproved(true);
               return;
+            }
+          }
+        }
+
+        const resMem = await fetch(`${baseUrl}/api/db/get?col=squad_members&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
+        if (resMem.ok) {
+          const memJson = await resMem.json();
+          if (memJson && memJson.exists && memJson.data) {
+            const memData = memJson.data;
+            const st = memData?.status || memData?.approvalStatus || '';
+            if (['已通过', 'approved', '通过'].includes(st)) {
+              try {
+                localStorage.setItem(`dd_approved_${userPhone}`, 'true');
+                localStorage.setItem(`dd_in_squad_${userPhone}`, 'true');
+                window.dispatchEvent(new CustomEvent('squad_members_updated'));
+              } catch (_) {}
+              checkAndSetApproved(true);
+              return;
+            }
+          } else {
+            // Document does not exist in squad_members database
+            if (userPhone && userPhone !== '15509601222') {
+              setIsSquadApprovedOrManagement(false);
+              try {
+                localStorage.removeItem(`dd_approved_${userPhone}`);
+                localStorage.removeItem(`dd_in_squad_${userPhone}`);
+              } catch (_) {}
             }
           }
         }
@@ -887,12 +922,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           isOnline: true,
           onlineOrdersEnabled: true,
           isBusy: isDriverBusy,
+          currentView: currentView,
+          isInReportView: currentView === 'create_order',
           todayOrders: currentTodayOrders,
           city: city,
           version: currentAppVersion,
           appVersion: currentAppVersion,
           lastUpdatedBy: methodUsed,
-          lastUpdatedTime: timestampIso
+          lastUpdatedTime: timestampIso,
+          lastLocationTime: Date.now()
         };
 
         // 1. Update driver_users collection
@@ -1170,20 +1208,41 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         }).catch(() => {});
       } catch (_) {}
     }
-    // Clear all settings keys from localStorage
+    // Clear all settings and user-specific keys from localStorage
     try {
       localStorage.setItem('dd_is_online', 'false');
       localStorage.removeItem('dd_online_session_time');
       localStorage.removeItem('dd_user_phone');
       localStorage.removeItem('isAdminAuthenticated');
       localStorage.removeItem('dd_settings');
+      localStorage.removeItem('dd_user_role');
+      localStorage.removeItem('dd_current_trip');
+      localStorage.removeItem('dd_current_order');
+      localStorage.removeItem('dd_active_incoming_order');
+      localStorage.removeItem('dd_user_wechat_qr');
+      localStorage.removeItem('dd_dispatch_wechat_qr');
+      localStorage.removeItem('dd_dispatch_fee_qr');
       if (userPhone) {
         localStorage.removeItem(`dd_settings_${userPhone}`);
         localStorage.removeItem(`dd_billing_rules_${userPhone}`);
+        localStorage.removeItem(`dd_approved_${userPhone}`);
+        localStorage.removeItem(`dd_in_squad_${userPhone}`);
+        localStorage.removeItem(`dd_squad_member_${userPhone}`);
+        localStorage.removeItem(`dd_dispatch_wechat_qr_${userPhone}`);
+        localStorage.removeItem(`dd_dispatch_fee_qr_${userPhone}`);
       }
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
-        if (key && (key.startsWith('dd_settings') || key.startsWith('dd_stats') || key.startsWith('dd_billing_rules'))) {
+        if (key && (
+          key.startsWith('dd_settings') ||
+          key.startsWith('dd_stats') ||
+          key.startsWith('dd_billing_rules') ||
+          key.startsWith('dd_approved_') ||
+          key.startsWith('dd_in_squad_') ||
+          key.startsWith('dd_squad_member_') ||
+          key.startsWith('dd_dispatch_wechat_qr_') ||
+          key.startsWith('dd_dispatch_fee_qr_')
+        )) {
           localStorage.removeItem(key);
         }
       }
@@ -1192,8 +1251,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setIsOnline(false);
     setIsAdminAuthenticated(false);
     setUserPhone(null);
+    setSquadRole('普通司机');
+    setIsSquadApprovedOrManagement(false);
+    setIsInSquad(false);
     setSettings({
       ...DEFAULT_SETTINGS,
+      phone: '',
       wechatQrCode: '',
       alipayQrCode: ''
     });
@@ -2880,16 +2943,23 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       return (
         <LoginView
           onLoginSuccess={(phone) => {
-            localStorage.setItem('dd_user_phone', phone);
+            const cleanPhone = phone.trim();
+            localStorage.setItem('dd_user_phone', cleanPhone);
             setIsUserDataLoaded(false);
-            setUserPhone(phone);
-            const settingsKey = `dd_settings_${phone}`;
-            const cachedSettings = localStorage.getItem(settingsKey) || localStorage.getItem('dd_settings');
+            setUserPhone(cleanPhone);
+            setSquadRole('普通司机');
+            setIsSquadApprovedOrManagement(cleanPhone === '15509601222');
+            const settingsKey = `dd_settings_${cleanPhone}`;
+            const cachedSettings = localStorage.getItem(settingsKey);
             if (cachedSettings) {
               try {
                 const parsed = JSON.parse(cachedSettings);
                 setSettings(parsed);
-              } catch (_) {}
+              } catch (_) {
+                setSettings({ ...DEFAULT_SETTINGS, phone: cleanPhone });
+              }
+            } else {
+              setSettings({ ...DEFAULT_SETTINGS, phone: cleanPhone });
             }
             triggerToast('🎉 设备签署校验通过，欢迎重新登录回一键代驾系统！');
           }}

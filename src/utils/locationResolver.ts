@@ -29,19 +29,49 @@ const getPoiLngLat = (poi: any): { lng: number; lat: number } | null => {
   return null;
 };
 
+// Helper to clean POI name, e.g. removing extra branch annotations like (北京路店) if redundant
+const cleanPoiName = (name: string): string => {
+  if (!name) return '';
+  let cleaned = cleanBuildingName(name);
+  // Clean store suffix brackets like (北京路店), (北京东路店), (西桥巷店) while preserving original brand name
+  if (cleaned.includes('(') && cleaned.includes(')')) {
+    const branchMatch = cleaned.match(/^(.+?)\s*\([^\)]*店\)$/);
+    if (branchMatch && branchMatch[1]) {
+      cleaned = branchMatch[1].trim();
+    }
+  } else if (cleaned.includes('（') && cleaned.includes('）')) {
+    const branchMatch = cleaned.match(/^(.+?)\s*（[^）]*店）$/);
+    if (branchMatch && branchMatch[1]) {
+      cleaned = branchMatch[1].trim();
+    }
+  }
+  return cleaned;
+};
+
 // Precise distance calculation in meters between POI and query coordinates
 const getPoiDistance = (poi: any, centerLng?: number, centerLat?: number): number => {
+  let haversineDist = 999999;
   if (typeof centerLng === 'number' && typeof centerLat === 'number') {
     const loc = getPoiLngLat(poi);
     if (loc) {
       const dKm = calculateHaversineDistanceKm(centerLat, centerLng, loc.lat, loc.lng);
-      return Math.round(dKm * 1000);
+      haversineDist = Math.round(dKm * 1000);
     }
   }
+
+  let gaodeDist = 999999;
   if (poi.distance !== undefined && poi.distance !== null && poi.distance !== '') {
     const dist = Number(poi.distance);
-    if (!isNaN(dist)) return dist;
+    if (!isNaN(dist) && dist >= 0) {
+      gaodeDist = dist;
+    }
   }
+
+  if (haversineDist !== 999999 && gaodeDist !== 999999) {
+    return Math.min(haversineDist, gaodeDist);
+  }
+  if (haversineDist !== 999999) return haversineDist;
+  if (gaodeDist !== 999999) return gaodeDist;
   return 999999;
 };
 
@@ -68,8 +98,8 @@ const cleanBuildingName = (name: string): string => {
 const isPureRoadName = (name: string): boolean => {
   if (!name) return false;
   const trimmed = name.trim();
-  // If it contains building or venue indicators, it's not pure road
-  if (/[0-9]+号楼|[0-9]+栋|店|馆|苑|小区|家园|花园|大厦|大楼|中心|广场|商城|公寓|府|邸|公司|所|轮胎|门窗/.test(trimmed)) {
+  // If it contains building, store, compound or venue indicators, it's not pure road
+  if (/[0-9]+号楼|[0-9]+栋|店|馆|楼|厦|行|庄|居|坊|轩|阁|堂|亭|吧|所|社|院|中心|广场|商城|商厦|超市|市场|公司|局|部|站|处|厅|铺|苑|小区|家园|花园|公寓|府|邸|住宅|公馆|新村|大厦|大楼|酒店|宾馆|饭店|餐馆|门市|银行|药房|药店|诊所|医院|俱乐部|会所|影院|影城|KTV/.test(trimmed)) {
     return false;
   }
   return /(?:路|街|巷|道|大道|环路|胡同)$/.test(trimmed);
@@ -127,7 +157,7 @@ export const getHighPrecisionLocationName = (
   const formattedAddress = String(regeocode.formattedAddress || fallbackAddress || '').trim();
 
   // Regex to extract specific community + building pattern from text
-  // e.g. "兴庆区政府住宅区5号楼", "五宝苑1号楼", "迎春苑1号楼", "宏昌·林荫香榭6号楼"
+  // e.g. "兴庆区政府住宅区5号楼", "五宝苑1号楼", "迎春苑1号楼", "宏昌·林荫香榭6号楼", "海宝苑9号楼"
   const extractCommunityBuilding = (text: string): string | null => {
     if (!text) return null;
     const match = text.match(/([\u4e00-\u9fa5A-Za-z0-9·]+?(?:苑|小区|家园|花园|公寓|华庭|名邸|府|公馆|新村|大厦|大楼|住宅区|宿舍))(?:\s*[-－_—]?\s*)([0-9A-Za-z一二三四五六七八九十]+号楼|[0-9A-Za-z一二三四五六七八九十]+栋|[0-9A-Za-z一二三四五六七八九十]+单元|[A-Za-z]座)/);
@@ -158,7 +188,7 @@ export const getHighPrecisionLocationName = (
         continue;
       }
 
-      let cleanedName = cleanBuildingName(rawName);
+      let cleanedName = cleanPoiName(rawName);
 
       // If POI is just a building number like '1号楼' or '5号楼' or '5栋' and we have an AOI name, combine them
       if (/^[0-9A-Za-z一二三四五六七八九十]+号楼$|^[0-9A-Za-z一二三四五六七八九十]+栋$/.test(cleanedName) && aoiName) {
@@ -167,8 +197,8 @@ export const getHighPrecisionLocationName = (
 
       const dist = getPoiDistance(poi, centerLng, centerLat);
       const hasBuildingNo = /[0-9A-Za-z一二三四五六七八九十]+号楼|[0-9A-Za-z一二三四五六七八九十]+栋|[0-9A-Za-z一二三四五六七八九十]+单元|[A-Za-z]座/.test(cleanedName);
-      const isStoreOrVenue = /轮胎|门窗|修车|洗车|店|馆|大厦|酒楼|餐厅|饭店|超市|便利|商行|总店|逸品|德隆楼/.test(cleanedName);
-      const isGateOnly = /\(西门\)|\(东门\)|\(南门\)|\(北门\)|-西门|-东门|-南门|-北门|大门|出入口/.test(cleanedName);
+      const isStoreOrVenue = /店|馆|楼|厦|行|庄|居|坊|轩|阁|堂|亭|吧|所|社|院|中心|广场|商城|商厦|超市|市场|公司|局|部|站|处|厅|铺|庄园|园区|酒店|宾馆|旅馆|客栈|饭店|餐馆|酒家|茶楼|茶社|咖啡|会所|俱乐部|影城|影院|KTV|酒吧|药房|药店|诊所|医院|门市|银行|网点|汽修|修车|洗车|轮胎|美容|美发|理发|烘焙|熟食|生鲜|便利|连锁|专卖|旗舰店|总店|餐饮|小吃|拌面|火锅|烤肉|羊肉|牛肉|烧烤|串串/.test(cleanedName);
+      const isGateOnly = /\(西门\)|\(东门\)|\(南门\)|\(北门\)|-西门|-东门|-南门|-北门|大门|出入口|侧门/.test(rawName);
 
       poiCandidates.push({
         name: cleanedName,
@@ -181,88 +211,70 @@ export const getHighPrecisionLocationName = (
     }
   }
 
-  // Sort candidates strictly by true physical distance ascending
+  // Sort candidates strictly by true physical distance ascending (离哪最近就排在最前)
   poiCandidates.sort((a, b) => a.rawDist - b.rawDist);
 
   // =========================================================================
-  // CORE 10-METER PRECISION RULE (用户核心要求：当前位置精确到10米，10米之内在哪就显示哪的名字)
+  // CORE DIRECTIVE: "当前位置离哪最近就显示哪的名字"
+  // (Display the name of the place closest to current location)
   // =========================================================================
 
-  // Check 1: Is there a specific POI within 10 meters?
-  // (e.g. w5 德隆楼德鼎逸品, w6 朝阳轮胎, w7 兴庆区政府住宅区5号楼, w8 五宝苑1号楼)
-  const poiWithin10m = poiCandidates.filter(p => p.rawDist <= 10);
-  if (poiWithin10m.length > 0) {
-    // If multiple within 10m:
-    // If one is a specific building number that matches our AOI / community:
-    const buildingPoi = poiWithin10m.find(p => p.hasBuildingNo);
-    if (buildingPoi && formattedBuildingMatch && buildingPoi.name.includes(formattedBuildingMatch)) {
-      return buildingPoi.name;
+  if (poiCandidates.length > 0) {
+    const closestPoi = poiCandidates[0];
+
+    // If the closest candidate is within 60 meters, it represents the exact nearby place!
+    if (closestPoi.rawDist <= 60) {
+      // If the closest POI is a gate (e.g. 海宝苑南门), check if a specific store/venue or building is right next to it (within 15m)
+      if (closestPoi.isGateOnly) {
+        const nonGateNearby = poiCandidates.find(p => !p.isGateOnly && p.rawDist <= closestPoi.rawDist + 15);
+        if (nonGateNearby) {
+          return nonGateNearby.name;
+        }
+      }
+
+      // If building match is present (e.g. 迎春苑1号楼) and closest POI is within compound:
+      if (closestPoi.hasBuildingNo) {
+        return closestPoi.name;
+      }
+
+      return closestPoi.name;
     }
-    // Prefer non-gate-only POI within 10m
-    const nonGate = poiWithin10m.find(p => !p.isGateOnly);
-    if (nonGate) {
-      return nonGate.name;
-    }
-    return poiWithin10m[0].name;
   }
 
-  // Check 2: Check community building within 10 meters from formattedAddress / AOI + building
-  // (e.g. w7 "兴庆区政府住宅区5号楼", w8 "五宝苑1号楼")
+  // If formatted building match exists from address string (e.g. "宏昌·林荫香榭6号楼", "五宝苑1号楼")
   if (formattedBuildingMatch) {
-    // If the community matches the current AOI or neighborhood
-    if (aoiDistance <= 15 || (aoiName && formattedBuildingMatch.includes(aoiName))) {
-      return formattedBuildingMatch;
-    }
+    return formattedBuildingMatch;
   }
 
-  if (aoiName && buildingName && aoiDistance <= 15) {
-    const combined = `${aoiName}${buildingName}`;
-    return combined;
+  // If AOI + building number from addressComponent exists (e.g. "五宝苑" + "1号楼")
+  if (aoiName && buildingName) {
+    return `${aoiName}${buildingName}`;
   }
 
-  // Check 3: Check AOI within 10 meters (e.g. w10 "宏昌·林荫香榭")
-  // If the user coordinate is inside the AOI boundary (aoiDistance <= 10m):
-  // And there is no closer valid POI within 10m, the user is directly at the estate/venue!
-  if (aoiName && aoiDistance <= 10) {
-    // Check if there is a closer POI with distance <= 15m that is a specific store/venue
-    const closePoi = poiCandidates.find(p => p.rawDist <= 15 && p.isStoreOrVenue && !p.isGateOnly);
-    if (closePoi) {
-      return closePoi.name;
-    }
+  // If AOI exists (e.g. "宏昌·林荫香榭", "海宝苑")
+  if (aoiName) {
     return aoiName;
   }
 
-  // Check 4: Nearest POI (if within 25 meters, take the physically closest non-gate POI)
-  const nearbyPoi = poiCandidates.find(p => p.rawDist <= 25 && !p.isGateOnly);
-  if (nearbyPoi) {
-    return nearbyPoi.name;
+  // Fallback to buildingName if available
+  if (buildingName) {
+    return buildingName;
   }
 
-  if (poiCandidates.length > 0 && poiCandidates[0].rawDist <= 35) {
-    return poiCandidates[0].name;
-  }
-
-  // Check 5: AOI fallback if within 50m
-  if (aoiName && aoiDistance <= 50) {
-    return aoiName;
-  }
-
-  // Check 6: Fallback to nearest POI if any exist
+  // Fallback to the closest POI even if slightly beyond 60m
   if (poiCandidates.length > 0) {
     return poiCandidates[0].name;
   }
 
   // =========================================================================
-  // ANTI-ROAD-NAME SAFEGUARD (解决 w11 "北京东路"、w12 "北寺巷" 问题)
-  // 代驾商家起点绝不能仅显示孤立路名，必须优先使用小区名、建筑物名或备用地址
+  // ANTI-ROAD-NAME SAFEGUARD
+  // 代驾商家起点绝不能仅显示孤立路名，若只有路名则附加"附近"
   // =========================================================================
-  let finalRes = aoiName || buildingName || '';
+  let finalRes = '';
 
-  if (!finalRes && fallbackAddress && !isPureRoadName(fallbackAddress)) {
+  if (fallbackAddress && !isPureRoadName(fallbackAddress)) {
     finalRes = fallbackAddress;
-  }
-
-  if (!finalRes && roadName) {
+  } else if (roadName) {
     finalRes = `${roadName}附近`;
   }
 

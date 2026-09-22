@@ -384,9 +384,34 @@ export default function HomeView({
     // 0. 已被移出的司机绝不是小队成员！
     if (isDriverRemoved(phone)) return false;
 
+    // 1. 检查 squadMembers 列表中是否有该司机且审核通过
+    const inList = (squadMembers || []).some((m: any) => {
+      const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+      const st = String(m?.status || m?.approvalStatus || '').trim();
+      return p === phone && (!st || ['已通过', 'approved', '通过'].includes(st));
+    });
+    if (inList) return true;
+
+    // 2. 检查 localStorage dd_squad_members_v2 中是否有该司机且审核通过
     try {
-      if (localStorage.getItem(`dd_in_squad_${phone}`) === 'true') return true;
-      if (localStorage.getItem(`dd_approved_${phone}`) === 'true') return true;
+      const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+      const inSaved = savedM.some((m: any) => {
+        const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+        const st = String(m?.status || m?.approvalStatus || '').trim();
+        return p === phone && (!st || ['已通过', 'approved', '通过'].includes(st));
+      });
+      if (inSaved) return true;
+    } catch (_) {}
+
+    // 3. 检查 localStorage dd_applicants_v2 中是否有该司机且审核通过
+    try {
+      const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+      const inApps = savedA.some((a: any) => {
+        const p = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
+        const st = String(a?.status || a?.approvalStatus || '').trim();
+        return p === phone && ['已通过', 'approved', '通过'].includes(st);
+      });
+      if (inApps) return true;
     } catch (_) {}
 
     return false;
@@ -636,7 +661,7 @@ export default function HomeView({
     // 当前登录司机如果未被移出且已加入小队，计入
     const curP = getCurrentPhone();
     if (curP && curP !== '15509601222' && !removedSet.has(curP)) {
-      if (isSquadApprovedOrManagement || localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true' || localStorage.getItem(`dd_squad_member_${curP}`) || isDriverInSquad(curP)) {
+      if (isDriverInSquad(curP)) {
         activeDriverPhones.add(curP);
       }
     }
@@ -1449,12 +1474,7 @@ export default function HomeView({
       }
     } catch (_) {}
 
-    // 3. 本地通过标记判定 (必须不是待审核且未被删除)
-    if (localStorage.getItem(`dd_approved_${currentPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${currentPhone}`) === 'true') {
-      return true;
-    }
-
-    // 4. 检查是否处于小队
+    // 3. 检查是否处于小队
     if (isDriverInSquad(currentPhone)) {
       return true;
     }
