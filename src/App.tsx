@@ -500,18 +500,31 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     // Try reading local storage first
     try {
-      const saved = localStorage.getItem('dd_squad_members_v2');
-      if (saved) {
-        const members = JSON.parse(saved);
-        const m = members.find((mem: any) => String(mem.phone || mem.id).trim() === userPhone.trim());
-        if (m && (m.role || m.userRole)) {
-          setSquadRole(m.role || m.userRole);
+      const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+      const isRemoved = savedR && Array.isArray(JSON.parse(savedR)) && JSON.parse(savedR).includes(userPhone);
+      if (isRemoved) {
+        setSquadRole('普通司机');
+      } else {
+        const saved = localStorage.getItem('dd_squad_members_v2');
+        if (saved) {
+          const members = JSON.parse(saved);
+          const m = members.find((mem: any) => String(mem.phone || mem.id).trim() === userPhone.trim());
+          if (m && (m.role || m.userRole)) {
+            setSquadRole(m.role || m.userRole);
+          }
         }
       }
     } catch (_) {}
 
     // Realtime listeners for squad_members & driver_users
     const unsub1 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
+      try {
+        const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (savedR && Array.isArray(JSON.parse(savedR)) && JSON.parse(savedR).includes(userPhone)) {
+          setSquadRole('普通司机');
+          return;
+        }
+      } catch (_) {}
       if (snap.exists()) {
         const sm = snap.data();
         const r = sm?.role || sm?.userRole;
@@ -520,6 +533,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     }, () => {});
 
     const unsub2 = onSnapshot(doc(db, 'driver_users', userPhone), (snap) => {
+      try {
+        const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (savedR && Array.isArray(JSON.parse(savedR)) && JSON.parse(savedR).includes(userPhone)) {
+          setSquadRole('普通司机');
+          return;
+        }
+      } catch (_) {}
       if (snap.exists()) {
         const d = snap.data();
         const r = d?.role || d?.userRole;
@@ -533,10 +553,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
   }, [userPhone]);
 
+  const isCurrentUserRemoved = () => {
+    if (!userPhone || userPhone === '15509601222') return false;
+    try {
+      const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (savedR && JSON.parse(savedR).includes(userPhone)) return true;
+    } catch (_) {}
+    return false;
+  };
+
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
   const userRole = (userPhone === '15509601222')
     ? '开发者司机'
-    : (squadRole || (loggedInMember ? loggedInMember.role : '普通司机'));
+    : (isCurrentUserRemoved() ? '普通司机' : (squadRole || (loggedInMember ? loggedInMember.role : '普通司机')));
   const userTeamCity = loggedInMember ? loggedInMember.city : '';
   const [incomingOrder, setIncomingOrder] = useState<any>(null);
   const [activeOnlineOrder, setActiveOnlineOrder] = useState<any>(null);
@@ -618,15 +647,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (Array.isArray(data?.phones)) {
           const removed = data.phones.map((p: any) => String(p).trim());
           if (userPhone && userPhone !== '15509601222' && removed.includes(userPhone)) {
-            setIsSquadApprovedOrManagement(false);
+            setIsSquadApprovedOrManagement(prev => (prev ? false : prev));
+            setSquadRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
+            const wasApproved = localStorage.getItem(`dd_approved_${userPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true';
+            const oldRole = localStorage.getItem('dd_user_role');
             try {
-              localStorage.removeItem(`dd_approved_${userPhone}`);
-              localStorage.removeItem(`dd_squad_member_${userPhone}`);
-              localStorage.removeItem(`dd_in_squad_${userPhone}`);
-              localStorage.setItem('dd_user_role', '普通司机');
               localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(removed));
-              window.dispatchEvent(new CustomEvent('user_role_updated'));
-              window.dispatchEvent(new CustomEvent('squad_members_updated'));
+              if (wasApproved || (oldRole && oldRole !== '普通司机')) {
+                localStorage.removeItem(`dd_approved_${userPhone}`);
+                localStorage.removeItem(`dd_squad_member_${userPhone}`);
+                localStorage.removeItem(`dd_in_squad_${userPhone}`);
+                localStorage.setItem('dd_user_role', '普通司机');
+                window.dispatchEvent(new CustomEvent('user_role_updated'));
+                window.dispatchEvent(new CustomEvent('squad_members_updated'));
+              }
             } catch (_) {}
           }
         }

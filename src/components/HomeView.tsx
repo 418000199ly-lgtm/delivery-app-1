@@ -336,18 +336,71 @@ export default function HomeView({
     ).replace(/\D/g, '').trim();
   };
 
-  const [localRole, setLocalRole] = useState<string>(userRole);
+  const isDriverRemoved = (phoneToCheck?: string) => {
+    const phone = (phoneToCheck || getCurrentPhone()).trim();
+    if (!phone) return false;
+    if (phone === '15509601222') return false; // 开发者账号永不移出
+
+    // 检查是否在被移出黑名单中
+    let removedList: string[] = [];
+    try {
+      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          removedList = parsed;
+        }
+      }
+    } catch (_) {}
+
+    return removedList.some(p => {
+      const pStr = String(p).trim();
+      return pStr === phone || pStr.replace(/\D/g, '') === phone;
+    });
+  };
+
+  const isDriverInSquad = (phoneToCheck?: string) => {
+    const phone = (phoneToCheck || getCurrentPhone()).trim();
+    if (!phone) return false;
+    if (phone === '15509601222') return true; // 开发者最高权限默认在小队
+
+    // 0. 已被移出的司机绝不是小队成员！
+    if (isDriverRemoved(phone)) return false;
+
+    try {
+      if (localStorage.getItem(`dd_in_squad_${phone}`) === 'true') return true;
+      if (localStorage.getItem(`dd_approved_${phone}`) === 'true') return true;
+    } catch (_) {}
+
+    return false;
+  };
+
+  const [localRole, setLocalRole] = useState<string>(() => {
+    const curP = getCurrentPhone();
+    if (curP && curP !== '15509601222' && isDriverRemoved(curP)) {
+      return '普通司机';
+    }
+    return userRole || '普通司机';
+  });
 
   useEffect(() => {
-    setLocalRole(userRole);
+    const curP = getCurrentPhone();
+    if (curP && curP !== '15509601222' && isDriverRemoved(curP)) {
+      setLocalRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
+    } else {
+      setLocalRole(prev => (prev !== userRole ? userRole : prev));
+    }
   }, [userRole]);
 
   const setUserRole = (role: string) => {
-    setLocalRole(role);
-    try {
-      localStorage.setItem('dd_user_role', role);
-      window.dispatchEvent(new CustomEvent('user_role_updated'));
-    } catch (_) {}
+    setLocalRole(prev => (prev !== role ? role : prev));
+    const current = localStorage.getItem('dd_user_role');
+    if (current !== role) {
+      try {
+        localStorage.setItem('dd_user_role', role);
+        window.dispatchEvent(new CustomEvent('user_role_updated'));
+      } catch (_) {}
+    }
   };
 
   const effectiveCity = (userRole && userRole !== '开发者司机' && userTeamCity) ? userTeamCity : (settings?.city || '银川市');
@@ -1376,82 +1429,6 @@ export default function HomeView({
     }, 100);
   };
 
-  const isDriverRemoved = (phoneToCheck?: string) => {
-    const phone = (phoneToCheck || getCurrentPhone()).trim();
-    if (!phone) return false;
-    if (phone === '15509601222') return false; // 开发者账号永不移出
-
-    // 检查是否在被移出黑名单中
-    let removedList: string[] = removedMemberPhones || [];
-    try {
-      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          removedList = Array.from(new Set([...removedList, ...parsed]));
-        }
-      }
-    } catch (_) {}
-
-    const isMatchRemoved = removedList.some(p => {
-      const pStr = String(p).trim();
-      return pStr === phone || pStr.replace(/\D/g, '') === phone;
-    });
-
-    if (isMatchRemoved) {
-      return true;
-    }
-
-    return false;
-  };
-
-  const isDriverInSquad = (phoneToCheck?: string) => {
-    const phone = (phoneToCheck || getCurrentPhone()).trim();
-    if (!phone) return false;
-    if (phone === '15509601222') return true; // 开发者最高权限默认在小队
-
-    // 0. 已被移出的司机绝不是小队成员！
-    if (isDriverRemoved(phone)) return false;
-
-    // 1. 检查小队成员列表中是否具有小队成员身份 (squad_members 中的成员即为入队司机)
-    const foundInMembers = squadMembers.some((m: any) => {
-      const mPhone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
-      if (mPhone !== phone) return false;
-      const st = String(m.status || m.approvalStatus || '').trim();
-      return !st || ['已通过', 'approved', '通过'].includes(st);
-    });
-    if (foundInMembers) return true;
-
-    try {
-      const saved = localStorage.getItem('dd_squad_members_v2');
-      if (saved) {
-        const list = JSON.parse(saved);
-        if (Array.isArray(list) && list.some((m: any) => String(m.phone || m.id).replace(/\D/g, '').trim() === phone && (!m.status || ['已通过', 'approved', '通过'].includes(m.status)))) {
-          return true;
-        }
-      }
-      if (phone === getCurrentPhone() && isSquadApprovedOrManagement) return true;
-      if (localStorage.getItem(`dd_approved_${phone}`) === 'true') {
-        return true;
-      }
-      if (localStorage.getItem(`dd_in_squad_${phone}`) === 'true') {
-        return true;
-      }
-      if (localStorage.getItem(`dd_squad_member_${phone}`)) {
-        return true;
-      }
-      const savedApps = localStorage.getItem('dd_applicants_v2');
-      if (savedApps) {
-        const appList = JSON.parse(savedApps);
-        if (Array.isArray(appList) && appList.some((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === phone && ['已通过', 'approved', '通过'].includes(String(a.status || '')))) {
-          return true;
-        }
-      }
-    } catch (_) {}
-
-    return false;
-  };
-
   const checkApprovalStatus = () => {
     const currentPhone = getCurrentPhone();
     if (!currentPhone) return false;
@@ -2310,6 +2287,8 @@ export default function HomeView({
           } catch (_) {}
         } else if (isCurrentTrulyRemoved) {
           // 仅当司机被真正从黑名单移出且不在审批中时，才清空身份缓存
+          const wasApproved = localStorage.getItem(`dd_approved_${currentPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${currentPhone}`) === 'true';
+          const oldRole = localStorage.getItem('dd_user_role');
           try {
             localStorage.setItem('dd_user_role', '普通司机');
             setUserRole('普通司机');
@@ -2317,17 +2296,20 @@ export default function HomeView({
             localStorage.removeItem(`dd_approved_${currentPhone}`);
             localStorage.removeItem(`dd_in_squad_${currentPhone}`);
 
-            const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-            const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
-            localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
+            setIsReapplying(prev => (prev ? false : prev));
+            setShowAdminDispatchView(prev => (prev ? false : prev));
 
-            const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-            const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
-            localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
+            if (wasApproved || (oldRole && oldRole !== '普通司机')) {
+              const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+              const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
+              localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
 
-            setIsReapplying(false);
-            setShowAdminDispatchView(false);
-            window.dispatchEvent(new CustomEvent('user_role_updated'));
+              const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+              const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== currentPhone);
+              localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
+
+              window.dispatchEvent(new CustomEvent('user_role_updated'));
+            }
           } catch (_) {}
         }
       }
@@ -2355,25 +2337,33 @@ export default function HomeView({
               localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
             } catch (_) {}
             if (curP && curP !== '15509601222' && phones.includes(curP)) {
+              const wasApproved = localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true';
+              const oldRole = localStorage.getItem('dd_user_role');
               setUserRole('普通司机');
-              setIsReapplying(false);
-              setSquadMembers(prev => prev.filter(m => String(m.phone || m.id).trim() !== curP));
+              setIsReapplying(prev => (prev ? false : prev));
+              setSquadMembers(prev => {
+                const hasCur = prev.some(m => String(m.phone || m.id).trim() === curP);
+                if (!hasCur) return prev;
+                return prev.filter(m => String(m.phone || m.id).trim() !== curP);
+              });
               try {
                 localStorage.setItem('dd_user_role', '普通司机');
                 localStorage.removeItem(`dd_squad_member_${curP}`);
                 localStorage.removeItem(`dd_approved_${curP}`);
                 localStorage.removeItem(`dd_in_squad_${curP}`);
 
-                const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-                const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== curP);
-                localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
+                if (wasApproved || (oldRole && oldRole !== '普通司机')) {
+                  const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+                  const filteredM = savedM.filter((item: any) => String(item.phone || item.id).trim() !== curP);
+                  localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
 
-                const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-                const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== curP);
-                localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
+                  const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+                  const filteredA = savedA.filter((item: any) => String(item.phone || item.id).trim() !== curP);
+                  localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
 
-                window.dispatchEvent(new CustomEvent('user_role_updated'));
-                window.dispatchEvent(new CustomEvent('squad_members_updated'));
+                  window.dispatchEvent(new CustomEvent('user_role_updated'));
+                  window.dispatchEvent(new CustomEvent('squad_members_updated'));
+                }
               } catch (_) {}
             }
           }
@@ -2556,29 +2546,49 @@ export default function HomeView({
         const isCurInSnapshot = list.some(m => String(m.phone || m.id).trim() === curP);
         const isCurLocallyApproved = localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true';
         if ((!isCurInSnapshot && !isCurLocallyApproved) || (removedList.includes(curP) && !isCurLocallyApproved)) {
+          const oldRole = localStorage.getItem('dd_user_role');
           try {
             localStorage.setItem('dd_user_role', '普通司机');
             setUserRole('普通司机');
             localStorage.removeItem(`dd_squad_member_${curP}`);
             localStorage.removeItem(`dd_approved_${curP}`);
             localStorage.removeItem(`dd_in_squad_${curP}`);
-            window.dispatchEvent(new CustomEvent('user_role_updated'));
+            if (oldRole && oldRole !== '普通司机') {
+              window.dispatchEvent(new CustomEvent('user_role_updated'));
+            }
           } catch (_) {}
         }
       }
 
-      setSquadMembers(list);
+      setSquadMembers(prev => {
+        if (prev.length === list.length && prev.every((m, idx) => m.id === list[idx]?.id && m.role === list[idx]?.role && m.status === list[idx]?.status && m.phone === list[idx]?.phone)) {
+          return prev;
+        }
+        return list;
+      });
       try {
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(list));
       } catch (_) {}
     });
 
+    let squadEventDebounce: any = null;
     const handleSquadEvent = () => {
-      fetchLatestSquadData();
-      try {
-        const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
-        if (savedR) setRemovedMemberPhones(JSON.parse(savedR));
-      } catch (_) {}
+      if (squadEventDebounce) clearTimeout(squadEventDebounce);
+      squadEventDebounce = setTimeout(() => {
+        fetchLatestSquadData();
+        try {
+          const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+          if (savedR) {
+            const parsed = JSON.parse(savedR);
+            if (Array.isArray(parsed)) {
+              setRemovedMemberPhones(prev => {
+                if (prev.length === parsed.length && prev.every(p => parsed.includes(p))) return prev;
+                return parsed;
+              });
+            }
+          }
+        } catch (_) {}
+      }, 300);
     };
     window.addEventListener('squad_members_updated', handleSquadEvent);
 
