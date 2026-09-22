@@ -341,14 +341,14 @@ export default function HomeView({
     if (!phone) return false;
     if (phone === '15509601222') return false; // 开发者账号永不移出
 
-    // 检查是否在被移出黑名单中
-    let removedList: string[] = removedMemberPhones || [];
+    // 检查是否在被移出黑名单中 (纯从 localStorage 健壮读取，避免闭包初始化时序 TDZ 异常)
+    let removedList: string[] = [];
     try {
-      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          removedList = Array.from(new Set([...removedList, ...parsed]));
+          removedList = parsed;
         }
       }
     } catch (_) {}
@@ -362,7 +362,7 @@ export default function HomeView({
 
     // 若司机已提交了新申请（待审核）或重新获得审批通过，则不再受历史移出名单限制
     try {
-      const savedApps = localStorage.getItem('dd_applicants_v2');
+      const savedApps = typeof window !== 'undefined' ? localStorage.getItem('dd_applicants_v2') : null;
       if (savedApps) {
         const apps = JSON.parse(savedApps);
         const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === phone);
