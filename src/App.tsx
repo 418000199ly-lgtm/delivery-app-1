@@ -716,15 +716,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           }
 
           if (isUserRemoved) {
-            setIsSquadApprovedOrManagement(false);
-            try {
-              localStorage.removeItem(`dd_approved_${userPhone}`);
-              localStorage.removeItem(`dd_squad_member_${userPhone}`);
-              localStorage.removeItem(`dd_in_squad_${userPhone}`);
-              localStorage.setItem('dd_user_role', '普通司机');
-              window.dispatchEvent(new CustomEvent('user_role_updated'));
-              window.dispatchEvent(new CustomEvent('squad_members_updated'));
-            } catch (_) {}
+            setIsSquadApprovedOrManagement(prev => (prev ? false : prev));
+            const wasApproved = localStorage.getItem(`dd_approved_${userPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true';
+            const oldRole = localStorage.getItem('dd_user_role');
+            if (wasApproved || (oldRole && oldRole !== '普通司机')) {
+              try {
+                localStorage.removeItem(`dd_approved_${userPhone}`);
+                localStorage.removeItem(`dd_squad_member_${userPhone}`);
+                localStorage.removeItem(`dd_in_squad_${userPhone}`);
+                localStorage.setItem('dd_user_role', '普通司机');
+                window.dispatchEvent(new CustomEvent('user_role_updated'));
+                window.dispatchEvent(new CustomEvent('squad_members_updated'));
+              } catch (_) {}
+            }
             return;
           }
         }
@@ -778,9 +782,28 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         checkAndSetApproved(true);
       }
     };
+
+    const handleRoleUpdateForApp = () => {
+      const curPhone = userPhone || localStorage.getItem('dd_user_phone') || '';
+      if (!curPhone || curPhone === '15509601222') return;
+
+      let isRemoved = false;
+      try {
+        const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (saved && JSON.parse(saved).includes(curPhone)) {
+          isRemoved = true;
+        }
+      } catch (_) {}
+
+      const role = localStorage.getItem('dd_user_role') || '普通司机';
+      if (isRemoved || role === '普通司机') {
+        setIsSquadApprovedOrManagement(prev => (prev ? false : prev));
+      }
+    };
+
     window.addEventListener('squad_member_approved', handleApprovedEvent);
     window.addEventListener('storage', checkStatusSync);
-    window.addEventListener('user_role_updated', checkStatusSync);
+    window.addEventListener('user_role_updated', handleRoleUpdateForApp);
 
     return () => {
       unsub0();
@@ -790,7 +813,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       clearInterval(syncInterval);
       window.removeEventListener('squad_member_approved', handleApprovedEvent);
       window.removeEventListener('storage', checkStatusSync);
-      window.removeEventListener('user_role_updated', checkStatusSync);
+      window.removeEventListener('user_role_updated', handleRoleUpdateForApp);
     };
   }, [userPhone]);
 

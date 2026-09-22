@@ -433,20 +433,25 @@ export default function HomeView({
           try {
             removedArr = JSON.parse(saved);
           } catch (_) {}
-          setRemovedMemberPhones(removedArr);
+          setRemovedMemberPhones(prev => {
+            if (prev.length === removedArr.length && prev.every(p => removedArr.includes(p))) {
+              return prev;
+            }
+            return removedArr;
+          });
         }
         const removedSet = new Set(removedArr.map(p => String(p).replace(/\D/g, '').trim()).filter(Boolean));
 
         // 检查当前登录司机是否已被移出小队
         const curP = getCurrentPhone();
         if (curP && curP !== '15509601222' && removedSet.has(curP)) {
-          setLocalRole('普通司机');
-          setIsReapplying(false);
-          setShowNearbyMap(false);
-          setShowApplySquadModal(false);
-          setShowDispatchModal(false);
-          setShowMerchantDispatchModal(false);
-          setShowAdminDispatchView(false);
+          setLocalRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
+          setIsReapplying(prev => (prev ? false : prev));
+          setShowNearbyMap(prev => (prev ? false : prev));
+          setShowApplySquadModal(prev => (prev ? false : prev));
+          setShowDispatchModal(prev => (prev ? false : prev));
+          setShowMerchantDispatchModal(prev => (prev ? false : prev));
+          setShowAdminDispatchView(prev => (prev ? false : prev));
           try {
             localStorage.setItem('dd_user_role', '普通司机');
             localStorage.removeItem(`dd_squad_member_${curP}`);
@@ -507,7 +512,11 @@ export default function HomeView({
               status: '已通过'
             });
           }
-          return Array.from(map.values());
+          const nextArr = Array.from(map.values());
+          if (prev.length === nextArr.length && prev.every((m, idx) => m.id === nextArr[idx]?.id && m.role === nextArr[idx]?.role && m.status === nextArr[idx]?.status)) {
+            return prev;
+          }
+          return nextArr;
         });
       } catch (_) {}
     };
@@ -516,14 +525,12 @@ export default function HomeView({
     window.addEventListener('focus', syncRemoved);
     window.addEventListener('squad_members_updated', syncRemoved);
     window.addEventListener('squad_member_approved', syncRemoved);
-    window.addEventListener('user_role_updated', syncRemoved);
-    const timer = setInterval(syncRemoved, 1500);
+    const timer = setInterval(syncRemoved, 2000);
     return () => {
       window.removeEventListener('storage', syncRemoved);
       window.removeEventListener('focus', syncRemoved);
       window.removeEventListener('squad_members_updated', syncRemoved);
       window.removeEventListener('squad_member_approved', syncRemoved);
-      window.removeEventListener('user_role_updated', syncRemoved);
       clearInterval(timer);
     };
   }, []);
@@ -547,19 +554,24 @@ export default function HomeView({
       const isCurRemoved = Boolean(
         curPhone &&
         curPhone !== '15509601222' &&
-        (removedList.includes(curPhone) || removedMemberPhones.includes(curPhone) || isDriverRemoved(curPhone))
+        (removedList.includes(curPhone) || isDriverRemoved(curPhone))
       );
 
-      // 同步最新移出名单到状态
+      // 同步最新移出名单到状态，有变化才更新
       if (removedList.length > 0) {
-        setRemovedMemberPhones(prev => Array.from(new Set([...prev, ...removedList])));
+        setRemovedMemberPhones(prev => {
+          if (prev.length === removedList.length && prev.every(p => removedList.includes(p))) {
+            return prev;
+          }
+          return Array.from(new Set([...prev, ...removedList]));
+        });
       }
 
       // 如果当前司机已被移出小队，或者角色退回为普通司机
       if (isCurRemoved || (curPhone && curPhone !== '15509601222' && updatedRole === '普通司机' && !isDriverInSquad(curPhone))) {
-        // 1. 强制重置角色和重新申请状态
-        setLocalRole('普通司机');
-        setIsReapplying(false);
+        // 1. 强制重置角色和重新申请状态（带幂等保护）
+        setLocalRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
+        setIsReapplying(prev => (prev ? false : prev));
 
         // 2. 清理本地关于当前司机的审核与小队缓存
         if (curPhone && curPhone !== '15509601222') {
@@ -571,21 +583,22 @@ export default function HomeView({
           } catch (_) {}
         }
 
-        // 3. 强制重置所有关联组件的可见性，立即关闭打开的页面
-        setShowNearbyMap(false);               // 强制关闭附近代驾调度地图组件
-        setShowApplySquadModal(false);         // 强制重置/关闭小队申请弹窗组件
-        setShowDispatchModal(false);           // 强制重置/关闭审核派单及商户代叫组件
-        setShowMerchantDispatchModal(false);   // 强制关闭商户代叫组件
-        setShowAdminDispatchView(false);       // 强制关闭管理员调度派单视图
+        // 3. 强制重置所有关联组件的可见性，立即关闭打开的页面（带幂等保护）
+        setShowNearbyMap(prev => (prev ? false : prev));               // 强制关闭附近代驾调度地图组件
+        setShowApplySquadModal(prev => (prev ? false : prev));         // 强制重置/关闭小队申请弹窗组件
+        setShowDispatchModal(prev => (prev ? false : prev));           // 强制重置/关闭审核派单及商户代叫组件
+        setShowMerchantDispatchModal(prev => (prev ? false : prev));   // 强制关闭商户代叫组件
+        setShowAdminDispatchView(prev => (prev ? false : prev));       // 强制关闭管理员调度派单视图
 
         // 4. 从当前小队成员状态列表中彻底剔除
-        setSquadMembers(prev => prev.filter(m => {
-          const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
-          return p !== curPhone;
-        }));
+        setSquadMembers(prev => {
+          const hasCur = prev.some(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() === curPhone);
+          if (!hasCur) return prev;
+          return prev.filter(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() !== curPhone);
+        });
       } else {
         // 未被移出，同步更新角色
-        setLocalRole(updatedRole);
+        setLocalRole(prev => (prev !== updatedRole ? updatedRole : prev));
       }
     };
 
@@ -593,7 +606,7 @@ export default function HomeView({
     return () => {
       window.removeEventListener('user_role_updated', handleUserRoleUpdated);
     };
-  }, [userPhone, removedMemberPhones]);
+  }, [userPhone]);
 
   const getActiveSquadDriverCount = () => {
     const isMock = (phone: string, name: string) => {
