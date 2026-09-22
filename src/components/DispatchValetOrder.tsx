@@ -4654,10 +4654,12 @@ export default function DispatchValetOrder({
                                     if (targetPhone) {
                                       localStorage.removeItem(`dd_squad_member_${targetPhone}`);
                                       localStorage.removeItem(`dd_approved_${targetPhone}`);
+                                      localStorage.removeItem(`dd_in_squad_${targetPhone}`);
                                     }
                                     if (targetId) {
                                       localStorage.removeItem(`dd_squad_member_${targetId}`);
                                       localStorage.removeItem(`dd_approved_${targetId}`);
+                                      localStorage.removeItem(`dd_in_squad_${targetId}`);
                                     }
 
                                     if (targetPhone === (userPhone || '').trim() || targetId === (userPhone || '').trim()) {

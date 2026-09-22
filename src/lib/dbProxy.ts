@@ -1,6 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage';
 
-// Mock DB reference object for native Firestore API interface compatibility
+// DB reference object for Mainland China Aliyun Baota MySQL REST API interface compatibility
 const dbPlaceholder = { _isProxy: true };
 
 // Types for Aliyun Baota MySQL / Native REST API document structure

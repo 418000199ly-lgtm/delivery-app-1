@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-20T08:48:27.082Z"
+      "updatedAt": "2026-09-22T07:44:21.527Z"
     }
   },
   "version_history": {
@@ -66,7 +66,8 @@
       "name": "李扬",
       "role": "普通司机",
       "userRole": "普通司机",
-      "status": "已通过",
+      "status": "未加入小队",
+      "approvalStatus": "未加入小队",
       "city": "银川市",
       "updatedAt": "2026-09-19T08:30:00.000Z",
       "lat": 38.47513,
@@ -119,6 +120,11 @@
       "upgradeUrl": "https://download.heiwan.com/max",
       "xianyuUrl": "https://www.goofish.com",
       "updatedAt": "2026-08-18T11:12:55.704Z"
+    },
+    "removed_squad_members": {
+      "phones": [
+        "18695119126"
+      ]
     }
   }
 }

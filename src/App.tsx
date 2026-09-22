@@ -617,18 +617,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const data = snap.data();
         if (Array.isArray(data?.phones)) {
           const removed = data.phones.map((p: any) => String(p).trim());
-          if (removed.includes(userPhone)) {
-            // 只有当未在通过名单中时才执行移出
-            if (!isApprovedByAny && localStorage.getItem(`dd_approved_${userPhone}`) !== 'true') {
-              setIsSquadApprovedOrManagement(false);
-              try {
-                localStorage.removeItem(`dd_approved_${userPhone}`);
-                localStorage.removeItem(`dd_squad_member_${userPhone}`);
-                localStorage.removeItem(`dd_in_squad_${userPhone}`);
-                localStorage.setItem('dd_user_role', '普通司机');
-                window.dispatchEvent(new CustomEvent('user_role_updated'));
-              } catch (_) {}
-            }
+          if (userPhone && userPhone !== '15509601222' && removed.includes(userPhone)) {
+            setIsSquadApprovedOrManagement(false);
+            try {
+              localStorage.removeItem(`dd_approved_${userPhone}`);
+              localStorage.removeItem(`dd_squad_member_${userPhone}`);
+              localStorage.removeItem(`dd_in_squad_${userPhone}`);
+              localStorage.setItem('dd_user_role', '普通司机');
+              localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(removed));
+              window.dispatchEvent(new CustomEvent('user_role_updated'));
+              window.dispatchEvent(new CustomEvent('squad_members_updated'));
+            } catch (_) {}
           }
         }
       }
@@ -637,7 +636,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const unsub1 = onSnapshot(doc(db, 'driver_users', userPhone), (snap) => {
       if (snap.exists()) {
         const d = snap.data();
-        if (d && managementRoles.includes(d.role || d.userRole)) {
+        let isRemoved = false;
+        try {
+          const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+          if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
+        } catch (_) {}
+        if (!isRemoved && d && managementRoles.includes(d.role || d.userRole)) {
           checkAndSetApproved(true);
           return;
         }
@@ -647,9 +651,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const unsub2 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
       if (snap.exists()) {
         const sm = snap.data();
-        const st = sm?.status || sm?.approvalStatus || '';
-        if (!st || ['已通过', 'approved', '通过'].includes(st)) {
-          checkAndSetApproved(true);
+        let isRemoved = false;
+        try {
+          const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+          if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
+        } catch (_) {}
+        if (!isRemoved && userPhone !== '15509601222') {
+          const st = sm?.status || sm?.approvalStatus || '';
+          if (!st || ['已通过', 'approved', '通过'].includes(st)) {
+            checkAndSetApproved(true);
+          }
         }
       }
     });
@@ -658,9 +669,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const unsub3 = onSnapshot(doc(db, 'squad_applications', userPhone), (snap) => {
       if (snap.exists()) {
         const app = snap.data();
-        const st = app?.status || '';
-        if (['已通过', 'approved', '通过'].includes(st)) {
-          checkAndSetApproved(true);
+        let isRemoved = false;
+        try {
+          const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+          if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
+        } catch (_) {}
+        if (!isRemoved && userPhone !== '15509601222') {
+          const st = app?.status || '';
+          if (['已通过', 'approved', '通过'].includes(st)) {
+            checkAndSetApproved(true);
+          }
         }
       }
     });
@@ -668,11 +686,53 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     // 4. 定时轮询与事件监听，确保跨设备秒级同步
     const checkStatusSync = async () => {
       try {
+        const baseUrl = getBaseApiUrl();
+
+        // 首先检查当前司机是否已被管理员移出小队
+        if (userPhone && userPhone !== '15509601222') {
+          let isUserRemoved = false;
+          try {
+            const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
+            if (savedRemoved) {
+              const list = JSON.parse(savedRemoved);
+              if (Array.isArray(list) && list.includes(userPhone)) {
+                isUserRemoved = true;
+              }
+            }
+          } catch (_) {}
+
+          if (!isUserRemoved) {
+            try {
+              const resRemoved = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+              if (resRemoved.ok) {
+                const rJson = await resRemoved.json();
+                const phones = rJson?.data?.phones || rJson?.phones;
+                if (Array.isArray(phones) && phones.includes(userPhone)) {
+                  isUserRemoved = true;
+                  localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (isUserRemoved) {
+            setIsSquadApprovedOrManagement(false);
+            try {
+              localStorage.removeItem(`dd_approved_${userPhone}`);
+              localStorage.removeItem(`dd_squad_member_${userPhone}`);
+              localStorage.removeItem(`dd_in_squad_${userPhone}`);
+              localStorage.setItem('dd_user_role', '普通司机');
+              window.dispatchEvent(new CustomEvent('user_role_updated'));
+              window.dispatchEvent(new CustomEvent('squad_members_updated'));
+            } catch (_) {}
+            return;
+          }
+        }
+
         if (localStorage.getItem(`dd_approved_${userPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true' || localStorage.getItem(`dd_squad_member_${userPhone}`)) {
           checkAndSetApproved(true);
           return;
         }
-        const baseUrl = getBaseApiUrl();
         const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const resJson = await res.json();
@@ -720,6 +780,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
     window.addEventListener('squad_member_approved', handleApprovedEvent);
     window.addEventListener('storage', checkStatusSync);
+    window.addEventListener('user_role_updated', checkStatusSync);
 
     return () => {
       unsub0();
@@ -729,6 +790,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       clearInterval(syncInterval);
       window.removeEventListener('squad_member_approved', handleApprovedEvent);
       window.removeEventListener('storage', checkStatusSync);
+      window.removeEventListener('user_role_updated', checkStatusSync);
     };
   }, [userPhone]);
 
