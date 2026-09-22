@@ -109,36 +109,6 @@ export default function NearbyMapView({
     }
   }, [effectiveMyPhone, removedPhones, onClose]);
 
-  // 实时监听 user_role_updated 事件：当当前司机被移出小队或失去小队资格时，立刻强制关闭附近地图组件
-  useEffect(() => {
-    const handleRoleUpdated = () => {
-      const curPhone = effectiveMyPhone || '';
-      if (!curPhone || curPhone === '15509601222') return;
-
-      const role = localStorage.getItem('dd_user_role') || '普通司机';
-      let removedList: string[] = [];
-      try {
-        const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) removedList = parsed.map((p: any) => String(p).trim());
-        }
-      } catch (_) {}
-
-      const isRemoved = removedList.includes(curPhone) || removedPhones.includes(curPhone);
-      const isApproved = localStorage.getItem(`dd_approved_${curPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${curPhone}`) === 'true';
-
-      if (isRemoved || (!isApproved && role === '普通司机')) {
-        onClose();
-      }
-    };
-
-    window.addEventListener('user_role_updated', handleRoleUpdated);
-    return () => {
-      window.removeEventListener('user_role_updated', handleRoleUpdated);
-    };
-  }, [effectiveMyPhone, removedPhones, onClose]);
-
   const [mySquadName, setMySquadName] = useState<string>(() => {
     return resolveDriverRealName(
       effectiveMyPhone,
