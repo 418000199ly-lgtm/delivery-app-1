@@ -2,6 +2,7 @@ import { TripState } from '../types';
 import { db, doc, updateDoc } from '../lib/dbProxy';
 import { safeSetItem } from './safeStorage';
 import { findNearestKnownPoi, calculateHaversineDistanceKm } from './geocoding';
+import { wgs84ToGcj02 } from './coordinateTransform';
 
 export { calculateHaversineDistanceKm };
 
@@ -421,6 +422,7 @@ export async function resolveCurrentGpsLocationName(
                 (pos) => {
                   const rawLng = pos.coords.longitude;
                   const rawLat = pos.coords.latitude;
+                  const converted = wgs84ToGcj02(rawLng, rawLat);
                   if (AMap.convertFrom) {
                     AMap.convertFrom([rawLng, rawLat], 'gps', (cStatus: string, cRes: any) => {
                       if (cStatus === 'complete' && cRes && cRes.locations && cRes.locations[0]) {
@@ -430,11 +432,15 @@ export async function resolveCurrentGpsLocationName(
                         localStorage.setItem('dd_bg_driver_coords_lat', String(cLat));
                         doGeocode(cLng, cLat);
                       } else {
-                        doGeocode(rawLng, rawLat);
+                        localStorage.setItem('dd_bg_driver_coords_lng', String(converted.lng));
+                        localStorage.setItem('dd_bg_driver_coords_lat', String(converted.lat));
+                        doGeocode(converted.lng, converted.lat);
                       }
                     });
                   } else {
-                    doGeocode(rawLng, rawLat);
+                    localStorage.setItem('dd_bg_driver_coords_lng', String(converted.lng));
+                    localStorage.setItem('dd_bg_driver_coords_lat', String(converted.lat));
+                    doGeocode(converted.lng, converted.lat);
                   }
                 },
                 () => resolve(null),
@@ -450,7 +456,10 @@ export async function resolveCurrentGpsLocationName(
       });
     } else if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => doGeocode(pos.coords.longitude, pos.coords.latitude),
+        (pos) => {
+          const converted = wgs84ToGcj02(pos.coords.longitude, pos.coords.latitude);
+          doGeocode(converted.lng, converted.lat);
+        },
         () => resolve(null),
         { enableHighAccuracy: true, timeout: 6000 }
       );

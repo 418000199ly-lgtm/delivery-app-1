@@ -16,21 +16,7 @@
 
 import { db, setDoc, doc, getBaseApiUrl } from '../lib/dbProxy';
 import { resolveDriverRealName } from './nameResolver';
-
-// Haversine distance in meters
-function getDistanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const radLat1 = (lat1 * Math.PI) / 180;
-  const radLat2 = (lat2 * Math.PI) / 180;
-  const a = radLat1 - radLat2;
-  const b = (lng1 * Math.PI) / 180 - (lng2 * Math.PI) / 180;
-  const s = 2 * Math.asin(
-    Math.sqrt(
-      Math.pow(Math.sin(a / 2), 2) +
-      Math.cos(radLat1) * Math.cos(radLat2) * Math.pow(Math.sin(b / 2), 2)
-    )
-  );
-  return s * 6378137.0; // Earth radius in meters
-}
+import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
 
 interface LocationReporterConfig {
   userPhone: string;
@@ -277,10 +263,11 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           if (isDisposed) return;
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          uploadCoordinates(lat, lng, 'HTML5 Adaptive GPS');
-          scheduleNext(getNextIntervalMs(lat, lng));
+          const rawLat = pos.coords.latitude;
+          const rawLng = pos.coords.longitude;
+          const converted = wgs84ToGcj02(rawLng, rawLat);
+          uploadCoordinates(converted.lat, converted.lng, 'HTML5 Adaptive GPS');
+          scheduleNext(getNextIntervalMs(converted.lat, converted.lng));
         },
         () => {
           scheduleNext(getNextIntervalMs());
@@ -299,13 +286,18 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
   };
 
   // 2. 启动 HTML5 watchPosition 后台连续监听 (位移超过 10 米即时触发)
+  // 必须使用 wgs84ToGcj02 转换为高德火星坐标系，严禁上传未转换的原生 WGS84 坐标导致 500 米偏差漂移
   if (typeof navigator !== 'undefined' && navigator.geolocation) {
     try {
       watchPositionId = navigator.geolocation.watchPosition(
         (pos) => {
           if (isDisposed) return;
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
+          const rawLat = pos.coords.latitude;
+          const rawLng = pos.coords.longitude;
+          const converted = wgs84ToGcj02(rawLng, rawLat);
+          const lat = converted.lat;
+          const lng = converted.lng;
+
           const dist = (lastReportedLat && lastReportedLng) 
             ? getDistanceMeters(lastReportedLat, lastReportedLng, lat, lng)
             : 999;

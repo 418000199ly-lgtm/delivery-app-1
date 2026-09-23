@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MapPin, Navigation, ChevronRight, Clock, ShieldCheck, X, PlusCircle, MinusCircle, CheckCircle, Phone } from 'lucide-react';
 import { TripState, ChauffeurSettings, BillingRules, DEFAULT_SLOTS, checkVipActive } from '../types';
 import { calculateOrderTripCost, getTimeSlotForTime } from '../utils/billingUtils';
+import { wgs84ToGcj02 } from '../utils/coordinateTransform';
 import NavigationView from './NavigationView';
 
 const SUGGESTED_DESTINATIONS = [
@@ -393,6 +394,7 @@ export default function ActiveTripView({
         const accuracy = pos.coords.accuracy || 10;
         const speed = pos.coords.speed;
 
+        const converted = wgs84ToGcj02(rawLng, rawLat);
         const AMap = (window as any).AMap;
         if (AMap) {
           try {
@@ -400,14 +402,14 @@ export default function ActiveTripView({
               if (convertStatus === 'complete' && convertResult.locations && convertResult.locations[0]) {
                 handlePositionUpdateRef.current(convertResult.locations[0].lng, convertResult.locations[0].lat, accuracy, speed);
               } else {
-                handlePositionUpdateRef.current(rawLng, rawLat, accuracy, speed);
+                handlePositionUpdateRef.current(converted.lng, converted.lat, accuracy, speed);
               }
             });
           } catch (err) {
-            handlePositionUpdateRef.current(rawLng, rawLat, accuracy, speed);
+            handlePositionUpdateRef.current(converted.lng, converted.lat, accuracy, speed);
           }
         } else {
-          handlePositionUpdateRef.current(rawLng, rawLat, accuracy, speed);
+          handlePositionUpdateRef.current(converted.lng, converted.lat, accuracy, speed);
         }
       };
 

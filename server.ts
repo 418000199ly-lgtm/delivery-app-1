@@ -1427,41 +1427,97 @@ async function startServer() {
       }
 
       const dbData = readLocalJsonDb();
-      let driverList: any[] = [];
+      let squadList: any[] = [];
+      let locationMap: Record<string, any> = {};
 
       if (isMySQLEnabled && mysqlPool) {
         try {
-          const [rows]: any = await mysqlPool.query(
+          const [squadRows]: any = await mysqlPool.query(
             'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
-            ['driver_users']
+            ['squad_members']
           );
-          driverList = (rows || []).map((r: any) => {
+          squadList = (squadRows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-            return { phone: r.doc_id, data };
+            return { phone: String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim(), data };
+          });
+
+          const [locRows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
+            ['driver_locations']
+          );
+          (locRows || []).forEach((r: any) => {
+            const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            const p = String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim();
+            if (p) locationMap[p] = data;
           });
         } catch (_) {}
       }
 
-      if (driverList.length === 0) {
-        const colData = dbData['driver_users'] || {};
-        driverList = Object.keys(colData).map((k) => ({ phone: k, data: colData[k] }));
+      if (squadList.length === 0) {
+        const colData = dbData['squad_members'] || {};
+        squadList = Object.keys(colData).map((k) => ({
+          phone: String(k).replace(/\D/g, '').trim(),
+          data: colData[k]
+        }));
       }
 
-      // Candidate drivers filter
+      const localLocations = dbData['driver_locations'] || {};
+      Object.keys(localLocations).forEach((k) => {
+        const p = String(k).replace(/\D/g, '').trim();
+        if (p && !locationMap[p]) {
+          locationMap[p] = localLocations[k];
+        }
+      });
+
+      // Always include developer driver 15509601222 if not present in squadList
+      if (!squadList.some((s) => s.phone === '15509601222')) {
+        const devDriverData = dbData['driver_users']?.['15509601222'] || {};
+        squadList.push({
+          phone: '15509601222',
+          data: {
+            ...devDriverData,
+            role: '开发者司机',
+            userRole: '开发者司机',
+            driverName: devDriverData.driverName || '吴彦祖',
+            status: '已通过'
+          }
+        });
+      }
+
+      // Candidate drivers filter (Strictly approved squad drivers only)
       const candidates: Array<{ phone: string; name: string; distKm: number; data: any }> = [];
 
-      driverList.forEach(({ phone, data }) => {
-        if (!data || data.isBanned) return;
-        if (reporterPhone && (phone === reporterPhone || phone === orderData.passengerPhone)) return;
+      squadList.forEach(({ phone, data }) => {
+        if (!phone || !data || data.isBanned) return;
+        if (reporterPhone && (phone === String(reporterPhone).replace(/\D/g, '').trim() || phone === String(orderData.passengerPhone).replace(/\D/g, '').trim())) return;
 
-        const isOnline = Boolean(data.isOnline || data.onlineOrdersEnabled);
+        // 1. Approval status check
+        const st = String(data.status || data.approvalStatus || '已通过').trim();
+        if (['已拒绝', 'rejected', '拒绝', '待审核', '未加入小队'].includes(st)) {
+          return;
+        }
+
+        // 2. Role check (must be one of: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机, 普通司机)
+        const role = String(data.role || data.userRole || data.approvedRole || '').trim();
+        if ((role.includes('商户') || role.includes('商家')) && !role.includes('司机') && !role.includes('管理')) {
+          return;
+        }
+        const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
+        const hasAllowedRole = allowedRoles.some((r) => role.includes(r)) || role === '' || phone === '15509601222';
+        if (!hasAllowedRole) {
+          return;
+        }
+
+        // 3. Online & not busy check
+        const loc = locationMap[phone] || {};
+        const isOnline = Boolean(loc.isOnline ?? data.isOnline);
         if (!isOnline) return;
 
-        const isBusy = Boolean(data.hasActiveOrder || data.currentStatus === 'serving');
+        const isBusy = Boolean(data.hasActiveOrder || data.currentStatus === 'serving' || data.isBusy || loc.isBusy);
         if (isBusy) return;
 
-        let dLat = Number(data.lat);
-        let dLng = Number(data.lng);
+        let dLat = Number(loc.lat ?? data.lat);
+        let dLng = Number(loc.lng ?? data.lng);
 
         if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
           dLat = 38.487167;
@@ -1475,7 +1531,7 @@ async function startServer() {
         if (distKm <= radiusKm) {
           candidates.push({
             phone,
-            name: data.driverName || data.name || '代驾司机',
+            name: data.driverName || data.name || (phone === '15509601222' ? '吴彦祖' : `司机${phone.slice(-4)}`),
             distKm,
             data
           });

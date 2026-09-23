@@ -72,91 +72,53 @@ export default function ReportTransferOrderModal({
       }
 
       // 2. Fetch candidate drivers from all sources
+      // 2. Fetch candidate drivers strictly from squad_members collection
       const squadPhones = new Set<string>();
+      const driverMap = new Map<string, any>();
+
+      // A. Read squad_members
       try {
         const squadSnap = await getDocs(collection(db, 'squad_members'));
         squadSnap.forEach(d => {
-          if (d.id) squadPhones.add(String(d.id).replace(/\D/g, '').trim());
-        });
-      } catch (_) {}
-
-      try {
-        const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-        if (Array.isArray(savedSq)) {
-          savedSq.forEach((m: any) => {
-            const p = typeof m === 'string' ? m : (m?.phone || m?.userPhone);
-            if (p) squadPhones.add(String(p).replace(/\D/g, '').trim());
-          });
-        }
-      } catch (_) {}
-
-      // Management roles
-      const managementPhones = new Set<string>();
-      try {
-        const teamSnap = await getDocs(collection(db, 'team_members'));
-        teamSnap.forEach(d => {
-          const data = d.data();
-          if (data && ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(data.role)) {
-            if (data.phone) managementPhones.add(String(data.phone).replace(/\D/g, '').trim());
-          }
-        });
-      } catch (_) {}
-
-      // Collect all driver candidates in a combined map
-      const driverMap = new Map<string, any>();
-
-      // A. Read driver_users
-      try {
-        const driverSnap = await getDocs(collection(db, 'driver_users'));
-        driverSnap.forEach(d => {
           if (d.id && d.data()) {
             const cleanId = String(d.id).replace(/\D/g, '').trim();
             if (cleanId) {
+              squadPhones.add(cleanId);
               driverMap.set(cleanId, { phone: cleanId, ...d.data() });
             }
           }
         });
       } catch (_) {}
 
-      // B. Read squad_members
+      // B. Fallback to local storage squad list if needed
       try {
-        const squadSnap = await getDocs(collection(db, 'squad_members'));
-        squadSnap.forEach(d => {
-          if (d.id && d.data()) {
-            const cleanId = String(d.id).replace(/\D/g, '').trim();
-            if (cleanId) {
-              const existing = driverMap.get(cleanId) || {};
-              driverMap.set(cleanId, { ...existing, ...d.data(), phone: cleanId });
+        const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+        if (Array.isArray(savedSq)) {
+          savedSq.forEach((m: any) => {
+            const p = typeof m === 'string' ? m : (m?.phone || m?.userPhone || m?.id);
+            const cleanP = String(p || '').replace(/\D/g, '').trim();
+            if (cleanP) {
+              squadPhones.add(cleanP);
+              if (!driverMap.has(cleanP)) {
+                driverMap.set(cleanP, { phone: cleanP, ...(typeof m === 'object' ? m : {}) });
+              }
             }
-          }
-        });
+          });
+        }
       } catch (_) {}
 
-      // C. Read driver_locations for real-time online status and GPS
-      try {
-        const locSnap = await getDocs(collection(db, 'driver_locations'));
-        locSnap.forEach(d => {
-          if (d.id && d.data()) {
-            const cleanId = String(d.id).replace(/\D/g, '').trim();
-            if (cleanId) {
-              const existing = driverMap.get(cleanId) || {};
-              driverMap.set(cleanId, { ...existing, ...d.data(), phone: cleanId });
-            }
-          }
-        });
-      } catch (_) {}
-
-      // D. Fallback to API if driverMap is empty
+      // C. Fallback to API if driverMap is empty
       if (driverMap.size === 0) {
         try {
           const baseUrl = getBaseApiUrl();
-          const res = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
+          const res = await fetch(`${baseUrl}/api/db/list?col=squad_members`);
           if (res.ok) {
             const json = await res.json();
             const rawList = Array.isArray(json) ? json : (json?.docs || json?.data || []);
             rawList.forEach((item: any) => {
               const dId = item?.id ? String(item.id).replace(/\D/g, '').trim() : '';
               if (dId) {
+                squadPhones.add(dId);
                 driverMap.set(dId, { phone: dId, ...(item.data || item) });
               }
             });
@@ -164,7 +126,27 @@ export default function ReportTransferOrderModal({
         } catch (_) {}
       }
 
-      // Filter candidates (Strictly EXCLUDING current reporter driver!)
+      // Always include master developer
+      squadPhones.add('15509601222');
+      if (!driverMap.has('15509601222')) {
+        driverMap.set('15509601222', { phone: '15509601222', name: '吴彦祖', role: '开发者司机', status: '已通过' });
+      }
+
+      // D. Read driver_locations for real-time online status and GPS
+      try {
+        const locSnap = await getDocs(collection(db, 'driver_locations'));
+        locSnap.forEach(d => {
+          if (d.id && d.data()) {
+            const cleanId = String(d.id).replace(/\D/g, '').trim();
+            if (cleanId && driverMap.has(cleanId)) {
+              const existing = driverMap.get(cleanId) || {};
+              driverMap.set(cleanId, { ...existing, ...d.data(), phone: cleanId });
+            }
+          }
+        });
+      } catch (_) {}
+
+      // Filter candidates (Strictly EXCLUDING current reporter driver and strictly squad members only!)
       const candidates: Array<{ phone: string; name: string; lat: number; lng: number; distKm: number }> = [];
 
       const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
@@ -192,13 +174,17 @@ export default function ReportTransferOrderModal({
           return;
         }
 
-        // 3. 必须属于小队成员、管理人员或入职司机
-        const isSquadOrManagement = squadPhones.has(targetPhone) || managementPhones.has(targetPhone) || targetPhone === '15509601222';
-        if (!isSquadOrManagement) return;
+        // 3. 必须属于小队成员（小队普通司机、城市派单员司机、城市管理司机、城市老板司机、开发者司机）
+        const isSquadDriver = squadPhones.has(targetPhone) || targetPhone === '15509601222';
+        if (!isSquadDriver) return;
 
-        // 4. 必须审核通过（未被拒绝或待审核）
+        const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
+        const hasAllowedRole = allowedRoles.some(r => dRole.includes(r)) || dRole === '' || targetPhone === '15509601222';
+        if (!hasAllowedRole) return;
+
+        // 4. 必须审核通过（未被拒绝或待审核或未加入小队）
         const st = String(data.status || data.approvalStatus || '已通过').trim();
-        if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
+        if (['已拒绝', 'rejected', '拒绝', '待审核', '未加入小队'].includes(st)) {
           return;
         }
 

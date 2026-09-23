@@ -9,6 +9,7 @@ import ReportTransferOrderModal from './ReportTransferOrderModal';
 import QRCode from 'qrcode';
 import { ensureAMapLoaded } from '../utils/amapLoader';
 import { getHighPrecisionLocationName } from '../utils/locationResolver';
+import { wgs84ToGcj02 } from '../utils/coordinateTransform';
 
 const MULTIPLIER_OPTIONS = Array.from({ length: 11 }, (_, i) => Number((1.0 + i * 0.1).toFixed(1))); // [1.0, 1.1, ..., 2.0]
 
@@ -112,49 +113,6 @@ const SvgQrCode = ({ seed, url }: { seed: number; url?: string }) => {
   );
 };
 
-const PI = 3.1415926535897932384626;
-const a_axis = 6378245.0; // Semi-major axis
-const ee_factor = 0.00669342162296594323; // Flattening factor
-
-function transformLat(x: number, y: number): number {
-  let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-  ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
-  ret += (20.0 * Math.sin(y * PI) + 40.0 * Math.sin(y / 3.0 * PI)) * 2.0 / 3.0;
-  ret += (160.0 * Math.sin(y / 12.0 * PI) + 320 * Math.sin(y * PI / 30.0)) * 2.0 / 3.0;
-  return ret;
-}
-
-function transformLng(x: number, y: number): number {
-  let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-  ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
-  ret += (20.0 * Math.sin(x * PI) + 40.0 * Math.sin(x / 3.0 * PI)) * 2.0 / 3.0;
-  ret += (150.0 * Math.sin(x / 12.0 * PI) + 300.0 * Math.sin(x / 30.0 * PI)) * 2.0 / 3.0;
-  return ret;
-}
-
-function outOfChina(lng: number, lat: number): boolean {
-  if (lng < 72.004 || lng > 137.8347) return true;
-  if (lat < 0.8293 || lat > 55.8271) return true;
-  return false;
-}
-
-function wgs84ToGcj02(lng: number, lat: number): { lng: number; lat: number } {
-  if (outOfChina(lng, lat)) {
-    return { lng, lat };
-  }
-  let dLat = transformLat(lng - 105.0, lat - 35.0);
-  let dLng = transformLng(lng - 105.0, lat - 35.0);
-  const radLat = lat / 180.0 * PI;
-  let magic = Math.sin(radLat);
-  magic = 1 - ee_factor * magic * magic;
-  const sqrtMagic = Math.sqrt(magic);
-  dLat = (dLat * 180.0) / ((a_axis * (1 - ee_factor)) / (magic * sqrtMagic) * PI);
-  dLng = (dLng * 180.0) / (a_axis / sqrtMagic * Math.cos(radLat) * PI);
-  const mgLat = lat + dLat;
-  const mgLng = lng + dLng;
-  return { lng: mgLng, lat: mgLat };
-}
-
 const getRobustLocation = (
   AMap: any,
   onSuccess: (gcjLng: number, gcjLat: number, isHighAccuracy: boolean, addressName?: string) => void,
@@ -165,74 +123,49 @@ const getRobustLocation = (
     return;
   }
 
-  let hasLowAccuracy = false;
   let hasHighAccuracy = false;
 
   const handleSuccess = (gcjLng: number, gcjLat: number, isHighAcc: boolean, addressName?: string) => {
     if (hasHighAccuracy) {
-      // High accuracy already achieved, ignore any incoming results
       return;
     }
-    if (isHighAcc) {
-      hasHighAccuracy = true;
-      clearTimeout(watchdog);
-      onSuccess(gcjLng, gcjLat, true, addressName);
-    } else {
-      if (!hasLowAccuracy) {
-        hasLowAccuracy = true;
-        onSuccess(gcjLng, gcjLat, false, addressName);
-      }
-    }
+    hasHighAccuracy = true;
+    clearTimeout(watchdog);
+    onSuccess(gcjLng, gcjLat, true, addressName);
   };
 
   const safeOnFailure = (err: any) => {
-    // If we already achieved some sort of location, don't trigger general failure
-    if (hasLowAccuracy || hasHighAccuracy) return;
+    if (hasHighAccuracy) return;
     clearTimeout(watchdog);
     onFailure(err);
   };
 
-  // Watchdog timer: If everything else fails or takes too long, fall back to city search
+  // Watchdog timer: If GPS takes too long, fall back to city search
   const watchdog = setTimeout(() => {
-    if (!hasLowAccuracy && !hasHighAccuracy) {
-      console.warn('⚡ [GPS Watchdog] Positioning took too long (>6s) or got stuck, triggering IP/City fallback!');
+    if (!hasHighAccuracy) {
+      console.warn('⚡ [GPS Watchdog] Positioning took too long (>6s), triggering IP/City fallback!');
       fallbackToCitySearch();
     }
-  }, 6000); // 6s watchdog to cover cellular base stations/GPS warm-up
+  }, 6000);
 
-  // 1. Fast Coarse/Cached positioning (Base station simulation)
+  // 1. High accuracy browser hardware GPS positioning (strictly converted to GCJ-02)
   if (typeof window !== 'undefined' && navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const rawLng = pos.coords.longitude;
         const rawLat = pos.coords.latitude;
         const converted = wgs84ToGcj02(rawLng, rawLat);
-        console.log('⚡ [Fast Network Geolocation] Resolved:', converted.lng, converted.lat);
-        handleSuccess(converted.lng, converted.lat, false);
-      },
-      (err) => {
-        console.warn('⚡ [Fast Network Geolocation] Failed:', err);
-      },
-      { enableHighAccuracy: false, timeout: 1200, maximumAge: 300000 } // use cache up to 5 mins for instant return
-    );
-
-    // 2. High accuracy browser GPS/Simulation positioning
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const rawLng = pos.coords.longitude;
-        const rawLat = pos.coords.latitude;
-        const converted = wgs84ToGcj02(rawLng, rawLat);
-        console.log('⚡ [Precise GPS Geolocation] Resolved:', converted.lng, converted.lat);
+        console.log('⚡ [Precise GPS Geolocation] Resolved GCJ-02:', converted.lng, converted.lat);
         handleSuccess(converted.lng, converted.lat, true);
       },
       (err) => {
         console.warn('⚡ [Precise GPS Geolocation] Failed:', err);
       },
-      { enableHighAccuracy: true, timeout: 3500, maximumAge: 0 } // fresh GPS reading
+      { enableHighAccuracy: true, timeout: 4000, maximumAge: 0 }
     );
   }
 
-  // 3. Gaode Map Geolocation plugin
+  // 2. Gaode Map Geolocation plugin
   AMap.plugin('AMap.Geolocation', () => {
     try {
       const geolocation = new AMap.Geolocation({
@@ -247,22 +180,19 @@ const getRobustLocation = (
 
       geolocation.getCurrentPosition((status: string, result: any) => {
         if (status === 'complete' && result.position) {
-          console.log('⚡ [AMap Geolocation] Resolved:', result.position.lng, result.position.lat);
-          const isHighAcc = result.location_type === 'gps' || result.location_type === 'html5';
-          handleSuccess(result.position.lng, result.position.lat, isHighAcc, result.formattedAddress);
+          console.log('⚡ [AMap Geolocation] Resolved GCJ-02:', result.position.lng, result.position.lat);
+          handleSuccess(result.position.lng, result.position.lat, true, result.formattedAddress);
         } else {
           console.warn('⚡ [AMap Geolocation] Failed:', status, result);
-          fallbackToCitySearch();
         }
       });
     } catch (e) {
       console.warn('⚡ [AMap Geolocation] Exception:', e);
-      fallbackToCitySearch();
     }
   });
 
   const fallbackToCitySearch = () => {
-    if (hasLowAccuracy || hasHighAccuracy) return;
+    if (hasHighAccuracy) return;
     AMap.plugin('AMap.CitySearch', () => {
       try {
         const citySearch = new AMap.CitySearch();
@@ -707,15 +637,15 @@ export default function CreateOrderView({
         (position) => {
           const rawLat = position.coords.latitude;
           const rawLng = position.coords.longitude;
-          prefetchedCoordsRef.current = { lng: rawLng, lat: rawLat };
-          console.log('⚡ Prefetched native GPS coordinates:', rawLng, rawLat);
+          const converted = wgs84ToGcj02(rawLng, rawLat);
+          prefetchedCoordsRef.current = { lng: converted.lng, lat: converted.lat };
+          console.log('⚡ Prefetched native GPS coordinates (GCJ-02):', converted.lng, converted.lat);
 
           const AMap = (window as any).AMap;
           const map = mapInstanceRef.current;
           // If map and AMap are already fully loaded, immediately update center & reverse-geocode
           if (map && AMap && !prefetchedGeocodedRef.current) {
             prefetchedGeocodedRef.current = true;
-            const converted = wgs84ToGcj02(rawLng, rawLat);
             const finalLng = converted.lng;
             const finalLat = converted.lat;
             
@@ -775,15 +705,14 @@ export default function CreateOrderView({
         const cachedLng = localStorage.getItem('dd_bg_driver_coords_lng');
         const hasCached = cachedLat && cachedLng;
 
-        // Fixed scale level 18: high-precision street & building block view as shown in user screenshot (图片gd)
+        // Fixed scale level 18: high-precision street & building block view
         const initialZoom = 18;
 
         const initialCenter = driverCoords && !isDefaultYinchuanCoords(driverCoords)
           ? [driverCoords.lng, driverCoords.lat]
-          : (hasCached ? [Number(cachedLng), Number(cachedLat)] : (prefetchedCoordsRef.current ? (() => {
-              const converted = wgs84ToGcj02(prefetchedCoordsRef.current.lng, prefetchedCoordsRef.current.lat);
-              return [converted.lng, converted.lat];
-            })() : [106.2350, 38.4830]));
+          : (prefetchedCoordsRef.current && !isDefaultYinchuanCoords(prefetchedCoordsRef.current)
+            ? [prefetchedCoordsRef.current.lng, prefetchedCoordsRef.current.lat]
+            : (hasCached ? [Number(cachedLng), Number(cachedLat)] : [106.2815, 38.4988]));
 
         // Initialize AMap strictly in 2D mode, with disabled manual rotatability/pitching
         const map = new AMap.Map(mapContainerRef.current, {
@@ -892,17 +821,17 @@ export default function CreateOrderView({
               prefetchedGeocodedRef.current = true;
               const { lng, lat } = prefetchedCoordsRef.current;
               console.log('⚡ Speeding up using pre-fetched native GPS coordinates:', lng, lat);
-              
-              const converted = wgs84ToGcj02(lng, lat);
-              reverseGeocodeCenter(converted.lng, converted.lat);
+              reverseGeocodeCenter(lng, lat);
               return true;
             }
             return false;
           };
 
-          // If we have driverCoords or cached background coordinates, use them immediately!
+          // If we have driverCoords or prefetched/cached background coordinates, use them immediately!
           if (driverCoords && !isDefaultYinchuanCoords(driverCoords)) {
             reverseGeocodeCenter(driverCoords.lng, driverCoords.lat);
+          } else if (prefetchedCoordsRef.current && !isDefaultYinchuanCoords(prefetchedCoordsRef.current)) {
+            reverseGeocodeCenter(prefetchedCoordsRef.current.lng, prefetchedCoordsRef.current.lat);
           } else if (hasCached) {
             reverseGeocodeCenter(Number(cachedLng), Number(cachedLat));
           } else {

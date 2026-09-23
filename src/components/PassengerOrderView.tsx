@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { db, doc, setDoc, getDoc, getDocs, collection, getBaseApiUrl } from '../lib/dbProxy';
 import { QrCode, MapPin, Phone, CheckCircle, Navigation, ShieldCheck, Car, Headphones, Smartphone, BellRing, Check, ArrowLeft, Flag, CreditCard, ShieldAlert, AlertTriangle, RefreshCw, Crown } from 'lucide-react';
 import { checkVipActive } from '../types';
+import { wgs84ToGcj02 } from '../utils/coordinateTransform';
 
 const FALLBACK_VIP_BANNER_SVG = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 360" width="100%" height="100%"><defs><linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="%231a0f0a"/><stop offset="50%" stop-color="%233d2212"/><stop offset="100%" stop-color="%23180d07"/></linearGradient><linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="%23fef08a"/><stop offset="50%" stop-color="%23f59e0b"/><stop offset="100%" stop-color="%23d97706"/></linearGradient><linearGradient id="card" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="rgba(255,215,0,0.15)"/><stop offset="100%" stop-color="rgba(255,140,0,0.05)"/></linearGradient></defs><rect width="800" height="360" fill="url(%23bg)"/><circle cx="700" cy="80" r="180" fill="none" stroke="rgba(245,158,11,0.1)" stroke-width="2"/><circle cx="700" cy="80" r="130" fill="none" stroke="rgba(245,158,11,0.15)" stroke-width="1.5"/><circle cx="100" cy="280" r="160" fill="none" stroke="rgba(245,158,11,0.08)" stroke-width="2"/><rect x="40" y="40" width="720" height="280" rx="20" fill="url(%23card)" stroke="rgba(245,158,11,0.3)" stroke-width="1.5"/><g fill="url(%23gold)"><path d="M400 80 L415 115 L450 115 L420 135 L432 170 L400 148 L368 170 L380 135 L350 115 L385 115 Z" opacity="0.9"/><path d="M380 65 L400 35 L420 65 L400 55 Z" opacity="0.95"/></g><text x="400" y="210" fill="url(%23gold)" font-family="sans-serif" font-weight="900" font-size="34" text-anchor="middle" letter-spacing="4">开通尊享会员 • 享无限开单</text><text x="400" y="255" fill="%23fef3c7" font-family="sans-serif" font-weight="600" font-size="20" text-anchor="middle" opacity="0.9" letter-spacing="2">专业代驾 • 安全到家 • 优先匹配</text><rect x="300" y="278" width="200" height="30" rx="15" fill="rgba(245,158,11,0.2)" stroke="rgba(245,158,11,0.5)" stroke-width="1"/><text x="400" y="298" fill="%23fbbf24" font-family="sans-serif" font-weight="800" font-size="14" text-anchor="middle">VIP PASSENGER SERVICE</text></svg>';
 
@@ -146,9 +147,10 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
       try {
         navigator.geolocation.getCurrentPosition(
           (pos) => {
+            const converted = wgs84ToGcj02(pos.coords.longitude, pos.coords.latitude);
             setPassengerCoords({
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude
+              lat: converted.lat,
+              lng: converted.lng
             });
           },
           (err) => {

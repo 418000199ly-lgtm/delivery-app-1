@@ -4,6 +4,7 @@ import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from
 import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
+import { wgs84ToGcj02 } from '../utils/coordinateTransform';
 import { 
   MapPin, 
   Phone, 
@@ -2393,7 +2394,10 @@ export default function MobileDispatchValetOrder({
 
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
-          (pos) => doReport(pos.coords.latitude, pos.coords.longitude),
+          (pos) => {
+            const converted = wgs84ToGcj02(pos.coords.longitude, pos.coords.latitude);
+            doReport(converted.lat, converted.lng);
+          },
           () => doReport(passengerCoords.lat, passengerCoords.lng),
           { enableHighAccuracy: true, timeout: 6000 }
         );
@@ -3085,38 +3089,75 @@ export default function MobileDispatchValetOrder({
     }
   };
 
-  // Combine real drivers (Only real squad drivers)
+  // Helper to check if a squad member/driver is authorized and approved
+  const isEligibleSquadDriver = (m: any) => {
+    if (!m) return false;
+    const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+    if (!phone) return false;
+
+    // 1. Check if in removed squad member phones
+    let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
+    try {
+      const savedRemoved = safeGetItem('dd_removed_squad_phones_v2');
+      if (savedRemoved) {
+        const parsed = JSON.parse(savedRemoved);
+        if (Array.isArray(parsed)) {
+          removedList = Array.from(new Set([...removedList, ...parsed]));
+        }
+      }
+    } catch (_) {}
+    if (removedList.some(p => String(p).replace(/\D/g, '').trim() === phone)) {
+      return false;
+    }
+
+    // 2. Check approval status (must be approved / 已通过)
+    const status = String(m.status || m.approvalStatus || '已通过').trim();
+    if (['已拒绝', 'rejected', '拒绝', '待审核', '未加入小队'].includes(status)) {
+      return false;
+    }
+
+    // 3. Check role (must be one of: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机, 普通司机)
+    const role = String(m.role || m.approvedRole || m.userRole || '').trim();
+    if ((role.includes('商户') || role.includes('商家')) && !role.includes('司机') && !role.includes('管理')) {
+      return false;
+    }
+    const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
+    const hasAllowedRole = allowedRoles.some(r => role.includes(r)) || role === '' || phone === '15509601222';
+    if (!hasAllowedRole) {
+      return false;
+    }
+
+    return true;
+  };
+
+  // Combine real drivers (Strictly Only Approved Squad Drivers)
   const getCombinedDrivers = () => {
     const driverMap = new Map<string, any>();
 
-    // 1. Add realDrivers who are online
-    realDrivers.forEach(d => {
-      if (d.phone && (d.isOnline === true || d.isOnline === 'true')) {
-        driverMap.set(d.phone, { ...d, isOnline: true });
-      }
-    });
-
-    // 2. Add squadMembers who are online
+    // 1. Add squadMembers who are approved and online
     squadMembers.forEach((sm: any) => {
-      if (sm.phone && (sm.isOnline === true || sm.isOnline === 'true')) {
-        const existing = driverMap.get(sm.phone) || {};
-        const st = sm.status || sm.approvalStatus || '已通过';
-        if (!['已拒绝', 'rejected', '拒绝'].includes(st)) {
-          driverMap.set(sm.phone, {
-            ...existing,
-            phone: sm.phone,
-            name: sm.name || sm.driverName || sm.realName || existing.name || `司机${sm.phone.slice(-4)}`,
-            lat: isValidCoords(sm.lat, sm.lng) ? sm.lat : existing.lat,
-            lng: isValidCoords(sm.lat, sm.lng) ? sm.lng : existing.lng,
-            isOnline: true,
-            isBusy: sm.isBusy === true || existing.isBusy === true,
-            role: sm.role || sm.approvedRole || existing.role || ''
-          });
-        }
+      const phone = String(sm.phone || sm.id || '').replace(/\D/g, '').trim();
+      if (!phone) return;
+      if (!isEligibleSquadDriver(sm)) return;
+
+      if (sm.isOnline === true || sm.isOnline === 'true') {
+        const existing = driverMap.get(phone) || {};
+        const dName = resolveDriverRealName(phone, sm.name || sm.driverName || sm.realName || existing.name);
+        driverMap.set(phone, {
+          ...existing,
+          ...sm,
+          phone,
+          name: dName,
+          lat: isValidCoords(sm.lat, sm.lng) ? sm.lat : existing.lat,
+          lng: isValidCoords(sm.lat, sm.lng) ? sm.lng : existing.lng,
+          isOnline: true,
+          isBusy: sm.isBusy === true || existing.isBusy === true,
+          role: sm.role || sm.approvedRole || existing.role || '普通司机'
+        });
       }
     });
 
-    // 3. Ensure currently logged-in driver status is registered accurately if online
+    // 2. Ensure currently logged-in driver status is registered accurately if online and approved
     const localIsOnline = typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : false;
     const hasActiveTrip = typeof window !== 'undefined' && Boolean(
       localStorage.getItem('dd_current_trip') ||
@@ -3129,9 +3170,12 @@ export default function MobileDispatchValetOrder({
     const localLng = lngStr && !isNaN(parseFloat(lngStr)) ? parseFloat(lngStr) : null;
 
     if (userPhone) {
-      if (localIsOnline) {
-        const smSelf = squadMembers.find((m: any) => m.phone === userPhone);
-        const selfRealName = smSelf?.name || smSelf?.driverName || smSelf?.realName || (adminProfile?.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机' && adminProfile.name !== '吴彦祖' ? adminProfile.name : `司机${userPhone.slice(-4)}`);
+      const cleanUserPhone = String(userPhone).replace(/\D/g, '').trim();
+      const smSelf = squadMembers.find((m: any) => String(m.phone || m.id || '').replace(/\D/g, '').trim() === cleanUserPhone);
+      const isEligible = cleanUserPhone === '15509601222' || (smSelf && isEligibleSquadDriver(smSelf));
+
+      if (localIsOnline && isEligible) {
+        const selfRealName = resolveDriverRealName(cleanUserPhone, smSelf?.name || smSelf?.driverName || smSelf?.realName || adminProfile?.name);
 
         let selfLat = localLat;
         let selfLng = localLng;
@@ -3140,30 +3184,29 @@ export default function MobileDispatchValetOrder({
           selfLng = smSelf.lng;
         }
 
-        const existing = driverMap.get(userPhone) || {};
-        driverMap.set(userPhone, {
+        const existing = driverMap.get(cleanUserPhone) || {};
+        driverMap.set(cleanUserPhone, {
           ...existing,
-          phone: userPhone,
+          phone: cleanUserPhone,
           name: selfRealName,
           lat: isValidCoords(selfLat, selfLng) ? selfLat : existing.lat,
           lng: isValidCoords(selfLat, selfLng) ? selfLng : existing.lng,
           isOnline: true,
           isBusy: hasActiveTrip,
           onlineOrdersEnabled: true,
-          role: adminProfile?.role || existing.role || '普通司机'
+          role: adminProfile?.role || smSelf?.role || existing.role || '普通司机'
         });
       } else {
-        // Driver is offline, remove from candidate dispatch map!
-        driverMap.delete(userPhone);
+        // Driver is offline or ineligible, remove from candidate dispatch map!
+        driverMap.delete(cleanUserPhone);
       }
     }
 
     const onlineRealDrivers = Array.from(driverMap.values());
 
     const listWithDistance = onlineRealDrivers.map(d => {
-      const sm = squadMembers.find((m: any) => m.phone === d.phone);
-      const realName = sm?.name || sm?.driverName || sm?.realName || (d.name && d.name !== '吴彦祖' && d.name !== '代驾司机' && d.name !== '在线代驾司机' ? d.name : null);
-      const cleanName = realName || (d.phone ? `小队司机(${d.phone.slice(-4)})` : '小队司机');
+      const sm = squadMembers.find((m: any) => String(m.phone || m.id || '').replace(/\D/g, '').trim() === d.phone);
+      const realName = resolveDriverRealName(d.phone, sm?.name || sm?.driverName || sm?.realName || d.name);
 
       let dLat = d.lat;
       let dLng = d.lng;
@@ -3179,7 +3222,7 @@ export default function MobileDispatchValetOrder({
 
       return {
         ...d,
-        name: cleanName,
+        name: realName,
         lat: dLat,
         lng: dLng,
         distance: dist
@@ -3244,12 +3287,12 @@ export default function MobileDispatchValetOrder({
 
       // Helper to verify driver eligibility for orders
       const isDriverEligible = (d: any) => {
-        const phone = d.phone ? String(d.phone).trim() : '';
+        const phone = d.phone ? String(d.phone).replace(/\D/g, '').trim() : '';
         if (!phone) return false;
 
         const isCurrentDriver = (
           phone === activePhone ||
-          (userPhone && phone === String(userPhone).trim())
+          (userPhone && phone === String(userPhone).replace(/\D/g, '').trim())
         );
 
         // 1. 处于报单页面的司机绝对不能接收商户代叫派单与报单转单派单
@@ -3262,52 +3305,25 @@ export default function MobileDispatchValetOrder({
           return localIsOnline && (!d.isBusy && d.isBusy !== 'true');
         }
 
-        // 2. Merchants/商家 are NEVER eligible as drivers to receive valet orders
-        const dRole = (d.role || d.userRole || d.approvedRole || '').trim();
-        const isPureMerchant = (dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理');
-        if (isPureMerchant) return false;
-
-        // 3. Check if in removedMemberPhones list
-        let removedList: string[] = typeof removedMemberPhones !== 'undefined' ? removedMemberPhones : [];
-        try {
-          const savedRemoved = safeGetItem('dd_removed_squad_phones_v2');
-          if (savedRemoved) {
-            const parsed = JSON.parse(savedRemoved);
-            if (Array.isArray(parsed)) {
-              removedList = Array.from(new Set([...removedList, ...parsed]));
-            }
-          }
-        } catch (_) {}
-
-        const isRemoved = removedList.some(p => {
-          const pStr = String(p).trim();
-          if (!pStr) return false;
-          if (phone && (pStr === phone || pStr.replace(/\D/g, '') === phone)) return true;
-          if (d.id && pStr === String(d.id).trim()) return true;
-          return false;
+        // 2. 必须是小队成员列表中已通过审核的司机（或开发者本人），严禁任何非小队成员接单！
+        const sm = squadMembers.find((m: any) => {
+          const smPhone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+          return smPhone === phone;
         });
-        if (isRemoved) return false;
 
-        // 4. MUST be an approved driver in squadMembers
-        const sm = squadMembers.find((m: any) => String(m.phone).trim() === phone || String(m.id).trim() === phone);
-        if (squadMembers && squadMembers.length > 0 && !sm) {
-          const rd = realDrivers.find((m: any) => String(m.phone).trim() === phone);
-          if (!rd) return false;
+        if (!sm && phone !== '15509601222') {
+          return false;
         }
 
-        if (sm) {
-          const st = sm.status || sm.approvalStatus || '已通过';
-          if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(st)) {
-            return false;
-          }
-          const smRole = (sm.role || sm.approvedRole || sm.userRole || '').trim();
-          const smIsPureMerchant = (smRole.includes('商户') || smRole.includes('商家')) && !smRole.includes('司机') && !smRole.includes('管理');
-          if (smIsPureMerchant) {
-            return false;
-          }
+        if (sm && !isEligibleSquadDriver(sm)) {
+          return false;
         }
 
-        // 5. Online & free check - strictly check isOnline and not busy
+        if (!isEligibleSquadDriver(d)) {
+          return false;
+        }
+
+        // 3. Online & free check - strictly check isOnline and not busy
         const isOnline = d.isOnline === true || d.isOnline === 'true';
         if (!isOnline) return false;
 

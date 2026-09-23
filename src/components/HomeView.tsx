@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS, findNearestKnownPoi } from '../utils/geocoding';
+import { wgs84ToGcj02 } from '../utils/coordinateTransform';
 import { 
   ShoppingBag, 
   Users, 
@@ -738,10 +739,11 @@ export default function HomeView({
     if (typeof window === 'undefined' || !('geolocation' in navigator)) return;
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        localStorage.setItem('dd_bg_driver_coords_lat', lat.toString());
-        localStorage.setItem('dd_bg_driver_coords_lng', lng.toString());
+        const rawLat = pos.coords.latitude;
+        const rawLng = pos.coords.longitude;
+        const converted = wgs84ToGcj02(rawLng, rawLat);
+        localStorage.setItem('dd_bg_driver_coords_lat', converted.lat.toString());
+        localStorage.setItem('dd_bg_driver_coords_lng', converted.lng.toString());
       },
       () => {},
       { enableHighAccuracy: true, timeout: 6000, maximumAge: 0 }
