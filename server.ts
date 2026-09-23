@@ -1211,7 +1211,8 @@ async function startServer() {
   // 5.5 Update Driver / Squad Member Name API (Alibaba Cloud Baota Server Panel)
   app.post('/api/driver/name', async (req, res) => {
     try {
-      const phone = String(req.body.phone || '').trim();
+      const rawPhone = String(req.body.phone || '').trim();
+      const phone = rawPhone.replace(/\D/g, '');
       const name = String(req.body.name || '').trim().slice(0, 8);
       if (!phone || !name) {
         return res.status(400).json({ success: false, error: 'Phone and name required' });
@@ -1219,15 +1220,15 @@ async function startServer() {
 
       if (isMySQLEnabled && mysqlPool) {
         try {
-          for (const col of ['driver_users', 'squad_members', 'driver_locations', 'online_applications']) {
+          for (const col of ['driver_users', 'squad_members', 'driver_locations', 'online_applications', 'squad_applications']) {
             const [rows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
               [col, phone]
             );
-            let merged: any = { phone, name, driverName: name, applicantName: name, lastUpdatedTime: new Date().toISOString() };
+            let merged: any = { phone, name, driverName: name, applicantName: name, realName: name, lastUpdatedTime: new Date().toISOString() };
             if (rows && rows.length > 0) {
               const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-              merged = { ...prev, name, driverName: name, applicantName: name, lastUpdatedTime: new Date().toISOString() };
+              merged = { ...prev, name, driverName: name, applicantName: name, realName: name, lastUpdatedTime: new Date().toISOString() };
             }
             await mysqlPool.query(
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
@@ -1239,11 +1240,38 @@ async function startServer() {
       }
 
       const dbData = readLocalJsonDb();
-      for (const col of ['driver_users', 'squad_members', 'driver_locations', 'online_applications']) {
+      for (const col of ['driver_users', 'squad_members', 'driver_locations', 'online_applications', 'squad_applications']) {
         if (!dbData[col]) dbData[col] = {};
         const prev = dbData[col][phone] || {};
-        dbData[col][phone] = { ...prev, name, driverName: name, applicantName: name, lastUpdatedTime: new Date().toISOString() };
+        dbData[col][phone] = { ...prev, name, driverName: name, applicantName: name, realName: name, lastUpdatedTime: new Date().toISOString() };
       }
+
+      // Update orders dispatched by or assigned to this driver/admin
+      for (const orderCol of ['merchant_orders', 'orders']) {
+        if (dbData[orderCol]) {
+          Object.keys(dbData[orderCol]).forEach((ordKey) => {
+            const ord = dbData[orderCol][ordKey];
+            if (!ord) return;
+            const dPhone = String(ord.driverPhone || '').replace(/\D/g, '');
+            const aPhone = String(ord.adminPhone || ord.dispatchedByPhone || ord.creatorPhone || ord.reporterPhone || '').replace(/\D/g, '');
+            let orderChanged = false;
+            if (dPhone === phone) {
+              ord.driverName = name;
+              ord.driverDisplayName = name;
+              orderChanged = true;
+            }
+            if (aPhone === phone) {
+              ord.adminName = name;
+              ord.dispatchedByName = name;
+              orderChanged = true;
+            }
+            if (orderChanged) {
+              dbData[orderCol][ordKey] = ord;
+            }
+          });
+        }
+      }
+
       writeLocalJsonDb(dbData);
 
       return res.json({ success: true, phone, name });

@@ -34,6 +34,7 @@ import {
   Flag,
   User,
   ChevronDown,
+  ChevronRight,
   Headphones,
   MoreVertical,
   UserPlus,
@@ -44,7 +45,7 @@ import {
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64 } from '../assets/images/driverImageConstants';
-import { getFormattedDispatcherName, resolveDriverRealName } from '../utils/nameResolver';
+import { getFormattedDispatcherName, resolveDriverRealName, updateDriverGlobalName } from '../utils/nameResolver';
 
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -543,6 +544,7 @@ export default function DispatchValetOrder({
   const [showOrderCenterModal, setShowOrderCenterModal] = useState(false);
   const [showTeamManagementModal, setShowTeamManagementModal] = useState(false);
   const [showApplicantApprovalModal, setShowApplicantApprovalModal] = useState(false);
+  const [selectedApplicantDetail, setSelectedApplicantDetail] = useState<any | null>(null);
   const [showConfirmClearOrdersModal, setShowConfirmClearOrdersModal] = useState(false);
 
   const handleExecuteClearAllOrders = async () => {
@@ -1700,34 +1702,22 @@ export default function DispatchValetOrder({
       return;
     }
 
+    // 1. Update globally across in-memory registry, localStorage, REST API, and dbProxy collections
+    await updateDriverGlobalName(targetPhone, finalName);
+
     // Sync adminProfile if editing self
     if (targetPhone === userPhone || (isCurrentDev && targetPhone === '15509601222')) {
       setAdminProfile(prev => ({ ...prev, name: finalName }));
-      localStorage.setItem('dd_admin_name', finalName);
-      localStorage.setItem('dd_user_name', finalName);
-      if (userPhone) {
-        localStorage.setItem(`dd_custom_app_name_${userPhone}`, finalName);
-      }
     }
-
-    // 1. Persist directly to Alibaba Cloud Baota REST API & MySQL
-    try {
-      const baseUrl = getBaseApiUrl();
-      await fetch(`${baseUrl}/api/driver/name`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: targetPhone, name: finalName })
-      });
-    } catch (_) {}
 
     // 2. Update local React state immediately so UI updates without external database/network dependency
     setSquadMembers(prev => {
       const exists = prev.some(m => m.phone === targetPhone);
       let updatedList = [];
       if (exists) {
-        updatedList = prev.map(m => m.phone === targetPhone ? { ...m, name: finalName, driverName: finalName } : m);
+        updatedList = prev.map(m => m.phone === targetPhone ? { ...m, name: finalName, driverName: finalName, realName: finalName } : m);
       } else {
-        updatedList = [...prev, { phone: targetPhone, name: finalName, driverName: finalName }];
+        updatedList = [...prev, { phone: targetPhone, name: finalName, driverName: finalName, realName: finalName }];
       }
       try {
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
@@ -1736,34 +1726,7 @@ export default function DispatchValetOrder({
     });
 
     // Also sync to applicants list if present
-    setApplicants(prev => prev.map(a => (a.phone === targetPhone || a.id === targetPhone) ? { ...a, name: finalName, applicantName: finalName } : a));
-
-    // 3. Update dbProxy collections
-    try {
-      if (targetPhone) {
-        setDoc(doc(db, 'squad_members', targetPhone), {
-          name: finalName,
-          driverName: finalName,
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'driver_users', targetPhone), {
-          driverName: finalName,
-          name: finalName,
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'driver_locations', targetPhone), {
-          driverName: finalName,
-          name: finalName
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'online_applications', targetPhone), {
-          applicantName: finalName,
-          name: finalName
-        }, { merge: true }).catch(() => {});
-      }
-    } catch (_) {}
+    setApplicants(prev => prev.map(a => (a.phone === targetPhone || a.id === targetPhone) ? { ...a, name: finalName, applicantName: finalName, driverName: finalName, realName: finalName } : a));
 
     onShowToast(`🎉 已成功将成员名字修改为：「${finalName}」！`);
     setEditingMemberPhone(null);
@@ -1849,71 +1812,27 @@ export default function DispatchValetOrder({
     }
 
     const finalName = trimmed.slice(0, 8); // Max 8 Chinese characters
+    const targetPhone = userPhone || '15509601222';
 
+    // 1. Update globally
+    await updateDriverGlobalName(targetPhone, finalName);
     setAdminProfile(prev => ({ ...prev, name: finalName }));
-    localStorage.setItem('dd_admin_name', finalName);
-    localStorage.setItem('dd_user_name', finalName);
-    if (userPhone) {
-      localStorage.setItem(`dd_custom_app_name_${userPhone}`, finalName);
-    }
-
-    // 1. Persist directly to Alibaba Cloud Baota REST API & MySQL
-    if (userPhone) {
-      try {
-        const baseUrl = getBaseApiUrl();
-        await fetch(`${baseUrl}/api/driver/name`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: userPhone, name: finalName })
-        });
-      } catch (_) {}
-    }
 
     // 2. Update local squadMembers and applicants state
-    if (userPhone) {
-      setSquadMembers(prev => {
-        const exists = prev.some(m => m.phone === userPhone);
-        let updatedList = [];
-        if (exists) {
-          updatedList = prev.map(m => m.phone === userPhone ? { ...m, name: finalName, driverName: finalName } : m);
-        } else {
-          updatedList = [...prev, { phone: userPhone, name: finalName, driverName: finalName, role: userRole || '开发者司机' }];
-        }
-        try {
-          localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
-        } catch (_) {}
-        return updatedList;
-      });
-      setApplicants(prev => prev.map(a => (a.phone === userPhone || a.id === userPhone) ? { ...a, name: finalName, applicantName: finalName } : a));
-    }
-
-    // 3. Update dbProxy documents
-    if (userPhone) {
-      try {
-        setDoc(doc(db, 'driver_users', userPhone), {
-          driverName: finalName,
-          name: finalName,
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'squad_members', userPhone), {
-          name: finalName,
-          driverName: finalName
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'driver_locations', userPhone), {
-          driverName: finalName,
-          name: finalName
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'online_applications', userPhone), {
-          applicantName: finalName,
-          name: finalName
-        }, { merge: true }).catch(() => {});
-      } catch (err) {
-        console.error('Failed to update admin name:', err);
+    setSquadMembers(prev => {
+      const exists = prev.some(m => m.phone === targetPhone);
+      let updatedList = [];
+      if (exists) {
+        updatedList = prev.map(m => m.phone === targetPhone ? { ...m, name: finalName, driverName: finalName, realName: finalName } : m);
+      } else {
+        updatedList = [...prev, { phone: targetPhone, name: finalName, driverName: finalName, realName: finalName, role: userRole || '开发者司机' }];
       }
-    }
+      try {
+        localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
+      } catch (_) {}
+      return updatedList;
+    });
+    setApplicants(prev => prev.map(a => (a.phone === targetPhone || a.id === targetPhone) ? { ...a, name: finalName, applicantName: finalName, driverName: finalName, realName: finalName } : a));
 
     setIsEditingAdminName(false);
     onShowToast(`🎉 已成功修改名字为：「${finalName}」！`);
@@ -4078,13 +3997,12 @@ export default function DispatchValetOrder({
 
       {/* Management Team Modal (管理团队) */}
       {showTeamManagementModal && (() => {
+        const activePhone = userPhone || '15509601222';
         const currentAdminRole = userRole || '开发者司机';
-        const currentAdminName = (adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机') ? adminProfile.name : '吴彦祖';
+        const currentAdminName = resolveDriverRealName(activePhone, adminProfile.name);
 
         // 固定超级管理员（仅绑定手机号15509601222，姓名支持改名）
-        const masterDevName = (userPhone === '15509601222' && adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机')
-          ? adminProfile.name
-          : (squadMembers.find((sm: any) => sm.phone === '15509601222')?.name || '吴彦祖');
+        const masterDevName = resolveDriverRealName('15509601222', activePhone === '15509601222' ? adminProfile.name : (squadMembers.find((sm: any) => sm.phone === '15509601222')?.name));
 
         const masterDevMember = {
           id: '15509601222',
@@ -4126,7 +4044,7 @@ export default function DispatchValetOrder({
 
         const membersMap = new Map<string, any>();
 
-        // 1. 始终优先包含超级管理员 15509601222 (吴彦祖，开发者司机，已通过)
+        // 1. 始终优先包含超级管理员 15509601222 (开发者司机，已通过)
         membersMap.set('15509601222', masterDevMember);
 
         // 2. 遍历真实 squadMembers (仅包含已审核通过的成员)
@@ -4139,7 +4057,7 @@ export default function DispatchValetOrder({
               const isMerchant = m.role === '商户、商家' || m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家');
               const memberName = isMerchant 
                 ? '商户、商家' 
-                : (m.name || m.driverName || m.realName || m.applicantName || (isMaster ? masterDevName : (m.phone === '15121904440' ? '李扬' : `司机${m.phone.slice(-4)}`)));
+                : (isMaster ? masterDevName : resolveDriverRealName(m.phone, m.name || m.driverName || m.realName || m.applicantName));
               const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (m.role || m.userRole || '普通司机');
 
               membersMap.set(m.phone, {
@@ -4167,10 +4085,10 @@ export default function DispatchValetOrder({
               const isMerchant = app.role === '商户、商家' || app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家');
               const memberName = isMerchant 
                 ? '商户、商家' 
-                : (app.name || app.driverName || app.realName || app.applicantName || existing?.name || (isMaster ? masterDevName : (app.phone === '15121904440' ? '李扬' : `司机${app.phone.slice(-4)}`)));
-              const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (app.role || existing?.role || '普通司机');
-              const approvedBy = app.approvedBy || existing?.approvedBy || currentAdminName;
-              const approvedRole = app.approvedRole || existing?.approvedRole || currentAdminRole;
+                : (isMaster ? masterDevName : resolveDriverRealName(app.phone, existing?.name || app.name || app.driverName || app.realName || app.applicantName));
+              const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (existing?.role || app.role || '普通司机');
+              const approvedBy = existing?.approvedBy || app.approvedBy || currentAdminName;
+              const approvedRole = existing?.approvedRole || app.approvedRole || currentAdminRole;
 
               membersMap.set(app.phone, {
                 id: app.id || app.phone,
@@ -5352,7 +5270,10 @@ export default function DispatchValetOrder({
             <div className="flex items-center gap-3">
               <button 
                 type="button"
-                onClick={() => setShowApplicantApprovalModal(false)}
+                onClick={() => {
+                  setShowApplicantApprovalModal(false);
+                  setSelectedApplicantDetail(null);
+                }}
                 className="active:scale-95 transition-transform hover:bg-[#f3f3f3] p-2 rounded-full flex items-center justify-center text-[#984800]"
                 title="返回"
               >
@@ -5388,124 +5309,191 @@ export default function DispatchValetOrder({
                 <p className="text-xs text-[#8b7263] mt-1">当有司机提交入队申请后，此处将自动显示并可审核审批</p>
               </div>
             ) : (
-              applicants.map((applicant) => (
-              <div 
-                key={applicant.id}
-                className="bg-white rounded-xl border border-[#e2e2e2] p-4 flex flex-col gap-3 shadow-xs"
-              >
-                <div className="flex justify-between items-start">
-                  <div className="flex flex-col">
-                    <span className="font-bold text-base text-[#1a1c1c]">{applicant.name}</span>
-                    <span className="text-sm text-[#584235] font-mono">{applicant.phone}</span>
-                  </div>
-                  <div className={`px-2.5 py-1 rounded text-xs font-bold ${
-                    applicant.status === '已通过' 
-                      ? 'bg-emerald-100 text-emerald-800' 
-                      : applicant.status === '已拒绝'
-                      ? 'bg-rose-100 text-rose-800'
-                      : 'bg-[#eeeeee] text-[#584235]'
-                  }`}>
-                    {applicant.status}
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-1">
-                  <label className="text-[11px] font-bold text-[#584235] uppercase tracking-wider">
-                    申请备注
-                  </label>
-                  <div className={`bg-white border border-[#e2e2e2] rounded-lg p-3 text-sm text-[#1a1c1c] ${!applicant.note ? 'italic opacity-60' : ''}`}>
-                    {applicant.note || '该申请人未填写具体备注。'}
-                  </div>
-                  <p className="text-[#584235]/70 text-[11px] px-1 flex items-center gap-1 mt-0.5">
-                    <Info className="w-3.5 h-3.5 shrink-0 text-[#584235]" />
-                    <span>备注越详细越能增加审核通过的概率</span>
-                  </p>
-                </div>
-
-                {applicant.status !== '待审核' && applicant.approvedBy && (
-                  <div className="bg-[#f9f9f9] border border-[#e2e2e2] rounded-lg p-2.5 text-xs text-[#584235] flex flex-col gap-1">
-                    <div className="flex items-center gap-1.5 font-bold text-[#1a1c1c]">
-                      <span>审批记录：</span>
-                      <span className="text-[#ff7d00]">{applicant.approvedBy}</span>
-                      <span className="text-[10px] bg-[#ff7d00]/10 text-[#ff7d00] px-1.5 py-0.2 rounded border border-[#ff7d00]/20">{applicant.approvedRole}</span>
+              <div className="space-y-2.5">
+                {applicants.map((applicant, index) => (
+                  <div 
+                    key={applicant.id || applicant.phone || index}
+                    onClick={() => setSelectedApplicantDetail(applicant)}
+                    className="bg-white rounded-xl border border-[#e2e2e2] hover:border-[#ff7d00] p-3.5 flex items-center justify-between shadow-xs cursor-pointer active:scale-[0.98] transition-all group"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                      <span className="text-sm sm:text-base font-bold text-[#1a1c1c] group-hover:text-[#ff7d00] transition-colors shrink-0">
+                        {index + 1}、{applicant.name}
+                      </span>
+                      <span className="text-xs sm:text-sm text-[#584235] font-mono shrink-0">
+                        {applicant.phone}
+                      </span>
                     </div>
-                    {applicant.approvalTime && (
-                      <span className="text-[11px] text-[#584235]/70">处理时间: {applicant.approvalTime}</span>
-                    )}
-                    {applicant.status === '已拒绝' && applicant.selectedReasons && applicant.selectedReasons.length > 0 && (
-                      <span className="text-rose-700 font-medium mt-0.5">不通过原因: {applicant.selectedReasons.join('，')}</span>
-                    )}
-                  </div>
-                )}
 
-                {applicant.status === '待审核' && (
-                  <div className="flex flex-col gap-2 pt-2">
-                    <button 
-                      type="button"
-                      onClick={() => handleApproveApplicant(applicant.id, applicant.name)}
-                      className="w-full bg-[#ff7d00] hover:bg-[#984800] text-white font-bold text-sm py-3 rounded-lg active:scale-95 transition-transform shadow-xs cursor-pointer flex items-center justify-center gap-1.5"
-                    >
-                      <span>审批通过</span>
-                    </button>
-                    <button 
-                      type="button"
-                      onClick={() => {
-                        if (!canReviewApplicants) {
-                          onShowToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核');
-                          return;
-                        }
-                        setApplicants(prev => prev.map(a => a.id === applicant.id ? { ...a, showReasons: !a.showReasons, selectedReasons: a.selectedReasons || [] } : a));
-                      }}
-                      className="w-full bg-white border border-[#ff7d00] text-[#ff7d00] font-bold text-sm py-3 rounded-lg active:scale-95 transition-transform cursor-pointer"
-                    >
-                      审批不通过
-                    </button>
-                  </div>
-                )}
-
-                {/* Rejection Reasons Panel */}
-                {applicant.status === '待审核' && applicant.showReasons && (
-                  <div className="flex flex-col gap-2 pt-2 border-t border-[#e2e2e2] mt-1 animate-in fade-in duration-200">
-                    <p className="text-xs font-bold text-[#584235]">选择不通过原因：</p>
-                    <div className="flex flex-wrap gap-2">
-                      {['备注填写不详细', '无法核实您的身份准确性'].map((reason) => {
-                        const isSelected = (applicant.selectedReasons || []).includes(reason);
-                        return (
-                          <div 
-                            key={reason}
-                            onClick={() => {
-                              setApplicants(prev => prev.map(a => {
-                                if (a.id !== applicant.id) return a;
-                                const currentReasons = a.selectedReasons || [];
-                                const reasons = isSelected 
-                                  ? currentReasons.filter(r => r !== reason)
-                                  : [...currentReasons, reason];
-                                return { ...a, selectedReasons: reasons };
-                              }));
-                            }}
-                            className={`cursor-pointer px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
-                              isSelected 
-                                ? 'border-[#ff7d00] bg-[#fff2e6] text-[#ff7d00] font-bold'
-                                : 'border-[#e2e2e2] bg-[#f3f3f3] text-[#584235] hover:border-[#ff7d00]'
-                            }`}
-                          >
-                            {reason}
-                          </div>
-                        );
-                      })}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`px-2.5 py-1 rounded text-xs font-bold ${
+                        applicant.status === '已通过' 
+                          ? 'bg-emerald-100 text-emerald-800' 
+                          : applicant.status === '已拒绝'
+                          ? 'bg-rose-100 text-rose-800'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {applicant.status}
+                      </span>
+                      <ChevronRight className="w-4 h-4 text-[#8b7263] group-hover:text-[#ff7d00] transition-colors" />
                     </div>
-                    <button 
-                      type="button"
-                      onClick={() => handleRejectApplicant(applicant.id, applicant.name)}
-                      className="mt-2 bg-[#ba1a1a] hover:bg-[#93000a] text-white font-bold text-sm py-2.5 rounded-lg active:opacity-80 transition-all shadow-xs cursor-pointer"
-                    >
-                      确认拒绝
-                    </button>
                   </div>
-                )}
+                ))}
               </div>
-            )))}
+            )}
           </main>
+
+          {/* Applicant Detail Popup Modal (w5 / w6) */}
+          {selectedApplicantDetail && (() => {
+            const applicant = applicants.find(a => a.id === selectedApplicantDetail.id || a.phone === selectedApplicantDetail.phone) || selectedApplicantDetail;
+            return (
+              <div 
+                className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-200"
+                onClick={() => setSelectedApplicantDetail(null)}
+              >
+                <div 
+                  className="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border border-[#e2e2e2] flex flex-col gap-4 animate-in zoom-in-95 duration-200 relative"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {/* Top Bar: Name, Phone, Status, and Close X */}
+                  <div className="flex justify-between items-start">
+                    <div className="flex flex-col">
+                      <h3 className="font-bold text-lg text-[#1a1c1c] tracking-tight">{applicant.name}</h3>
+                      <span className="text-sm text-[#584235] font-mono mt-0.5">{applicant.phone}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className={`px-2.5 py-1 rounded text-xs font-bold shrink-0 ${
+                        applicant.status === '已通过' 
+                          ? 'bg-emerald-100 text-emerald-800' 
+                          : applicant.status === '已拒绝'
+                          ? 'bg-rose-100 text-rose-800'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {applicant.status}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedApplicantDetail(null)}
+                        className="p-1 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-700 transition-colors cursor-pointer"
+                        title="关闭"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 申请备注 */}
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-bold text-[#584235]">
+                      申请备注
+                    </label>
+                    <div className={`bg-white border border-[#e2e2e2] rounded-xl p-3.5 text-sm text-[#1a1c1c] leading-relaxed shadow-xs ${!applicant.note ? 'italic opacity-60' : ''}`}>
+                      {applicant.note || '身份信息确认填写正确，申请加入小队！'}
+                    </div>
+                    <p className="text-[#584235]/70 text-[11px] px-1 flex items-center gap-1.5 mt-0.5">
+                      <Info className="w-3.5 h-3.5 shrink-0 text-[#584235]/70" />
+                      <span>备注越详细越能增加审核通过的概率</span>
+                    </p>
+                  </div>
+
+                  {/* 审批记录 (已处理) */}
+                  {applicant.status !== '待审核' && applicant.approvedBy && (
+                    <div className="bg-[#f9f9f9] border border-[#e2e2e2] rounded-xl p-3 text-xs text-[#584235] flex flex-col gap-1.5">
+                      <div className="flex items-center gap-1.5 font-bold text-[#1a1c1c]">
+                        <span>审批记录：</span>
+                        <span className="text-[#ff7d00]">{applicant.approvedBy}</span>
+                        <span className="text-[10px] bg-[#ff7d00]/10 text-[#ff7d00] px-1.5 py-0.5 rounded border border-[#ff7d00]/20 font-medium">
+                          {applicant.approvedRole || '开发者司机'}
+                        </span>
+                      </div>
+                      {applicant.approvalTime && (
+                        <span className="text-[11px] text-[#584235]/70">处理时间: {applicant.approvalTime}</span>
+                      )}
+                      {applicant.status === '已拒绝' && applicant.selectedReasons && applicant.selectedReasons.length > 0 && (
+                        <span className="text-rose-700 font-medium mt-0.5">不通过原因: {applicant.selectedReasons.join('，')}</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 待审核 状态下的审核操作按钮 */}
+                  {applicant.status === '待审核' && (
+                    <div className="flex flex-col gap-2 pt-1">
+                      <button 
+                        type="button"
+                        onClick={() => handleApproveApplicant(applicant.id, applicant.name)}
+                        className="w-full bg-[#ff7d00] hover:bg-[#984800] text-white font-bold text-sm py-3 rounded-xl active:scale-95 transition-transform shadow-xs cursor-pointer flex items-center justify-center gap-1.5"
+                      >
+                        <span>审批通过</span>
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={() => {
+                          if (!canReviewApplicants) {
+                            onShowToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核');
+                            return;
+                          }
+                          setApplicants(prev => prev.map(a => a.id === applicant.id ? { ...a, showReasons: !a.showReasons, selectedReasons: a.selectedReasons || [] } : a));
+                        }}
+                        className="w-full bg-white border border-[#ff7d00] text-[#ff7d00] font-bold text-sm py-3 rounded-xl active:scale-95 transition-transform cursor-pointer"
+                      >
+                        审批不通过
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 不通过原因选择 */}
+                  {applicant.status === '待审核' && applicant.showReasons && (
+                    <div className="flex flex-col gap-2 pt-2 border-t border-[#e2e2e2] mt-1 animate-in fade-in duration-200">
+                      <p className="text-xs font-bold text-[#584235]">选择不通过原因：</p>
+                      <div className="flex flex-wrap gap-2">
+                        {['备注填写不详细', '无法核实您的身份准确性'].map((reason) => {
+                          const isSelected = (applicant.selectedReasons || []).includes(reason);
+                          return (
+                            <div 
+                              key={reason}
+                              onClick={() => {
+                                setApplicants(prev => prev.map(a => {
+                                  if (a.id !== applicant.id) return a;
+                                  const currentReasons = a.selectedReasons || [];
+                                  const reasons = isSelected 
+                                    ? currentReasons.filter(r => r !== reason)
+                                    : [...currentReasons, reason];
+                                  return { ...a, selectedReasons: reasons };
+                                }));
+                              }}
+                              className={`cursor-pointer px-3 py-2 rounded-lg text-xs font-medium transition-all border ${
+                                isSelected 
+                                  ? 'border-[#ff7d00] bg-[#fff2e6] text-[#ff7d00] font-bold'
+                                  : 'border-[#e2e2e2] bg-[#f3f3f3] text-[#584235] hover:border-[#ff7d00]'
+                              }`}
+                            >
+                              {reason}
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => handleRejectApplicant(applicant.id, applicant.name)}
+                        className="mt-2 bg-[#ba1a1a] hover:bg-[#93000a] text-white font-bold text-sm py-2.5 rounded-xl active:opacity-80 transition-all shadow-xs cursor-pointer"
+                      >
+                        确认拒绝
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Close button */}
+                  <button
+                    type="button"
+                    onClick={() => setSelectedApplicantDetail(null)}
+                    className="w-full py-2.5 bg-[#f3f3f3] hover:bg-[#eaeaea] active:scale-95 text-[#584235] text-xs font-bold rounded-xl transition-all mt-1 cursor-pointer"
+                  >
+                    返回列表
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 

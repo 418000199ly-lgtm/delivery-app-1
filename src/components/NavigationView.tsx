@@ -387,7 +387,13 @@ export default function NavigationView({
       .replace(/^\([^)]+\)\s*/, '')
       .trim();
 
-    const cleanDest = destination && destination !== '请填写目的地（选填）' && destination !== '待指定安全目的地' && destination !== '未完成安全目的地设定'
+    const cleanDest = destination && 
+      destination !== '请填写目的地（选填）' && 
+      destination !== '待指定安全目的地' && 
+      destination !== '未完成安全目的地设定' &&
+      destination !== '未知' &&
+      !destination.startsWith('未知') &&
+      destination !== '待确定'
       ? destination.replace(/^\([^)]+\)\s*/, '').trim()
       : '建发大阅城';
 
@@ -467,7 +473,7 @@ export default function NavigationView({
         const safeCallback = (lng: number, lat: number) => {
           // If result points to Yinchuan Municipal Government (106.230912, 38.487193), redirect to Yunxiang Residential Quarter
           if (Math.abs(lng - 106.230912) < 0.002 && Math.abs(lat - 38.487193) < 0.002) {
-            safeCallback(106.2350, 38.4830);
+            onResolvedOrigin(106.2736, 38.4842);
             return;
           }
           onResolvedOrigin(lng, lat);

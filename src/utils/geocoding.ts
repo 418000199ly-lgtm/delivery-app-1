@@ -41,6 +41,10 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.5450, lng: 106.2150 } // 阅海湾 ~ 6.6km
   },
   {
+    keywords: ['眉山川菜（北门店）', '眉山川菜(北门店)', '眉山川菜北门店', '眉山川菜', '北关清真寺', '北塔东路'],
+    coords: { lat: 38.4988, lng: 106.2815 } // 兴庆区北塔东路与中山北街交汇处向北100米 眉山川菜（北门店）
+  },
+  {
     keywords: ['正源北街', '悦海新天地'],
     coords: { lat: 38.5120, lng: 106.2180 } // 悦海新天地 ~ 3.3km
   },
@@ -172,6 +176,19 @@ export function findNearestKnownPoi(coords?: { lat?: number; lng?: number } | nu
     }
   }
   return nearestName;
+}
+
+/**
+ * Checks if coordinates are default city-level fallback / centroid coordinates (e.g. Ningxia Museum or People Square)
+ */
+export function isDefaultYinchuanCoords(coords: { lat: number; lng: number } | null | undefined): boolean {
+  if (!coords || !isValidCoords(coords.lat, coords.lng)) return true;
+  // Ningxia Museum / Default centroid: 38.4830, 106.2350
+  if (Math.abs(coords.lat - 38.4830) < 0.003 && Math.abs(coords.lng - 106.2350) < 0.003) return true;
+  // Municipal Government / People Square centroid: 38.487193, 106.230912
+  if (Math.abs(coords.lat - 38.487193) < 0.003 && Math.abs(coords.lng - 106.230912) < 0.003) return true;
+  if (Math.abs(coords.lat - 38.487167) < 0.003 && Math.abs(coords.lng - 106.23091) < 0.003) return true;
+  return false;
 }
 
 /**

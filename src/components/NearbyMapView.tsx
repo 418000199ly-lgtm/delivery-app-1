@@ -117,6 +117,33 @@ export default function NearbyMapView({
     );
   });
 
+  // Listen for global driver name changes to update map markers instantly
+  useEffect(() => {
+    const handleNameChange = (e: any) => {
+      const { phone, name } = e.detail || {};
+      const cleanTargetPhone = String(phone || '').replace(/\D/g, '').trim();
+      const cleanMy = String(effectiveMyPhone || '').replace(/\D/g, '').trim();
+      if (cleanTargetPhone === cleanMy) {
+        setMySquadName(name);
+      }
+      // Trigger re-render of squadList
+      setSquadList(prev => prev.map(item => {
+        const itemPhone = String(item.phone || item.id || '').replace(/\D/g, '').trim();
+        if (itemPhone === cleanTargetPhone) {
+          return { ...item, name, driverName: name, realName: name };
+        }
+        return item;
+      }));
+    };
+
+    window.addEventListener('driver_name_changed', handleNameChange);
+    window.addEventListener('squad_members_updated', handleNameChange);
+    return () => {
+      window.removeEventListener('driver_name_changed', handleNameChange);
+      window.removeEventListener('squad_members_updated', handleNameChange);
+    };
+  }, [effectiveMyPhone]);
+
   // Resolve current driver's name based on squad application, Baota database, or settings
   const currentDriverName = resolveDriverRealName(
     effectiveMyPhone,
@@ -369,6 +396,7 @@ export default function NearbyMapView({
     }
 
     const fetchBaotaLocations = async () => {
+      if (document.hidden) return; // Background render throttling (Save battery)
       try {
         const baseUrl = getBaseApiUrl();
         const res = await fetch(`${baseUrl}/api/driver/locations`);
@@ -382,10 +410,20 @@ export default function NearbyMapView({
     };
 
     fetchBaotaLocations();
-    const interval = setInterval(fetchBaotaLocations, 4000); // 4s polling to catch all 20s uploads immediately
+    const interval = setInterval(fetchBaotaLocations, 4000); // 4s polling when visible
+
+    // Instant catchup when switching back to foreground
+    const handleVisibilityCatchup = () => {
+      if (!document.hidden) {
+        fetchBaotaLocations();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityCatchup);
+
     return () => {
       unsubscribe();
       clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityCatchup);
     };
   }, []);
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Clock, Bike } from 'lucide-react';
 import { TripState, BillingRules } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
-import { speakText, stopSpeaking } from '../utils/speech';
+import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
 import { isOrderAlreadyEnded } from '../utils/orderValidation';
 
@@ -59,13 +59,12 @@ export function getTTSBroadcastText(
   distanceText: string
 ): string {
   if (order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单') {
-    return `您有新的报单转单系统派单，直线距离 ${distanceText}，请及时处理！`;
+    return `您有新的报单转单系统派单，请及时处理！`;
   }
   if (order?.isPlatformDispatch) {
-    return `您有新的系统派单，直线距离 ${distanceText}，请及时处理！`;
+    return `您有新的系统派单，请及时处理！`;
   }
-  const priceStr = (approxPrice === '未知' || !approxPrice) ? '48' : `${approxPrice}`;
-  return `收到新订单！从 ${startLocation} 到 ${destination}，距离 ${distanceText}，预估金额 ${priceStr}元，请及时接单！`;
+  return `注意！收到新的代驾派单，请及时查看并确认接单！`;
 }
 
 export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
@@ -217,6 +216,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   useEffect(() => {
     let isActive = true;
     let timerId: any = null;
+
+    initAudioUnlock();
 
     const playSpeech = () => {
       if (!isActive) return;

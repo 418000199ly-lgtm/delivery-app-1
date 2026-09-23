@@ -141,8 +141,8 @@ export async function triggerBackgroundOrderAlert(order: any) {
   const now = Date.now();
   const lastAlertTime = notifiedOrderAlertMap.get(orderKey) || 0;
 
-  // Prevent duplicate notifications within 60 seconds for the exact same order
-  if (now - lastAlertTime < 60000) {
+  // Prevent duplicate notifications within 120 seconds for the exact same order
+  if (now - lastAlertTime < 120000) {
     return;
   }
   notifiedOrderAlertMap.set(orderKey, now);
@@ -150,7 +150,7 @@ export async function triggerBackgroundOrderAlert(order: any) {
   // Periodic cleanup of stale alert keys
   if (notifiedOrderAlertMap.size > 100) {
     for (const [k, time] of notifiedOrderAlertMap.entries()) {
-      if (now - time > 120000) {
+      if (now - time > 300000) {
         notifiedOrderAlertMap.delete(k);
       }
     }
@@ -217,7 +217,7 @@ export async function triggerBackgroundOrderAlert(order: any) {
       console.warn('[Notif] Native schedule error:', err);
     }
   } else if (typeof window !== 'undefined' && 'Notification' in window) {
-    // Web / PWA Notification
+    // Web / PWA Notification with strict single tag deduplication
     try {
       if (Notification.permission === 'granted') {
         const notif = new Notification(notifTitle, {
@@ -228,6 +228,8 @@ export async function triggerBackgroundOrderAlert(order: any) {
         });
         notif.onclick = () => {
           try { window.focus(); } catch (_) {}
+          setPendingOrderCache(order);
+          window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: order }));
           notif.close();
         };
       }

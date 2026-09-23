@@ -83,6 +83,32 @@ export default function SquadDriverList({
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // Listen for global driver name changes to update squad driver list instantly
+  useEffect(() => {
+    const handleNameChange = (e: any) => {
+      const { phone, name } = e.detail || {};
+      const cleanTargetPhone = String(phone || '').replace(/\D/g, '').trim();
+      const cleanMy = effectiveMyPhone.replace(/\D/g, '').trim();
+      if (cleanTargetPhone === cleanMy) {
+        setMySquadName(name);
+      }
+      setSquadList(prev => prev.map(item => {
+        const itemPhone = String(item.phone || item.id || '').replace(/\D/g, '').trim();
+        if (itemPhone === cleanTargetPhone) {
+          return { ...item, name, driverName: name, realName: name };
+        }
+        return item;
+      }));
+    };
+
+    window.addEventListener('driver_name_changed', handleNameChange);
+    window.addEventListener('squad_members_updated', handleNameChange);
+    return () => {
+      window.removeEventListener('driver_name_changed', handleNameChange);
+      window.removeEventListener('squad_members_updated', handleNameChange);
+    };
+  }, [effectiveMyPhone]);
+
   const isMeMember = (phoneOrId?: string) => {
     const clean = String(phoneOrId || '').replace(/\D/g, '').trim();
     const myClean = effectiveMyPhone.replace(/\D/g, '').trim();

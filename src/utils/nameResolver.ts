@@ -1,4 +1,5 @@
 import { db, collection, getDocs, doc, setDoc } from '../lib/dbProxy';
+import { getBaseApiUrl } from '../lib/dbProxy';
 
 /**
  * Common 2-character Chinese compound surnames (复姓)
@@ -6,6 +7,102 @@ import { db, collection, getDocs, doc, setDoc } from '../lib/dbProxy';
 const COMPOUND_SURNAMES = [
   '欧阳', '诸葛', '司马', '上官', '夏侯', '东方', '独孤', '南宫', '皇甫', '司徒', '尉迟', '公孙', '慕容', '宇文'
 ];
+
+// Global in-memory cache for customized driver names to ensure instantaneous, zero-latency reactive updates
+const driverCustomNameRegistry = new Map<string, string>();
+
+/**
+ * Update a driver's custom name globally across all storage layers, memory registries, and event buses
+ */
+export async function updateDriverGlobalName(phone: string, newName: string): Promise<string> {
+  const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+  const finalName = String(newName || '').trim().slice(0, 8);
+  if (!cleanPhone || !finalName) return finalName;
+
+  // 1. Update in-memory registry
+  driverCustomNameRegistry.set(cleanPhone, finalName);
+
+  // 2. Persist to localStorage keys
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(`dd_driver_name_${cleanPhone}`, finalName);
+      localStorage.setItem(`dd_admin_name_${cleanPhone}`, finalName);
+      localStorage.setItem(`dd_custom_app_name_${cleanPhone}`, finalName);
+      localStorage.setItem(`dd_applicant_name_${cleanPhone}`, finalName);
+      localStorage.setItem(`dd_user_name_${cleanPhone}`, finalName);
+
+      // Check if this is the active user
+      const currentUserPhone = (localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+      if (currentUserPhone === cleanPhone || cleanPhone === '15509601222') {
+        localStorage.setItem('dd_admin_name', finalName);
+        localStorage.setItem('dd_user_name', finalName);
+      }
+
+      // Update in dd_squad_members_v2
+      try {
+        const savedMembers = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+        if (Array.isArray(savedMembers)) {
+          const updated = savedMembers.map((m: any) => {
+            const mPhone = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+            if (mPhone === cleanPhone) {
+              return { ...m, name: finalName, driverName: finalName, realName: finalName, applicantName: finalName };
+            }
+            return m;
+          });
+          localStorage.setItem('dd_squad_members_v2', JSON.stringify(updated));
+        }
+      } catch (_) {}
+
+      // Update in dd_applicants_v2
+      try {
+        const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+        if (Array.isArray(savedApps)) {
+          const updatedApps = savedApps.map((a: any) => {
+            const aPhone = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
+            if (aPhone === cleanPhone) {
+              return { ...a, name: finalName, driverName: finalName, realName: finalName, applicantName: finalName };
+            }
+            return a;
+          });
+          localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
+        }
+      } catch (_) {}
+
+      // Broadcast window events for instant multi-view reactive updates
+      window.dispatchEvent(new CustomEvent('driver_name_changed', { detail: { phone: cleanPhone, name: finalName } }));
+      window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { phone: cleanPhone, name: finalName } }));
+    } catch (_) {}
+  }
+
+  // 3. Persist to Alibaba Cloud Baota REST API & MySQL
+  try {
+    const baseUrl = getBaseApiUrl();
+    fetch(`${baseUrl}/api/driver/name`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: cleanPhone, name: finalName })
+    }).catch(() => {});
+  } catch (_) {}
+
+  // 4. Update dbProxy / Firestore collections
+  try {
+    const timeStr = new Date().toLocaleString();
+    const updatePayload = {
+      name: finalName,
+      driverName: finalName,
+      realName: finalName,
+      applicantName: finalName,
+      lastUpdatedTime: timeStr
+    };
+    setDoc(doc(db, 'driver_users', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'squad_members', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'driver_locations', cleanPhone), { driverName: finalName, name: finalName }, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'online_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'squad_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+  } catch (_) {}
+
+  return finalName;
+}
 
 /**
  * 格式化司机隐藏名字为“X师傅”或“前缀+X师傅”：
@@ -63,9 +160,9 @@ export function formatDriverMaskedName(rawName?: string | null): string {
 
 /**
  * 权威解析指定手机号司机的真实姓名：
- * 1. 15509601222 默认是“吴彦祖”（支持自定义改名）
- * 2. 其他手机号（如 18695119126）优先读取申请时填写的真实姓名（如“李扬”），绝不与“吴彦祖”混淆
- * 3. 若无任何记录，回退为“司机”+后4位
+ * 1. 优先读取全局内存登记与专属存储中最新的自定义名字（例如 15509601222 更改为“吴彦”，15121904440 改为“周杰伦”，18695119126 改为“林俊杰”）
+ * 2. 默认兜底：15509601222 为“吴彦祖”，15121904440/18695119126 为“李扬”
+ * 3. 其他手机号回退为“司机”+后4位
  */
 export function resolveDriverRealName(
   phone?: string | null,
@@ -75,45 +172,40 @@ export function resolveDriverRealName(
   const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
   if (!cleanPhone) return '代驾司机';
 
-  // 15509601222 专属
   const isWu = cleanPhone === '15509601222';
-  // 18695119126 / 15121904440 为李扬
   const isLiYang = cleanPhone === '18695119126' || cleanPhone === '15121904440';
 
   const isValidCustomName = (name?: string | null): boolean => {
     if (!name) return false;
     const str = String(name).trim();
     if (!str) return false;
-    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机') return false;
+    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名') return false;
     if (str.startsWith('网页商户商家') || str.startsWith('商户商家')) return false;
-    // 非 15509601222 账号绝不能叫“吴彦祖”或“吴师傅”或带有“吴彦祖”
-    if (!isWu && (str === '吴彦祖' || str === '吴师傅' || str.includes('吴彦祖'))) return false;
-    // 如果是 18695119126，像“司机9126”这种临时兜底名绝不采纳，必须用“李扬”
+    // 非 15509601222 账号绝不能默认叫“吴彦祖”或“吴师傅”（除非被特意改名为吴彦祖相关）
+    if (!isWu && (str === '吴彦祖' || str === '吴师傅')) return false;
+    // 如果是 18695119126 或 15121904440，像“司机9126”这种临时兜底名绝不采纳
     if (isLiYang && (/^司机\d{4}$/.test(str) || str === `司机${cleanPhone.slice(-4)}`)) return false;
     return true;
   };
 
-  // 1. 如果有传入非通用候选名字，优先校验
-  const cleanCandidate = String(candidateName || '').trim();
-  if (isValidCustomName(cleanCandidate)) {
-    return cleanCandidate;
-  }
-
-  // 2. 检查 settings 中的名字
-  if (settings) {
-    const sName = String(settings.driverName || settings.name || '').trim();
-    if (isValidCustomName(sName)) {
-      return sName;
+  // 1. 检查全局内存注册表（最高优先级，保证改名瞬间全应用各界面统一同步）
+  if (driverCustomNameRegistry.has(cleanPhone)) {
+    const regName = driverCustomNameRegistry.get(cleanPhone);
+    if (isValidCustomName(regName)) {
+      return regName!;
     }
   }
 
-  // 3. 检查 localStorage 针对该手机号的专属存储
+  // 2. 检查 localStorage 针对该手机号的专属存储
   if (typeof window !== 'undefined') {
     const phoneSpecificName =
       localStorage.getItem(`dd_driver_name_${cleanPhone}`) ||
+      localStorage.getItem(`dd_admin_name_${cleanPhone}`) ||
+      localStorage.getItem(`dd_custom_app_name_${cleanPhone}`) ||
       localStorage.getItem(`dd_applicant_name_${cleanPhone}`) ||
-      localStorage.getItem(`dd_custom_app_name_${cleanPhone}`);
+      localStorage.getItem(`dd_user_name_${cleanPhone}`);
     if (isValidCustomName(phoneSpecificName)) {
+      driverCustomNameRegistry.set(cleanPhone, phoneSpecificName!);
       return phoneSpecificName!;
     }
 
@@ -124,6 +216,7 @@ export function resolveDriverRealName(
         const smObj = JSON.parse(smRaw);
         const nameVal = smObj?.name || smObj?.driverName || smObj?.realName;
         if (isValidCustomName(nameVal)) {
+          driverCustomNameRegistry.set(cleanPhone, nameVal);
           return nameVal;
         }
       }
@@ -142,6 +235,7 @@ export function resolveDriverRealName(
           if (match) {
             const mName = match.name || match.driverName || match.realName;
             if (isValidCustomName(mName)) {
+              driverCustomNameRegistry.set(cleanPhone, mName);
               return mName;
             }
           }
@@ -150,15 +244,34 @@ export function resolveDriverRealName(
     } catch (_) {}
   }
 
-  // 4. 固定账号默认
+  // 3. 如果传入了非通用候选名字，校验并采用
+  const cleanCandidate = String(candidateName || '').trim();
+  if (isValidCustomName(cleanCandidate)) {
+    driverCustomNameRegistry.set(cleanPhone, cleanCandidate);
+    return cleanCandidate;
+  }
+
+  // 4. 检查 settings 中的名字
+  if (settings) {
+    const sName = String(settings.driverName || settings.name || '').trim();
+    if (isValidCustomName(sName)) {
+      driverCustomNameRegistry.set(cleanPhone, sName);
+      return sName;
+    }
+  }
+
+  // 5. 固定账号默认
   if (isWu) {
     return '吴彦祖';
+  }
+  if (cleanPhone === '18695119126') {
+    return '李扬扬扬';
   }
   if (isLiYang) {
     return '李扬';
   }
 
-  // 5. 兜底格式
+  // 6. 兜底格式
   return `司机${cleanPhone.slice(-4)}`;
 }
 

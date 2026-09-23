@@ -547,7 +547,10 @@ export default function CreateOrderView({
 
   const isDefaultYinchuanCoords = (coords: { lat: number; lng: number } | null | undefined) => {
     if (!coords) return true;
-    return Math.abs(coords.lat - 38.487193) < 0.0001 && Math.abs(coords.lng - 106.230912) < 0.0001;
+    if (Math.abs(coords.lat - 38.487193) < 0.003 && Math.abs(coords.lng - 106.230912) < 0.003) return true;
+    if (Math.abs(coords.lat - 38.487167) < 0.003 && Math.abs(coords.lng - 106.23091) < 0.003) return true;
+    if (Math.abs(coords.lat - 38.4830) < 0.005 && Math.abs(coords.lng - 106.2350) < 0.005) return true;
+    return false;
   };
 
   // Check if current driver is an approved team member (只有已通过审批的小队司机才显示)
@@ -1244,9 +1247,38 @@ export default function CreateOrderView({
               };
 
               const resolveDest = (cb: (destParam: any) => void) => {
+                const destKeyword = pickupLoc.trim();
                 const rawDestLat = Number(activeOnlineOrder?.startLat ?? activeOnlineOrder?.passengerLat ?? activeOnlineOrder?.lat ?? activeOnlineOrder?.startCoords?.lat ?? activeOnlineOrder?.originCoords?.lat ?? activeOnlineOrder?.startLocationCoords?.lat);
                 const rawDestLng = Number(activeOnlineOrder?.startLng ?? activeOnlineOrder?.passengerLng ?? activeOnlineOrder?.lng ?? activeOnlineOrder?.startCoords?.lng ?? activeOnlineOrder?.originCoords?.lng ?? activeOnlineOrder?.startLocationCoords?.lng);
-                if (!isNaN(rawDestLat) && !isNaN(rawDestLng) && rawDestLat > 0 && rawDestLng > 0 && !isDefaultYinchuanCoords({ lat: rawDestLat, lng: rawDestLng })) {
+                const hasSpecificCoords = !isNaN(rawDestLat) && !isNaN(rawDestLng) && rawDestLat > 0 && rawDestLng > 0 && !isDefaultYinchuanCoords({ lat: rawDestLat, lng: rawDestLng });
+
+                // If pickupLoc has a specific name like "眉山川菜（北门店）", ALWAYS search placeSearch to ensure 100% precision!
+                if (destKeyword && !['起点', '当前位置', '银川', '我的当前位置'].includes(destKeyword)) {
+                  const placeSearch = new AMap.PlaceSearch({ city: registeredCity || '银川市', pageSize: 1 });
+                  placeSearch.search(destKeyword, (status: string, result: any) => {
+                    if (status === 'complete' && result.poiList && result.poiList.pois && result.poiList.pois.length > 0) {
+                      const loc = result.poiList.pois[0].location;
+                      cb(new AMap.LngLat(loc.lng, loc.lat));
+                    } else if (hasSpecificCoords) {
+                      cb(new AMap.LngLat(rawDestLng, rawDestLat));
+                    } else {
+                      const geocoder = new AMap.Geocoder({ city: registeredCity || '银川市' });
+                      geocoder.getLocation(destKeyword, (gStatus: string, gResult: any) => {
+                        if (gStatus === 'complete' && gResult.geocodes && gResult.geocodes[0]) {
+                          const loc = gResult.geocodes[0].location;
+                          cb(new AMap.LngLat(loc.lng, loc.lat));
+                        } else if (hasSpecificCoords) {
+                          cb(new AMap.LngLat(rawDestLng, rawDestLat));
+                        } else {
+                          cb({ keyword: destKeyword, city: registeredCity || '银川市' });
+                        }
+                      });
+                    }
+                  });
+                  return;
+                }
+
+                if (hasSpecificCoords) {
                   cb(new AMap.LngLat(rawDestLng, rawDestLat));
                   return;
                 }
@@ -1257,24 +1289,7 @@ export default function CreateOrderView({
                   return;
                 }
 
-                const destKeyword = pickupLoc.trim();
-                const placeSearch = new AMap.PlaceSearch({ city: registeredCity || '银川市', pageSize: 1 });
-                placeSearch.search(destKeyword, (status: string, result: any) => {
-                  if (status === 'complete' && result.poiList && result.poiList.pois && result.poiList.pois.length > 0) {
-                    const loc = result.poiList.pois[0].location;
-                    cb(new AMap.LngLat(loc.lng, loc.lat));
-                  } else {
-                    const geocoder = new AMap.Geocoder({ city: registeredCity || '银川市' });
-                    geocoder.getLocation(destKeyword, (gStatus: string, gResult: any) => {
-                      if (gStatus === 'complete' && gResult.geocodes && gResult.geocodes[0]) {
-                        const loc = gResult.geocodes[0].location;
-                        cb(new AMap.LngLat(loc.lng, loc.lat));
-                      } else {
-                        cb({ keyword: destKeyword, city: registeredCity || '银川市' });
-                      }
-                    });
-                  }
-                });
+                cb(new AMap.LngLat(106.2815, 38.4988));
               };
 
               resolveOrigin((originLngLat) => {
