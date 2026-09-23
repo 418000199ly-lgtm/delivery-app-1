@@ -279,6 +279,14 @@ export default function CreateOrderView({
           } catch (e) {
             console.error("Error cancelling merchant order in Firestore:", e);
           }
+          try {
+            const baseUrl = typeof window !== 'undefined' ? (window.location.origin.includes('localhost') ? 'http://localhost:3000' : window.location.origin) : '';
+            fetch(`${baseUrl}/api/order/cancel`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId: targetId, driverPhone: userPhone, reason: '司机取消订单' })
+            }).catch(() => {});
+          } catch (_) {}
         }
 
         try {

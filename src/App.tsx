@@ -1860,11 +1860,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const handleDeclineIncomingOrder = () => {
     if (!userPhone) return;
+    const cleanUserPhone = String(userPhone).replace(/\D/g, '').trim();
     clearPendingOrderCache();
     if (incomingOrder) {
-      const orderId = incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo;
+      const orderId = String(incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo || '').trim();
       const orderKey = orderId || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
+
+      // Record in driver's local storage so this order NEVER appears in this driver's 选单大厅
+      try {
+        const localDeclined = JSON.parse(localStorage.getItem(`dd_declined_orders_${cleanUserPhone}`) || '[]');
+        if (orderId && !localDeclined.includes(orderId)) {
+          localDeclined.push(orderId);
+          localStorage.setItem(`dd_declined_orders_${cleanUserPhone}`, JSON.stringify(localDeclined.slice(-100)));
+        }
+      } catch (_) {}
+
+      const existingDeclined = Array.isArray(incomingOrder.declinedDriverPhones) ? incomingOrder.declinedDriverPhones : [];
+      const existingTimeout = Array.isArray(incomingOrder.timeoutDriverPhones) ? incomingOrder.timeoutDriverPhones : [];
 
       const updateData = {
         status: 'hall',
@@ -1874,7 +1887,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         dispatchedDriverName: '',
         claimedDriverPhone: '',
         claimedDriverName: '',
-        driverName: ''
+        driverName: '',
+        declinedDriverPhones: Array.from(new Set([...existingDeclined, cleanUserPhone].filter(Boolean))),
+        timeoutDriverPhones: Array.from(new Set([...existingTimeout, cleanUserPhone].filter(Boolean))),
+        lastDeclinedAt: Date.now()
       };
 
       if (orderId) {
@@ -1884,11 +1900,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           });
         }
         const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/db/set`, {
+        fetch(`${baseUrl}/api/order/decline`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: updateData })
-        }).catch(() => {});
+          body: JSON.stringify({ orderId, driverPhone: cleanUserPhone })
+        }).catch(() => {
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: updateData })
+          }).catch(() => {});
+        });
       }
 
       try {
@@ -1909,7 +1931,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (_) {}
 
       try {
-        const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';
+        const ordersKey = cleanUserPhone ? `dd_driver_orders_${cleanUserPhone}` : 'dd_driver_orders';
         const savedDrv = JSON.parse(localStorage.getItem(ordersKey) || '[]');
         if (Array.isArray(savedDrv)) {
           let drvChanged = false;
@@ -1940,10 +1962,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     try {
       localStorage.removeItem('dd_active_incoming_order');
     } catch (_) {}
-    triggerToast('已放弃接单，订单已重置回【选单大厅】。');
+    triggerToast('已放弃接单，订单已转入选单大厅供其他小队司机抢单。');
     // Clear/delete the passenger link doc to finish the session
-    if (db && userPhone) {
-      deleteDoc(doc(db, 'passenger_links', userPhone)).catch(err => {
+    if (db && cleanUserPhone) {
+      deleteDoc(doc(db, 'passenger_links', cleanUserPhone)).catch(err => {
         console.error("Error clearing declined passenger order link document:", err);
       });
     }
@@ -1951,7 +1973,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     fetch(`${baseUrl}/api/db/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ collection: 'passenger_links', docId: userPhone })
+      body: JSON.stringify({ collection: 'passenger_links', docId: cleanUserPhone })
     }).catch(() => {});
   };
 

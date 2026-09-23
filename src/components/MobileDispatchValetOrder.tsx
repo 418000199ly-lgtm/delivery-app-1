@@ -47,7 +47,7 @@ import {
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64, DRIVER_MASCOT_BASE64 } from '../assets/images/driverImageConstants';
-import { getFormattedDispatcherName, resolveDriverRealName, formatDriverMaskedName, updateDriverGlobalName } from '../utils/nameResolver';
+import { getFormattedDispatcherName, resolveDriverRealName, formatDriverMaskedName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser } from '../utils/nameResolver';
 
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -236,7 +236,19 @@ const formatMerchantOrderNo = (data: any, idx?: number, totalCount?: number) => 
     return data.orderNo;
   }
   
-  const ts = data?.timestamp || (data?.id && !isNaN(Number(String(data.id).replace('MO_', ''))) ? Number(String(data.id).replace('MO_', '')) : Date.now());
+  let ts = Number(data?.timestamp || data?.dispatchedAt || data?.createdAt || 0);
+  if (!ts || isNaN(ts) || ts < 1577836800000) {
+    if (data?.id && String(data.id).startsWith('MO_')) {
+      const parsed = Number(String(data.id).replace('MO_', ''));
+      if (!isNaN(parsed) && parsed >= 1577836800000) {
+        ts = parsed;
+      }
+    }
+  }
+  if (!ts || isNaN(ts) || ts < 1577836800000) {
+    ts = Date.now();
+  }
+
   const dt = new Date(ts);
   const yyyy = dt.getFullYear();
   const mm = String(dt.getMonth() + 1).padStart(2, '0');
@@ -734,6 +746,11 @@ export default function MobileDispatchValetOrder({
 
   const handleExecuteClearAllOrders = async () => {
     setShowConfirmClearOrdersModal(false);
+    const clearNow = Date.now();
+    try {
+      localStorage.setItem('dd_merchant_orders_cleared_at', String(clearNow));
+    } catch (_) {}
+
     // 1. Instantly reset local state in UI
     setAllDispatchedOrders([]);
 
@@ -1507,10 +1524,10 @@ export default function MobileDispatchValetOrder({
             cancelReason: '商户派单管理员取消派单'
           }, { merge: true });
         }
-        fetch(`${baseUrl}/api/db/delete`, {
+        fetch(`${baseUrl}/api/order/cancel`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'merchant_orders', docId: cid })
+          body: JSON.stringify({ orderId: cid, driverPhone, reason: '商户派单管理员取消派单' })
         }).catch(() => {});
       } catch (e) {
         console.error("Error setting merchant order to cancelled:", e);
@@ -1803,7 +1820,15 @@ export default function MobileDispatchValetOrder({
   const canDeleteMember = (targetMember: any) => {
     if (!targetMember) return false;
     const targetPhone = String(targetMember.phone || targetMember.id || '').trim();
-    if (targetPhone === '15509601222') return false; // 严禁删除开发者
+    const cleanTargetPhone = targetPhone.replace(/\D/g, '');
+    const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+
+    // 0. 自己绝不能删除自己！例如：软件app登录账号是 15121904440，成员列表里面 15121904440 的删除组件按钮就自动隐藏
+    if (cleanTargetPhone && cleanUserPhone && cleanTargetPhone === cleanUserPhone) {
+      return false;
+    }
+
+    if (cleanTargetPhone === '15509601222' || targetPhone === '15509601222') return false; // 严禁删除开发者
 
     const isCurrentDev = userPhone === '15509601222' || userRole === '开发者司机' || userRole === '开发者' || userRole === '总指挥官' || adminProfile.role === '开发者司机';
     const isCurrentManagerOrBoss = userRole === '城市管理司机' || userRole === '城市管理' || userRole === '城市老板司机' || userRole === '城市老板' || adminProfile.role === '城市管理司机' || adminProfile.role === '城市老板司机';
@@ -2272,10 +2297,33 @@ export default function MobileDispatchValetOrder({
     fetchSquadFromHttp();
     const squadHttpInterval = setInterval(fetchSquadFromHttp, 2500);
 
-    const onCustomUpdate = () => {
+    const handleGlobalNameChange = (e: any) => {
+      const { phone, name } = e?.detail || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      if (cleanPhone) {
+        setSquadMembers(prev => prev.map(m => {
+          const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+          if (p === cleanPhone) {
+            return { ...m, name, driverName: name, realName: name };
+          }
+          return m;
+        }));
+        setApplicants(prev => prev.map(a => {
+          const p = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+          if (p === cleanPhone) {
+            return { ...a, name, applicantName: name, driverName: name, realName: name };
+          }
+          return a;
+        }));
+        if (cleanPhone === String(userPhone || '').replace(/\D/g, '').trim() || cleanPhone === '15509601222') {
+          if (name) setAdminProfile(prev => ({ ...prev, name }));
+        }
+      }
       fetchSquadFromHttp();
     };
-    window.addEventListener('squad_members_updated', onCustomUpdate);
+
+    window.addEventListener('driver_name_changed', handleGlobalNameChange);
+    window.addEventListener('squad_members_updated', handleGlobalNameChange);
 
     const unsubscribe = onSnapshot(collection(db, 'squad_members'), (snapshot) => {
       const phones: string[] = [];
@@ -2304,7 +2352,8 @@ export default function MobileDispatchValetOrder({
     });
     return () => {
       clearInterval(squadHttpInterval);
-      window.removeEventListener('squad_members_updated', onCustomUpdate);
+      window.removeEventListener('driver_name_changed', handleGlobalNameChange);
+      window.removeEventListener('squad_members_updated', handleGlobalNameChange);
       unsubscribe();
     };
   }, [userPhone]);
@@ -3506,6 +3555,7 @@ export default function MobileDispatchValetOrder({
         dispatcherRole: currentAdminRole,
         teamName: teamName,
         timestamp: ts,
+        dispatchedAt: ts,
         isValetOrder: true,
         isPlatformDispatch: true,
         status: chosenDriver ? 'dispatched' : 'hall',
@@ -4920,7 +4970,11 @@ export default function MobileDispatchValetOrder({
                       const isMerchantMember = member.role === '商户、商家' || member.role?.includes('商户') || member.role?.includes('商家');
                       const assignableRoles = getAllowedAssignRoles(member);
                       const canChangeRole = !isMerchantMember && assignableRoles.length > 0;
-                      const memberDisplayName = isMerchantMember ? '商户、商家' : member.name;
+                      const resolvedName = resolveDriverRealName(member.phone, member.name || member.driverName || member.realName);
+                      const memberDisplayName = isMerchantMember ? '商户、商家' : resolvedName;
+                      const cleanMemberPhone = String(member.phone || '').replace(/\D/g, '').trim();
+                      const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+                      const isSelfMember = Boolean(cleanMemberPhone && cleanUserPhone && cleanMemberPhone === cleanUserPhone);
 
                       if (isMerchantMember) {
                         return (
@@ -5081,7 +5135,7 @@ export default function MobileDispatchValetOrder({
                                 )}
                               </div>
 
-                              <span className="text-sm text-[#584235] font-mono">{member.phone}</span>
+                              <span className="text-sm text-[#584235] font-mono">{formatMemberDisplayPhone(member.phone, userPhone)}</span>
                               <span className="text-[10px] text-[#584235]/70 block truncate">
                                 {member.footprint}
                               </span>
@@ -5089,13 +5143,15 @@ export default function MobileDispatchValetOrder({
                           </div>
 
                           <div className="flex gap-2 shrink-0 ml-2">
-                            <a 
-                              href={`tel:${member.phone}`}
-                              className="w-10 h-10 flex items-center justify-center rounded-full bg-[#ff7d00]/10 text-[#ff7d00] hover:bg-[#ff7d00] hover:text-white transition-all active:scale-95"
-                              title="拨打电话"
-                            >
-                              <Phone className="w-4 h-4 fill-current" />
-                            </a>
+                            {!isPhoneMaskedForUser(member.phone, userPhone) && (
+                              <a 
+                                href={`tel:${member.phone}`}
+                                className="w-10 h-10 flex items-center justify-center rounded-full bg-[#ff7d00]/10 text-[#ff7d00] hover:bg-[#ff7d00] hover:text-white transition-all active:scale-95"
+                                title="拨打电话"
+                              >
+                                <Phone className="w-4 h-4 fill-current" />
+                              </a>
+                            )}
                             {canDeleteMember(member) && (
                               <button 
                                 type="button"
@@ -5872,10 +5928,10 @@ export default function MobileDispatchValetOrder({
                   >
                     <div className="flex items-center gap-2.5 min-w-0 pr-2">
                       <span className="text-sm sm:text-base font-bold text-[#1a1c1c] group-hover:text-[#ff7d00] transition-colors shrink-0">
-                        {index + 1}、{applicant.name}
+                        {index + 1}、{resolveDriverRealName(applicant.phone, applicant.name || applicant.applicantName || applicant.driverName)}
                       </span>
                       <span className="text-xs sm:text-sm text-[#584235] font-mono shrink-0">
-                        {applicant.phone}
+                        {formatMemberDisplayPhone(applicant.phone, userPhone)}
                       </span>
                     </div>
 
@@ -5912,8 +5968,8 @@ export default function MobileDispatchValetOrder({
                   {/* Top Bar: Name, Phone, Status, and Close X */}
                   <div className="flex justify-between items-start">
                     <div className="flex flex-col">
-                      <h3 className="font-bold text-lg text-[#1a1c1c] tracking-tight">{applicant.name}</h3>
-                      <span className="text-sm text-[#584235] font-mono mt-0.5">{applicant.phone}</span>
+                      <h3 className="font-bold text-lg text-[#1a1c1c] tracking-tight">{resolveDriverRealName(applicant.phone, applicant.name || applicant.applicantName || applicant.driverName)}</h3>
+                      <span className="text-sm text-[#584235] font-mono mt-0.5">{formatMemberDisplayPhone(applicant.phone, userPhone)}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className={`px-2.5 py-1 rounded text-xs font-bold shrink-0 ${

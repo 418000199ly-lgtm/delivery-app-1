@@ -792,15 +792,44 @@ export default function HomeView({
 
     const isOrderEligibleForHall = (data: any): boolean => {
       if (!data) return false;
+      const myPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
       const st = String(data.status || '').toLowerCase();
       const cat = String(data.statusCategory || '').toLowerCase();
-      const isCancelled = st === 'cancelled' || cat.includes('取消');
-      const isCompleted = st === 'completed' || cat.includes('完成') || cat.includes('结单');
-      const isClaimed = st === 'claimed' || st === 'accepted' || st === 'taken' || st === 'arrived' || st === 'serving' || cat.includes('已接单') || cat.includes('服务中');
-      const isDispatched = st === 'dispatched' || Boolean(data.dispatchedDriverPhone);
-
-      if (isCancelled || isCompleted || isClaimed || isDispatched) return false;
+      const isCancelled = st === 'cancelled' || cat.includes('取消') || Boolean(data.cancelledAt);
+      const isCompleted = st === 'completed' || cat.includes('完成') || cat.includes('结单') || Boolean(data.completedAt);
+      const isClaimed = st === 'claimed' || st === 'accepted' || st === 'taken' || st === 'arrived' || st === 'serving' || cat.includes('已接单') || cat.includes('服务中') || (Boolean(data.claimedDriverPhone) && data.claimedDriverPhone !== myPhone);
+      
+      // 1. 任何已被取消、已完成、或其他司机已抢单/接单的订单，绝对不显示在选单大厅！
+      if (isCancelled || isCompleted || isClaimed) return false;
       if (data.in_hall === false) return false;
+
+      // 2. 司机A超时未接单或主动点击取消订单后，该订单绝不进入司机A的选单大厅！
+      const declinedList = Array.isArray(data.declinedDriverPhones) ? data.declinedDriverPhones.map((p: any) => String(p).replace(/\D/g, '').trim()) : [];
+      const timeoutList = Array.isArray(data.timeoutDriverPhones) ? data.timeoutDriverPhones.map((p: any) => String(p).replace(/\D/g, '').trim()) : [];
+      if (myPhone && (declinedList.includes(myPhone) || timeoutList.includes(myPhone))) {
+        return false;
+      }
+
+      const oKey = String(data.id || data.orderId || data.orderNo || '').trim();
+      if (myPhone && oKey) {
+        try {
+          const localDeclined = JSON.parse(localStorage.getItem(`dd_declined_orders_${myPhone}`) || '[]');
+          if (Array.isArray(localDeclined) && localDeclined.includes(oKey)) {
+            return false;
+          }
+        } catch (_) {}
+      }
+
+      // 3. 检查是否有指派给其他司机且处于30秒强弹倒计时中的订单（若已超时30秒则自动开放给大厅抢单）
+      const dispatchedPhone = String(data.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+      if (dispatchedPhone && st !== 'hall' && data.in_hall !== true) {
+        const dispatchedAt = Number(data.dispatchedAt || data.timestamp || 0);
+        const elapsed = Date.now() - dispatchedAt;
+        if (dispatchedAt > 0 && elapsed < 30000) {
+          // 仍在30秒指派倒计时中，暂不进入选单大厅
+          return false;
+        }
+      }
 
       // 规则：选单大厅仅接收【报单转单】与【商户代叫】订单！
       // 司机自建的【报单】和乘客扫码自接单的【二维码创单】都是自己给自己开单，绝不进入选单大厅！
@@ -838,7 +867,6 @@ export default function HomeView({
 
       // 报单转单订单：转入选单大厅供所有其他司机抢单，但是订单绝对不要进入报单转单下单司机的选单大厅！
       if (isTransferOrder) {
-        const myPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
         const issuerPhones = [
           data.reporterPhone,
           data.merchantPhone,
@@ -864,6 +892,7 @@ export default function HomeView({
 
     const getValidHallOrdersFromLocal = () => {
       try {
+        const clearedAt = Number(localStorage.getItem('dd_merchant_orders_cleared_at') || 0);
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
         if (!Array.isArray(saved)) return [];
         const now = Date.now();
@@ -871,6 +900,7 @@ export default function HomeView({
         return saved.filter((o: any) => {
           if (!isOrderEligibleForHall(o)) return false;
           const orderTime = parseOrderTime(o);
+          if (clearedAt > 0 && orderTime > 0 && orderTime < clearedAt) return false;
           if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) return false;
           return true;
         });
@@ -1164,12 +1194,30 @@ export default function HomeView({
         claimedAt: Date.now()
       };
 
+      const baseUrl = getBaseApiUrl();
+
+      // Atomic grab attempt via server API
+      try {
+        const claimRes = await fetch(`${baseUrl}/api/order/claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: ord.id || ord.orderId || ord.orderNo,
+            driverPhone: userPhone,
+            driverName: currentDriverName,
+            orderPayload
+          })
+        });
+        if (claimRes.status === 409) {
+          alert('⚠️ 该订单已被其他小队司机抢走！');
+          return;
+        }
+      } catch (_) {}
+
       if (db) {
         await setDoc(doc(db, 'merchant_orders', ord.id), claimUpdateData, { merge: true }).catch(() => {});
       }
 
-      // Sync to HTTP server API (Baota / Aliyun backend)
-      const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

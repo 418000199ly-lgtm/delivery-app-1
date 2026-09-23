@@ -273,6 +273,7 @@ export default function ReportTransferOrderModal({
           destination: '',
           status: 'submitted',
           timestamp: Date.now(),
+          dispatchedAt: Date.now(),
           isValetOrder: true,
           isPlatformDispatch: true,
           orderRemark: '报单转单',

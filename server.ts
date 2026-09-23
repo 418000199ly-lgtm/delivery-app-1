@@ -1547,6 +1547,7 @@ async function startServer() {
         const selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
 
         const distText = selected.distKm < 0.05 ? '0米' : `${(selected.distKm * 1000).toFixed(0)}米`;
+        const nowTs = Date.now();
         const dispatchedPayload = {
           ...orderData,
           status: 'submitted',
@@ -1554,7 +1555,9 @@ async function startServer() {
           isPlatformDispatch: true,
           dispatchedDriverPhone: selected.phone,
           dispatchedDriverName: selected.name,
-          distanceText: distText
+          distanceText: distText,
+          dispatchedAt: nowTs,
+          timestamp: nowTs
         };
 
         // Write directly to passenger_links[selected.phone]
@@ -1566,7 +1569,9 @@ async function startServer() {
         dbData['merchant_orders'][orderId] = {
           ...dispatchedPayload,
           status: 'dispatched',
-          statusCategory: '已指派'
+          statusCategory: '已指派',
+          dispatchedAt: nowTs,
+          timestamp: nowTs
         };
 
         writeLocalJsonDb(dbData);
@@ -1581,13 +1586,15 @@ async function startServer() {
         });
       } else {
         // Order Lobby fallback
+        const nowTs = Date.now();
         const hallPayload = {
           ...orderData,
           status: 'hall',
           statusCategory: '等待接单',
           in_hall: true,
           isValetOrder: true,
-          isPlatformDispatch: true
+          isPlatformDispatch: true,
+          timestamp: nowTs
         };
 
         if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
@@ -1606,6 +1613,291 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
+
+  // 5.1 Atomic Order Grab / Claim from 选单大厅
+  app.post('/api/order/claim', async (req, res) => {
+    try {
+      const { orderId, driverPhone, driverName, orderPayload } = req.body;
+      const cleanOrderId = String(orderId || '').trim();
+      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      const cleanDriverName = String(driverName || `司机${cleanDriverPhone.slice(-4)}`).trim();
+
+      if (!cleanOrderId || !cleanDriverPhone) {
+        return res.status(400).json({ success: false, error: 'Missing orderId or driverPhone' });
+      }
+
+      const dbData = readLocalJsonDb();
+      if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+      const targetOrder = dbData['merchant_orders'][cleanOrderId];
+
+      // Check if order is already claimed or cancelled
+      if (targetOrder) {
+        const isClaimed = targetOrder.status === 'claimed' || targetOrder.status === 'serving' || targetOrder.status === 'completed' || targetOrder.in_hall === false || (Boolean(targetOrder.claimedDriverPhone) && targetOrder.claimedDriverPhone !== cleanDriverPhone);
+        const isCancelled = targetOrder.status === 'cancelled' || targetOrder.statusCategory === '已取消';
+        if (isClaimed || isCancelled) {
+          return res.status(409).json({ success: false, error: '⚠️ 该订单已被其他小队司机抢走！' });
+        }
+      }
+
+      const now = Date.now();
+      const claimUpdateData = {
+        ...(targetOrder || {}),
+        ...(orderPayload || {}),
+        id: cleanOrderId,
+        orderId: cleanOrderId,
+        status: 'claimed',
+        statusCategory: '已接单',
+        in_hall: false,
+        dispatchedDriverPhone: cleanDriverPhone,
+        dispatchedDriverName: cleanDriverName,
+        claimedDriverPhone: cleanDriverPhone,
+        claimedDriverName: cleanDriverName,
+        driverName: cleanDriverName,
+        claimedAt: now
+      };
+
+      dbData['merchant_orders'][cleanOrderId] = claimUpdateData;
+
+      // Also set passenger_links for this driver
+      if (!dbData['passenger_links']) dbData['passenger_links'] = {};
+      dbData['passenger_links'][cleanDriverPhone] = {
+        ...claimUpdateData,
+        status: 'submitted',
+        isDirectClaim: true
+      };
+
+      writeLocalJsonDb(dbData);
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['merchant_orders', cleanOrderId, JSON.stringify(claimUpdateData)]
+          );
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['passenger_links', cleanDriverPhone, JSON.stringify(dbData['passenger_links'][cleanDriverPhone])]
+          );
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, order: claimUpdateData });
+    } catch (err: any) {
+      console.error('[Order Claim Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 5.2 30-Second Timeout / Driver Decline Order Reclaim to 选单大厅
+  app.post('/api/order/decline', async (req, res) => {
+    try {
+      const { orderId, driverPhone } = req.body;
+      const cleanOrderId = String(orderId || '').trim();
+      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+
+      if (!cleanOrderId) {
+        return res.status(400).json({ success: false, error: 'Missing orderId' });
+      }
+
+      const dbData = readLocalJsonDb();
+      if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+      const targetOrder = dbData['merchant_orders'][cleanOrderId];
+
+      const existingDeclined = Array.isArray(targetOrder?.declinedDriverPhones) ? targetOrder.declinedDriverPhones : [];
+      const existingTimeout = Array.isArray(targetOrder?.timeoutDriverPhones) ? targetOrder.timeoutDriverPhones : [];
+
+      const now = Date.now();
+      const updateData = {
+        ...(targetOrder || {}),
+        status: 'hall',
+        in_hall: true,
+        statusCategory: '呼叫中',
+        dispatchedDriverPhone: '',
+        dispatchedDriverName: '',
+        claimedDriverPhone: '',
+        claimedDriverName: '',
+        driverName: '',
+        declinedDriverPhones: Array.from(new Set([...existingDeclined, cleanDriverPhone].filter(Boolean))),
+        timeoutDriverPhones: Array.from(new Set([...existingTimeout, cleanDriverPhone].filter(Boolean))),
+        lastDeclinedAt: now
+      };
+
+      dbData['merchant_orders'][cleanOrderId] = updateData;
+
+      if (cleanDriverPhone && dbData['passenger_links'] && dbData['passenger_links'][cleanDriverPhone]) {
+        delete dbData['passenger_links'][cleanDriverPhone];
+      }
+
+      writeLocalJsonDb(dbData);
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['merchant_orders', cleanOrderId, JSON.stringify(updateData)]
+          );
+          if (cleanDriverPhone) {
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['passenger_links', cleanDriverPhone]
+            );
+          }
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, order: updateData });
+    } catch (err: any) {
+      console.error('[Order Decline Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 5.2.2 ABSOLUTE Order Cancellation (Marks order as cancelled everywhere so it disappears from hall for ALL drivers)
+  app.post('/api/order/cancel', async (req, res) => {
+    try {
+      const orderId = String(req.body.orderId || req.body.id || '').trim();
+      const driverPhone = String(req.body.driverPhone || req.body.phone || '').replace(/\D/g, '').trim();
+      const cancelReason = String(req.body.reason || req.body.cancelReason || '订单已彻底取消').trim();
+
+      if (!orderId) {
+        return res.status(400).json({ success: false, error: 'Missing orderId' });
+      }
+
+      console.log(`[Order Cancel] Permanent cancellation for orderId: ${orderId}`);
+
+      const now = Date.now();
+      const cancelPayload = {
+        status: 'cancelled',
+        statusCategory: '已取消',
+        in_hall: false,
+        cancelledAt: now,
+        cancelReason: cancelReason
+      };
+
+      const dbData = readLocalJsonDb();
+      
+      // Update merchant_orders
+      if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+      const targetMerchant = dbData['merchant_orders'][orderId] || {};
+      dbData['merchant_orders'][orderId] = {
+        ...targetMerchant,
+        ...cancelPayload
+      };
+
+      // Update valet_orders if exists
+      if (!dbData['valet_orders']) dbData['valet_orders'] = {};
+      if (dbData['valet_orders'][orderId]) {
+        dbData['valet_orders'][orderId] = {
+          ...dbData['valet_orders'][orderId],
+          ...cancelPayload
+        };
+      }
+
+      // Update orders if exists
+      if (!dbData['orders']) dbData['orders'] = {};
+      if (dbData['orders'][orderId]) {
+        dbData['orders'][orderId] = {
+          ...dbData['orders'][orderId],
+          ...cancelPayload
+        };
+      }
+
+      // Clear from passenger_links for associated driver
+      const assignedDriver = driverPhone || targetMerchant.dispatchedDriverPhone || targetMerchant.claimedDriverPhone;
+      if (assignedDriver && dbData['passenger_links'] && dbData['passenger_links'][assignedDriver]) {
+        delete dbData['passenger_links'][assignedDriver];
+      }
+
+      writeLocalJsonDb(dbData);
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const mergedData = JSON.stringify(dbData['merchant_orders'][orderId]);
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['merchant_orders', orderId, mergedData]
+          );
+          if (assignedDriver) {
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['passenger_links', assignedDriver]
+            );
+          }
+        } catch (_) {}
+      }
+
+      return res.json({ success: true, orderId, order: dbData['merchant_orders'][orderId] });
+    } catch (err: any) {
+      console.error('[Order Cancel Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 5.3 Automated 30s Timeout Daemon for Offline/Exited/Uninstalled App Drivers
+  setInterval(async () => {
+    try {
+      const now = Date.now();
+      const dbData = readLocalJsonDb();
+      const merchantOrders = dbData['merchant_orders'] || {};
+      let hasChanges = false;
+
+      for (const [orderId, order] of Object.entries<any>(merchantOrders)) {
+        if (!order) continue;
+        const isDispatched = (
+          order.status === 'dispatched' || 
+          (order.status === 'submitted' && Boolean(order.dispatchedDriverPhone))
+        ) && !order.claimedAt && order.status !== 'claimed' && order.status !== 'serving' && order.status !== 'completed' && order.status !== 'cancelled' && order.in_hall !== true;
+
+        if (isDispatched && order.dispatchedDriverPhone) {
+          const dispatchedTime = Number(order.dispatchedAt || order.timestamp || 0);
+          // 30 seconds timeout
+          if (dispatchedTime > 0 && (now - dispatchedTime) >= 30000) {
+            const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, '').trim();
+            const existingDeclined = Array.isArray(order.declinedDriverPhones) ? order.declinedDriverPhones : [];
+            const existingTimeout = Array.isArray(order.timeoutDriverPhones) ? order.timeoutDriverPhones : [];
+
+            const updatedOrder = {
+              ...order,
+              status: 'hall',
+              in_hall: true,
+              statusCategory: '呼叫中',
+              dispatchedDriverPhone: '',
+              dispatchedDriverName: '',
+              declinedDriverPhones: Array.from(new Set([...existingDeclined, timedOutDriverPhone].filter(Boolean))),
+              timeoutDriverPhones: Array.from(new Set([...existingTimeout, timedOutDriverPhone].filter(Boolean))),
+              lastTimeoutAt: now
+            };
+
+            merchantOrders[orderId] = updatedOrder;
+            hasChanges = true;
+
+            if (dbData['passenger_links'] && dbData['passenger_links'][timedOutDriverPhone]) {
+              delete dbData['passenger_links'][timedOutDriverPhone];
+            }
+
+            if (isMySQLEnabled && mysqlPool) {
+              try {
+                await mysqlPool.query(
+                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                  ['merchant_orders', orderId, JSON.stringify(updatedOrder)]
+                );
+                await mysqlPool.query(
+                  'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+                  ['passenger_links', timedOutDriverPhone]
+                );
+              } catch (_) {}
+            }
+          }
+        }
+      }
+
+      if (hasChanges) {
+        writeLocalJsonDb(dbData);
+      }
+    } catch (e) {
+      // Ignore background interval errors
+    }
+  }, 2500);
 
   // 6. ADD Document (auto-generated ID)
   app.post('/api/db/add', async (req, res) => {

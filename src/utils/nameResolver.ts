@@ -276,6 +276,49 @@ export function resolveDriverRealName(
 }
 
 /**
+ * 手机号脱敏/加密显示格式化：例如 15509601222 -> 155****1222
+ */
+export function formatMaskedPhone(phone?: string | null): string {
+  if (!phone) return '****';
+  const clean = String(phone).replace(/\D/g, '').trim();
+  if (clean.length === 11) {
+    return `${clean.slice(0, 3)}****${clean.slice(-4)}`;
+  }
+  if (clean.length >= 7) {
+    return `${clean.slice(0, 3)}****${clean.slice(-2)}`;
+  }
+  return clean || '****';
+}
+
+/**
+ * 成员列表及申请审批列表中手机号显示规则：
+ * 只有小队内其他管理人员/成员看见的手机号码，只对 15509601222 实行脱敏显示 155****1222；
+ * 其他司机（例如 15121904440、18695119126 等）的手机号码一律不实行脱敏，正常显示完整手机号。
+ * 若当前登录 App 的账号本身就是 15509601222，则看自己也显示完整手机号 15509601222。
+ */
+export function formatMemberDisplayPhone(targetPhone?: string | null, currentAppUserPhone?: string | null): string {
+  if (!targetPhone) return '';
+  const cleanTarget = String(targetPhone).replace(/\D/g, '').trim();
+  const cleanCurrent = String(currentAppUserPhone || '').replace(/\D/g, '').trim();
+
+  // 只有目标手机号是 15509601222，且当前登录账号不是 15509601222 时，才进行脱敏
+  if (cleanTarget === '15509601222' && cleanCurrent !== '15509601222') {
+    return formatMaskedPhone(targetPhone);
+  }
+  return String(targetPhone);
+}
+
+/**
+ * 判断某个目标手机号对于当前登录用户是否处于脱敏隐藏状态（如 15509601222 被脱敏时为 true）
+ */
+export function isPhoneMaskedForUser(targetPhone?: string | null, currentAppUserPhone?: string | null): boolean {
+  if (!targetPhone) return false;
+  const cleanTarget = String(targetPhone).replace(/\D/g, '').trim();
+  const cleanCurrent = String(currentAppUserPhone || '').replace(/\D/g, '').trim();
+  return cleanTarget === '15509601222' && cleanCurrent !== '15509601222';
+}
+
+/**
  * 格式化派单人名称：
  * - 软件app里商户代叫下单：例如 15509601222商户代叫下单就显示派单人：吴彦祖1222；18695119126下单显示：李扬9126
  * - 商户代叫（手机网页版）下单：例如 15509601222/15509601222A下单显示：商户商家1222
