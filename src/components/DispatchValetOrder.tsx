@@ -42,11 +42,12 @@ import {
   Filter,
   SlidersHorizontal,
   ShieldCheck,
-  Store
+  Store,
+  Copy
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64 } from '../assets/images/driverImageConstants';
-import { getFormattedDispatcherName, resolveDriverRealName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser } from '../utils/nameResolver';
+import { getFormattedDispatcherName, resolveDriverRealName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName } from '../utils/nameResolver';
 
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -635,6 +636,39 @@ export default function DispatchValetOrder({
     window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
     window.dispatchEvent(new CustomEvent('valet_orders_updated'));
     onShowToast('🧹 商户代叫订单中心所有订单已彻底一键清空！');
+  };
+
+  // Copy applicant phone helper
+  const handleCopyApplicantPhone = (phone: string) => {
+    const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+    if (!cleanPhone) return;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cleanPhone).then(() => {
+          onShowToast(`📋 手机号 ${cleanPhone} 复制成功！`);
+        }).catch(() => {
+          const input = document.createElement('input');
+          input.setAttribute('value', cleanPhone);
+          input.value = cleanPhone;
+          document.body.appendChild(input);
+          input.select();
+          document.execCommand('copy');
+          document.body.removeChild(input);
+          onShowToast(`📋 手机号 ${cleanPhone} 复制成功！`);
+        });
+      } else {
+        const input = document.createElement('input');
+        input.setAttribute('value', cleanPhone);
+        input.value = cleanPhone;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+        onShowToast(`📋 手机号 ${cleanPhone} 复制成功！`);
+      }
+    } catch (_) {
+      onShowToast(`📋 手机号已复制: ${cleanPhone}`);
+    }
   };
 
   // Applicants for squad join approval (团队审核 - 申请审批)
@@ -2057,6 +2091,7 @@ export default function DispatchValetOrder({
         if (data.isBanned) return;
         
         const dName = resolveDriverRealName(docSnap.id, data.driverName || data.name);
+        if (dName && docSnap.id) registerDriverCustomName(docSnap.id, dName);
 
         list.push({
           phone: docSnap.id,
@@ -2099,10 +2134,12 @@ export default function DispatchValetOrder({
       const phones: string[] = [];
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
+        const dData = docSnap.data();
+        if (dData.name && docSnap.id) registerDriverCustomName(docSnap.id, dData.name);
         phones.push(docSnap.id);
         list.push({
           phone: docSnap.id,
-          ...docSnap.data()
+          ...dData
         });
 
         if (userPhone && docSnap.id === userPhone) {
@@ -5394,35 +5431,59 @@ export default function DispatchValetOrder({
               </div>
             ) : (
               <div className="space-y-2.5">
-                {applicants.map((applicant, index) => (
-                  <div 
-                    key={applicant.id || applicant.phone || index}
-                    onClick={() => setSelectedApplicantDetail(applicant)}
-                    className="bg-white rounded-xl border border-[#e2e2e2] hover:border-[#ff7d00] p-3.5 flex items-center justify-between shadow-xs cursor-pointer active:scale-[0.98] transition-all group"
-                  >
-                    <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                      <span className="text-sm sm:text-base font-bold text-[#1a1c1c] group-hover:text-[#ff7d00] transition-colors shrink-0">
-                        {index + 1}、{resolveDriverRealName(applicant.phone, applicant.name || applicant.applicantName || applicant.driverName)}
-                      </span>
-                      <span className="text-xs sm:text-sm text-[#584235] font-mono shrink-0">
-                        {formatMemberDisplayPhone(applicant.phone, userPhone)}
-                      </span>
-                    </div>
+                {applicants.map((applicant, index) => {
+                  const rawPhone = String(applicant.phone || '').trim();
+                  const cleanPhone = rawPhone.replace(/\D/g, '');
+                  const displayPhone = formatMemberDisplayPhone(applicant.phone, userPhone);
+                  const isSpecial155 = cleanPhone === '15509601222' || rawPhone === '15509601222' || displayPhone.includes('155****1222') || rawPhone.includes('155****1222');
+                  const isApproved = applicant.status === '已通过';
+                  const showCopyBtn = isApproved && !isSpecial155 && Boolean(cleanPhone);
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`px-2.5 py-1 rounded text-xs font-bold ${
-                        applicant.status === '已通过' 
-                          ? 'bg-emerald-100 text-emerald-800' 
-                          : applicant.status === '已拒绝'
-                          ? 'bg-rose-100 text-rose-800'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}>
-                        {applicant.status}
-                      </span>
-                      <ChevronRight className="w-4 h-4 text-[#8b7263] group-hover:text-[#ff7d00] transition-colors" />
+                  return (
+                    <div 
+                      key={applicant.id || applicant.phone || index}
+                      onClick={() => setSelectedApplicantDetail(applicant)}
+                      className="bg-white rounded-xl border border-[#e2e2e2] hover:border-[#ff7d00] p-3.5 flex items-center justify-between shadow-xs cursor-pointer active:scale-[0.98] transition-all group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        <span className="text-sm sm:text-base font-bold text-[#1a1c1c] group-hover:text-[#ff7d00] transition-colors shrink-0">
+                          {index + 1}、{resolveDriverRealName(applicant.phone, applicant.name || applicant.applicantName || applicant.driverName)}
+                        </span>
+                        <span className="text-xs sm:text-sm text-[#584235] font-mono shrink-0">
+                          {displayPhone}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {showCopyBtn && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCopyApplicantPhone(cleanPhone);
+                            }}
+                            className="px-2.5 py-1 rounded-md bg-[#fff2e6] hover:bg-[#ffe2cc] active:scale-95 text-[#ff7d00] border border-[#ff7d00]/30 text-xs font-bold flex items-center gap-1 transition-all cursor-pointer shadow-2xs shrink-0"
+                            title="一键复制手机号码"
+                          >
+                            <Copy className="w-3.5 h-3.5 text-[#ff7d00]" />
+                            <span>一键复制</span>
+                          </button>
+                        )}
+
+                        <span className={`px-2.5 py-1 rounded text-xs font-bold ${
+                          applicant.status === '已通过' 
+                            ? 'bg-emerald-100 text-emerald-800' 
+                            : applicant.status === '已拒绝'
+                            ? 'bg-rose-100 text-rose-800'
+                            : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {applicant.status}
+                        </span>
+                        <ChevronRight className="w-4 h-4 text-[#8b7263] group-hover:text-[#ff7d00] transition-colors" />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </main>

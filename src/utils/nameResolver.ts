@@ -12,6 +12,42 @@ const COMPOUND_SURNAMES = [
 const driverCustomNameRegistry = new Map<string, string>();
 
 /**
+ * Register a driver name into memory and localStorage cache
+ */
+export function registerDriverCustomName(phone: string, name: string): void {
+  const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+  const finalName = String(name || '').trim().slice(0, 8);
+  if (!cleanPhone || !finalName) return;
+  if (finalName === '代驾司机' || finalName === '在线代驾司机' || finalName === '司机' || finalName === '未命名') return;
+  if (finalName.startsWith('网页商户商家') || finalName.startsWith('商户商家')) return;
+  driverCustomNameRegistry.set(cleanPhone, finalName);
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(`dd_driver_name_${cleanPhone}`, finalName);
+    } catch (_) {}
+  }
+}
+
+/**
+ * Clear cached names for a driver when they are deleted or re-applying
+ */
+export function clearDriverCachedName(phone: string): void {
+  const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+  if (!cleanPhone) return;
+  driverCustomNameRegistry.delete(cleanPhone);
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem(`dd_driver_name_${cleanPhone}`);
+      localStorage.removeItem(`dd_admin_name_${cleanPhone}`);
+      localStorage.removeItem(`dd_custom_app_name_${cleanPhone}`);
+      localStorage.removeItem(`dd_applicant_name_${cleanPhone}`);
+      localStorage.removeItem(`dd_user_name_${cleanPhone}`);
+      localStorage.removeItem(`dd_squad_member_${cleanPhone}`);
+    } catch (_) {}
+  }
+}
+
+/**
  * Update a driver's custom name globally across all storage layers, memory registries, and event buses
  */
 export async function updateDriverGlobalName(phone: string, newName: string): Promise<string> {
@@ -188,7 +224,14 @@ export function resolveDriverRealName(
     return true;
   };
 
-  // 1. 检查全局内存注册表（最高优先级，保证改名瞬间全应用各界面统一同步）
+  // 1. 如果传入了非通用候选名字，校验并采用（例如刚提交的申请名字或数据库实时下发的新名字）
+  const cleanCandidate = String(candidateName || '').trim();
+  if (isValidCustomName(cleanCandidate)) {
+    driverCustomNameRegistry.set(cleanPhone, cleanCandidate);
+    return cleanCandidate;
+  }
+
+  // 2. 检查全局内存注册表（保证改名瞬间全应用各界面统一同步）
   if (driverCustomNameRegistry.has(cleanPhone)) {
     const regName = driverCustomNameRegistry.get(cleanPhone);
     if (isValidCustomName(regName)) {
@@ -196,7 +239,7 @@ export function resolveDriverRealName(
     }
   }
 
-  // 2. 检查 localStorage 针对该手机号的专属存储
+  // 3. 检查 localStorage 针对该手机号的专属存储
   if (typeof window !== 'undefined') {
     const phoneSpecificName =
       localStorage.getItem(`dd_driver_name_${cleanPhone}`) ||
@@ -244,13 +287,6 @@ export function resolveDriverRealName(
     } catch (_) {}
   }
 
-  // 3. 如果传入了非通用候选名字，校验并采用
-  const cleanCandidate = String(candidateName || '').trim();
-  if (isValidCustomName(cleanCandidate)) {
-    driverCustomNameRegistry.set(cleanPhone, cleanCandidate);
-    return cleanCandidate;
-  }
-
   // 4. 检查 settings 中的名字
   if (settings) {
     const sName = String(settings.driverName || settings.name || '').trim();
@@ -260,12 +296,9 @@ export function resolveDriverRealName(
     }
   }
 
-  // 5. 固定账号默认
+  // 5. 固定账号默认兜底
   if (isWu) {
     return '吴彦祖';
-  }
-  if (cleanPhone === '18695119126') {
-    return '李扬扬扬';
   }
   if (isLiYang) {
     return '李扬';

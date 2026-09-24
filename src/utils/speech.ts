@@ -47,7 +47,7 @@ const LOCAL_AUDIO_MAP: Record<string, string> = {
   '您有新的系统派单，请及时处理！': 'system_dispatch.mp3',
   '您有新的系统派单': 'system_dispatch.mp3',
   '注意！收到新的代驾派单，请及时查看并确认接单！': 'background_alert.mp3',
-  '注意！收到新的代驾派单': 'background_alert.mp3',
+  '注意！收到新的代驾派单': 'background_alert.mp3'
 };
 
 function normalizeTextKey(text: string): string {
@@ -66,10 +66,10 @@ function getLocalAudioPath(text: string): string | null {
     }
   }
 
-  // Keyword fuzzy matching for dynamic voice phrases when offline or on Android emulator
+  // Keyword fuzzy matching for packaged high-quality human voice MP3s
   if (clean.includes('报单转单')) return 'report_transfer.mp3';
   if (clean.includes('系统派单')) return 'system_dispatch.mp3';
-  if (clean.includes('新订单') || clean.includes('代驾派单') || clean.includes('收到新订单') || clean.includes('请及时接单') || clean.includes('收到代驾派单')) return 'background_alert.mp3';
+  if (clean.includes('代驾派单') || clean.includes('新订单') || clean.includes('收到新订单') || clean.includes('请及时接单') || clean.includes('收到代驾派单') || clean.includes('确认接单')) return 'background_alert.mp3';
   if (clean.includes('选单大厅') || clean.includes('大厅有新订单')) return 'hall_new_order.mp3';
   if (clean.includes('上线')) return 'online.mp3';
   if (clean.includes('下线')) return 'offline.mp3';
@@ -113,8 +113,8 @@ async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<
   const fileName = audioPath.split('/').pop() || audioPath;
   const bundledBase64 = BUNDLED_AUDIO_BASE64[fileName] || BUNDLED_AUDIO_BASE64[audioPath];
 
-  // LEVEL 0: High-Speed Memory Base64 Playback (100% Offline, ZERO fetch, ZERO CORS/file:// error)
-  if (bundledBase64) {
+  // LEVEL 0: High-Speed Memory Base64 Playback (Only if valid non-empty audio > 2000 bytes)
+  if (bundledBase64 && bundledBase64.length > 2000) {
     // 1. Try Web Audio API decode from ArrayBuffer first
     try {
       const ctx = getAudioContext();
@@ -123,7 +123,7 @@ async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<
           await ctx.resume().catch(() => {});
         }
         const arrayBuffer = base64DataUrlToArrayBuffer(bundledBase64);
-        if (arrayBuffer && arrayBuffer.byteLength > 300) {
+        if (arrayBuffer && arrayBuffer.byteLength > 1000) {
           const success = await playAudioBuffer(arrayBuffer, onEnd);
           if (success) return true;
         }
@@ -315,6 +315,14 @@ export function stopSpeaking() {
       window.speechSynthesis.resume();
     } catch (e) {}
   }
+}
+
+/**
+ * Disabled: User explicitly requested NO "ding" prompt tones, chimes, or beep tones.
+ * Retained as empty stub for backward interface compatibility.
+ */
+export function playOrderAlertBeep(): boolean {
+  return false;
 }
 
 /**
@@ -659,7 +667,7 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
     return;
   }
 
-  // LEVEL 5: Guaranteed Bundled Studio Human Voice Fallback (Never silent)
+  // LEVEL 5: Guaranteed Bundled Studio Human Voice MP3 Fallback (Never silent)
   if (cleanText.includes('报单转单')) {
     await playLocalMp3File('report_transfer.mp3', onEnd);
     return;
@@ -668,7 +676,7 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
     await playLocalMp3File('system_dispatch.mp3', onEnd);
     return;
   }
-  if (cleanText.includes('新订单') || cleanText.includes('代驾派单') || cleanText.includes('接单') || cleanText.includes('订单') || cleanText.includes('出发地')) {
+  if (cleanText.includes('派单') || cleanText.includes('新订单') || cleanText.includes('代驾') || cleanText.includes('接单')) {
     await playLocalMp3File('background_alert.mp3', onEnd);
     return;
   }

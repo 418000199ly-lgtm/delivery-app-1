@@ -60,7 +60,7 @@ import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
@@ -797,9 +797,20 @@ export default function HomeView({
       const cat = String(data.statusCategory || '').toLowerCase();
       const isCancelled = st === 'cancelled' || cat.includes('取消') || Boolean(data.cancelledAt);
       const isCompleted = st === 'completed' || cat.includes('完成') || cat.includes('结单') || Boolean(data.completedAt);
-      const isClaimed = st === 'claimed' || st === 'accepted' || st === 'taken' || st === 'arrived' || st === 'serving' || cat.includes('已接单') || cat.includes('服务中') || (Boolean(data.claimedDriverPhone) && data.claimedDriverPhone !== myPhone);
+      const isClaimed = (
+        st === 'claimed' ||
+        st === 'accepted' ||
+        st === 'taken' ||
+        st === 'arrived' ||
+        st === 'serving' ||
+        cat.includes('已接单') ||
+        cat.includes('服务中') ||
+        Boolean(data.claimedDriverPhone) ||
+        Boolean(data.claimedDriverName) ||
+        data.in_hall === false
+      );
       
-      // 1. 任何已被取消、已完成、或其他司机已抢单/接单的订单，绝对不显示在选单大厅！
+      // 1. 任何已被取消、已完成、或已被任何司机抢单/接单的订单，绝对不显示在选单大厅！
       if (isCancelled || isCompleted || isClaimed) return false;
       if (data.in_hall === false) return false;
 
@@ -1031,7 +1042,7 @@ export default function HomeView({
 
     const handleOrdersUpdated = () => {
       const localValid = getValidHallOrdersFromLocal();
-      setHallOrders(prev => mergeOrders(prev, localValid));
+      setHallOrders(localValid);
       syncDriverOrdersWithMerchantData(localValid);
     };
 
@@ -1045,28 +1056,57 @@ export default function HomeView({
         const allMerchantOrders: any[] = [];
         const now = Date.now();
         const TIMEOUT_20_MIN = 20 * 60 * 1000;
+        const claimedOrCancelledIds = new Set<string>();
 
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
-          allMerchantOrders.push({ id: docSnap.id, ...data });
-          if (isOrderEligibleForHall(data)) {
-            const orderTime = parseOrderTime(data);
-            if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) {
-              // Auto cancel expired hall orders after 20 minutes
-              setDoc(doc(db, 'merchant_orders', docSnap.id), {
-                status: 'cancelled',
-                statusCategory: '已取消',
-                in_hall: false,
-                cancelReason: '选单大厅20分钟无人接单，系统自动取消',
-                cancelledAt: now
-              }, { merge: true }).catch(() => {});
-            } else {
-              list.push({ id: docSnap.id, ...data });
-            }
+          const docId = String(docSnap.id || '').trim();
+          const orderId = String(data?.id || data?.orderId || data?.orderNo || docId).trim();
+          allMerchantOrders.push({ id: docId, ...data });
+
+          if (!isOrderEligibleForHall(data)) {
+            if (docId) claimedOrCancelledIds.add(docId);
+            if (orderId) claimedOrCancelledIds.add(orderId);
+            return;
+          }
+
+          const orderTime = parseOrderTime(data);
+          if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) {
+            // Auto cancel expired hall orders after 20 minutes
+            setDoc(doc(db, 'merchant_orders', docSnap.id), {
+              status: 'cancelled',
+              statusCategory: '已取消',
+              in_hall: false,
+              cancelReason: '选单大厅20分钟无人接单，系统自动取消',
+              cancelledAt: now
+            }, { merge: true }).catch(() => {});
+            if (docId) claimedOrCancelledIds.add(docId);
+            if (orderId) claimedOrCancelledIds.add(orderId);
+          } else {
+            list.push({ id: docSnap.id, ...data });
           }
         });
-        const localValid = getValidHallOrdersFromLocal();
-        setHallOrders(prev => mergeOrders(prev, list, localValid));
+
+        // Clean up claimed/cancelled/completed orders from local storage
+        try {
+          const savedLocal = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+          if (Array.isArray(savedLocal) && savedLocal.length > 0) {
+            const cleaned = savedLocal.filter((o: any) => {
+              const k = String(o.id || o.orderId || o.orderNo || '').trim();
+              return !claimedOrCancelledIds.has(k) && isOrderEligibleForHall(o);
+            });
+            localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(cleaned));
+          }
+        } catch (_) {}
+
+        const localValid = getValidHallOrdersFromLocal().filter((o: any) => {
+          const k = String(o.id || o.orderId || o.orderNo || '').trim();
+          return !claimedOrCancelledIds.has(k);
+        });
+
+        // Authoritative update from database snapshot + local valid items (No stale prev state merged!)
+        const activeOrders = mergeOrders([], list, localValid);
+        setHallOrders(activeOrders);
         syncDriverOrdersWithMerchantData([...allMerchantOrders, ...localValid]);
       }, (err) => {
         console.warn("Error listening to merchant_orders in HomeView:", err);
@@ -1125,6 +1165,41 @@ export default function HomeView({
     );
 
     try {
+      const targetOrderId = String(ord.id || ord.orderId || ord.orderNo || '').trim();
+      const myCleanPhone = String(userPhone || '').replace(/\D/g, '').trim();
+
+      // Pre-check if order was already grabbed by another driver in the squad
+      if (db && targetOrderId) {
+        try {
+          const snap = await getDoc(doc(db, 'merchant_orders', targetOrderId));
+          if (snap && snap.exists()) {
+            const d = snap.data();
+            const st = String(d?.status || '').toLowerCase();
+            const cat = String(d?.statusCategory || '');
+            const claimedBy = String(d?.claimedDriverPhone || d?.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+            const isTaken = (
+              st === 'claimed' ||
+              st === 'accepted' ||
+              st === 'taken' ||
+              st === 'arrived' ||
+              st === 'serving' ||
+              cat.includes('已接单') ||
+              cat.includes('服务中') ||
+              d?.in_hall === false ||
+              (Boolean(claimedBy) && claimedBy !== myCleanPhone)
+            );
+            if (isTaken) {
+              alert('⚠️ 手慢了，该订单已被小队其他司机抢走！');
+              setHallOrders(prev => prev.filter(o => {
+                const k = String(o.id || o.orderId || o.orderNo || '').trim();
+                return k !== targetOrderId;
+              }));
+              return;
+            }
+          }
+        } catch (_) {}
+      }
+
       let currentDriverName = (settings as any)?.driverName || (settings as any)?.name || applyName || '';
       if (!currentDriverName || currentDriverName === '张三') {
         try {
@@ -1322,19 +1397,24 @@ export default function HomeView({
     setIsSubmittingApply(true);
 
     try {
+      const freshName = applyName.trim();
       const noteText = applyRemarks.trim() || '身份信息确认填写正确，申请加入小队！';
       
-      // 0. 清除可能残留的“审核通过”标记，确保提交后直接进入审核中状态
+      // 0. 清除可能残留的历史名字缓存及审核状态标记，确保提交后直接进入审核中状态且名字以本次提交为准
       try {
+        clearDriverCachedName(currentPhone);
         localStorage.removeItem(`dd_approved_${currentPhone}`);
         localStorage.removeItem(`dd_in_squad_${currentPhone}`);
         localStorage.removeItem(`dd_squad_member_${currentPhone}`);
       } catch (_) {}
 
+      // 注册与全局更新本次申请的真实名字
+      updateDriverGlobalName(currentPhone, freshName).catch(() => {});
+
       // 1. 从被删除名单中移除该手机号（重新申请）
       const cleanRemoved = (removedMemberPhones || []).filter(p => {
         const pStr = String(p).trim();
-        return pStr !== currentPhone && pStr !== applyName.trim() && pStr.replace(/\D/g, '') !== currentPhone;
+        return pStr !== currentPhone && pStr !== freshName && pStr.replace(/\D/g, '') !== currentPhone;
       });
       setRemovedMemberPhones(cleanRemoved);
       try {
@@ -1346,7 +1426,7 @@ export default function HomeView({
       const existingApps = savedApps ? JSON.parse(savedApps) : [];
       const newApp = {
         id: `app-${Date.now()}`,
-        name: applyName.trim(),
+        name: freshName,
         phone: currentPhone,
         status: '待审核',
         note: noteText,
@@ -1366,7 +1446,7 @@ export default function HomeView({
         {
           id: currentPhone,
           phone: currentPhone,
-          name: applyName.trim(),
+          name: freshName,
           role: '普通司机',
           status: '待审核',
           note: noteText,
@@ -1383,7 +1463,7 @@ export default function HomeView({
         return [...filtered, {
           id: currentPhone,
           phone: currentPhone,
-          name: applyName.trim(),
+          name: freshName,
           role: '普通司机',
           status: '待审核',
           note: noteText,
@@ -1395,7 +1475,7 @@ export default function HomeView({
       // 5. 写入 宝塔面板 HTTP REST API 后端 与 Firestore
       const appPayload = {
         id: `app-${Date.now()}`,
-        name: applyName.trim(),
+        name: freshName,
         phone: currentPhone,
         status: '待审核',
         note: noteText,
@@ -1411,7 +1491,7 @@ export default function HomeView({
         selectedReasons: []
       };
       const memberPayload = {
-        name: applyName.trim(),
+        name: freshName,
         phone: currentPhone,
         role: '普通司机',
         status: '待审核',

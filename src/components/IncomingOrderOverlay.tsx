@@ -222,27 +222,27 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     const playSpeech = () => {
       if (!isActive) return;
       try {
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          try {
+            navigator.vibrate([400, 200, 400, 200, 600]);
+          } catch (e) {}
+        }
+
         const effectivePrice = (order.isValetOrder || order.isPlatformDispatch) ? '未知' : approxPrice;
         const speechText = getTTSBroadcastText(order, effectivePrice, startLocation, destination, distanceText);
         
         speakText(speechText, () => {
           if (isActive) {
-            // Pause 1 second between repeat loops
+            // Pause 1.2 second between repeat loops
             timerId = setTimeout(() => {
               playSpeech();
-            }, 1000);
+            }, 1200);
           }
         });
       } catch (e) {
         console.error('Speech synthesis loop failed:', e);
       }
     };
-
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate([200, 100, 200, 100, 300]);
-      } catch (e) {}
-    }
 
     playSpeech();
 
