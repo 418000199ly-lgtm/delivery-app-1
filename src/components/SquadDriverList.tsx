@@ -127,9 +127,35 @@ export default function SquadDriverList({
     ? isOnline 
     : (typeof window !== 'undefined' ? localStorage.getItem('dd_is_online') === 'true' : true);
 
+  const [localBusyFlag, setLocalBusyFlag] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('dd_driver_status_is_busy') === 'true';
+  });
+
+  useEffect(() => {
+    const handleStatusChanged = (e: any) => {
+      if (e?.detail?.phone) {
+        const clean = String(e.detail.phone).replace(/\D/g, '').trim();
+        const myClean = effectiveMyPhone.replace(/\D/g, '').trim();
+        if (clean === myClean) {
+          setLocalBusyFlag(Boolean(e.detail.isBusy));
+        }
+      } else if (typeof window !== 'undefined') {
+        setLocalBusyFlag(localStorage.getItem('dd_driver_status_is_busy') === 'true');
+      }
+    };
+    window.addEventListener('driver_status_changed', handleStatusChanged);
+    window.addEventListener('merchant_orders_updated', handleStatusChanged);
+    return () => {
+      window.removeEventListener('driver_status_changed', handleStatusChanged);
+      window.removeEventListener('merchant_orders_updated', handleStatusChanged);
+    };
+  }, [effectiveMyPhone]);
+
   // Current driver busy status: 做单、行程中、报单页面
   const isCurrentDriverBusy = Boolean(
     currentTrip || 
+    localBusyFlag ||
     localStorage.getItem('dd_driver_status_is_busy') === 'true' ||
     (settings as any)?.isBusy === true
   );

@@ -28,7 +28,79 @@ interface LocationReporterConfig {
   currentView?: string;
   settings?: any;
   sysVersion?: string;
+  incomingOrder?: any;
+  activeOnlineOrder?: any;
   onLocationChange?: (coords: { lat: number; lng: number }) => void;
+}
+
+/**
+ * 实时上报司机忙碌/空闲状态至中国大陆阿里云服务器与数据库
+ * @param userPhone 司机手机号
+ * @param isBusy 是否忙碌/接单状态 (true = 忙碌/做单/来单弹窗/报单中, false = 空闲接单)
+ * @param extra 额外参数 (例如 driverName, currentView 等)
+ */
+export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean, extra?: any) {
+  if (!userPhone) return;
+  const cleanPhone = String(userPhone).replace(/\D/g, '').trim();
+  if (!cleanPhone) return;
+
+  try {
+    localStorage.setItem('dd_driver_status_is_busy', isBusy ? 'true' : 'false');
+    window.dispatchEvent(new CustomEvent('driver_status_changed', { detail: { phone: cleanPhone, isBusy } }));
+  } catch (_) {}
+
+  const payload = {
+    phone: cleanPhone,
+    isBusy,
+    status: isBusy ? 'busy' : 'idle',
+    lastStatusUpdateTime: Date.now(),
+    ...(extra || {})
+  };
+
+  // 1. 同步更新各大文档
+  try {
+    setDoc(doc(db, 'driver_users', cleanPhone), payload, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'driver_locations', cleanPhone), payload, { merge: true }).catch(() => {});
+    setDoc(doc(db, 'squad_members', cleanPhone), payload, { merge: true }).catch(() => {});
+  } catch (_) {}
+
+  // 2. 立即上报中国大陆阿里云 REST API
+  try {
+    const baseUrl = getBaseApiUrl();
+    fetch(`${baseUrl}/api/driver/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: cleanPhone,
+        isBusy,
+        status: isBusy ? 'busy' : 'idle',
+        timestamp: Date.now()
+      })
+    }).catch(() => {});
+
+    // 同时写 DB 代理通用接口，确保持久层秒级同步
+    fetch(`${baseUrl}/api/db/set`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        collection: 'driver_users',
+        docId: cleanPhone,
+        data: payload,
+        merge: true
+      })
+    }).catch(() => {});
+
+    fetch(`${baseUrl}/api/db/set`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        collection: 'driver_locations',
+        docId: cleanPhone,
+        data: payload,
+        merge: true
+      })
+    }).catch(() => {});
+  } catch (_) {}
 }
 
 // Global Keep-Alive Audio Reference to prevent Garbage Collection
@@ -112,6 +184,8 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     currentView,
     settings,
     sysVersion = 'V2.0',
+    incomingOrder,
+    activeOnlineOrder,
     onLocationChange
   } = config;
 
@@ -148,7 +222,13 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       onLocationChange({ lat, lng });
     }
 
-    const isDriverBusy = !!currentTrip || currentView === 'create_order';
+    const isDriverBusy = Boolean(
+      currentTrip || 
+      currentView === 'create_order' || 
+      incomingOrder || 
+      activeOnlineOrder || 
+      localStorage.getItem('dd_driver_status_is_busy') === 'true'
+    );
     const timestampIso = new Date().toISOString();
     const currentTodayOrders = Number(stats?.todayOrders || 0);
     const resolvedSelfName = resolveDriverRealName(userPhone, settings?.driverName, settings);

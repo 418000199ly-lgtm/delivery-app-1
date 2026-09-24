@@ -54,6 +54,7 @@ import {
   MoreVertical
 } from 'lucide-react';
 import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive, DEFAULT_SLOTS } from '../types';
+import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
 import OrderDetailModal from './OrderDetailModal';
@@ -1333,6 +1334,7 @@ export default function HomeView({
       } catch (_) {}
 
       if (userPhone) {
+        reportDriverBusyStatus(userPhone, true, { currentView: 'incoming_overlay', isBusy: true });
         if (db) {
           await setDoc(doc(db, 'passenger_links', userPhone), orderPayload).catch(() => {});
         }

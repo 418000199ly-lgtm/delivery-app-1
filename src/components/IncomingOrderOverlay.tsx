@@ -5,6 +5,7 @@ import { getTimeSlotForTime } from '../utils/billingUtils';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
 import { isOrderAlreadyEnded } from '../utils/orderValidation';
+import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
 interface IncomingOrderOverlayProps {
   order: {
@@ -22,6 +23,7 @@ interface IncomingOrderOverlayProps {
     bookingTime?: string;
     needScooter?: boolean;
   };
+  userPhone?: string;
   driverCoords?: { lat: number; lng: number } | null;
   onlineBillingRules?: BillingRules;
   onAccept: (trip: TripState) => void;
@@ -69,12 +71,21 @@ export function getTTSBroadcastText(
 
 export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   order,
+  userPhone,
   driverCoords,
   onlineBillingRules,
   onAccept,
   onDecline,
 }) => {
   const [timeLeft, setTimeLeft] = useState(30);
+
+  // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
+  useEffect(() => {
+    const phone = userPhone || localStorage.getItem('dd_user_phone') || '';
+    if (phone) {
+      reportDriverBusyStatus(phone, true, { currentView: 'incoming_overlay', isBusy: true });
+    }
+  }, [userPhone]);
 
   // Parse details with fallbacks
   const startLocation = order.startLocation || '运祥小区(北寺巷)';
@@ -211,6 +222,61 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
     return () => clearInterval(timer);
   }, [timeLeft, onDecline]);
+
+  // Active cancellation listener while incoming order modal is open
+  useEffect(() => {
+    const orderId = String((order as any)?.id || (order as any)?.orderId || (order as any)?.orderNo || '').trim();
+    const orderNo = String((order as any)?.orderNo || '').trim();
+    
+    const checkCancelled = () => {
+      try {
+        const latestRaw = localStorage.getItem('dd_latest_cancelled_order');
+        if (latestRaw) {
+          const parsed = JSON.parse(latestRaw);
+          if (
+            (orderId && (parsed.orderId === orderId || parsed.orderNo === orderId)) ||
+            (orderNo && (parsed.orderId === orderNo || parsed.orderNo === orderNo))
+          ) {
+            stopSpeaking();
+            onDecline();
+            return;
+          }
+        }
+        const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+        const match = saved.find((o: any) => 
+          (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) ||
+          (orderNo && (o.id === orderNo || o.orderId === orderNo || o.orderNo === orderNo))
+        );
+        if (match && (match.status === 'cancelled' || match.statusCategory === '已取消')) {
+          stopSpeaking();
+          onDecline();
+        }
+      } catch (_) {}
+    };
+
+    const handleCustomCancelled = (e: any) => {
+      if (e?.detail) {
+        const d = e.detail;
+        if (
+          (orderId && (d.orderId === orderId || d.orderNo === orderId)) ||
+          (orderNo && (d.orderId === orderNo || d.orderNo === orderNo))
+        ) {
+          stopSpeaking();
+          onDecline();
+        }
+      }
+    };
+
+    window.addEventListener('merchant_order_cancelled', handleCustomCancelled);
+    window.addEventListener('merchant_orders_updated', checkCancelled);
+    const interval = setInterval(checkCancelled, 1000);
+
+    return () => {
+      window.removeEventListener('merchant_order_cancelled', handleCustomCancelled);
+      window.removeEventListener('merchant_orders_updated', checkCancelled);
+      clearInterval(interval);
+    };
+  }, [order, onDecline]);
 
   // Handle TTS and Vibrate with continuous loop until accepted, declined or expired
   useEffect(() => {

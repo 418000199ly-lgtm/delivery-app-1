@@ -50,7 +50,7 @@ import { isOrderAlreadyEnded } from './utils/orderValidation';
 import { getDeviceId, clearDeviceSession } from './utils/deviceSession';
 import { downloadDeployZip } from './utils/downloadHelper';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
-import { startAdaptiveLocationReporter, initGlobalPowerManager } from './utils/powerAndLocationManager';
+import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusyStatus } from './utils/powerAndLocationManager';
 
 const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => {
   const norm = (cityName || '').trim();
@@ -905,6 +905,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       currentView,
       settings,
       sysVersion,
+      incomingOrder,
+      activeOnlineOrder,
       onLocationChange: (coords) => {
         setDriverCoords(coords);
       }
@@ -913,7 +915,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return () => {
       stopReporter();
     };
-  }, [userPhone, isOnline, isSquadApprovedOrManagement, settings?.city, settings?.driverName, currentTrip, stats?.todayOrders, currentView, sysVersion]);
+  }, [userPhone, isOnline, isSquadApprovedOrManagement, settings?.city, settings?.driverName, currentTrip, stats?.todayOrders, currentView, sysVersion, incomingOrder, activeOnlineOrder]);
+
+  // Synchronize driver busy / idle status to Mainland China Aliyun server, Firestore & local state
+  useEffect(() => {
+    if (!userPhone) return;
+    const isBusy = Boolean(currentTrip || currentView === 'create_order' || incomingOrder || activeOnlineOrder);
+    reportDriverBusyStatus(userPhone, isBusy, {
+      driverName: settings?.driverName,
+      currentView: incomingOrder ? 'incoming_overlay' : currentView
+    });
+  }, [userPhone, currentTrip, currentView, incomingOrder, activeOnlineOrder, settings?.driverName]);
 
   // Helper to execute offline state transition and push to Mainland China Aliyun Baota backend
   const executeDirectOffline = (reason: string) => {
@@ -1736,65 +1748,138 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const docRef = doc(db, 'passenger_links', cleanPhone);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
-        processIncomingData(docSnap.data());
-      } else {
-        setIncomingOrder((prev: any) => {
-          if (prev && (prev.isDirectClaim || (Date.now() - (prev.timestamp || 0) < 30000))) {
-            return prev;
+        const data = docSnap.data();
+        if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
+          setIncomingOrder(null);
+          clearPendingOrderCache();
+          if (activeOnlineOrder) {
+            setActiveOnlineOrder(null);
+            setCurrentTrip(null);
+            setCurrentView('home');
+            setMobileActiveTab('app');
+            reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+            triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+            try {
+              speakText('该代叫订单已被商户取消');
+            } catch (_) {}
+          } else {
+            reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+            triggerToast('⚠️ 该代叫订单已被商户取消');
           }
-          return null;
-        });
+          // Clean up passenger_links doc after cancellation handled
+          try {
+            deleteDoc(docRef).catch(() => {});
+          } catch (_) {}
+          return;
+        }
+        processIncomingData(data);
+      } else {
+        setIncomingOrder(null);
       }
     }, (err) => {
       console.warn('[Baota DB] passenger_links snapshot error:', err);
     });
 
+    // 2. Active orders listener for immediate driver cancellation push
+    const activeDocRef = doc(db, 'active_orders', cleanPhone);
+    const unsubscribeActive = onSnapshot(activeDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
+          setIncomingOrder(null);
+          clearPendingOrderCache();
+          if (activeOnlineOrder) {
+            setActiveOnlineOrder(null);
+            setCurrentTrip(null);
+            setCurrentView('home');
+            setMobileActiveTab('app');
+            reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+            triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+            try {
+              speakText('该代叫订单已被商户取消');
+            } catch (_) {}
+          }
+        }
+      }
+    }, () => {});
+
     return () => {
       unsubscribe();
+      unsubscribeActive();
     };
-  }, [userPhone, currentView, isOnline]);
+  }, [userPhone, currentView, isOnline, activeOnlineOrder]);
 
   // Listen for real-time cancellation of driver's active online order
   useEffect(() => {
     if (!activeOnlineOrder) return;
-    const activeOrderId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || activeOnlineOrder.orderNo || '').trim();
-    if (!activeOrderId) return;
+    const activeOrderId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
+    const activeOrderNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
+    const candidateIds = Array.from(new Set([
+      activeOrderId,
+      activeOrderNo,
+      activeOnlineOrder.id,
+      activeOnlineOrder.orderId,
+      activeOnlineOrder.rawOrder?.id,
+      activeOnlineOrder.rawOrder?.orderId,
+      activeOnlineOrder.rawOrder?.orderNo
+    ].filter(Boolean).map(x => String(x).trim())));
 
-    const acceptedAt = Number(activeOnlineOrder.acceptedAt || activeOnlineOrder.claimedAt || activeOnlineOrder.timestamp || Date.now());
+    if (candidateIds.length === 0) return;
 
     let isTriggered = false;
     const handleOrderCancelled = () => {
       if (isTriggered) return;
-      // Protect newly accepted orders within 8 seconds from false cache cancellation
-      if (Date.now() - acceptedAt < 8000) {
-        return;
-      }
       isTriggered = true;
       setActiveOnlineOrder(null);
+      setCurrentTrip(null);
       setCurrentView('home');
-      triggerToast('⚠️ 该订单已取消');
+      setMobileActiveTab('app');
+      reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+      triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+      try {
+        speakText('该代叫订单已被商户取消');
+      } catch (_) {}
     };
 
-    // 1. Realtime listener on merchant_orders via Baota DB Proxy
-    const unsubscribe = onSnapshot(doc(db, 'merchant_orders', activeOrderId), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data?.status === 'cancelled' || data?.statusCategory === '已取消') {
-          handleOrderCancelled();
-        }
-      }
-    }, (err) => {
-      console.warn("Error listening to active order status:", err);
+    // 1. Realtime listener on merchant_orders via Baota DB Proxy for all candidate IDs
+    const unsubs: (() => void)[] = [];
+    const validDocIds = candidateIds.filter(id => !id.match(/^1[3-9]\d{9}$/));
+    validDocIds.forEach((docId) => {
+      try {
+        const unsub = onSnapshot(doc(db, 'merchant_orders', docId), (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data?.status === 'cancelled' || data?.statusCategory === '已取消' || data?.in_hall === false) {
+              handleOrderCancelled();
+            }
+          }
+        }, (err) => {
+          console.warn("Error listening to active order status:", err);
+        });
+        unsubs.push(unsub);
+      } catch (_) {}
     });
 
-    // 2. Fallback check for local storage / HTTP API sync (STRICT ORDER ID MATCHING ONLY - NEVER match by passengerPhone)
+    // 2. Event & Local storage check for local sync
     const checkCancellationLocal = async () => {
       try {
+        const latestRaw = localStorage.getItem('dd_latest_cancelled_order');
+        if (latestRaw) {
+          const parsed = JSON.parse(latestRaw);
+          const isMatch = candidateIds.some(cid => cid === parsed.orderId || cid === parsed.orderNo);
+          if (isMatch) {
+            handleOrderCancelled();
+            return;
+          }
+        }
+
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
         const match = saved.find((o: any) => 
-          (o.id && String(o.id).trim() === activeOrderId) || 
-          (o.orderId && String(o.orderId).trim() === activeOrderId) || 
-          (o.orderNo && activeOnlineOrder?.orderNo && String(o.orderNo).trim() === String(activeOnlineOrder.orderNo).trim())
+          candidateIds.some(cid => 
+            String(o.id || '').trim() === cid || 
+            String(o.orderId || '').trim() === cid || 
+            String(o.orderNo || '').trim() === cid
+          )
         );
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           handleOrderCancelled();
@@ -1802,24 +1887,39 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         }
 
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${activeOrderId}`);
-        if (res.ok) {
-          const json = await res.json();
-          if (json && json.data) {
-            if (json.data.status === 'cancelled' || json.data.statusCategory === '已取消') {
-              handleOrderCancelled();
+        for (const tid of validDocIds.slice(0, 2)) {
+          const res = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${tid}`);
+          if (res.ok) {
+            const json = await res.json();
+            if (json && json.data) {
+              if (json.data.status === 'cancelled' || json.data.statusCategory === '已取消') {
+                handleOrderCancelled();
+                return;
+              }
             }
           }
         }
       } catch (e) {}
     };
 
-    const pollInterval = setInterval(checkCancellationLocal, 2500);
+    const handleCustomCancelled = (e: any) => {
+      if (e?.detail) {
+        const d = e.detail;
+        const isMatch = candidateIds.some(cid => cid === d.orderId || cid === d.orderNo);
+        if (isMatch) {
+          handleOrderCancelled();
+        }
+      }
+    };
+
+    const pollInterval = setInterval(checkCancellationLocal, 1500);
+    window.addEventListener('merchant_order_cancelled', handleCustomCancelled);
     window.addEventListener('merchant_orders_updated', checkCancellationLocal);
 
     return () => {
-      unsubscribe();
+      unsubs.forEach(u => u());
       clearInterval(pollInterval);
+      window.removeEventListener('merchant_order_cancelled', handleCustomCancelled);
       window.removeEventListener('merchant_orders_updated', checkCancellationLocal);
     };
   }, [activeOnlineOrder]);
@@ -1848,6 +1948,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setMobileActiveTab('app');
     setCurrentView('create_order');
     setIncomingOrder(null);
+    reportDriverBusyStatus(userPhone, true, { currentView: 'create_order', isBusy: true });
     try {
       localStorage.removeItem('dd_active_incoming_order');
     } catch (_) {}
@@ -1959,6 +2060,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
     }
     setIncomingOrder(null);
+    reportDriverBusyStatus(cleanUserPhone || userPhone, false, { currentView: 'home', isBusy: false });
     try {
       localStorage.removeItem('dd_active_incoming_order');
     } catch (_) {}
@@ -2820,6 +2922,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       return (
         <IncomingOrderOverlay
           order={incomingOrder}
+          userPhone={userPhone}
           driverCoords={driverCoords}
           onlineBillingRules={billingRules || onlineBillingRules}
           onAccept={handleAcceptIncomingOrder}

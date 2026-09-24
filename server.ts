@@ -86,7 +86,11 @@ async function initDatabase() {
     password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_DATABASE,
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 100,
+    maxIdle: 50,
+    idleTimeout: 60000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
     queueLimit: 0,
     connectTimeout: 3000,
     charset: 'utf8mb4'
@@ -104,7 +108,8 @@ async function initDatabase() {
         \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (\`collection\`, \`doc_id\`),
-        INDEX \`idx_collection\` (\`collection\`)
+        INDEX \`idx_collection\` (\`collection\`),
+        INDEX \`idx_col_updated\` (\`collection\`, \`updated_at\`)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
     
@@ -125,7 +130,11 @@ async function initDatabase() {
           password: process.env.MYSQL_PASSWORD,
           database: process.env.MYSQL_DATABASE,
           waitForConnections: true,
-          connectionLimit: 10,
+          connectionLimit: 100,
+          maxIdle: 50,
+          idleTimeout: 60000,
+          enableKeepAlive: true,
+          keepAliveInitialDelay: 0,
           queueLimit: 0,
           connectTimeout: 2000,
           charset: 'utf8mb4'
@@ -142,7 +151,8 @@ async function initDatabase() {
             \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             \`updated_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (\`collection\`, \`doc_id\`),
-            INDEX \`idx_collection\` (\`collection\`)
+            INDEX \`idx_collection\` (\`collection\`),
+            INDEX \`idx_col_updated\` (\`collection\`, \`updated_at\`)
           ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         `);
         conn.release();
@@ -489,7 +499,7 @@ async function startServer() {
   });
 
   // 2. LIST Documents from Collection
-  // Supports: /api/db/list?col=merchant_orders&constraints=...
+  // Supports: /api/db/list?col=merchant_orders&limit=10000&constraints=...
   app.get('/api/db/list', async (req, res) => {
     try {
       const col = String(req.query.col || req.query.collection || '').trim();
@@ -497,11 +507,13 @@ async function startServer() {
         return res.status(400).json({ docs: [], error: 'Missing col parameter' });
       }
 
+      const limitNum = Math.min(Math.max(Number(req.query.limit) || 10000, 1), 20000);
+
       if (isMySQLEnabled && mysqlPool) {
         try {
           const [rows]: any = await mysqlPool.query(
-            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT 500',
-            [col]
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT ?',
+            [col, limitNum]
           );
           const docs = (rows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
@@ -1898,6 +1910,90 @@ async function startServer() {
       // Ignore background interval errors
     }
   }, 2500);
+
+  // 5.4 Automated 2-Day 10:00 AM Clean-Up Daemon & Manual API
+  let lastAutoCleanTimestamp = 0;
+  const executeServerAutoClean = async () => {
+    console.log('[Auto-Clean] Starting scheduled 2-day disk and cache cleanup at 10:00 AM...');
+    try {
+      // 1. Purge MySQL binlogs if MySQL is enabled
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query('PURGE BINARY LOGS BEFORE DATE_SUB(NOW(), INTERVAL 2 DAY)');
+          console.log('✓ [Auto-Clean] Purged MySQL binlogs older than 2 days.');
+        } catch (_) {}
+      }
+
+      // 2. Clean temporary files and build artifacts
+      const tmpDirs = ['/tmp', path.join(process.cwd(), 'temp_builds')];
+      for (const d of tmpDirs) {
+        if (fs.existsSync(d)) {
+          try {
+            const files = fs.readdirSync(d);
+            for (const f of files) {
+              if (f.endsWith('.tmp') || f.endsWith('.zip') || f.startsWith('npm-')) {
+                try {
+                  const fp = path.join(d, f);
+                  const stat = fs.statSync(fp);
+                  if (Date.now() - stat.mtimeMs > 24 * 3600 * 1000) {
+                    fs.unlinkSync(fp);
+                  }
+                } catch (_) {}
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      // 3. Clean stale passenger_links older than 48 hours
+      const dbData = readLocalJsonDb();
+      if (dbData['passenger_links']) {
+        const now = Date.now();
+        let changed = false;
+        for (const [k, v] of Object.entries<any>(dbData['passenger_links'])) {
+          const time = Number(v?.timestamp || v?.updatedAt || 0);
+          if (time > 0 && (now - time) > 48 * 3600 * 1000) {
+            delete dbData['passenger_links'][k];
+            changed = true;
+          }
+        }
+        if (changed) {
+          writeLocalJsonDb(dbData);
+        }
+      }
+
+      console.log('✓ [Auto-Clean] 2-day maintenance completed successfully.');
+    } catch (cleanErr) {
+      console.error('[Auto-Clean Error]:', cleanErr);
+    }
+  };
+
+  // Check every 30 seconds for 10:00 AM Beijing Time (UTC+8) on a 2-day cycle
+  setInterval(async () => {
+    const now = new Date();
+    // Convert to Beijing Time (UTC+8)
+    const bjHour = (now.getUTCHours() + 8) % 24;
+    const bjMinute = now.getUTCMinutes();
+    const currentDayTime = now.getTime();
+
+    // Check if it's 10:00 AM (hour == 10, minute < 5) and at least 40 hours since last clean
+    if (bjHour === 10 && bjMinute < 5) {
+      if (!lastAutoCleanTimestamp || (currentDayTime - lastAutoCleanTimestamp) > 40 * 3600 * 1000) {
+        lastAutoCleanTimestamp = currentDayTime;
+        await executeServerAutoClean();
+      }
+    }
+  }, 30000);
+
+  // Manual Trigger Endpoint for Admin / Baota WebHook
+  app.all(['/api/system/clean-disk', '/api/admin/clean-now'], async (req, res) => {
+    await executeServerAutoClean();
+    res.json({
+      success: true,
+      message: '✓ 阿里云服务器清理与瘦身任务已成功执行完成！',
+      timestamp: new Date().toISOString()
+    });
+  });
 
   // 6. ADD Document (auto-generated ID)
   app.post('/api/db/add', async (req, res) => {

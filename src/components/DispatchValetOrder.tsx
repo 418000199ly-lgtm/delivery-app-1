@@ -1346,63 +1346,85 @@ export default function DispatchValetOrder({
     }
 
     const targetOrderNo = selectedOrderDetail.orderNo || selectedOrderDetail.id || '此订单';
-    const candidateIds = Array.from(new Set([
+    const primaryDocId = selectedOrderDetail.id || selectedOrderDetail.orderId || selectedOrderDetail.rawOrder?.id || selectedOrderDetail.rawOrder?.orderId;
+    const docIdsToUpdate = Array.from(new Set([
+      primaryDocId,
+      selectedOrderDetail.rawOrder?.id,
+      selectedOrderDetail.rawOrder?.orderId
+    ].filter(Boolean).map(x => String(x).trim()))).filter(id => !id.match(/^1[3-9]\d{9}$/)); // Strict: NEVER use 11-digit phone as merchant_orders doc id
+
+    const candidateMatchKeys = Array.from(new Set([
+      primaryDocId,
       selectedOrderDetail.id,
       selectedOrderDetail.orderId,
+      selectedOrderDetail.orderNo,
       selectedOrderDetail.rawOrder?.id,
       selectedOrderDetail.rawOrder?.orderId,
-      selectedOrderDetail.orderNo,
       selectedOrderDetail.rawOrder?.orderNo,
-      selectedOrderDetail.passengerPhone,
-      selectedOrderDetail.rawOrder?.passengerPhone
-    ].filter(Boolean)));
+      targetOrderNo
+    ].filter(Boolean).map(x => String(x).trim())));
 
-    const driverPhone = selectedOrderDetail.dispatchedDriverPhone || selectedOrderDetail.driverPhone || selectedOrderDetail.rawOrder?.driverPhone || selectedOrderDetail.rawOrder?.dispatchedDriverPhone;
+    const driverPhone = selectedOrderDetail.dispatchedDriverPhone || 
+      selectedOrderDetail.driverPhone || 
+      selectedOrderDetail.rawOrder?.driverPhone || 
+      selectedOrderDetail.rawOrder?.dispatchedDriverPhone || 
+      selectedOrderDetail.driver?.phone || 
+      selectedOrderDetail.rawOrder?.driver?.phone;
+
+    const cleanDriverPhone = driverPhone ? String(driverPhone).replace(/\D/g, '').trim() : '';
 
     const baseUrl = getBaseApiUrl();
 
-    // 1. Update Firestore & Node DB merchant_orders to cancelled
-    for (const cid of candidateIds) {
+    // 1. Update Firestore & Node DB merchant_orders to cancelled strictly on valid order doc IDs
+    const targetDocId = primaryDocId || (docIdsToUpdate.length > 0 ? docIdsToUpdate[0] : `ord_${Date.now()}`);
+    try {
+      if (db) {
+        await setDoc(doc(db, 'merchant_orders', targetDocId), {
+          in_hall: false,
+          status: 'cancelled',
+          statusCategory: '已取消',
+          cancelledAt: Date.now(),
+          cancelReason: '商户派单管理员取消派单'
+        }, { merge: true });
+      }
+      fetch(`${baseUrl}/api/order/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: targetDocId, orderNo: targetOrderNo, driverPhone: cleanDriverPhone, reason: '商户派单管理员取消派单' })
+      }).catch(() => {});
+    } catch (e) {
+      console.error("Error setting merchant order to cancelled:", e);
+    }
+
+    // 2. Notify assigned driver via passenger_links and active_orders so driver App instantly triggers cancellation
+    const cancelPayload = {
+      status: 'cancelled',
+      statusCategory: '已取消',
+      isCancelled: true,
+      orderId: targetDocId,
+      orderNo: targetOrderNo,
+      cancelledAt: Date.now(),
+      cancelReason: '商户派单管理员取消派单'
+    };
+
+    if (cleanDriverPhone) {
       try {
         if (db) {
-          await setDoc(doc(db, 'merchant_orders', cid as string), {
-            in_hall: false,
-            status: 'cancelled',
-            statusCategory: '已取消',
-            cancelledAt: Date.now(),
-            cancelReason: '商户派单管理员取消派单'
-          }, { merge: true });
+          await setDoc(doc(db, 'passenger_links', cleanDriverPhone), cancelPayload, { merge: true });
+          await setDoc(doc(db, 'active_orders', cleanDriverPhone), cancelPayload, { merge: true });
         }
-        fetch(`${baseUrl}/api/order/cancel`, {
+      } catch (_) {}
+      try {
+        fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orderId: cid, driverPhone, reason: '商户派单管理员取消派单' })
+          body: JSON.stringify({ collection: 'passenger_links', docId: cleanDriverPhone, data: cancelPayload })
         }).catch(() => {});
-      } catch (e) {
-        console.error("Error setting merchant order to cancelled:", e);
-      }
-    }
-
-    // 2. Clear from passenger_links & active_orders so driver App triggers cancellation toast "该订单已取消"
-    if (driverPhone) {
-      try {
-        await deleteDoc(doc(db, 'passenger_links', driverPhone));
-      } catch (_) {}
-      try {
-        await deleteDoc(doc(db, 'active_orders', driverPhone));
-      } catch (_) {}
-    }
-
-    // Also write cancelled marker in active_orders for candidate IDs
-    for (const cid of candidateIds) {
-      try {
-        if (db) {
-          await setDoc(doc(db, 'active_orders', cid as string), {
-            status: 'cancelled',
-            statusCategory: '已取消',
-            cancelledAt: Date.now()
-          }, { merge: true });
-        }
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'active_orders', docId: cleanDriverPhone, data: cancelPayload })
+        }).catch(() => {});
       } catch (_) {}
     }
 
@@ -1410,11 +1432,10 @@ export default function DispatchValetOrder({
     try {
       const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
       const updated = saved.map((o: any) => {
-        const isMatch = candidateIds.some(cid =>
-          o.id === cid ||
-          o.orderId === cid ||
-          o.orderNo === cid ||
-          (o.passengerPhone && o.passengerPhone === cid)
+        const isMatch = candidateMatchKeys.some(cid =>
+          String(o.id || '').trim() === cid ||
+          String(o.orderId || '').trim() === cid ||
+          String(o.orderNo || '').trim() === cid
         );
         if (isMatch) {
           return {
@@ -1428,9 +1449,15 @@ export default function DispatchValetOrder({
         return o;
       });
       localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+      localStorage.setItem('dd_latest_cancelled_order', JSON.stringify({
+        orderId: targetDocId,
+        orderNo: targetOrderNo,
+        driverPhone: cleanDriverPhone,
+        cancelledAt: Date.now()
+      }));
     } catch (_) {}
 
-    // 4. Update local state & trigger event for immediate UI update
+    // 4. Update local state & trigger events for immediate multi-screen UI synchronization
     setSelectedOrderDetail((prev: any) => prev ? {
       ...prev,
       in_hall: false,
@@ -1439,11 +1466,10 @@ export default function DispatchValetOrder({
     } : null);
 
     setAllDispatchedOrders((prev) => prev.map((o: any) => {
-      const isMatch = candidateIds.some(cid =>
-        o.id === cid ||
-        o.orderId === cid ||
-        o.orderNo === cid ||
-        (o.passengerPhone && o.passengerPhone === cid)
+      const isMatch = candidateMatchKeys.some(cid =>
+        String(o.id || '').trim() === cid ||
+        String(o.orderId || '').trim() === cid ||
+        String(o.orderNo || '').trim() === cid
       );
       if (isMatch) {
         return {
@@ -1456,6 +1482,9 @@ export default function DispatchValetOrder({
       return o;
     }));
 
+    window.dispatchEvent(new CustomEvent('merchant_order_cancelled', {
+      detail: { orderId: targetDocId, orderNo: targetOrderNo, driverPhone: cleanDriverPhone }
+    }));
     window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 
     if (onShowToast) {
@@ -1909,7 +1938,19 @@ export default function DispatchValetOrder({
       if (snapshotDocs) {
         snapshotDocs.forEach((docSnap) => {
           const data = docSnap.data();
+          const docId = String(docSnap.id || '').trim();
           if (data) {
+            // Identify and purge ghost docs that have no real location, no real phone, or are dummy placeholder docs
+            const hasLocation = Boolean(data.originName || data.startLocation || data.passengerAddress || data.destinationName || data.destination);
+            const isPhoneId = Boolean(docId.match(/^1[3-9]\d{9}$/));
+            const isGhost = (!hasLocation && !data.passengerPhone) || (isPhoneId && !hasLocation);
+            if (isGhost) {
+              try {
+                deleteDoc(doc(db, 'merchant_orders', docId)).catch(() => {});
+              } catch (_) {}
+              return;
+            }
+
             const isCancelled = data.status === 'cancelled' || data.statusCategory === '已取消' || data.statusCategory === '订单已取消';
             list.push({
               id: docSnap.id,
@@ -1924,8 +1965,15 @@ export default function DispatchValetOrder({
       // Merge local storage dd_merchant_orders_v2 for local fallback (including both real and virtual orders)
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
+        const cleanSaved: any[] = [];
         saved.forEach((item: any) => {
           if (!item) return;
+          const hasLocation = Boolean(item.originName || item.startLocation || item.passengerAddress || item.destinationName || item.destination);
+          const isPhoneId = Boolean(String(item.id || item.orderId || '').match(/^1[3-9]\d{9}$/));
+          if (!hasLocation && !item.passengerPhone) return;
+          if (isPhoneId && !hasLocation) return;
+          cleanSaved.push(item);
+
           const isItemCancelled = item.status === 'cancelled' || item.statusCategory === '已取消' || item.statusCategory === '订单已取消';
           const matchIdx = list.findIndex(x => (x.id && (x.id === item.id || x.id === item.orderId)) || (x.orderNo && item.orderNo && x.orderNo === item.orderNo));
           if (matchIdx !== -1) {
@@ -1944,6 +1992,9 @@ export default function DispatchValetOrder({
             });
           }
         });
+        if (cleanSaved.length !== saved.length) {
+          localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(cleanSaved));
+        }
       } catch (_) {}
 
       list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
