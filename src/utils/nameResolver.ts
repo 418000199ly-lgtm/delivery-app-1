@@ -131,10 +131,26 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
       lastUpdatedTime: timeStr
     };
     setDoc(doc(db, 'driver_users', cleanPhone), updatePayload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'squad_members', cleanPhone), updatePayload, { merge: true }).catch(() => {});
     setDoc(doc(db, 'driver_locations', cleanPhone), { driverName: finalName, name: finalName }, { merge: true }).catch(() => {});
     setDoc(doc(db, 'online_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'squad_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+
+    // 严密防线：已被移出小队的司机绝不向 squad_members 或 squad_applications 写入
+    let isRemovedName = false;
+    try {
+      const savedR = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
+      if (savedR && JSON.parse(savedR).includes(cleanPhone)) isRemovedName = true;
+    } catch (_) {}
+    const isInSquadName = cleanPhone === '15509601222' || (!isRemovedName && (
+      typeof window !== 'undefined' && (
+        localStorage.getItem(`dd_approved_${cleanPhone}`) === 'true' ||
+        localStorage.getItem(`dd_in_squad_${cleanPhone}`) === 'true'
+      )
+    ));
+
+    if (isInSquadName && !isRemovedName) {
+      setDoc(doc(db, 'squad_members', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+      setDoc(doc(db, 'squad_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
+    }
   } catch (_) {}
 
   return finalName;

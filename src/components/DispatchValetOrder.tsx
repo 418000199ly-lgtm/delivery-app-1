@@ -3239,8 +3239,11 @@ export default function DispatchValetOrder({
           // 如果有多名符合资格的小队司机直线距离完全一样，随机派单给这几名司机之一
           chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
         }
+      } else if (eligibleDrivers.length > 0) {
+        // 智能优选：当同城范围内有在线空闲小队司机时，优先指派给最近的空闲小队司机
+        eligibleDrivers.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        chosenDriver = eligibleDrivers[0];
       }
-      // 3公里范围内若没有符合资格的小队司机，chosenDriver 保持为 null，订单自动进入选单大厅供小队司机抢单！
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
         ? scheduledTime.trim()

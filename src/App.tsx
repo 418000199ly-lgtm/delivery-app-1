@@ -577,6 +577,22 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return false;
   };
 
+  const isUserSquadMember = () => {
+    if (!userPhone) return false;
+    if (userPhone === '15509601222') return true;
+    if (isCurrentUserRemoved()) return false;
+    try {
+      if (localStorage.getItem(`dd_approved_${userPhone}`) === 'true') return true;
+      if (localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true') return true;
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      if (saved) {
+        const members = JSON.parse(saved);
+        return members.some((m: any) => String(m.phone || m.id).replace(/\D/g, '').trim() === userPhone.trim());
+      }
+    } catch (_) {}
+    return false;
+  };
+
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
   const userRole = (userPhone === '15509601222')
     ? '开发者司机'
@@ -660,21 +676,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       if (snap.exists()) {
         const data = snap.data();
         if (Array.isArray(data?.phones)) {
-          const removed = data.phones.map((p: any) => String(p).trim());
+          const removed = data.phones.map((p: any) => String(p).trim()).filter(Boolean);
+          try {
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(removed));
+          } catch (_) {}
+
+          // 实时通知全局小队成员组件同步剔除
+          window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { removedList: removed } }));
+
           if (userPhone && userPhone !== '15509601222' && removed.includes(userPhone)) {
             setIsSquadApprovedOrManagement(prev => (prev ? false : prev));
             setSquadRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
             const wasApproved = localStorage.getItem(`dd_approved_${userPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true';
             const oldRole = localStorage.getItem('dd_user_role');
             try {
-              localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(removed));
               if (wasApproved || (oldRole && oldRole !== '普通司机')) {
                 localStorage.removeItem(`dd_approved_${userPhone}`);
                 localStorage.removeItem(`dd_squad_member_${userPhone}`);
                 localStorage.removeItem(`dd_in_squad_${userPhone}`);
                 localStorage.setItem('dd_user_role', '普通司机');
                 window.dispatchEvent(new CustomEvent('user_role_updated'));
-                window.dispatchEvent(new CustomEvent('squad_members_updated'));
               }
             } catch (_) {}
           }
@@ -730,18 +751,29 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     // 3. 同时监听 squad_applications 审批结果 (审批通过后秒级生效)
     const unsub3 = onSnapshot(doc(db, 'squad_applications', userPhone), (snap) => {
+      let isRemoved = false;
+      try {
+        const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
+      } catch (_) {}
+
       if (snap.exists()) {
         const app = snap.data();
-        let isRemoved = false;
-        try {
-          const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
-          if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
-        } catch (_) {}
         if (!isRemoved && userPhone !== '15509601222') {
           const st = app?.status || '';
           if (['已通过', 'approved', '通过'].includes(st)) {
             checkAndSetApproved(true);
+            return;
           }
+        }
+      }
+      if (!snap.exists() || isRemoved) {
+        if (userPhone !== '15509601222') {
+          setIsSquadApprovedOrManagement(false);
+          try {
+            localStorage.removeItem(`dd_approved_${userPhone}`);
+            localStorage.removeItem(`dd_in_squad_${userPhone}`);
+          } catch (_) {}
         }
       }
     });
@@ -770,9 +802,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               if (resRemoved.ok) {
                 const rJson = await resRemoved.json();
                 const phones = rJson?.data?.phones || rJson?.phones;
-                if (Array.isArray(phones) && phones.includes(userPhone)) {
-                  isUserRemoved = true;
+                if (Array.isArray(phones)) {
                   localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
+                  if (phones.includes(userPhone)) {
+                    isUserRemoved = true;
+                  }
                 }
               }
             } catch (_) {}
@@ -796,13 +830,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           }
         }
 
+        if (isCurrentUserRemoved()) {
+          return;
+        }
+
         const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const resJson = await res.json();
           if (resJson && resJson.exists && resJson.data) {
             const docData = resJson.data;
             const st = docData?.status || '';
-            if (['已通过', 'approved', '通过'].includes(st)) {
+            if (['已通过', 'approved', '通过'].includes(st) && !isCurrentUserRemoved()) {
               try {
                 localStorage.setItem(`dd_approved_${userPhone}`, 'true');
                 localStorage.setItem(`dd_in_squad_${userPhone}`, 'true');
@@ -820,7 +858,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           if (memJson && memJson.exists && memJson.data) {
             const memData = memJson.data;
             const st = memData?.status || memData?.approvalStatus || '';
-            if (['已通过', 'approved', '通过'].includes(st)) {
+            if (['已通过', 'approved', '通过'].includes(st) && !isCurrentUserRemoved()) {
               try {
                 localStorage.setItem(`dd_approved_${userPhone}`, 'true');
                 localStorage.setItem(`dd_in_squad_${userPhone}`, 'true');
@@ -965,11 +1003,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         body: JSON.stringify({ collection: 'driver_users', docId: targetPhone, data: offlinePayload, merge: true })
       }).catch(() => {});
 
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: targetPhone, data: offlinePayload, merge: true })
-      }).catch(() => {});
+      if (isUserSquadMember()) {
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'squad_members', docId: targetPhone, data: offlinePayload, merge: true })
+        }).catch(() => {});
+      }
 
       fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
@@ -1591,7 +1631,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       };
 
       setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(() => {});
-      setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(() => {});
+      if (isUserSquadMember()) {
+        setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(() => {});
+      }
 
       // Realtime report online/offline status to Aliyun/Baota server API
       const baseUrl = getBaseApiUrl();
@@ -1601,11 +1643,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: payload, merge: true })
       }).catch(() => {});
 
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: payload, merge: true })
-      }).catch(() => {});
+      if (isUserSquadMember()) {
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: payload, merge: true })
+        }).catch(() => {});
+      }
     }
   }, [isOnline, userPhone]);
 
@@ -1849,7 +1893,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const unsub = onSnapshot(doc(db, 'merchant_orders', docId), (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            if (data?.status === 'cancelled' || data?.statusCategory === '已取消' || data?.in_hall === false) {
+            if (data?.status === 'cancelled' || data?.statusCategory === '已取消' || data?.statusCategory === '订单已取消') {
               handleOrderCancelled();
             }
           }
@@ -1926,7 +1970,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const handleAcceptIncomingOrder = async (trip: TripState) => {
     if (!userPhone) return;
+    const cleanUserPhone = String(userPhone).replace(/\D/g, '').trim();
     clearPendingOrderCache();
+
+    const orderIdToClaim = String(incomingOrder?.orderId || incomingOrder?.id || trip.id || trip.orderNumber || '').trim();
+    const orderNoToClaim = String(incomingOrder?.orderNo || trip.orderNumber || trip.id || orderIdToClaim).trim();
+
     if (incomingOrder) {
       const orderKey = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
@@ -1944,7 +1993,56 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         }
       } catch (_) {}
     }
-    setActiveOnlineOrder(incomingOrder || { ...trip, id: trip.id || trip.orderNumber });
+
+    const currentDriverName = (settings as any)?.driverName || (settings as any)?.name || '小队司机';
+
+    const claimUpdateData = {
+      status: 'claimed',
+      statusCategory: '已接单',
+      in_hall: false,
+      dispatchedDriverPhone: cleanUserPhone,
+      dispatchedDriverName: currentDriverName,
+      claimedDriverPhone: cleanUserPhone,
+      claimedDriverName: currentDriverName,
+      driverName: currentDriverName,
+      claimedAt: Date.now()
+    };
+
+    // Update database & server claim endpoint immediately to prevent 30s timeout reset
+    if (orderIdToClaim) {
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/order/claim`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId: orderIdToClaim,
+          orderNo: orderNoToClaim,
+          driverPhone: cleanUserPhone,
+          driverName: currentDriverName,
+          orderPayload: { ...(incomingOrder || {}), ...trip, ...claimUpdateData }
+        })
+      }).catch(() => {});
+
+      if (db) {
+        setDoc(doc(db, 'merchant_orders', orderIdToClaim), claimUpdateData, { merge: true }).catch(() => {});
+      }
+      fetch(`${baseUrl}/api/db/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'merchant_orders', docId: orderIdToClaim, data: claimUpdateData })
+      }).catch(() => {});
+    }
+
+    const mergedActive = {
+      ...(incomingOrder || {}),
+      ...trip,
+      id: orderIdToClaim,
+      orderId: orderIdToClaim,
+      orderNo: orderNoToClaim,
+      ...claimUpdateData
+    };
+
+    setActiveOnlineOrder(mergedActive);
     setMobileActiveTab('app');
     setCurrentView('create_order');
     setIncomingOrder(null);
@@ -1954,7 +2052,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     } catch (_) {}
     triggerToast('✓ 成功确认接单！已自动为您规划骑行前往接客起点的路线。');
     // Clear/delete the passenger link doc to finish the session
-    deleteDoc(doc(db, 'passenger_links', userPhone)).catch(err => {
+    deleteDoc(doc(db, 'passenger_links', cleanUserPhone)).catch(err => {
       console.error("Error clearing accepted passenger order link document:", err);
     });
   };
@@ -2651,7 +2749,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       setDoc(doc(db, 'driver_users', userPhone), onlinePayload, { merge: true }).catch((e) => {
         console.error("Failed to sync isOnline toggle to Firestore driver_users:", e);
       });
-      setDoc(doc(db, 'squad_members', userPhone), onlinePayload, { merge: true }).catch(() => {});
+      if (isUserSquadMember() && !isCurrentUserRemoved()) {
+        setDoc(doc(db, 'squad_members', userPhone), onlinePayload, { merge: true }).catch(() => {});
+      }
       setDoc(doc(db, 'driver_locations', userPhone), onlinePayload, { merge: true }).catch(() => {});
 
       const baseUrl = getBaseApiUrl();
@@ -2680,11 +2780,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: onlinePayload, merge: true })
       }).catch(() => {});
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload, merge: true })
-      }).catch(() => {});
+      if (isUserSquadMember()) {
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload, merge: true })
+        }).catch(() => {});
+      }
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

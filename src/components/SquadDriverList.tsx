@@ -481,29 +481,29 @@ export default function SquadDriverList({
       });
     });
 
-    // 3. Merge live location / heartbeat updates ONLY for drivers already in squadList
+    // 3. Merge live location / heartbeat updates from Baota Server / Firestore
     Object.keys(realtimeLocations).forEach((phoneKey) => {
       const liveLoc = realtimeLocations[phoneKey];
       if (!liveLoc) return;
       const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
       if (!phone || isMeMember(phone)) return;
 
-      // STRICT SQUAD FILTER: Only update drivers who are ALREADY verified members in squadList!
-      // NEVER create new drivers who are not part of the squad!
+      const rawName = String(liveLoc.driverName || liveLoc.name || '').trim();
       const existing = candidateMap.get(phone);
-      if (!existing) return;
 
-      const uploadTimeVal = liveLoc.timestamp
-        ? Number(liveLoc.timestamp)
-        : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : existing.uploadTime);
+      const uploadTimeVal = liveLoc.lastLocationTime
+        ? Number(liveLoc.lastLocationTime)
+        : (liveLoc.timestamp
+          ? Number(liveLoc.timestamp)
+          : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || Date.now())));
 
       const isBusyVal = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
-        : existing.isBusy;
+        : (existing?.isBusy || false);
 
       let isOnlineVal = liveLoc.isOnline !== undefined
         ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true' || liveLoc.onlineOrdersEnabled === true || liveLoc.onlineOrdersEnabled === 'true')
-        : existing.isOnline;
+        : (existing ? existing.isOnline : true);
 
       // 05:59 AM Cutoff check for Aliyun live locations
       if (uploadTimeVal > 0 && uploadTimeVal < cutoff0559Ms) {
@@ -513,15 +513,21 @@ export default function SquadDriverList({
       const isFromToday = (liveLoc.lastResetDate && liveLoc.lastResetDate === cur6AmDay) ||
         (uploadTimeVal > 0 && new Date(uploadTimeVal - 6 * 3600 * 1000).toISOString().slice(0, 10) === cur6AmDay);
 
-      const liveOrders = liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : existing.todayOrders;
+      const liveOrders = liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : (existing?.todayOrders || 0);
       const finalTodayOrders = isFromToday ? Math.max(0, liveOrders) : 0;
 
+      const candidateName = existing?.name || rawName || `司机${phone.slice(-4)}`;
+      const resolvedRealName = resolveDriverRealName(phone, existing?.rawRealName || candidateName);
+
       candidateMap.set(phone, {
-        ...existing,
+        phone,
+        name: candidateName,
+        rawRealName: resolvedRealName,
         isOnline: isOnlineVal,
         isBusy: isBusyVal,
         todayOrders: finalTodayOrders,
-        uploadTime: Math.max(uploadTimeVal, existing.uploadTime)
+        uploadTime: Math.max(uploadTimeVal, existing?.uploadTime || 0),
+        status: existing?.status || '已通过'
       });
     });
 

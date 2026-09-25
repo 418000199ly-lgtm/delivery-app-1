@@ -61,7 +61,23 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
   try {
     setDoc(doc(db, 'driver_users', cleanPhone), payload, { merge: true }).catch(() => {});
     setDoc(doc(db, 'driver_locations', cleanPhone), payload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'squad_members', cleanPhone), payload, { merge: true }).catch(() => {});
+
+    // 严密防线：已被移出小队的司机绝不向 squad_members 写入，防止已删除成员被意外复活
+    let isRemoved = false;
+    try {
+      const savedR = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
+      if (savedR && JSON.parse(savedR).includes(cleanPhone)) isRemoved = true;
+    } catch (_) {}
+    const isInSquad = cleanPhone === '15509601222' || (!isRemoved && (
+      typeof window !== 'undefined' && (
+        localStorage.getItem(`dd_approved_${cleanPhone}`) === 'true' ||
+        localStorage.getItem(`dd_in_squad_${cleanPhone}`) === 'true'
+      )
+    ));
+
+    if (isInSquad && !isRemoved) {
+      setDoc(doc(db, 'squad_members', cleanPhone), payload, { merge: true }).catch(() => {});
+    }
   } catch (_) {}
 
   // 2. 立即上报中国大陆阿里云 REST API
@@ -254,8 +270,24 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
 
     // 1. 异步更新各大集合（静默失败不阻塞）
     setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(() => {});
     setDoc(doc(db, 'driver_locations', userPhone), payload, { merge: true }).catch(() => {});
+
+    // 严密防线：已被移出小队的司机绝不向 squad_members 写入，防止已删除成员被意外复活
+    let isRemovedLoc = false;
+    try {
+      const savedR = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
+      if (savedR && JSON.parse(savedR).includes(userPhone)) isRemovedLoc = true;
+    } catch (_) {}
+    const isInSquadLoc = userPhone === '15509601222' || (!isRemovedLoc && (
+      typeof window !== 'undefined' && (
+        localStorage.getItem(`dd_approved_${userPhone}`) === 'true' ||
+        localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true'
+      )
+    ));
+
+    if (isInSquadLoc && !isRemovedLoc) {
+      setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(() => {});
+    }
 
     // 2. 直连宝塔 REST 接口
     try {

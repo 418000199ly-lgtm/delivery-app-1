@@ -3416,6 +3416,7 @@ export default function MobileDispatchValetOrder({
       const isDriverEligible = (d: any) => {
         const phone = d.phone ? String(d.phone).replace(/\D/g, '').trim() : '';
         if (!phone) return false;
+        if (removedMemberPhones.includes(phone)) return false;
 
         const isCurrentDriver = (
           phone === activePhone ||
@@ -3437,10 +3438,6 @@ export default function MobileDispatchValetOrder({
           const smPhone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
           return smPhone === phone;
         });
-
-        if (!sm && phone !== '15509601222') {
-          return false;
-        }
 
         if (sm && !isEligibleSquadDriver(sm)) {
           return false;
@@ -3500,7 +3497,7 @@ export default function MobileDispatchValetOrder({
               finalLng,
               { lat: dLat, lng: dLng }
             ).distKm
-          : 999;
+          : 0.5; // Default nearby proximity if coords pending
         return { ...d, lat: dLat, lng: dLng, distance: dist };
       });
 
@@ -3544,8 +3541,11 @@ export default function MobileDispatchValetOrder({
           // 如果有多名符合资格的小队司机直线距离完全一样，随机派单给这几名司机之一
           chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
         }
+      } else if (eligibleDrivers.length > 0) {
+        // 智能优选：当同城范围内有在线空闲小队司机时，优先指派给最近的空闲小队司机
+        eligibleDrivers.sort((a, b) => (a.distance || 999) - (b.distance || 999));
+        chosenDriver = eligibleDrivers[0];
       }
-      // 3公里范围内若没有符合资格的小队司机，chosenDriver 保持为 null，订单自动进入选单大厅供小队司机抢单！
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
         ? scheduledTime.trim()
@@ -5243,9 +5243,14 @@ export default function MobileDispatchValetOrder({
                                     return;
                                   }
 
+                                  const cleanTargetPhone = String(targetPhone || targetId || '').replace(/\D/g, '').trim();
+
                                   // 1. Mark as removed locally in state & localStorage
                                   setRemovedMemberPhones(prev => {
-                                    const updated = Array.from(new Set([...prev, targetPhone, targetId, targetName].filter(Boolean)));
+                                    const updated = Array.from(new Set([
+                                      ...prev.map(p => String(p).replace(/\D/g, '').trim()),
+                                      cleanTargetPhone
+                                    ].filter(Boolean)));
                                     try {
                                       localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
                                     } catch (_) {}
@@ -5254,9 +5259,10 @@ export default function MobileDispatchValetOrder({
 
                                   // 2. Directly update React states so UI removes member instantly
                                   setSquadMembers(prev => {
-                                    const updated = prev.filter((m: any) => 
-                                      m.phone !== targetPhone && m.id !== targetId && m.name !== targetName && m.phone !== targetId
-                                    );
+                                    const updated = prev.filter((m: any) => {
+                                      const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+                                      return p !== cleanTargetPhone && m.phone !== targetPhone && m.id !== targetId;
+                                    });
                                     try {
                                       localStorage.setItem('dd_squad_members_v2', JSON.stringify(updated));
                                     } catch (_) {}
@@ -5264,9 +5270,10 @@ export default function MobileDispatchValetOrder({
                                   });
 
                                   setApplicants(prev => {
-                                    const updated = prev.filter((a: any) => 
-                                      a.phone !== targetPhone && a.id !== targetId && a.name !== targetName && a.phone !== targetId
-                                    );
+                                    const updated = prev.filter((a: any) => {
+                                      const p = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+                                      return p !== cleanTargetPhone && a.phone !== targetPhone && a.id !== targetId;
+                                    });
                                     try {
                                       localStorage.setItem('dd_applicants_v2', JSON.stringify(updated));
                                     } catch (_) {}
@@ -5341,7 +5348,6 @@ export default function MobileDispatchValetOrder({
                                   }
 
                                   // Sync removed_squad_members to cloud config for multi-device sync
-                                  const cleanTargetPhone = String(targetPhone || '').replace(/\D/g, '').trim();
                                   const updatedRemoved = cleanTargetPhone 
                                     ? Array.from(new Set([...removedMemberPhones, cleanTargetPhone]))
                                     : removedMemberPhones;

@@ -6,6 +6,7 @@ import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
 import { isOrderAlreadyEnded } from '../utils/orderValidation';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
+import { getBaseApiUrl } from '../lib/dbProxy';
 
 interface IncomingOrderOverlayProps {
   order: {
@@ -225,29 +226,32 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
   // Active cancellation listener while incoming order modal is open
   useEffect(() => {
-    const orderId = String((order as any)?.id || (order as any)?.orderId || (order as any)?.orderNo || '').trim();
-    const orderNo = String((order as any)?.orderNo || '').trim();
+    const rawId = String((order as any)?.id || (order as any)?.orderId || '').trim();
+    const rawOrderNo = String((order as any)?.orderNo || '').trim();
+    const validCandidateIds = [rawId, rawOrderNo].filter(id => id && id.length > 3 && !id.match(/^1[3-9]\d{9}$/));
     
+    if (validCandidateIds.length === 0) return;
+
     const checkCancelled = () => {
       try {
         const latestRaw = localStorage.getItem('dd_latest_cancelled_order');
         if (latestRaw) {
           const parsed = JSON.parse(latestRaw);
-          if (
-            (orderId && (parsed.orderId === orderId || parsed.orderNo === orderId)) ||
-            (orderNo && (parsed.orderId === orderNo || parsed.orderNo === orderNo))
-          ) {
+          const pId = String(parsed.orderId || '').trim();
+          const pNo = String(parsed.orderNo || '').trim();
+          if ((pId && validCandidateIds.includes(pId)) || (pNo && validCandidateIds.includes(pNo))) {
             stopSpeaking();
             onDecline();
             return;
           }
         }
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-        const match = saved.find((o: any) => 
-          (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) ||
-          (orderNo && (o.id === orderNo || o.orderId === orderNo || o.orderNo === orderNo))
-        );
-        if (match && (match.status === 'cancelled' || match.statusCategory === '已取消')) {
+        const match = saved.find((o: any) => {
+          const oId = String(o.id || o.orderId || '').trim();
+          const oNo = String(o.orderNo || '').trim();
+          return (oId && validCandidateIds.includes(oId)) || (oNo && validCandidateIds.includes(oNo));
+        });
+        if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           stopSpeaking();
           onDecline();
         }
@@ -257,10 +261,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     const handleCustomCancelled = (e: any) => {
       if (e?.detail) {
         const d = e.detail;
-        if (
-          (orderId && (d.orderId === orderId || d.orderNo === orderId)) ||
-          (orderNo && (d.orderId === orderNo || d.orderNo === orderNo))
-        ) {
+        const dId = String(d.orderId || '').trim();
+        const dNo = String(d.orderNo || '').trim();
+        if ((dId && validCandidateIds.includes(dId)) || (dNo && validCandidateIds.includes(dNo))) {
           stopSpeaking();
           onDecline();
         }
@@ -269,7 +272,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
     window.addEventListener('merchant_order_cancelled', handleCustomCancelled);
     window.addEventListener('merchant_orders_updated', checkCancelled);
-    const interval = setInterval(checkCancelled, 1000);
+    const interval = setInterval(checkCancelled, 1500);
 
     return () => {
       window.removeEventListener('merchant_order_cancelled', handleCustomCancelled);
@@ -278,7 +281,15 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     };
   }, [order, onDecline]);
 
-  // Handle TTS and Vibrate with continuous loop until accepted, declined or expired
+  // Keep latest broadcast speech text in ref so async prop updates never restart/interrupt speech
+  const speechTextRef = React.useRef<string>('');
+  useEffect(() => {
+    const effectivePrice = (order.isValetOrder || order.isPlatformDispatch) ? '未知' : approxPrice;
+    speechTextRef.current = getTTSBroadcastText(order, effectivePrice, startLocation, destination, distanceText);
+  }, [order, approxPrice, startLocation, destination, distanceText]);
+
+  // Handle TTS and Vibrate with continuous stable loop until accepted, declined or expired
+  // Controlled strictly on mount/unmount to eliminate stutter/cutoffs on Android phones
   useEffect(() => {
     let isActive = true;
     let timerId: any = null;
@@ -294,10 +305,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           } catch (e) {}
         }
 
-        const effectivePrice = (order.isValetOrder || order.isPlatformDispatch) ? '未知' : approxPrice;
-        const speechText = getTTSBroadcastText(order, effectivePrice, startLocation, destination, distanceText);
+        const textToSpeak = speechTextRef.current || getTTSBroadcastText(order, '未知', startLocation, destination, distanceText);
         
-        speakText(speechText, () => {
+        speakText(textToSpeak, () => {
           if (isActive) {
             // Pause 1.2 second between repeat loops
             timerId = setTimeout(() => {
@@ -310,14 +320,18 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       }
     };
 
-    playSpeech();
+    // Initial audio trigger with slight delay to ensure mobile AudioContext readiness
+    const initialTimer = setTimeout(() => {
+      playSpeech();
+    }, 100);
 
     return () => {
       isActive = false;
+      clearTimeout(initialTimer);
       if (timerId) clearTimeout(timerId);
       stopSpeaking();
     };
-  }, [approxPrice, startLocation, destination, distanceText]);
+  }, [order]);
 
   const [isAccepting, setIsAccepting] = useState(false);
 
@@ -334,7 +348,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
       // Prevent duplicate accepting of already ended/completed orders with 1.2s timeout race
       const ended = await Promise.race([
-        isOrderAlreadyEnded(order),
+        isOrderAlreadyEnded(order, userPhone),
         new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1200))
       ]).catch(() => false);
 
@@ -345,9 +359,12 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       }
 
       speakText('接单成功，请前往接驾地点');
-      const orderNumber = (order as any)?.id || (order as any)?.orderId || ('DD' + Date.now());
+      const orderNumber = (order as any)?.orderNo || (order as any)?.orderId || (order as any)?.id || ('YC' + Date.now());
+      const rawOrderId = String((order as any)?.id || (order as any)?.orderId || orderNumber).trim();
+      const cleanUserPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+
       const trip: TripState = {
-        id: orderNumber,
+        id: rawOrderId,
         orderNumber: orderNumber,
         passengerName: order.isValetOrder ? '商户代叫乘客' : '线上自助预约乘客',
         passengerPhone: passengerPhone,
@@ -368,6 +385,22 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           : (order.isValetOrder ? '商户代叫' : '二维码开单'),
         orderRemark: order.orderRemark || ((order.orderType === '报单转单' || order.type === '报单转单') ? '报单转单' : (order.isValetOrder ? '商户代叫' : '')),
       };
+
+      // Atomic claim call to server to lock in 'claimed' / 'serving' status and avoid 30s timeout reset
+      try {
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/order/claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: rawOrderId,
+            orderNo: orderNumber,
+            driverPhone: cleanUserPhone,
+            orderPayload: { ...order, ...trip }
+          })
+        }).catch(() => {});
+      } catch (_) {}
+
       onAccept(trip);
     } catch (err) {
       console.error('Confirm order execution error:', err);

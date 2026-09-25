@@ -49,25 +49,10 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
   if (typeof window !== 'undefined') {
     try {
       const savedMerchant = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-      if (Array.isArray(savedMerchant)) {
-        let match: any = null;
-        if (orderId) {
-          // Strictly match by order ID only! Never match different orders by passenger phone or address
-          match = savedMerchant.find((o: any) =>
-            o && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId || o.orderNumber === orderId)
-          );
-        } else if (pPhone && startLoc && !isPlaceholderPhone(pPhone)) {
-          // Fallback only when orderId is completely absent and phone is a real non-placeholder phone
-          const orderTime = Number(order.timestamp || order.createdAt || 0);
-          match = savedMerchant.find((o: any) => {
-            if (!o) return false;
-            const oPhone = (o.passengerPhone || o.phone || '').toString().trim();
-            const oLoc = (o.startLocation || o.pickupName || '').toString().trim();
-            const oTime = Number(o.timestamp || o.createdAt || 0);
-            const timeDiff = Math.abs(orderTime - oTime);
-            return oPhone === pPhone && oLoc === startLoc && (timeDiff < 30 * 60 * 1000);
-          });
-        }
+      if (Array.isArray(savedMerchant) && orderId) {
+        const match = savedMerchant.find((o: any) =>
+          o && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId || o.orderNumber === orderId)
+        );
 
         if (match) {
           const mStatus = (match.status || '').toString();
@@ -93,31 +78,19 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
       const cleanPhone = (userPhone || localStorage.getItem('dd_user_phone') || localStorage.getItem('dd_driver_phone') || '').replace(/\D/g, '');
       const storageKeys = cleanPhone ? [`dd_driver_orders_${cleanPhone}`, 'dd_driver_orders'] : ['dd_driver_orders'];
 
-      for (const key of storageKeys) {
-        const historyRaw = localStorage.getItem(key);
-        if (historyRaw) {
-          const history = JSON.parse(historyRaw);
-          if (Array.isArray(history)) {
-            let matchHist: any = null;
-            if (orderId) {
-              // Strictly match by order ID only! Never match different orders by passenger phone or address
-              matchHist = history.find((h: any) =>
+      if (orderId) {
+        for (const key of storageKeys) {
+          const historyRaw = localStorage.getItem(key);
+          if (historyRaw) {
+            const history = JSON.parse(historyRaw);
+            if (Array.isArray(history)) {
+              const matchHist = history.find((h: any) =>
                 h && (h.id === orderId || h.orderId === orderId || h.orderNumber === orderId || h.orderNo === orderId)
               );
-            } else if (pPhone && startLoc && !isPlaceholderPhone(pPhone)) {
-              const orderTime = Number(order.timestamp || order.createdAt || 0);
-              matchHist = history.find((h: any) => {
-                if (!h) return false;
-                const hPhone = (h.passengerPhone || h.phone || '').toString().trim();
-                const hLoc = (h.startLocation || h.endLocation || '').toString().trim();
-                const hTime = Number(h.timestamp || h.createdAt || 0);
-                const timeDiff = Math.abs(orderTime - hTime);
-                return hPhone === pPhone && hLoc === startLoc && (timeDiff < 30 * 60 * 1000);
-              });
-            }
 
-            if (matchHist) {
-              return true;
+              if (matchHist) {
+                return true;
+              }
             }
           }
         }
@@ -126,7 +99,7 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
   }
 
   // 4. Remote API check to Baota / MySQL DB
-  if (orderId) {
+  if (orderId && !orderId.match(/^1[3-9]\d{9}$/)) {
     try {
       const baseUrl = getBaseApiUrl();
       const controller = new AbortController();

@@ -558,6 +558,34 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
       }
 
+      // If writing to squad_members, verify the driver is not in removed_squad_members blacklist
+      if (col === 'squad_members' && docId !== '15509601222') {
+        let isRemovedDriver = false;
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [cfgRows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['config', 'removed_squad_members']
+            );
+            if (cfgRows && cfgRows.length > 0) {
+              const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
+              const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.map((p: any) => String(p).trim()) : [];
+              if (phones.includes(docId)) isRemovedDriver = true;
+            }
+          } catch (_) {}
+        } else {
+          const dbDataTmp = readLocalJsonDb();
+          const phones = dbDataTmp.config?.['removed_squad_members']?.phones || [];
+          if (Array.isArray(phones) && phones.map((p: any) => String(p).trim()).includes(docId)) {
+            isRemovedDriver = true;
+          }
+        }
+        if (isRemovedDriver) {
+          console.warn(`[DB Proxy SET] Dropping squad_members write for removed driver: ${docId}`);
+          return res.json({ success: true, id: docId, dropped: true });
+        }
+      }
+
       let finalData = data;
 
       if (isMySQLEnabled && mysqlPool) {
@@ -606,22 +634,6 @@ async function startServer() {
             [col, docId, dataStr]
           );
 
-          if (col === 'squad_members' || col === 'squad_applications') {
-            try {
-              const [cfgRows]: any = await mysqlPool.query(
-                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-                ['config', 'removed_squad_members']
-              );
-              if (cfgRows && cfgRows.length > 0) {
-                const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
-                const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.filter((p: any) => String(p).trim() !== docId) : [];
-                await mysqlPool.query(
-                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-                  ['config', 'removed_squad_members', JSON.stringify({ ...prevCfg, phones })]
-                );
-              }
-            } catch (_) {}
-          }
           return res.json({ success: true, id: docId });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy SET MySQL Error]:', mysqlErr);
@@ -664,13 +676,6 @@ async function startServer() {
       }
       dbData[col][docId] = finalData;
 
-      if (col === 'squad_members' || col === 'squad_applications') {
-        if (dbData.config && dbData.config['removed_squad_members']) {
-          const phones: string[] = dbData.config['removed_squad_members'].phones || [];
-          dbData.config['removed_squad_members'].phones = phones.filter((p: any) => String(p).trim() !== docId);
-        }
-      }
-
       writeLocalJsonDb(dbData);
 
       return res.json({ success: true, id: docId });
@@ -689,6 +694,34 @@ async function startServer() {
 
       if (!col || !docId || data === undefined) {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
+      }
+
+      // If updating squad_members, verify the driver is not in removed_squad_members blacklist
+      if (col === 'squad_members' && docId !== '15509601222') {
+        let isRemovedDriver = false;
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [cfgRows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['config', 'removed_squad_members']
+            );
+            if (cfgRows && cfgRows.length > 0) {
+              const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
+              const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.map((p: any) => String(p).trim()) : [];
+              if (phones.includes(docId)) isRemovedDriver = true;
+            }
+          } catch (_) {}
+        } else {
+          const dbDataTmp = readLocalJsonDb();
+          const phones = dbDataTmp.config?.['removed_squad_members']?.phones || [];
+          if (Array.isArray(phones) && phones.map((p: any) => String(p).trim()).includes(docId)) {
+            isRemovedDriver = true;
+          }
+        }
+        if (isRemovedDriver) {
+          console.warn(`[DB Proxy UPDATE] Dropping squad_members write for removed driver: ${docId}`);
+          return res.json({ success: true, id: docId, dropped: true });
+        }
       }
 
       let finalData = data;
@@ -710,22 +743,6 @@ async function startServer() {
             [col, docId, dataStr]
           );
 
-          if (col === 'squad_members' || col === 'squad_applications') {
-            try {
-              const [cfgRows]: any = await mysqlPool.query(
-                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-                ['config', 'removed_squad_members']
-              );
-              if (cfgRows && cfgRows.length > 0) {
-                const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
-                const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.filter((p: any) => String(p).trim() !== docId) : [];
-                await mysqlPool.query(
-                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-                  ['config', 'removed_squad_members', JSON.stringify({ ...prevCfg, phones })]
-                );
-              }
-            } catch (_) {}
-          }
           return res.json({ success: true, id: docId });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy UPDATE MySQL Error]:', mysqlErr);
@@ -738,13 +755,6 @@ async function startServer() {
       const prev = dbData[col][docId] || {};
       finalData = { ...prev, ...data };
       dbData[col][docId] = finalData;
-
-      if (col === 'squad_members' || col === 'squad_applications') {
-        if (dbData.config && dbData.config['removed_squad_members']) {
-          const phones: string[] = dbData.config['removed_squad_members'].phones || [];
-          dbData.config['removed_squad_members'].phones = phones.filter((p: any) => String(p).trim() !== docId);
-        }
-      }
 
       writeLocalJsonDb(dbData);
 
@@ -777,10 +787,14 @@ async function startServer() {
             [col, docId]
           );
           if (col === 'squad_members' && docId !== '15509601222') {
-            // Cascade delete from driver_locations & squad_applications
+            // Cascade delete from driver_locations & squad_applications (both by doc_id and phone)
             await mysqlPool.query(
-              'DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?) AND `doc_id` = ?',
-              ['driver_locations', 'squad_applications', docId]
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['driver_locations', docId]
+            );
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.phone\')) = ?)',
+              ['squad_applications', docId, docId]
             );
             // Reset driver_users to 普通司机
             const [uRows]: any = await mysqlPool.query(
@@ -828,8 +842,13 @@ async function startServer() {
         if (dbData.driver_locations && dbData.driver_locations[docId]) {
           delete dbData.driver_locations[docId];
         }
-        if (dbData.squad_applications && dbData.squad_applications[docId]) {
-          delete dbData.squad_applications[docId];
+        if (dbData.squad_applications) {
+          for (const k of Object.keys(dbData.squad_applications)) {
+            const app = dbData.squad_applications[k];
+            if (k === docId || app?.phone === docId || app?.id === docId) {
+              delete dbData.squad_applications[k];
+            }
+          }
         }
         if (dbData.driver_users && dbData.driver_users[docId]) {
           dbData.driver_users[docId] = {
@@ -1683,12 +1702,13 @@ async function startServer() {
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
       const targetOrder = dbData['merchant_orders'][cleanOrderId];
 
-      // Check if order is already claimed or cancelled
+      // Check if order is already claimed by ANOTHER driver or cancelled
       if (targetOrder) {
-        const isClaimed = targetOrder.status === 'claimed' || targetOrder.status === 'serving' || targetOrder.status === 'completed' || targetOrder.in_hall === false || (Boolean(targetOrder.claimedDriverPhone) && targetOrder.claimedDriverPhone !== cleanDriverPhone);
+        const isClaimedByOther = (Boolean(targetOrder.claimedDriverPhone) && targetOrder.claimedDriverPhone !== cleanDriverPhone) ||
+          (targetOrder.status === 'serving' && targetOrder.claimedDriverPhone && targetOrder.claimedDriverPhone !== cleanDriverPhone);
         const isCancelled = targetOrder.status === 'cancelled' || targetOrder.statusCategory === '已取消';
-        if (isClaimed || isCancelled) {
-          return res.status(409).json({ success: false, error: '⚠️ 该订单已被其他小队司机抢走！' });
+        if (isClaimedByOther || isCancelled) {
+          return res.status(409).json({ success: false, error: '⚠️ 该订单已被其他小队司机抢走或已取消！' });
         }
       }
 

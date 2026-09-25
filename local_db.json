@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-25T07:03:51.734Z"
+      "updatedAt": "2026-09-25T10:15:18.946Z"
     }
   },
   "version_history": {
@@ -40,7 +40,6 @@
     "15509601222": {
       "phone": "15509601222",
       "driverName": "吴彦祖",
-      "name": "吴彦祖",
       "role": "开发者",
       "userRole": "开发者",
       "vipExpiry": "2026-10-23",
@@ -50,6 +49,7 @@
       "isBanned": false,
       "city": "银川市",
       "updatedAt": "2026-09-07T16:40:37.510Z",
+      "name": "吴彦祖",
       "lastOfflineReason": "daily_0500_expired_cutoff",
       "lastOfflineTime": "2026-09-25T05:00:00.000Z",
       "lastUpdatedTime": "2026-09-25T05:00:00.000Z",
@@ -67,8 +67,8 @@
       "name": "李扬",
       "role": "普通司机",
       "userRole": "普通司机",
-      "status": "已通过",
-      "approvalStatus": "已通过",
+      "status": "未申请",
+      "approvalStatus": "未申请",
       "city": "银川市",
       "isOnline": false,
       "onlineOrdersEnabled": false,
@@ -99,39 +99,9 @@
       "version": "V1.0",
       "appVersion": "V1.0",
       "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
-    },
-    "18695119126": {
-      "isOnline": false,
-      "onlineOrdersEnabled": false,
-      "lastOfflineReason": "daily_0500_expired_cutoff",
-      "lastOfflineTime": "2026-09-25T05:00:00.000Z",
-      "lastUpdatedTime": "2026-09-25T05:00:00.000Z",
-      "phone": "18695119126",
-      "driverName": "李扬",
-      "name": "李扬",
-      "role": "普通司机",
-      "userRole": "普通司机",
-      "status": "已通过",
-      "approvalStatus": "已通过",
-      "lat": 38.47513,
-      "lng": 106.28665,
-      "isBusy": false,
-      "city": "银川市"
     }
   },
-  "squad_applications": {
-    "18695119126": {
-      "id": "18695119126",
-      "phone": "18695119126",
-      "name": "李扬",
-      "driverName": "李扬",
-      "role": "普通司机",
-      "userRole": "普通司机",
-      "status": "已通过",
-      "approvalStatus": "已通过",
-      "updatedAt": "2026-09-25T05:00:00.000Z"
-    }
-  },
+  "squad_applications": {},
   "driver_locations": {
     "15509601222": {
       "phone": "15509601222",
@@ -168,7 +138,9 @@
       "updatedAt": "2026-08-18T11:12:55.704Z"
     },
     "removed_squad_members": {
-      "phones": []
+      "phones": [
+        "18695119126"
+      ]
     }
   }
 }
