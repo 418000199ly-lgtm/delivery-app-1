@@ -3089,6 +3089,14 @@ async function startServer() {
             prev.qrCode = '';
             await mysqlPool.query('INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', ['driver_users', phone, JSON.stringify(prev)]);
           }
+
+          const [squadRows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', ['squad_members', phone]);
+          if (squadRows && squadRows.length > 0) {
+            const squadPrev = typeof squadRows[0].data === 'string' ? JSON.parse(squadRows[0].data) : squadRows[0].data;
+            squadPrev.wechatQrCode = '';
+            squadPrev.qrCode = '';
+            await mysqlPool.query('INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', ['squad_members', phone, JSON.stringify(squadPrev)]);
+          }
         } catch (err: any) {
           console.error('[MySQL delete-wechat-qr error]:', err);
         }
@@ -3100,6 +3108,10 @@ async function startServer() {
       if (dbData.driver_users && dbData.driver_users[phone]) {
         dbData.driver_users[phone].wechatQrCode = '';
         dbData.driver_users[phone].qrCode = '';
+      }
+      if (dbData.squad_members && dbData.squad_members[phone]) {
+        dbData.squad_members[phone].wechatQrCode = '';
+        dbData.squad_members[phone].qrCode = '';
       }
       writeLocalJsonDb(dbData);
 

@@ -1343,11 +1343,7 @@ export default function HomeView({
   // 秒级提交申请加入小队处理函数
   const processApplicationSubmission = (closeModalCallback: () => void) => {
     if (!hasDriverUploadedQrCode()) {
-      setLocalAlert({
-        title: '提示',
-        message: '请在app设置-上传二维码里添加二维码。',
-        type: 'warning'
-      });
+      showMissingWechatQrAlert();
       return;
     }
 
@@ -1581,19 +1577,24 @@ export default function HomeView({
 
   const hasDriverUploadedQrCode = (): boolean => {
     try {
-      if (settings?.wechatQrCode && settings.wechatQrCode.trim()) return true;
-      const currentPhone = (userPhone || applyPhone || localStorage.getItem('dd_user_phone') || '').trim();
-      if (currentPhone) {
+      // 1. 严格以当前软件 App 设置 (settings.wechatQrCode) 为准！
+      // 只要图片w9页面显示“暂未设置微信收款码”，即判定为未设置！
+      if (settings?.wechatQrCode && typeof settings.wechatQrCode === 'string' && settings.wechatQrCode.trim()) {
+        return true;
+      }
+      // 2. 检查本地当前手机账号个性化设置
+      const currentPhone = (userPhone || applyPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').trim();
+      if (currentPhone && typeof window !== 'undefined') {
         const userSettingsStr = localStorage.getItem(`dd_settings_${currentPhone}`);
         if (userSettingsStr) {
-          const parsed = JSON.parse(userSettingsStr);
-          if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return true;
+          try {
+            const parsed = JSON.parse(userSettingsStr);
+            if (parsed?.wechatQrCode && typeof parsed.wechatQrCode === 'string' && parsed.wechatQrCode.trim()) {
+              return true;
+            }
+          } catch (_) {}
         }
-        const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`);
-        if (localPhoneQr && localPhoneQr.trim()) return true;
       }
-      const globalQr = localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr');
-      if (globalQr && globalQr.trim()) return true;
     } catch (_) {}
     return false;
   };
@@ -2794,7 +2795,20 @@ export default function HomeView({
   const [showNearbyMap, setShowNearbyMap] = useState(false);
   const [onlineApp, setOnlineApp] = useState<any>(null);
   const [loadingApp, setLoadingApp] = useState(false);
-  const [localAlert, setLocalAlert] = useState<{ title: string; message: string; type?: 'warning' | 'info' | 'success' } | null>(null);
+  const [localAlert, setLocalAlert] = useState<{ title: string; message: React.ReactNode; type?: 'warning' | 'info' | 'success' } | null>(null);
+
+  // 统一的微信二维码缺失提示弹窗（微信二字为绿色、加大、加粗）
+  const showMissingWechatQrAlert = () => {
+    setLocalAlert({
+      title: '提示',
+      message: (
+        <span>
+          请在app设置-上传二维码里添加<span className="text-[#16a34a] font-black text-[13px] mx-0.5">微信</span>二维码。
+        </span>
+      ),
+      type: 'warning'
+    });
+  };
 
   // Form Fields
   const [applicantName, setApplicantName] = useState('');
@@ -4538,9 +4552,14 @@ export default function HomeView({
             </span>
           </div>
 
-          {/* 附近 (Nearby) - 只有小队内的司机点击附近组件按钮才能打开页面，司机被删除移除小队后就不算小队内司机，点击附近组件按钮就不能打开页面。不是小队内的司机和小队内被删除的司机点击附近组件按钮不能打开页面，点击附近组件按钮则提示：您未加入小队。 */}
+          {/* 附近 (Nearby) - 只有上传微信二维码且小队内的司机点击附近组件按钮才能打开页面 */}
           <button 
             onClick={() => {
+              if (!hasDriverUploadedQrCode()) {
+                showMissingWechatQrAlert();
+                return;
+              }
+
               const currentPhone = getCurrentPhone();
               const isSuperDev = currentPhone === '15509601222';
               const isRemoved = !isSuperDev && isDriverRemoved(currentPhone);
@@ -4568,6 +4587,11 @@ export default function HomeView({
 
           <button 
             onClick={() => {
+              if (!hasDriverUploadedQrCode()) {
+                showMissingWechatQrAlert();
+                return;
+              }
+
               const cfg = getDriverCityConfig();
               if (!cfg.merchant_dispatch_enabled) {
                 setLocalAlert({
@@ -4696,11 +4720,7 @@ export default function HomeView({
           <button 
             onClick={() => {
               if (!hasDriverUploadedQrCode()) {
-                setLocalAlert({
-                  title: '提示',
-                  message: '请在app设置-上传二维码里添加二维码。',
-                  type: 'warning'
-                });
+                showMissingWechatQrAlert();
                 return;
               }
 

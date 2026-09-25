@@ -974,20 +974,48 @@ export default function SettingsView({
               {isPhotoAlbumOpen ? '微信' : '我的收款码'}
             </span>
             <button 
-              onClick={() => {
+              onClick={async () => {
                 if (isPhotoAlbumOpen) {
                   setIsPhotoAlbumOpen(false);
                 } else {
                   // Delete currently active QR code
                   if (selectedQrTab === 'wechat') {
+                    const currentPhone = String((settings as any)?.phone || (settings as any)?.userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').trim();
+                    
                     onUpdateSettings({ ...settings, wechatQrCode: '' });
+                    
+                    if (typeof window !== 'undefined') {
+                      if (currentPhone) {
+                        localStorage.removeItem(`dd_dispatch_wechat_qr_${currentPhone}`);
+                        localStorage.removeItem(`dd_dispatch_fee_qr_${currentPhone}`);
+                        localStorage.removeItem(`dd_user_wechat_clean_qr_${currentPhone}`);
+                      }
+                      localStorage.removeItem('dd_dispatch_wechat_qr');
+                      localStorage.removeItem('dd_user_wechat_qr');
+                      localStorage.removeItem('dd_user_wechat_clean_qr');
+                      localStorage.removeItem('dd_last_payment_qr');
+                      window.dispatchEvent(new CustomEvent('wechat_qr_deleted', { detail: { phone: currentPhone } }));
+                    }
+
+                    try {
+                      const baseUrl = getBaseApiUrl();
+                      if (currentPhone) {
+                        fetch(`${baseUrl}/api/delete-wechat-qr`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ phone: currentPhone })
+                        }).catch(() => {});
+                      }
+                    } catch (_) {}
+
+                    alert('已成功清空微信收款二维码，并同步从阿里云服务器删除');
                   } else {
                     onUpdateSettings({ ...settings, alipayQrCode: '' });
+                    alert('已成功清空当前通道的收款二维码');
                   }
-                  alert('已成功清空当前通道的收款二维码');
                 }
               }}
-              className="text-xs font-bold text-red-400 hover:text-red-300 px-2.5 py-1 rounded-md hover:bg-black/10 active:scale-95 transition-all"
+              className="text-xs font-bold text-red-400 hover:text-red-300 px-2.5 py-1 rounded-md hover:bg-black/10 active:scale-95 transition-all cursor-pointer"
             >
               {isPhotoAlbumOpen ? '取消' : '删除'}
             </button>
