@@ -52,12 +52,42 @@ export default function NearbyMapView({
   const [showHubbleModal, setShowHubbleModal] = useState(false);
   const [showHubbleSettingsDialog, setShowHubbleSettingsDialog] = useState(false);
   const [hubbleAuthorizedPhones, setHubbleAuthorizedPhones] = useState<string[]>([]);
-  const [hubbleFilters, setHubbleFilters] = useState<HubbleFilterSettings>({
-    showIdle: true,
-    showBusy: true,
-    showOffline: false,
-    showFullName: false
+  const [hubbleFilters, setHubbleFilters] = useState<HubbleFilterSettings>(() => {
+    try {
+      const saved = localStorage.getItem('dd_hubble_filter_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.showFullName === 'boolean') return parsed;
+      }
+      const showFull = localStorage.getItem('dd_hubble_show_full_name') === 'true';
+      return {
+        showIdle: true,
+        showBusy: true,
+        showOffline: false,
+        showFullName: showFull
+      };
+    } catch (_) {
+      return {
+        showIdle: true,
+        showBusy: true,
+        showOffline: false,
+        showFullName: false
+      };
+    }
   });
+
+  // Listen to external Hubble settings changes
+  useEffect(() => {
+    const handleSettingsEvent = (e: any) => {
+      if (e?.detail) {
+        setHubbleFilters(prev => ({ ...prev, ...e.detail }));
+      }
+    };
+    window.addEventListener('hubble_settings_changed', handleSettingsEvent);
+    return () => {
+      window.removeEventListener('hubble_settings_changed', handleSettingsEvent);
+    };
+  }, []);
   const [hubbleSearchFeedback, setHubbleSearchFeedback] = useState<string | null>(null);
   const [devToast, setDevToast] = useState<string | null>(null);
   const toastTimerRef = useRef<any>(null);
@@ -164,8 +194,33 @@ export default function NearbyMapView({
 
   // Realtime busy status calculation:
   // 红色: 报单中、接单做单中、有进行中行程；绿色: 空闲空车接单状态 (严禁使用紫色)
+  const [localBusyState, setLocalBusyState] = useState<boolean>(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem('dd_driver_status_is_busy') === 'true' : false;
+  });
+
+  useEffect(() => {
+    const handleBusyStatusChange = (e?: any) => {
+      const busyVal = e?.detail?.isBusy !== undefined 
+        ? Boolean(e.detail.isBusy) 
+        : (localStorage.getItem('dd_driver_status_is_busy') === 'true');
+      setLocalBusyState(busyVal);
+    };
+
+    window.addEventListener('driver_status_changed', handleBusyStatusChange);
+    window.addEventListener('storage', handleBusyStatusChange);
+    window.addEventListener('focus', handleBusyStatusChange);
+    window.addEventListener('merchant_orders_updated', handleBusyStatusChange);
+    return () => {
+      window.removeEventListener('driver_status_changed', handleBusyStatusChange);
+      window.removeEventListener('storage', handleBusyStatusChange);
+      window.removeEventListener('focus', handleBusyStatusChange);
+      window.removeEventListener('merchant_orders_updated', handleBusyStatusChange);
+    };
+  }, []);
+
   const isCurrentDriverBusy = Boolean(
     currentTrip || 
+    localBusyState ||
     localStorage.getItem('dd_driver_status_is_busy') === 'true' ||
     (settings as any)?.isBusy === true
   );
@@ -602,18 +657,18 @@ export default function NearbyMapView({
       let statusDesc = '';
 
       if (!isOnlineState) {
-        tagBg = '#64748b';
+        tagBg = '#64748b'; // 下线状态：灰色
         circleFill = '#f1f5f9';
         bodyFill = '#94a3b8';
         hatFill = '#475569';
         statusDesc = '<span style="font-size: 9px; opacity: 0.85; margin-left: 2px;">(下线)</span>';
       } else if (isBusy) {
-        tagBg = '#e53935';
+        tagBg = '#dc2626'; // 忙/接单状态/报单：红色
         circleFill = '#fef2f2';
         bodyFill = '#dc2626';
         hatFill = '#b91c1c';
       } else {
-        tagBg = '#2e7d32';
+        tagBg = '#16a34a'; // 在线空闲状态：绿色
         circleFill = '#f0fdf4';
         bodyFill = '#16a34a';
         hatFill = '#15803d';
@@ -705,23 +760,41 @@ export default function NearbyMapView({
       uploadTime: number;
     }>();
 
+    // Helper to get Beijing 05:59 AM cutoff
+    const getBeijing0559CutoffMs = (): number => {
+      const now = new Date();
+      const beijingMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (8 * 3600000);
+      const beijingDate = new Date(beijingMs);
+      const cutoffDate = new Date(beijingDate);
+      cutoffDate.setHours(5, 59, 0, 0);
+      if (beijingDate.getTime() < cutoffDate.getTime()) {
+        cutoffDate.setDate(cutoffDate.getDate() - 1);
+      }
+      return cutoffDate.getTime() - (8 * 3600000) - (now.getTimezoneOffset() * 60000);
+    };
+    const cutoff0559Ms = getBeijing0559CutoffMs();
+
     // Collect from squadList
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
       if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
+      const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
+      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
+      const rawOnline = Boolean(member.isOnline === true || member.isOnline === 'true');
+
       candidateDriversMap.set(phone, {
         phone,
         name,
         lat: member.lat !== undefined ? Number(member.lat) : 0,
         lng: member.lng !== undefined ? Number(member.lng) : 0,
-        isOnline: Boolean(member.isOnline === true || member.isOnline === 'true'),
+        isOnline: rawOnline && !isExpired,
         isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
-        uploadTime: member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0
+        uploadTime
       });
     });
 
-    // Merge/Overlay live locations from Baota / Firestore (primary source of truth)
+    // Merge/Overlay live locations from Baota Server
     Object.keys(realtimeLocations).forEach((phoneKey) => {
       const liveLoc = realtimeLocations[phoneKey];
       if (!liveLoc) return;
@@ -733,15 +806,21 @@ export default function NearbyMapView({
 
       const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
       const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : (existing?.lng || 0);
-      const isOnline = liveLoc.isOnline !== undefined
+      const uploadTime = liveLoc.lastLocationTime 
+        ? Number(liveLoc.lastLocationTime)
+        : (liveLoc.timestamp
+          ? Number(liveLoc.timestamp)
+          : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0)));
+      
+      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
+      const rawIsOnline = liveLoc.isOnline !== undefined
         ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
         : (existing?.isOnline || false);
+      const isOnline = rawIsOnline && !isExpired;
+
       const isBusy = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
         : (existing?.isBusy || false);
-      const uploadTime = liveLoc.timestamp
-        ? Number(liveLoc.timestamp)
-        : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0));
       
       const candidateName = existing?.name || name || '';
       const resolvedName = resolveDriverRealName(phone, candidateName);
@@ -794,7 +873,7 @@ export default function NearbyMapView({
     });
 
     markersRef.current = newMarkers;
-  }, [mapLoaded, gpsLocation, isCurrentDriverOnline, isCurrentDriverBusy, currentDriverName, squadList, realtimeLocations, effectiveMyPhone, removedPhones, hubbleFilters]);
+  }, [mapLoaded, gpsLocation, isCurrentDriverOnline, isCurrentDriverBusy, localBusyState, currentDriverName, squadList, realtimeLocations, effectiveMyPhone, removedPhones, hubbleFilters]);
 
   // Center map on current GPS location
   const handleRecenter = () => {
@@ -966,6 +1045,7 @@ export default function NearbyMapView({
           isOnline={isCurrentDriverOnline}
           currentTrip={currentTrip}
           todayOrdersCount={todayOrdersCount}
+          showFullName={hubbleFilters.showFullName}
           onClose={() => setShowSquadDriverList(false)}
         />
       )}
@@ -990,6 +1070,11 @@ export default function NearbyMapView({
           initialSettings={hubbleFilters}
           onConfirm={(newSettings) => {
             setHubbleFilters(newSettings);
+            try {
+              localStorage.setItem('dd_hubble_filter_settings', JSON.stringify(newSettings));
+              localStorage.setItem('dd_hubble_show_full_name', newSettings.showFullName ? 'true' : 'false');
+            } catch (_) {}
+            window.dispatchEvent(new CustomEvent('hubble_settings_changed', { detail: newSettings }));
             setShowHubbleSettingsDialog(false);
             triggerDevToast('哈勃地图显示设置已生效');
           }}

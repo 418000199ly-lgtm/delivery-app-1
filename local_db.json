@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-22T07:44:21.527Z"
+      "updatedAt": "2026-09-25T07:03:51.734Z"
     }
   },
   "version_history": {
@@ -40,6 +40,7 @@
     "15509601222": {
       "phone": "15509601222",
       "driverName": "吴彦祖",
+      "name": "吴彦祖",
       "role": "开发者",
       "userRole": "开发者",
       "vipExpiry": "2026-10-23",
@@ -49,9 +50,9 @@
       "isBanned": false,
       "city": "银川市",
       "updatedAt": "2026-09-07T16:40:37.510Z",
-      "lastOfflineReason": "daily_0559_expired",
-      "lastOfflineTime": "2026-09-09T05:59:00.000Z",
-      "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
+      "lastOfflineReason": "daily_0500_expired_cutoff",
+      "lastOfflineTime": "2026-09-25T05:00:00.000Z",
+      "lastUpdatedTime": "2026-09-25T05:00:00.000Z",
       "lat": 38.47513,
       "lng": 106.28665,
       "isBusy": false,
@@ -66,10 +67,14 @@
       "name": "李扬",
       "role": "普通司机",
       "userRole": "普通司机",
-      "status": "未加入小队",
-      "approvalStatus": "未加入小队",
+      "status": "已通过",
+      "approvalStatus": "已通过",
       "city": "银川市",
-      "updatedAt": "2026-09-19T08:30:00.000Z",
+      "isOnline": false,
+      "onlineOrdersEnabled": false,
+      "lastOfflineReason": "daily_0500_expired_cutoff",
+      "updatedAt": "2026-09-25T05:00:00.000Z",
+      "lastUpdatedTime": "2026-09-25T05:00:00.000Z",
       "lat": 38.47513,
       "lng": 106.28665
     }
@@ -78,9 +83,9 @@
     "15509601222": {
       "isOnline": false,
       "onlineOrdersEnabled": false,
-      "lastOfflineReason": "daily_0559_expired",
-      "lastOfflineTime": "2026-09-09T05:59:00.000Z",
-      "lastUpdatedTime": "2026-08-18T11:28:48.973Z",
+      "lastOfflineReason": "daily_0500_expired_cutoff",
+      "lastOfflineTime": "2026-09-25T05:00:00.000Z",
+      "lastUpdatedTime": "2026-09-25T05:00:00.000Z",
       "phone": "15509601222",
       "driverName": "吴彦祖",
       "name": "吴彦祖",
@@ -94,9 +99,39 @@
       "version": "V1.0",
       "appVersion": "V1.0",
       "lastUpdatedBy": "Gaode AMap 20s Auto Reporter"
+    },
+    "18695119126": {
+      "isOnline": false,
+      "onlineOrdersEnabled": false,
+      "lastOfflineReason": "daily_0500_expired_cutoff",
+      "lastOfflineTime": "2026-09-25T05:00:00.000Z",
+      "lastUpdatedTime": "2026-09-25T05:00:00.000Z",
+      "phone": "18695119126",
+      "driverName": "李扬",
+      "name": "李扬",
+      "role": "普通司机",
+      "userRole": "普通司机",
+      "status": "已通过",
+      "approvalStatus": "已通过",
+      "lat": 38.47513,
+      "lng": 106.28665,
+      "isBusy": false,
+      "city": "银川市"
     }
   },
-  "squad_applications": {},
+  "squad_applications": {
+    "18695119126": {
+      "id": "18695119126",
+      "phone": "18695119126",
+      "name": "李扬",
+      "driverName": "李扬",
+      "role": "普通司机",
+      "userRole": "普通司机",
+      "status": "已通过",
+      "approvalStatus": "已通过",
+      "updatedAt": "2026-09-25T05:00:00.000Z"
+    }
+  },
   "driver_locations": {
     "15509601222": {
       "phone": "15509601222",
@@ -110,7 +145,18 @@
       "version": "V1.0",
       "appVersion": "V1.0",
       "lastUpdatedBy": "Gaode AMap 20s Auto Reporter",
-      "lastUpdatedTime": "2026-08-18T11:28:48.973Z"
+      "lastUpdatedTime": "2026-09-25T05:00:00.000Z"
+    },
+    "18695119126": {
+      "phone": "18695119126",
+      "driverName": "李扬",
+      "lat": 38.47513,
+      "lng": 106.28665,
+      "isOnline": false,
+      "onlineOrdersEnabled": false,
+      "isBusy": false,
+      "city": "银川市",
+      "lastUpdatedTime": "2026-09-25T05:00:00.000Z"
     }
   },
   "config": {
@@ -122,9 +168,7 @@
       "updatedAt": "2026-08-18T11:12:55.704Z"
     },
     "removed_squad_members": {
-      "phones": [
-        "18695119126"
-      ]
+      "phones": []
     }
   }
 }

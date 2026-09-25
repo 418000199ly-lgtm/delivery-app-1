@@ -5,6 +5,7 @@ import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
+import { regenerateQRCode } from '../utils/qrCodeHelper';
 import { 
   MapPin, 
   Phone, 
@@ -428,50 +429,23 @@ export default function DispatchValetOrder({
     handleFetchGPSLocation(true);
   }, []);
 
-  // Helper to auto-compress image and convert to PNG format
+  // Helper to auto-compress, crop and convert QR image to lightweight PNG (~50KB)
   const compressAndConvertToPng = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = (e) => {
-        const img = new Image();
-        img.onload = () => {
-          try {
-            const maxWidth = 800;
-            const maxHeight = 800;
-            let width = img.width;
-            let height = img.height;
-
-            if (width > maxWidth || height > maxHeight) {
-              if (width / height > maxWidth / maxHeight) {
-                height = Math.round((height * maxWidth) / width);
-                width = maxWidth;
-              } else {
-                width = Math.round((width * maxHeight) / height);
-                height = maxHeight;
-              }
-            }
-
-            const canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) {
-              resolve(e.target?.result as string);
-              return;
-            }
-
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, width, height);
-            ctx.drawImage(img, 0, 0, width, height);
-
-            const pngUrl = canvas.toDataURL('image/png', 0.85);
-            resolve(pngUrl);
-          } catch (err) {
-            resolve(e.target?.result as string);
+      reader.onload = async (e) => {
+        try {
+          const rawDataUrl = e.target?.result as string;
+          if (!rawDataUrl) {
+            resolve('');
+            return;
           }
-        };
-        img.onerror = () => resolve(e.target?.result as string || '');
-        img.src = e.target?.result as string;
+          // Auto-crop QR code bounding box and convert to lossless vector / lightweight image (~20KB-80KB)
+          const croppedQr = await regenerateQRCode(rawDataUrl, 'wechat');
+          resolve(croppedQr || rawDataUrl);
+        } catch (err) {
+          resolve(e.target?.result as string || '');
+        }
       };
       reader.onerror = (err) => reject(err);
       reader.readAsDataURL(file);
@@ -1829,42 +1803,77 @@ export default function DispatchValetOrder({
       return;
     }
 
+    const targetPhone = String(targetMember.phone || targetMember.id || '').replace(/\D/g, '').trim();
+    const targetName = String(targetMember.name || targetMember.driverName || (targetPhone === '18695119126' ? '李扬' : `司机${targetPhone.slice(-4)}`)).trim();
+
     // Update local React state immediately so UI updates without external database/network dependency
     setSquadMembers(prev => {
-      const exists = prev.some(m => m.phone === targetMember.phone);
+      const exists = prev.some(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone);
       let updatedList = [];
       if (exists) {
-        updatedList = prev.map(m => m.phone === targetMember.phone ? { ...m, role: newRole, userRole: newRole } : m);
+        updatedList = prev.map(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone ? { ...m, name: targetName, driverName: targetName, role: newRole, userRole: newRole, status: '已通过', approvalStatus: '已通过' } : m);
       } else {
-        updatedList = [...prev, { ...targetMember, role: newRole, userRole: newRole }];
+        updatedList = [...prev, { ...targetMember, phone: targetPhone, name: targetName, driverName: targetName, role: newRole, userRole: newRole, status: '已通过', approvalStatus: '已通过' }];
       }
       try {
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
-        const updatedMemberObj = updatedList.find(m => m.phone === targetMember.phone);
+        const updatedMemberObj = updatedList.find(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone);
         if (updatedMemberObj) {
-          localStorage.setItem(`dd_squad_member_${targetMember.phone}`, JSON.stringify(updatedMemberObj));
+          localStorage.setItem(`dd_squad_member_${targetPhone}`, JSON.stringify(updatedMemberObj));
+          localStorage.setItem(`dd_approved_${targetPhone}`, 'true');
+          localStorage.setItem(`dd_in_squad_${targetPhone}`, 'true');
         }
       } catch (_) {}
       return updatedList;
     });
 
     // Also sync to applicants list if present
-    setApplicants(prev => prev.map(a => (a.phone === targetMember.phone || a.id === targetMember.id) ? { ...a, role: newRole, userRole: newRole } : a));
+    setApplicants(prev => {
+      const updated = prev.map(a => (String(a.phone || a.id).replace(/\D/g, '').trim() === targetPhone) ? { ...a, name: targetName, driverName: targetName, role: newRole, userRole: newRole, status: '已通过', approvalStatus: '已通过' } : a);
+      try {
+        localStorage.setItem('dd_applicants_v2', JSON.stringify(updated));
+      } catch (_) {}
+      return updated;
+    });
+
+    // Clean removed blacklist for this target
+    setRemovedMemberPhones(prev => {
+      const next = prev.filter(p => String(p).replace(/\D/g, '').trim() !== targetPhone);
+      try {
+        localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(next));
+      } catch (_) {}
+      return next;
+    });
+
+    if (userPhone && String(userPhone).replace(/\D/g, '').trim() === targetPhone) {
+      setAdminProfile(prev => ({ ...prev, role: newRole }));
+      try {
+        localStorage.setItem('dd_user_role', newRole);
+      } catch (_) {}
+    }
 
     try {
-      if (targetMember.phone) {
-        if (db) {
-          setDoc(doc(db, 'squad_members', targetMember.phone), {
-            role: newRole,
-            userRole: newRole,
-            lastUpdatedTime: new Date().toLocaleString()
-          }, { merge: true }).catch(() => {});
+      if (targetPhone) {
+        const fullPayload = {
+          id: targetPhone,
+          phone: targetPhone,
+          name: targetName,
+          driverName: targetName,
+          realName: targetName,
+          role: newRole,
+          userRole: newRole,
+          status: '已通过',
+          approvalStatus: '已通过',
+          lastUpdatedTime: new Date().toLocaleString()
+        };
 
-          setDoc(doc(db, 'driver_users', targetMember.phone), {
-            userRole: newRole,
-            role: newRole,
-            lastUpdatedTime: new Date().toLocaleString()
+        if (db) {
+          setDoc(doc(db, 'squad_members', targetPhone), fullPayload, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'driver_users', targetPhone), {
+            ...fullPayload,
+            status: '已加入小队'
           }, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'squad_applications', targetPhone), fullPayload, { merge: true }).catch(() => {});
         }
 
         const baseUrl = getBaseApiUrl();
@@ -1873,8 +1882,8 @@ export default function DispatchValetOrder({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             collection: 'squad_members',
-            docId: targetMember.phone,
-            data: { role: newRole, userRole: newRole, lastUpdatedTime: new Date().toLocaleString() }
+            docId: targetPhone,
+            data: fullPayload
           })
         }).catch(() => {});
 
@@ -1883,14 +1892,30 @@ export default function DispatchValetOrder({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             collection: 'driver_users',
-            docId: targetMember.phone,
-            data: { userRole: newRole, role: newRole, lastUpdatedTime: new Date().toLocaleString() }
+            docId: targetPhone,
+            data: {
+              ...fullPayload,
+              status: '已加入小队'
+            }
           })
         }).catch(() => {});
+
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            collection: 'squad_applications',
+            docId: targetPhone,
+            data: fullPayload
+          })
+        }).catch(() => {});
+
+        window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { phone: targetPhone, role: newRole, name: targetName } }));
+        window.dispatchEvent(new CustomEvent('user_role_updated', { detail: { phone: targetPhone, role: newRole } }));
       }
     } catch (_) {}
 
-    onShowToast(`🎉 已成功将【${targetMember.name}】的角色修改为：${newRole}`);
+    onShowToast(`🎉 已成功将【${targetName}】的角色修改为：${newRole}`);
   };
 
   const handleSaveAdminName = async () => {
@@ -2083,11 +2108,13 @@ export default function DispatchValetOrder({
             const phones: string[] = [];
             const list: any[] = [];
             json2.docs.forEach((docSnap: any) => {
-              if (docSnap && docSnap.id && docSnap.data) {
+              if (docSnap && docSnap.id) {
+                const itemData = typeof docSnap.data === 'object' && docSnap.data !== null ? docSnap.data : docSnap;
                 phones.push(docSnap.id);
                 list.push({
                   phone: docSnap.id,
-                  ...docSnap.data()
+                  id: docSnap.id,
+                  ...itemData
                 });
               }
             });

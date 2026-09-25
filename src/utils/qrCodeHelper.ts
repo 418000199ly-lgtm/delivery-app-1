@@ -2,8 +2,43 @@ import jsQR from 'jsqr';
 import QRCode from 'qrcode';
 
 /**
+ * Memory-safe helper to downscale high-resolution mobile photos (12MP~48MP)
+ * down to max 800px to prevent Android OOM crashes and iOS WKWebView white-screen reloads.
+ */
+export function downscaleImage(img: HTMLImageElement, maxDim = 800): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  let width = img.naturalWidth || img.width || 800;
+  let height = img.naturalHeight || img.height || 800;
+
+  if (width <= 0 || height <= 0) {
+    width = 800;
+    height = 800;
+  }
+
+  if (width > maxDim || height > maxDim) {
+    if (width > height) {
+      height = Math.round((height * maxDim) / width);
+      width = maxDim;
+    } else {
+      width = Math.round((width * maxDim) / height);
+      height = maxDim;
+    }
+  }
+
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (ctx) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, width, height);
+  }
+  return canvas;
+}
+
+/**
  * Scans a canvas for QR code payload using jsQR with multi-strategy support
- * (standard, multi-scale, and binarized attempts)
+ * (standard, contrast enhanced, and multi-scale attempts)
  */
 function tryScanCanvas(canvas: HTMLCanvasElement): string | null {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -22,14 +57,12 @@ function tryScanCanvas(canvas: HTMLCanvasElement): string | null {
     }
   } catch (_) {}
 
-  // Attempt 2: Grayscale & Contrast Binarization
+  // Attempt 2: High contrast & Binarization
   try {
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
-    
-    // Calculate average luminance
-    let sumL = 0;
     const len = data.length;
+    let sumL = 0;
     for (let i = 0; i < len; i += 4) {
       sumL += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     }
@@ -50,18 +83,18 @@ function tryScanCanvas(canvas: HTMLCanvasElement): string | null {
     }
   } catch (_) {}
 
-  // Attempt 3: Downscale / Upscale if image is too large or too small
-  const targetSizes = [800, 500, 320];
+  // Attempt 3: Multi-scale downscale (450px, 320px)
+  const targetSizes = [450, 320];
   for (const targetSize of targetSizes) {
-    if (Math.max(width, height) > targetSize * 1.25) {
+    if (Math.max(width, height) > targetSize * 1.2) {
       try {
         const scale = targetSize / Math.max(width, height);
-        const sw = Math.round(width * scale);
-        const sh = Math.round(height * scale);
+        const sw = Math.max(1, Math.round(width * scale));
+        const sh = Math.max(1, Math.round(height * scale));
         const scaledCanvas = document.createElement('canvas');
         scaledCanvas.width = sw;
         scaledCanvas.height = sh;
-        const sctx = scaledCanvas.getContext('2d');
+        const sctx = scaledCanvas.getContext('2d', { willReadFrequently: true });
         if (sctx) {
           sctx.drawImage(canvas, 0, 0, sw, sh);
           const simgData = sctx.getImageData(0, 0, sw, sh);
@@ -78,139 +111,137 @@ function tryScanCanvas(canvas: HTMLCanvasElement): string | null {
 }
 
 /**
- * Detects the QR matrix bounding box from an image by scanning high-frequency transition density
+ * Lightweight, memory-safe bounding box detection on downscaled canvas
  */
 export function detectQRBoundingBox(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number
 ): { x: number; y: number; width: number; height: number } | null {
-  const imgData = ctx.getImageData(0, 0, width, height);
-  const data = imgData.data;
+  try {
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
 
-  const blockSize = Math.max(4, Math.floor(Math.min(width, height) / 60));
-  const cols = Math.floor(width / blockSize);
-  const rows = Math.floor(height / blockSize);
+    const blockSize = Math.max(4, Math.floor(Math.min(width, height) / 40));
+    const cols = Math.floor(width / blockSize);
+    const rows = Math.floor(height / blockSize);
+    if (cols <= 0 || rows <= 0) return null;
 
-  const density = Array.from({ length: rows }, () => new Float32Array(cols));
-  let maxDensity = 0;
+    const density = Array.from({ length: rows }, () => new Float32Array(cols));
+    let maxDensity = 0;
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      let transitionCount = 0;
-      const startX = c * blockSize;
-      const startY = r * blockSize;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        let transitionCount = 0;
+        const startX = c * blockSize;
+        const startY = r * blockSize;
 
-      for (let y = startY; y < Math.min(height - 1, startY + blockSize); y += 2) {
-        for (let x = startX; x < Math.min(width - 1, startX + blockSize); x += 2) {
-          const idx1 = (y * width + x) * 4;
-          const idxRight = (y * width + (x + 1)) * 4;
-          const idxDown = ((y + 1) * width + x) * 4;
+        for (let y = startY; y < Math.min(height - 1, startY + blockSize); y += 3) {
+          for (let x = startX; x < Math.min(width - 1, startX + blockSize); x += 3) {
+            const idx1 = (y * width + x) * 4;
+            const idxRight = (y * width + (x + 1)) * 4;
+            const idxDown = ((y + 1) * width + x) * 4;
 
-          const r1 = data[idx1], g1 = data[idx1 + 1], b1 = data[idx1 + 2];
-          const sat1 = Math.max(r1, g1, b1) - Math.min(r1, g1, b1);
-          const l1 = 0.299 * r1 + 0.587 * g1 + 0.114 * b1;
+            const r1 = data[idx1], g1 = data[idx1 + 1], b1 = data[idx1 + 2];
+            const sat1 = Math.max(r1, g1, b1) - Math.min(r1, g1, b1);
+            const l1 = 0.299 * r1 + 0.587 * g1 + 0.114 * b1;
 
-          const lRight = 0.299 * data[idxRight] + 0.587 * data[idxRight + 1] + 0.114 * data[idxRight + 2];
-          const lDown = 0.299 * data[idxDown] + 0.587 * data[idxDown + 1] + 0.114 * data[idxDown + 2];
+            const lRight = 0.299 * data[idxRight] + 0.587 * data[idxRight + 1] + 0.114 * data[idxRight + 2];
+            const lDown = 0.299 * data[idxDown] + 0.587 * data[idxDown + 1] + 0.114 * data[idxDown + 2];
 
-          // Black/white pattern transitions have low saturation and sharp luminance jumps
-          if (sat1 < 45) {
-            if (Math.abs(l1 - lRight) > 40) transitionCount++;
-            if (Math.abs(l1 - lDown) > 40) transitionCount++;
-          }
-        }
-      }
-
-      density[r][c] = transitionCount;
-      if (transitionCount > maxDensity) {
-        maxDensity = transitionCount;
-      }
-    }
-  }
-
-  if (maxDensity < 3) return null;
-
-  // Threshold to isolate the high-density QR module cluster
-  const threshold = Math.max(2, maxDensity * 0.2);
-
-  // Find components
-  const visited = Array.from({ length: rows }, () => new Uint8Array(cols));
-  const components: { minR: number; maxR: number; minC: number; maxC: number; count: number }[] = [];
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (density[r][c] >= threshold && visited[r][c] === 0) {
-        let minR = r, maxR = r, minC = c, maxC = c;
-        let count = 0;
-        const queue: [number, number][] = [[r, c]];
-        visited[r][c] = 1;
-
-        while (queue.length > 0) {
-          const [cr, cc] = queue.shift()!;
-          count++;
-          if (cr < minR) minR = cr;
-          if (cr > maxR) maxR = cr;
-          if (cc < minC) minC = cc;
-          if (cc > maxC) maxC = cc;
-
-          // Bridge tolerance across module gaps and center avatar
-          const bridge = 3;
-          for (let dr = -bridge; dr <= bridge; dr++) {
-            for (let dc = -bridge; dc <= bridge; dc++) {
-              const nr = cr + dr;
-              const nc = cc + dc;
-              if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                if (density[nr][nc] >= threshold && visited[nr][nc] === 0) {
-                  visited[nr][nc] = 1;
-                  queue.push([nr, nc]);
-                }
-              }
+            if (sat1 < 45) {
+              if (Math.abs(l1 - lRight) > 40) transitionCount++;
+              if (Math.abs(l1 - lDown) > 40) transitionCount++;
             }
           }
         }
 
-        if (count >= 6) {
-          components.push({ minR, maxR, minC, maxC, count });
+        density[r][c] = transitionCount;
+        if (transitionCount > maxDensity) {
+          maxDensity = transitionCount;
         }
       }
     }
+
+    if (maxDensity < 3) return null;
+
+    const threshold = Math.max(2, maxDensity * 0.25);
+    const visited = Array.from({ length: rows }, () => new Uint8Array(cols));
+    const components: { minR: number; maxR: number; minC: number; maxC: number; count: number }[] = [];
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (density[r][c] >= threshold && visited[r][c] === 0) {
+          let minR = r, maxR = r, minC = c, maxC = c;
+          let count = 0;
+          const queue: [number, number][] = [[r, c]];
+          visited[r][c] = 1;
+
+          while (queue.length > 0) {
+            const [cr, cc] = queue.shift()!;
+            count++;
+            if (cr < minR) minR = cr;
+            if (cr > maxR) maxR = cr;
+            if (cc < minC) minC = cc;
+            if (cc > maxC) maxC = cc;
+
+            const bridge = 2;
+            for (let dr = -bridge; dr <= bridge; dr++) {
+              for (let dc = -bridge; dc <= bridge; dc++) {
+                const nr = cr + dr;
+                const nc = cc + dc;
+                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                  if (density[nr][nc] >= threshold && visited[nr][nc] === 0) {
+                    visited[nr][nc] = 1;
+                    queue.push([nr, nc]);
+                  }
+                }
+              }
+            }
+          }
+
+          if (count >= 4) {
+            components.push({ minR, maxR, minC, maxC, count });
+          }
+        }
+      }
+    }
+
+    if (components.length === 0) return null;
+
+    components.sort((a, b) => b.count - a.count);
+    const best = components[0];
+
+    const rawX = best.minC * blockSize;
+    const rawY = best.minR * blockSize;
+    const rawW = (best.maxC - best.minC + 1) * blockSize;
+    const rawH = (best.maxR - best.minR + 1) * blockSize;
+
+    const maxDim = Math.max(rawW, rawH);
+    const padding = Math.round(maxDim * 0.05);
+    const cx = rawX + rawW / 2;
+    const cy = rawY + rawH / 2;
+    const size = maxDim + padding * 2;
+
+    let x = Math.round(cx - size / 2);
+    let y = Math.round(cy - size / 2);
+    let w = Math.round(size);
+    let h = Math.round(size);
+
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x + w > width) w = width - x;
+    if (y + h > height) h = height - y;
+
+    const finalSide = Math.min(w, h);
+    return { x, y, width: finalSide, height: finalSide };
+  } catch (_) {
+    return null;
   }
-
-  if (components.length === 0) return null;
-
-  // Sort by cluster size
-  components.sort((a, b) => b.count - a.count);
-  const best = components[0];
-
-  const rawX = best.minC * blockSize;
-  const rawY = best.minR * blockSize;
-  const rawW = (best.maxC - best.minC + 1) * blockSize;
-  const rawH = (best.maxR - best.minR + 1) * blockSize;
-
-  // Add 6% quiet zone margin and force square
-  const maxDim = Math.max(rawW, rawH);
-  const padding = Math.round(maxDim * 0.06);
-  const cx = rawX + rawW / 2;
-  const cy = rawY + rawH / 2;
-  const size = maxDim + padding * 2;
-
-  let x = Math.round(cx - size / 2);
-  let y = Math.round(cy - size / 2);
-  let w = Math.round(size);
-  let h = Math.round(size);
-
-  if (x < 0) x = 0;
-  if (y < 0) y = 0;
-  if (x + w > width) w = width - x;
-  if (y + h > height) h = height - y;
-
-  const finalSide = Math.min(w, h);
-  return { x, y, width: finalSide, height: finalSide };
 }
 
 /**
- * Crops and cleans up a QR code from any uploaded image (removes posters, green borders, headers, footers)
+ * Memory-safe and crash-proof QR code extraction and lossless reconstruction
  */
 export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {
@@ -223,52 +254,51 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
     img.crossOrigin = 'anonymous';
     img.onload = () => {
       try {
-        const origCanvas = document.createElement('canvas');
-        origCanvas.width = img.width;
-        origCanvas.height = img.height;
-        const origCtx = origCanvas.getContext('2d', { willReadFrequently: true });
-        if (!origCtx) {
-          resolve(dataUrl);
-          return;
-        }
+        // Step 1: Immediately downscale image to max 800px to avoid memory spikes
+        const downscaledCanvas = downscaleImage(img, 800);
+        const dw = downscaledCanvas.width;
+        const dh = downscaledCanvas.height;
 
-        origCtx.drawImage(img, 0, 0);
-
-        // 1. Try scanning original full canvas with jsQR
-        const fullScanPayload = tryScanCanvas(origCanvas);
+        // Step 2: Try scanning the downscaled canvas with jsQR
+        const fullScanPayload = tryScanCanvas(downscaledCanvas);
         if (fullScanPayload) {
           QRCode.toDataURL(fullScanPayload, {
             errorCorrectionLevel: 'H',
             margin: 2,
             width: 450,
             color: { dark: '#000000', light: '#ffffff' }
-          }).then(resolve).catch(() => resolve(dataUrl));
+          }).then(resolve).catch(() => resolve(downscaledCanvas.toDataURL('image/png')));
           return;
         }
 
-        // 2. Detect bounding box of the QR code in the image
-        const bbox = detectQRBoundingBox(origCtx, img.width, img.height);
-        
-        const cropX = bbox ? bbox.x : Math.round((img.width - Math.min(img.width, img.height)) / 2);
-        const cropY = bbox ? bbox.y : Math.round((img.height - Math.min(img.width, img.height)) / 2);
-        const cropW = bbox ? bbox.width : Math.min(img.width, img.height);
-        const cropH = bbox ? bbox.height : Math.min(img.width, img.height);
+        // Step 3: If direct scan didn't find payload, detect bounding box on downscaled canvas
+        const dctx = downscaledCanvas.getContext('2d', { willReadFrequently: true });
+        if (!dctx) {
+          resolve(downscaledCanvas.toDataURL('image/png'));
+          return;
+        }
 
-        // Render cropped canvas
+        const bbox = detectQRBoundingBox(dctx, dw, dh);
+        const cropX = bbox ? bbox.x : Math.round((dw - Math.min(dw, dh)) / 2);
+        const cropY = bbox ? bbox.y : Math.round((dh - Math.min(dw, dh)) / 2);
+        const cropW = bbox ? bbox.width : Math.min(dw, dh);
+        const cropH = bbox ? bbox.height : Math.min(dw, dh);
+
+        // Step 4: Render cropped canvas at 400x400
         const croppedCanvas = document.createElement('canvas');
         croppedCanvas.width = 400;
         croppedCanvas.height = 400;
         const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true });
         if (!croppedCtx) {
-          resolve(dataUrl);
+          resolve(downscaledCanvas.toDataURL('image/png'));
           return;
         }
 
         croppedCtx.imageSmoothingEnabled = true;
         croppedCtx.imageSmoothingQuality = 'high';
-        croppedCtx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, 400, 400);
+        croppedCtx.drawImage(downscaledCanvas, cropX, cropY, cropW, cropH, 0, 0, 400, 400);
 
-        // 3. Try scanning cropped canvas with jsQR
+        // Step 5: Try scanning the cropped 400x400 canvas
         const croppedScanPayload = tryScanCanvas(croppedCanvas);
         if (croppedScanPayload) {
           QRCode.toDataURL(croppedScanPayload, {
@@ -280,7 +310,7 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
           return;
         }
 
-        // 4. Fallback: Clean and binarize the cropped canvas (remove green margins, center avatar, clear noise)
+        // Step 6: Fallback: Clean up margins & binarize
         const imgData = croppedCtx.getImageData(0, 0, 400, 400);
         const pixels = imgData.data;
 
@@ -296,7 +326,7 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
             const idx = (y * 400 + x) * 4;
 
             // Clear margin borders
-            if (x < 24 || x > 376 || y < 24 || y > 376) {
+            if (x < 20 || x > 380 || y < 20 || y > 380) {
               pixels[idx] = 255;
               pixels[idx + 1] = 255;
               pixels[idx + 2] = 255;
@@ -333,7 +363,7 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
         croppedCtx.putImageData(imgData, 0, 0);
         resolve(croppedCanvas.toDataURL('image/png'));
       } catch (err) {
-        console.error('QR Crop process failed', err);
+        console.error('QR Crop process error:', err);
         resolve(dataUrl);
       }
     };

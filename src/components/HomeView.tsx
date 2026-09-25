@@ -563,12 +563,6 @@ export default function HomeView({
           localMemberList = JSON.parse(savedMembers);
         }
 
-        let localApprovedApps: any[] = [];
-        const savedApps = localStorage.getItem('dd_applicants_v2');
-        if (savedApps && Array.isArray(JSON.parse(savedApps))) {
-          localApprovedApps = JSON.parse(savedApps).filter((a: any) => ['已通过', 'approved', '通过'].includes(String(a?.status || '')));
-        }
-
         setSquadMembers(prev => {
           const map = new Map<string, any>();
           prev.forEach(m => {
@@ -577,21 +571,9 @@ export default function HomeView({
           });
           localMemberList.forEach((m: any) => {
             const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
-            if (p && (p === '15509601222' || !removedSet.has(p))) map.set(p, { ...(map.get(p) || {}), ...m });
-          });
-          localApprovedApps.forEach((a: any) => {
-            const p = String(a.phone || a.id || '').replace(/\D/g, '').trim();
             if (p && (p === '15509601222' || !removedSet.has(p))) {
               const existing = map.get(p) || {};
-              map.set(p, {
-                ...existing,
-                id: a.id || p,
-                phone: p,
-                name: a.name || existing.name || (p === '18695119126' ? '李扬' : `司机${p.slice(-4)}`),
-                role: a.role || a.userRole || existing.role || '普通司机',
-                userRole: a.userRole || a.role || existing.userRole || '普通司机',
-                status: '已通过'
-              });
+              map.set(p, { ...existing, ...m, role: m.role || existing.role || '普通司机', userRole: m.userRole || m.role || existing.userRole || '普通司机' });
             }
           });
           // 彻底剔除所有在移出黑名单中的司机（开发者账号除外）
@@ -660,24 +642,7 @@ export default function HomeView({
     // 开发者最高权限账号永远加入小队（唯一主键）
     activeDriverPhones.add('15509601222');
 
-    // 当前登录司机如果未被移出且已加入小队，计入
-    const curP = getCurrentPhone();
-    if (curP && curP !== '15509601222' && !removedSet.has(curP)) {
-      if (isDriverInSquad(curP)) {
-        activeDriverPhones.add(curP);
-      }
-    }
-
-    let localMembers: any[] = [];
-    try {
-      const savedM = localStorage.getItem('dd_squad_members_v2');
-      if (savedM && Array.isArray(JSON.parse(savedM))) {
-        localMembers = JSON.parse(savedM);
-      }
-    } catch (_) {}
-
-    const allCandidateMembers = [...(squadMembers || []), ...localMembers];
-    allCandidateMembers.forEach((m: any) => {
+    (squadMembers || []).forEach((m: any) => {
       if (!m) return;
       let phone = String(m.phone || '').replace(/\D/g, '').trim();
       const rawId = String(m.id || '').trim();
@@ -1617,16 +1582,14 @@ export default function HomeView({
   const hasDriverUploadedQrCode = (): boolean => {
     try {
       if (settings?.wechatQrCode && settings.wechatQrCode.trim()) return true;
-      if (settings?.alipayQrCode && settings.alipayQrCode.trim()) return true;
       const currentPhone = (userPhone || applyPhone || localStorage.getItem('dd_user_phone') || '').trim();
       if (currentPhone) {
         const userSettingsStr = localStorage.getItem(`dd_settings_${currentPhone}`);
         if (userSettingsStr) {
           const parsed = JSON.parse(userSettingsStr);
           if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return true;
-          if (parsed?.alipayQrCode && parsed.alipayQrCode.trim()) return true;
         }
-        const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`) || localStorage.getItem(`dd_dispatch_fee_qr_${currentPhone}`);
+        const localPhoneQr = localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`);
         if (localPhoneQr && localPhoneQr.trim()) return true;
       }
       const globalQr = localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr');

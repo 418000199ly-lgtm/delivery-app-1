@@ -16,12 +16,14 @@ interface SquadDriverListProps {
   isOnline?: boolean;
   currentTrip?: any;
   todayOrdersCount?: number;
+  showFullName?: boolean;
   onClose: () => void;
 }
 
 interface DriverItem {
   phone: string;
   name: string;
+  rawRealName: string;
   isMe: boolean;
   isOnline: boolean;
   isBusy: boolean; // true = 红色(做单、报单中); false = 绿色(空闲接单)
@@ -48,6 +50,7 @@ export default function SquadDriverList({
   isOnline = true,
   currentTrip,
   todayOrdersCount = 0,
+  showFullName: propShowFullName,
   onClose
 }: SquadDriverListProps) {
   // Normalize current user phone
@@ -56,6 +59,44 @@ export default function SquadDriverList({
     (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || 
     '15509601222'
   ).trim();
+
+  // Full name preference from Hubble settings
+  const [showFullName, setShowFullName] = useState<boolean>(() => {
+    if (typeof propShowFullName === 'boolean') return propShowFullName;
+    if (typeof window !== 'undefined') {
+      try {
+        const savedSettings = localStorage.getItem('dd_hubble_filter_settings');
+        if (savedSettings) {
+          const parsed = JSON.parse(savedSettings);
+          if (typeof parsed?.showFullName === 'boolean') return parsed.showFullName;
+        }
+        return localStorage.getItem('dd_hubble_show_full_name') === 'true';
+      } catch (_) {}
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (typeof propShowFullName === 'boolean') {
+      setShowFullName(propShowFullName);
+    }
+  }, [propShowFullName]);
+
+  // Listen to Hubble filter settings changes
+  useEffect(() => {
+    const handleHubbleSettings = (e: any) => {
+      if (e?.detail && typeof e.detail.showFullName === 'boolean') {
+        setShowFullName(e.detail.showFullName);
+      } else if (typeof window !== 'undefined') {
+        const flag = localStorage.getItem('dd_hubble_show_full_name') === 'true';
+        setShowFullName(flag);
+      }
+    };
+    window.addEventListener('hubble_settings_changed', handleHubbleSettings);
+    return () => {
+      window.removeEventListener('hubble_settings_changed', handleHubbleSettings);
+    };
+  }, []);
 
   const [squadList, setSquadList] = useState<any[]>(() => {
     try {
@@ -357,21 +398,36 @@ export default function SquadDriverList({
   // Stable random seed assigned per session for other drivers
   const sessionRandomSeedMap = useRef<Map<string, number>>(new Map());
 
+  // Helper to get Beijing 05:59 AM cutoff
+  const getBeijing0559CutoffMs = (): number => {
+    const now = new Date();
+    const beijingMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (8 * 3600000);
+    const beijingDate = new Date(beijingMs);
+    const cutoffDate = new Date(beijingDate);
+    cutoffDate.setHours(5, 59, 0, 0);
+    if (beijingDate.getTime() < cutoffDate.getTime()) {
+      cutoffDate.setDate(cutoffDate.getDate() - 1);
+    }
+    return cutoffDate.getTime() - (8 * 3600000) - (now.getTimezoneOffset() * 60000);
+  };
+
   // Merge and calculate driver list according to strict requirements:
   // 1. 只显示小队内所有上线的真实司机 (Offline drivers strictly hidden, no virtual/unapproved drivers)
   // 2. 列表中第一名永远是自己 (例如：李扬 (我) 或 吴彦祖 (我)，今日成单多少)
-  // 3. 然后随机排名其他上线的真实小队司机 (第二名，吴师傅，今日成单多少)
+  // 3. 然后随机排名其他上线的真实小队司机 (第二名，吴师傅/吴彦祖，今日成单多少)
   // 4. 空闲的司机显示绿色，做单和报单页面的司机显示红色
-  // 5. 只有自己显示全名，其他上线司机显示隐藏名字 (李扬 -> 李师傅，吴彦祖 -> 吴师傅)
+  // 5. 哈勃选择显示全名时，显示全名(林俊杰)；否则显示隐藏名字(林师傅)；自己永远显示全名(李扬 (我))
   // 6. 今日成单全部计算真实数据，不展示虚拟数据
   const sortedOnlineDrivers = useMemo(() => {
     const list: DriverItem[] = [];
+    const cutoff0559Ms = getBeijing0559CutoffMs();
 
     // 1. Self (always first if online)
     if (isCurrentDriverOnline) {
       list.push({
         phone: effectiveMyPhone,
         name: currentDriverFullName,
+        rawRealName: currentDriverFullName,
         isMe: true,
         isOnline: true,
         isBusy: isCurrentDriverBusy,
@@ -384,6 +440,7 @@ export default function SquadDriverList({
     const candidateMap = new Map<string, {
       phone: string;
       name: string;
+      rawRealName: string;
       isOnline: boolean;
       isBusy: boolean;
       todayOrders: number;
@@ -401,7 +458,8 @@ export default function SquadDriverList({
       const status = String(member.status || '').trim();
       if (status && status !== '已通过') return;
 
-      const name = member.name || member.driverName || '';
+      const rawName = String(member.name || member.driverName || '').trim();
+      const realName = resolveDriverRealName(phone, rawName);
       const memberLastUpdated = member.lastUpdatedTime 
         ? new Date(member.lastUpdatedTime).getTime() 
         : (member.timestamp ? Number(member.timestamp) : 0);
@@ -413,7 +471,8 @@ export default function SquadDriverList({
 
       candidateMap.set(phone, {
         phone,
-        name,
+        name: rawName,
+        rawRealName: realName,
         isOnline: Boolean(member.isOnline === true || member.isOnline === 'true' || member.onlineOrdersEnabled === true || member.onlineOrdersEnabled === 'true'),
         isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
         todayOrders: initialTodayOrders,
@@ -442,9 +501,14 @@ export default function SquadDriverList({
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
         : existing.isBusy;
 
-      const isOnlineVal = liveLoc.isOnline !== undefined
+      let isOnlineVal = liveLoc.isOnline !== undefined
         ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true' || liveLoc.onlineOrdersEnabled === true || liveLoc.onlineOrdersEnabled === 'true')
         : existing.isOnline;
+
+      // 05:59 AM Cutoff check for Aliyun live locations
+      if (uploadTimeVal > 0 && uploadTimeVal < cutoff0559Ms) {
+        isOnlineVal = false;
+      }
 
       const isFromToday = (liveLoc.lastResetDate && liveLoc.lastResetDate === cur6AmDay) ||
         (uploadTimeVal > 0 && new Date(uploadTimeVal - 6 * 3600 * 1000).toISOString().slice(0, 10) === cur6AmDay);
@@ -471,6 +535,11 @@ export default function SquadDriverList({
       if (isMeMember(driver.phone)) return;
       if (!driver.isOnline) return;
 
+      // If location timestamp is before today's 05:59 AM cutoff, strictly treat as offline
+      if (driver.uploadTime > 0 && driver.uploadTime < cutoff0559Ms) {
+        return;
+      }
+
       // Heartbeat validation: if uploadTime is set and is older than 10 minutes, driver has disconnected
       if (driver.uploadTime > 0 && (now - driver.uploadTime > MAX_INACTIVITY_MS)) {
         return;
@@ -482,13 +551,14 @@ export default function SquadDriverList({
       }
       const randomSortKey = sessionRandomSeedMap.current.get(driver.phone) || Math.random();
 
-      // Masked name for all other drivers (e.g. 李扬 -> 李师傅, 吴彦祖 -> 吴师傅)
-      const rawRealName = resolveDriverRealName(driver.phone, driver.name);
-      const maskedName = formatDriverMaskedName(rawRealName);
+      // Masked name or Full name depending on Hubble showFullName setting
+      const rawRealName = resolveDriverRealName(driver.phone, driver.rawRealName || driver.name);
+      const displayName = showFullName ? rawRealName : formatDriverMaskedName(rawRealName);
 
       otherOnlineDrivers.push({
         phone: driver.phone,
-        name: maskedName,
+        name: displayName,
+        rawRealName,
         isMe: false,
         isOnline: true,
         isBusy: driver.isBusy,
@@ -509,7 +579,8 @@ export default function SquadDriverList({
     isCurrentDriverBusy, 
     myComputedTodayOrders, 
     squadList, 
-    realtimeLocations
+    realtimeLocations,
+    showFullName
   ]);
 
   const handleManualRefresh = () => {
@@ -649,7 +720,7 @@ export default function SquadDriverList({
                         {isBusy ? (
                           <span className="inline-flex items-center text-[10px] font-bold text-red-600">
                             <Clock className="w-2.5 h-2.5 mr-0.5" />
-                            做单中
+                            忙碌
                           </span>
                         ) : (
                           <span className="inline-flex items-center text-[10px] font-bold text-emerald-600">

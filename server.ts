@@ -1123,6 +1123,23 @@ async function startServer() {
         });
       }
 
+      const cutoffMs = getMostRecent0559CutoffMs();
+      Object.keys(locations).forEach((k) => {
+        const item = locations[k];
+        if (item && (item.isOnline === true || item.isOnline === 'true')) {
+          let t = 0;
+          if (item.onlineSessionTime) t = Number(item.onlineSessionTime);
+          else if (item.lastLocationTime) t = Number(item.lastLocationTime);
+          else if (item.locationTimestamp) t = Number(item.locationTimestamp);
+          else if (item.lastUpdatedTime) t = new Date(item.lastUpdatedTime).getTime();
+          else if (item.updatedAt) t = new Date(item.updatedAt).getTime();
+          
+          if (!t || t < cutoffMs) {
+            locations[k] = { ...item, isOnline: false, onlineOrdersEnabled: false };
+          }
+        }
+      });
+
       return res.json({ success: true, locations });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
@@ -1312,7 +1329,6 @@ async function startServer() {
     return cutoffDate.getTime() - (8 * 3600000) - (now.getTimezoneOffset() * 60000);
   };
 
-  let lastProcessed0559Date = '';
   // Map of driver phone -> timestamp when order ended (0 = still in order)
   const pendingOfflineDrivers = new Map<string, number>();
 
@@ -1324,7 +1340,6 @@ async function startServer() {
       const beijingDate = new Date(beijingMs);
       const hours = beijingDate.getHours();
       const minutes = beijingDate.getMinutes();
-      const dateStr = `${beijingDate.getFullYear()}-${beijingDate.getMonth() + 1}-${beijingDate.getDate()}`;
 
       const is0559Time = (hours === 5 && minutes === 59);
       const cutoffMs = getMostRecent0559CutoffMs();
@@ -1333,6 +1348,7 @@ async function startServer() {
       const dbData = readLocalJsonDb();
       const driverUsers = dbData.driver_users || {};
       const squadMembers = dbData.squad_members || {};
+      const driverLocations = dbData.driver_locations || {};
       const merchantOrders = dbData.merchant_orders || {};
 
       // Helper to check if driver has an active, in-progress order
@@ -1353,7 +1369,7 @@ async function startServer() {
         return false;
       };
 
-      // Gather all online drivers from driver_users and squad_members
+      // Gather all online drivers from driver_users, squad_members, and driver_locations
       const onlineDriverPhones = new Set<string>();
       Object.keys(driverUsers).forEach(phone => {
         if (driverUsers[phone]?.isOnline) onlineDriverPhones.add(phone);
@@ -1361,14 +1377,39 @@ async function startServer() {
       Object.keys(squadMembers).forEach(phone => {
         if (squadMembers[phone]?.isOnline) onlineDriverPhones.add(phone);
       });
+      Object.keys(driverLocations).forEach(phone => {
+        if (driverLocations[phone]?.isOnline) onlineDriverPhones.add(phone);
+      });
 
-      // 1. If at 05:59 AM Beijing Time, or if driver's online session started before the most recent 05:59 AM cutoff:
-      for (const phone of onlineDriverPhones) {
-        const userData = driverUsers[phone] || squadMembers[phone] || {};
+      // Also gather from MySQL if available
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [myOnlineRows]: any = await mysqlPool.query(
+            "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` IN ('driver_users', 'squad_members', 'driver_locations')"
+          );
+          if (myOnlineRows && Array.isArray(myOnlineRows)) {
+            myOnlineRows.forEach((r: any) => {
+              try {
+                const parsed = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+                if (parsed?.isOnline === true || parsed?.isOnline === 'true') {
+                  const p = String(parsed?.phone || r.doc_id || '').trim();
+                  if (p) onlineDriverPhones.add(p);
+                }
+              } catch (_) {}
+            });
+          }
+        } catch (_) {}
+      }
+
+      // 1. If at 05:59 AM Beijing Time, or if driver's online session/location started before the most recent 05:59 AM cutoff:
+      for (const phone of Array.from(onlineDriverPhones)) {
+        const userData = driverUsers[phone] || squadMembers[phone] || driverLocations[phone] || {};
         let driverOnlineTime = 0;
         if (userData.onlineSessionTime) driverOnlineTime = Number(userData.onlineSessionTime);
-        else if (userData.lastUpdatedTime) driverOnlineTime = new Date(userData.lastUpdatedTime).getTime();
+        else if (userData.lastLocationTime) driverOnlineTime = Number(userData.lastLocationTime);
         else if (userData.locationTimestamp) driverOnlineTime = Number(userData.locationTimestamp);
+        else if (userData.lastUpdatedTime) driverOnlineTime = new Date(userData.lastUpdatedTime).getTime();
+        else if (userData.updatedAt) driverOnlineTime = new Date(userData.updatedAt).getTime();
 
         const isExpired = is0559Time || (!driverOnlineTime || driverOnlineTime < cutoffMs);
 
@@ -1382,7 +1423,7 @@ async function startServer() {
           } else if (!pendingOfflineDrivers.has(phone)) {
             // No active order: immediately force offline!
             await performServerOffline(phone, is0559Time ? 'daily_0559_scheduled_idle' : 'daily_0559_expired_cutoff');
-            console.log(`[Baota Aliyun Cron 05:59] Idle driver ${phone} (session before 05:59 cutoff) automatically set to offline.`);
+            console.log(`[Baota Aliyun Cron 05:59] Driver ${phone} (session before 05:59 cutoff) automatically set to offline.`);
           }
         }
       }
@@ -2831,7 +2872,7 @@ async function startServer() {
       const filename = isWeb ? `${cleanPhone}_web.png` : `${cleanPhone}.png`;
       const filepath = path.join(qrsDir, filename);
       
-      // Overwrite/replace file on server disk (Baota panel)
+      // Overwrite/replace file on server disk (Baota panel) - Guaranteed single file per account
       fs.writeFileSync(filepath, buffer);
 
       if (!isWeb) {
@@ -2879,7 +2920,64 @@ async function startServer() {
 
       res.json({ success: true, url: qrUrl, channel: isWeb ? 'web' : 'app' });
     } catch (err: any) {
-      console.error('[Server] Failed to upload QR:', err);
+      console.error('[Server] Failed to upload WeChat QR:', err);
+      res.status(500).json({ error: 'Upload failed' });
+    }
+  });
+
+  // Upload Alipay QR Code directly to server filesystem (Baota panel) - Single file per account
+  app.post('/api/upload-alipay-qr', async (req, res) => {
+    try {
+      const { phone, imageBase64 } = req.body;
+      if (!phone || !imageBase64) {
+        return res.status(400).json({ error: 'Missing phone or imageBase64' });
+      }
+      
+      const cleanPhone = String(phone).trim();
+      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
+      const buffer = Buffer.from(base64Data, 'base64');
+      
+      const filename = `${cleanPhone}_alipay.png`;
+      const filepath = path.join(qrsDir, filename);
+      
+      // Overwrite/replace file on server disk (Baota panel) - Guaranteed single file per account
+      fs.writeFileSync(filepath, buffer);
+      
+      const qrUrl = `/uploads/qrs/${filename}?t=${Date.now()}`;
+      
+      // Update MySQL & Local DB collections
+      const targetCols = ['driver_users', 'alipay_qrs', 'dispatch_qrs'];
+
+      const qrPayload = {
+        id: cleanPhone,
+        phone: cleanPhone,
+        alipayQrCode: qrUrl,
+        updatedAt: new Date().toISOString()
+      };
+
+      for (const col of targetCols) {
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = ?',
+              [col, cleanPhone, JSON.stringify(qrPayload), JSON.stringify(qrPayload)]
+            );
+          } catch (_) {}
+        }
+      }
+
+      try {
+        const dbData = readLocalJsonDb();
+        for (const col of targetCols) {
+          if (!dbData[col]) dbData[col] = {};
+          dbData[col][cleanPhone] = { ...(dbData[col][cleanPhone] || {}), ...qrPayload };
+        }
+        writeLocalJsonDb(dbData);
+      } catch (_) {}
+
+      res.json({ success: true, url: qrUrl });
+    } catch (err: any) {
+      console.error('[Server] Failed to upload Alipay QR:', err);
       res.status(500).json({ error: 'Upload failed' });
     }
   });
