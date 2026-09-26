@@ -2227,7 +2227,18 @@ export default function DispatchValetOrder({
         }
       });
       setSquadPhones(phones);
-      setSquadMembers(list);
+      setSquadMembers(prev => {
+        const map = new Map<string, any>();
+        (prev || []).forEach(item => {
+          const p = String(item.phone || item.id).trim();
+          if (p) map.set(p, item);
+        });
+        list.forEach(item => {
+          const p = String(item.phone || item.id).trim();
+          if (p) map.set(p, { ...(map.get(p) || {}), ...item });
+        });
+        return Array.from(map.values());
+      });
     });
 
     const handleGlobalNameChange = (e: any) => {

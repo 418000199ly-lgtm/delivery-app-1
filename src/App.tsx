@@ -721,15 +721,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const unsub2 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
       if (snap.exists()) {
         const sm = snap.data();
-        let isRemoved = false;
-        try {
-          const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
-          if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
-        } catch (_) {}
-        if (!isRemoved && userPhone !== '15509601222') {
+        if (userPhone !== '15509601222') {
           const st = sm?.status || sm?.approvalStatus || '';
           if (['已通过', 'approved', '通过'].includes(st)) {
             checkAndSetApproved(true);
+            try {
+              const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+              if (savedR) {
+                const list = JSON.parse(savedR).filter((p: string) => p !== userPhone);
+                localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(list));
+              }
+            } catch (_) {}
           } else {
             setIsSquadApprovedOrManagement(false);
             try {
@@ -751,23 +753,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     // 3. 同时监听 squad_applications 审批结果 (审批通过后秒级生效)
     const unsub3 = onSnapshot(doc(db, 'squad_applications', userPhone), (snap) => {
-      let isRemoved = false;
-      try {
-        const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
-        if (savedR && JSON.parse(savedR).includes(userPhone)) isRemoved = true;
-      } catch (_) {}
-
       if (snap.exists()) {
         const app = snap.data();
-        if (!isRemoved && userPhone !== '15509601222') {
+        if (userPhone !== '15509601222') {
           const st = app?.status || '';
           if (['已通过', 'approved', '通过'].includes(st)) {
             checkAndSetApproved(true);
+            try {
+              const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
+              if (savedR) {
+                const list = JSON.parse(savedR).filter((p: string) => p !== userPhone);
+                localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(list));
+              }
+            } catch (_) {}
             return;
           }
         }
       }
-      if (!snap.exists() || isRemoved) {
+      if (!snap.exists()) {
         if (userPhone !== '15509601222') {
           setIsSquadApprovedOrManagement(false);
           try {

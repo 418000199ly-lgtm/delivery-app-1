@@ -558,8 +558,40 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
       }
 
-      // If writing to squad_members, verify the driver is not in removed_squad_members blacklist
-      if (col === 'squad_members' && docId !== '15509601222') {
+      // 1. If explicitly approving or applying, automatically unblacklist the driver
+      const isExplicitApproval = (data?.status === '已通过' || data?.approvalStatus === '已通过');
+      const isExplicitApplication = col === 'squad_applications' && (data?.status === '待审核' || data?.status === '已通过');
+
+      if ((col === 'squad_members' && isExplicitApproval) || isExplicitApplication) {
+        // Auto-remove docId from removed_squad_members
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [cfgRows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['config', 'removed_squad_members']
+            );
+            if (cfgRows && cfgRows.length > 0) {
+              const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
+              const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.map((p: any) => String(p).trim()).filter((p: string) => p && p !== docId) : [];
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                ['config', 'removed_squad_members', JSON.stringify({ phones })]
+              );
+            }
+          } catch (_) {}
+        }
+        const dbDataTmp = readLocalJsonDb();
+        if (dbDataTmp.config?.['removed_squad_members']?.phones) {
+          dbDataTmp.config['removed_squad_members'].phones = dbDataTmp.config['removed_squad_members'].phones
+            .map((p: any) => String(p).trim())
+            .filter((p: string) => p && p !== docId);
+          writeLocalJsonDb(dbDataTmp);
+        }
+      }
+
+      // If writing to squad_members and not approved, check if driver is blacklisted
+      if (col === 'squad_members' && docId !== '15509601222' && !isExplicitApproval) {
         let isRemovedDriver = false;
         if (isMySQLEnabled && mysqlPool) {
           try {
@@ -581,7 +613,7 @@ async function startServer() {
           }
         }
         if (isRemovedDriver) {
-          console.warn(`[DB Proxy SET] Dropping squad_members write for removed driver: ${docId}`);
+          console.warn(`[DB Proxy SET] Dropping non-approved squad_members write for removed driver: ${docId}`);
           return res.json({ success: true, id: docId, dropped: true });
         }
       }
@@ -696,8 +728,40 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
       }
 
+      // 1. If explicitly approving or applying, automatically unblacklist the driver
+      const isExplicitApproval = (data?.status === '已通过' || data?.approvalStatus === '已通过');
+      const isExplicitApplication = col === 'squad_applications' && (data?.status === '待审核' || data?.status === '已通过');
+
+      if ((col === 'squad_members' && isExplicitApproval) || isExplicitApplication) {
+        // Auto-remove docId from removed_squad_members
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [cfgRows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['config', 'removed_squad_members']
+            );
+            if (cfgRows && cfgRows.length > 0) {
+              const prevCfg = typeof cfgRows[0].data === 'string' ? JSON.parse(cfgRows[0].data) : cfgRows[0].data;
+              const phones = Array.isArray(prevCfg?.phones) ? prevCfg.phones.map((p: any) => String(p).trim()).filter((p: string) => p && p !== docId) : [];
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                ['config', 'removed_squad_members', JSON.stringify({ phones })]
+              );
+            }
+          } catch (_) {}
+        }
+        const dbDataTmp = readLocalJsonDb();
+        if (dbDataTmp.config?.['removed_squad_members']?.phones) {
+          dbDataTmp.config['removed_squad_members'].phones = dbDataTmp.config['removed_squad_members'].phones
+            .map((p: any) => String(p).trim())
+            .filter((p: string) => p && p !== docId);
+          writeLocalJsonDb(dbDataTmp);
+        }
+      }
+
       // If updating squad_members, verify the driver is not in removed_squad_members blacklist
-      if (col === 'squad_members' && docId !== '15509601222') {
+      if (col === 'squad_members' && docId !== '15509601222' && !isExplicitApproval) {
         let isRemovedDriver = false;
         if (isMySQLEnabled && mysqlPool) {
           try {
@@ -719,7 +783,7 @@ async function startServer() {
           }
         }
         if (isRemovedDriver) {
-          console.warn(`[DB Proxy UPDATE] Dropping squad_members write for removed driver: ${docId}`);
+          console.warn(`[DB Proxy UPDATE] Dropping non-approved squad_members write for removed driver: ${docId}`);
           return res.json({ success: true, id: docId, dropped: true });
         }
       }

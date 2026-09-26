@@ -5,7 +5,7 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-09-25T10:15:18.946Z"
+      "updatedAt": "2026-09-26T11:19:12.143Z"
     }
   },
   "version_history": {
@@ -138,9 +138,7 @@
       "updatedAt": "2026-08-18T11:12:55.704Z"
     },
     "removed_squad_members": {
-      "phones": [
-        "18695119126"
-      ]
+      "phones": []
     }
   }
 }
