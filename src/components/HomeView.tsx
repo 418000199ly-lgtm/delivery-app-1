@@ -638,7 +638,7 @@ export default function HomeView({
       );
     };
 
-    // 获取当前被移出小队的名单
+    // 1. 获取当前被移出小队的名单
     let removedList: string[] = removedMemberPhones || [];
     try {
       const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
@@ -651,49 +651,79 @@ export default function HomeView({
     } catch (_) {}
     const removedSet = new Set(removedList.map(p => String(p).replace(/\D/g, '').trim()).filter(Boolean));
 
-    // 任何已显式通过审核的司机从被删除集合中排除
-    (squadMembers || []).forEach((m: any) => {
-      const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
-      const st = String(m?.status || m?.approvalStatus || (m?.data && m?.data?.status) || '').trim();
-      if (p && (!st || ['已通过', 'approved', '通过'].includes(st))) {
-        removedSet.delete(p);
-      }
-    });
+    const isApprovedStatus = (st: string) => !st || ['已通过', 'approved', '通过'].includes(st.trim());
 
-    const activeDriverPhones = new Set<string>();
+    // 2. 构建与 w30 页面（小队管理）完全一致的 membersMap
+    const membersMap = new Map<string, any>();
+    membersMap.set('15509601222', { phone: '15509601222', role: '开发者司机' });
 
-    // 开发者最高权限账号永远加入小队（唯一主键）
-    activeDriverPhones.add('15509601222');
-
+    // 从 squadMembers state 读取
     (squadMembers || []).forEach((m: any) => {
       if (!m) return;
-      let phone = String(m.phone || '').replace(/\D/g, '').trim();
-      const rawId = String(m.id || '').trim();
-      if (!phone && /^\d{11}$/.test(rawId)) {
-        phone = rawId;
-      }
+      const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
       const name = String(m.name || m.driverName || '').trim();
-
-      // 吴彦祖 / 15509601222 统一映射为开发者账号
-      if (phone === '15509601222' || name === '吴彦祖') {
-        activeDriverPhones.add('15509601222');
-        return;
-      }
-
-      if (!phone || isMock(phone, name) || removedSet.has(phone)) return;
-
+      if (!phone || isMock(phone, name)) return;
       const st = String(m.status || m.approvalStatus || (m.data && m.data.status) || '').trim();
-      const isApproved = !st || ['已通过', 'approved', '通过'].includes(st);
-      if (!isApproved) return;
-
-      const roleStr = String(m.role || m.userRole || '').trim();
-      const isMerchant = phone.toUpperCase().endsWith('A') || roleStr.includes('商户') || roleStr.includes('商家');
-      if (isMerchant) return;
-
-      activeDriverPhones.add(phone);
+      if (phone === '15509601222' || isApprovedStatus(st)) {
+        removedSet.delete(phone);
+        membersMap.set(phone, m);
+      }
     });
 
-    return activeDriverPhones.size;
+    // 从 local storage 缓存的 dd_squad_members_v2 读取
+    try {
+      const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+      if (Array.isArray(savedM)) {
+        savedM.forEach((m: any) => {
+          if (!m) return;
+          const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+          const name = String(m.name || m.driverName || '').trim();
+          if (!phone || isMock(phone, name)) return;
+          const st = String(m.status || m.approvalStatus || '').trim();
+          if (phone === '15509601222' || isApprovedStatus(st)) {
+            removedSet.delete(phone);
+            if (!membersMap.has(phone)) membersMap.set(phone, m);
+          }
+        });
+      }
+    } catch (_) {}
+
+    // 从 squadApplications / applicants 读取（与 w30 页面审核通过的申请完全同步）
+    const allApps: any[] = [];
+    try {
+      const savedApps = JSON.parse(localStorage.getItem('dd_squad_applications_v2') || '[]');
+      if (Array.isArray(savedApps)) allApps.push(...savedApps);
+    } catch (_) {}
+
+    allApps.forEach((app: any) => {
+      if (!app) return;
+      const phone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
+      const name = String(app.name || app.driverName || app.applicantName || '').trim();
+      if (!phone || isMock(phone, name)) return;
+      const st = String(app.status || app.approvalStatus || '').trim();
+      if (phone === '15509601222' || isApprovedStatus(st)) {
+        removedSet.delete(phone);
+        if (!membersMap.has(phone)) membersMap.set(phone, app);
+      }
+    });
+
+    // 3. 过滤商户账号及被删除账号，仅保留小队司机成员
+    const isMerchantMember = (item: any) => {
+      const p = String(item?.phone || item?.id || '').trim();
+      const r = String(item?.role || item?.userRole || '').trim();
+      return p.toUpperCase().endsWith('A') || ((r.includes('商户') || r.includes('商家')) && !r.includes('司机'));
+    };
+
+    let count = 0;
+    membersMap.forEach((m, phone) => {
+      if (phone === '15509601222') {
+        count++;
+      } else if (!removedSet.has(phone) && !isMerchantMember(m)) {
+        count++;
+      }
+    });
+
+    return count;
   };
   const [teamConfig, setTeamConfig] = useState<{ teamName: string } | null>(null);
   const [searchSquadPhone, setSearchSquadPhone] = useState('');

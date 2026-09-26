@@ -2965,25 +2965,41 @@ export default function DispatchValetOrder({
   const getCombinedDrivers = () => {
     const driverMap = new Map<string, any>();
 
-    // 1. Add squadMembers who are approved and online
-    squadMembers.forEach((sm: any) => {
+    // 1. Add squadMembers and approved applicants
+    const candidateSquadList = [...(squadMembers || [])];
+    (applicants || []).forEach(app => {
+      const appPhone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
+      const status = String(app.status || app.approvalStatus || '').trim();
+      if (['已通过', 'approved', '通过'].includes(status) || appPhone === '15509601222') {
+        if (!candidateSquadList.some(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() === appPhone)) {
+          candidateSquadList.push(app);
+        }
+      }
+    });
+
+    candidateSquadList.forEach((sm: any) => {
       const phone = String(sm.phone || sm.id || '').replace(/\D/g, '').trim();
       if (!phone) return;
       if (!isEligibleSquadDriver(sm)) return;
 
-      if (sm.isOnline === true || sm.isOnline === 'true') {
+      const rd = realDrivers.find((r: any) => String(r.phone).trim() === phone);
+      const isOnline = sm.isOnline === true || sm.isOnline === 'true' || rd?.isOnline === true || rd?.isOnline === 'true';
+      if (isOnline) {
         const existing = driverMap.get(phone) || {};
-        const dName = resolveDriverRealName(phone, sm.name || sm.driverName || sm.realName || existing.name);
+        const dName = resolveDriverRealName(phone, sm.name || sm.driverName || sm.realName || rd?.name || existing.name);
+        const lat = isValidCoords(sm.lat, sm.lng) ? sm.lat : (rd && isValidCoords(rd.lat, rd.lng) ? rd.lat : existing.lat);
+        const lng = isValidCoords(sm.lat, sm.lng) ? sm.lng : (rd && isValidCoords(rd.lat, rd.lng) ? rd.lng : existing.lng);
         driverMap.set(phone, {
           ...existing,
+          ...rd,
           ...sm,
           phone,
           name: dName,
-          lat: isValidCoords(sm.lat, sm.lng) ? sm.lat : existing.lat,
-          lng: isValidCoords(sm.lat, sm.lng) ? sm.lng : existing.lng,
+          lat,
+          lng,
           isOnline: true,
-          isBusy: sm.isBusy === true || existing.isBusy === true,
-          role: sm.role || sm.approvedRole || existing.role || '普通司机'
+          isBusy: sm.isBusy === true || sm.isBusy === 'true' || rd?.isBusy === true || rd?.isBusy === 'true',
+          role: sm.role || sm.approvedRole || rd?.role || existing.role || '普通司机'
         });
       }
     });
@@ -3139,12 +3155,18 @@ export default function DispatchValetOrder({
         }
 
         // 2. 必须是小队成员列表中已通过审核的司机（或开发者本人），严禁任何非小队成员接单！
+        const isApprovedInApps = (applicants || []).some((a: any) => {
+          const aPhone = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+          const aStatus = String(a.status || a.approvalStatus || '').trim();
+          return aPhone === phone && ['已通过', 'approved', '通过'].includes(aStatus);
+        });
+
         const sm = squadMembers.find((m: any) => {
           const smPhone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
           return smPhone === phone;
         });
 
-        if (!sm && phone !== '15509601222') {
+        if (!sm && !isApprovedInApps && phone !== '15509601222') {
           return false;
         }
 
@@ -3392,18 +3414,25 @@ export default function DispatchValetOrder({
         } catch (_) {}
 
         if (chosenDriver) {
-          const passengerLinkPayload = { ...newOrderData, status: 'submitted', orderId };
+          const passengerLinkPayload = { ...newOrderData, status: 'submitted', orderId, isCancelled: false };
+          const activeOrderPayload = { ...newOrderData, status: 'dispatched', orderId, isCancelled: false };
           try {
             await Promise.race([
               setDoc(doc(db, 'passenger_links', chosenDriver.phone), passengerLinkPayload),
               new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2500))
             ]);
+            setDoc(doc(db, 'active_orders', chosenDriver.phone), activeOrderPayload).catch(() => {});
           } catch (_) {}
           try {
             fetch(`${baseUrl}/api/db/set`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ collection: 'passenger_links', docId: chosenDriver.phone, data: passengerLinkPayload })
+            }).catch(() => {});
+            fetch(`${baseUrl}/api/db/set`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: 'active_orders', docId: chosenDriver.phone, data: activeOrderPayload })
             }).catch(() => {});
           } catch (_) {}
         }

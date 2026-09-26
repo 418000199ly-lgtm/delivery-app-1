@@ -931,8 +931,11 @@ export default function ActiveTripView({
           className="absolute inset-0 bg-white z-[70] flex flex-col animate-in slide-in-from-bottom duration-300 pointer-events-auto"
           id="active-destination-search-page"
         >
+          {/* 手机顶部电量/信号/状态栏安全占位区 (彻底避免手机信号、电量、时间遮挡返回与取消目的地按钮) */}
+          <div className="w-full shrink-0 bg-gray-700 status-bar-safe-spacer" />
+
           {/* Header */}
-          <div className="bg-gray-700 border-b border-gray-600 px-4 header-safe-pt pb-4 flex items-center justify-between shrink-0">
+          <div className="bg-gray-700 border-b border-gray-600 px-4 pt-2 pb-4 flex items-center justify-between shrink-0">
             <button 
               onClick={() => setShowDestinationSearch(false)}
               className="text-white hover:text-gray-200 p-1 rounded-full active:scale-95 transition-all cursor-pointer flex items-center gap-1"

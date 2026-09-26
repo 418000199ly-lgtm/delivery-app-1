@@ -1008,7 +1008,7 @@ export default function SettingsView({
                       }
                     } catch (_) {}
 
-                    alert('已成功清空微信收款二维码，并同步从阿里云服务器删除');
+                    alert('已成功清空微信收款二维码');
                   } else {
                     onUpdateSettings({ ...settings, alipayQrCode: '' });
                     alert('已成功清空当前通道的收款二维码');
@@ -1059,8 +1059,8 @@ export default function SettingsView({
                   <div className="w-full flex justify-between items-center mb-5 border-b border-gray-50 pb-2.5">
                     <div className="flex items-center gap-1.5">
                       <div className={`w-3 h-3 rounded-full ${selectedQrTab === 'wechat' ? 'bg-[#07C160]' : 'bg-[#108EE9]'}`} />
-                      <span className="text-[10px] text-gray-400 font-bold tracking-wider font-sans uppercase">
-                        {selectedQrTab === 'wechat' ? 'WECHAT PAY' : 'ALIPAY'}
+                      <span className="text-[11px] text-gray-700 font-bold tracking-wider font-sans">
+                        {selectedQrTab === 'wechat' ? '微信' : '支付宝'}
                       </span>
                     </div>
                     <span className="text-[9px] text-teal-600 font-bold bg-teal-50 px-2 py-0.5 rounded-full font-mono">

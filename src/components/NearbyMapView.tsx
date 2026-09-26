@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   Home, 
   MapPin, 
@@ -49,6 +49,7 @@ export default function NearbyMapView({
   const [squadList, setSquadList] = useState<any[]>([]);
   const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>({});
   const [showSquadDriverList, setShowSquadDriverList] = useState(false);
+  const [renderedMapDrivers, setRenderedMapDrivers] = useState<any[]>([]);
   const [showHubbleModal, setShowHubbleModal] = useState(false);
   const [showHubbleSettingsDialog, setShowHubbleSettingsDialog] = useState(false);
   const [hubbleAuthorizedPhones, setHubbleAuthorizedPhones] = useState<string[]>([]);
@@ -622,88 +623,223 @@ export default function NearbyMapView({
     };
   }, []);
 
-  // Update Markers whenever map is loaded, GPS changes, or squad 20s location updates arrive
+  // Helper to get Beijing 05:59 AM cutoff
+  const getBeijing0559CutoffMs = (): number => {
+    const now = new Date();
+    const beijingMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (8 * 3600000);
+    const beijingDate = new Date(beijingMs);
+    const cutoffDate = new Date(beijingDate);
+    cutoffDate.setHours(5, 59, 0, 0);
+    if (beijingDate.getTime() < cutoffDate.getTime()) {
+      cutoffDate.setDate(cutoffDate.getDate() - 1);
+    }
+    return cutoffDate.getTime() - (8 * 3600000) - (now.getTimezoneOffset() * 60000);
+  };
+
+  // 严格权威计算地图上当前显示的真实小队司机列表（与图片w1地图标记 100% 严格一致）
+  const activeMapDrivers = useMemo(() => {
+    const cutoff0559Ms = getBeijing0559CutoffMs();
+    const currentRenderedDrivers: any[] = [];
+
+    // 1. 当前司机本人 "我" (15509601222 或 登录司机)
+    if (isCurrentDriverOnline) {
+      currentRenderedDrivers.push({
+        phone: effectiveMyPhone,
+        name: currentDriverName,
+        rawRealName: currentDriverName,
+        isMe: true,
+        isOnline: true,
+        isBusy: isCurrentDriverBusy,
+        todayOrders: todayOrdersCount,
+        lat: gpsLocation.lat,
+        lng: gpsLocation.lng,
+        randomSortKey: -1
+      });
+    }
+
+    const candidateDriversMap = new Map<string, {
+      phone: string;
+      name: string;
+      lat: number;
+      lng: number;
+      isOnline: boolean;
+      isBusy: boolean;
+      uploadTime: number;
+      todayOrders: number;
+    }>();
+
+    // 收集小队成员 (squadList)
+    squadList.forEach((member) => {
+      const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
+      const name = String(member.name || member.driverName || '').trim();
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
+      const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
+      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
+      const rawOnline = Boolean(member.isOnline === true || member.isOnline === 'true');
+
+      candidateDriversMap.set(phone, {
+        phone,
+        name,
+        lat: member.lat !== undefined ? Number(member.lat) : 0,
+        lng: member.lng !== undefined ? Number(member.lng) : 0,
+        isOnline: rawOnline && !isExpired,
+        isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
+        uploadTime,
+        todayOrders: Number(member.todayOrders || 0)
+      });
+    });
+
+    // 叠加实时定位 (realtimeLocations)
+    Object.keys(realtimeLocations).forEach((phoneKey) => {
+      const liveLoc = realtimeLocations[phoneKey];
+      if (!liveLoc) return;
+      const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
+      const name = String(liveLoc.driverName || liveLoc.name || '').trim();
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
+
+      const existing = candidateDriversMap.get(phone);
+      const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
+      const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : (existing?.lng || 0);
+      const uploadTime = liveLoc.lastLocationTime 
+        ? Number(liveLoc.lastLocationTime)
+        : (liveLoc.timestamp
+          ? Number(liveLoc.timestamp)
+          : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0)));
+      
+      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
+      const rawIsOnline = liveLoc.isOnline !== undefined
+        ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
+        : (existing?.isOnline || false);
+      const isOnline = rawIsOnline && !isExpired;
+
+      const isBusy = liveLoc.isBusy !== undefined
+        ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
+        : (existing?.isBusy || false);
+      
+      const candidateName = existing?.name || name || '';
+      const resolvedName = resolveDriverRealName(phone, candidateName);
+
+      candidateDriversMap.set(phone, {
+        phone,
+        name: resolvedName,
+        lat,
+        lng,
+        isOnline,
+        isBusy,
+        uploadTime,
+        todayOrders: liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : (existing?.todayOrders || 0)
+      });
+    });
+
+    // 严格按地图渲染规则过滤：只有具备真实GPS且状态符合哈勃设置的司机才加入地图显示
+    candidateDriversMap.forEach((driver) => {
+      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone)) return;
+      // 必须有真实有效GPS坐标
+      if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) return;
+
+      // 状态筛选判断
+      if (driver.isOnline) {
+        if (driver.isBusy) {
+          if (!hubbleFilters.showBusy) return;
+        } else {
+          if (!hubbleFilters.showIdle) return;
+        }
+      } else {
+        if (!hubbleFilters.showOffline) return;
+      }
+
+      const rawName = resolveDriverRealName(driver.phone, driver.name);
+      const displayName = hubbleFilters.showFullName ? rawName : formatDriverMaskedName(rawName);
+
+      currentRenderedDrivers.push({
+        phone: driver.phone,
+        name: displayName,
+        rawRealName: rawName,
+        isMe: false,
+        isOnline: driver.isOnline,
+        isBusy: driver.isBusy,
+        todayOrders: driver.todayOrders || 0,
+        lat: driver.lat,
+        lng: driver.lng,
+        uploadTime: driver.uploadTime,
+        randomSortKey: Math.random()
+      });
+    });
+
+    return currentRenderedDrivers;
+  }, [
+    isCurrentDriverOnline,
+    effectiveMyPhone,
+    currentDriverName,
+    isCurrentDriverBusy,
+    todayOrdersCount,
+    gpsLocation,
+    squadList,
+    realtimeLocations,
+    removedPhones,
+    hubbleFilters
+  ]);
+
+  // Synchronize renderedMapDrivers state with activeMapDrivers
+  useEffect(() => {
+    setRenderedMapDrivers(activeMapDrivers);
+  }, [activeMapDrivers]);
+
+  // Dynamic Markers Rendering: Render drivers on map strictly matching activeMapDrivers
   useEffect(() => {
     const map = mapInstanceRef.current;
     const AMap = (window as any).AMap;
-    if (!map || !AMap || !mapLoaded) return;
+    if (!mapLoaded || !map || !AMap) return;
 
-    // Clear existing markers
-    markersRef.current.forEach((m) => {
-      try {
-        m.setMap(null);
-      } catch (_) {}
-    });
-    markersRef.current = [];
-    if (typeof map.clearMap === 'function') {
-      try {
-        map.clearMap();
-      } catch (_) {}
+    // Clear old markers
+    if (markersRef.current && markersRef.current.length > 0) {
+      markersRef.current.forEach(m => {
+        try {
+          m.setMap(null);
+        } catch (_) {}
+      });
+      markersRef.current = [];
     }
 
     const newMarkers: any[] = [];
 
-    // Helper to generate driver marker HTML
-    // 规则：
-    // 1. 下线状态：灰色 (#64748b / 帽子 #475569)
-    // 2. 上线空闲：绿色 (#16a34a / #2e7d32)
-    // 3. 做单/报单/接单忙碌：红色 (#dc2626 / #e53935)
-    // 4. 严禁紫色
-    const createDriverMarkerDom = (name: string, isOnlineState: boolean, isBusy: boolean, isMe: boolean = false) => {
-      let tagBg = '#64748b'; // default grey for offline
-      let circleFill = '#f1f5f9';
-      let bodyFill = '#94a3b8';
-      let hatFill = '#475569';
-      let statusDesc = '';
+    // Custom CSS DOM Marker for AMap
+    const createDriverMarkerDom = (driverName: string, isOnlineState: boolean, isBusyState: boolean, isMe: boolean): HTMLElement => {
+      const div = document.createElement('div');
+      div.className = 'custom-driver-marker select-none flex flex-col items-center pointer-events-auto cursor-pointer';
+
+      let tagBg = '#10b981'; // 绿色: 空闲空车接单状态
+      let tagText = driverName;
 
       if (!isOnlineState) {
-        tagBg = '#64748b'; // 下线状态：灰色
-        circleFill = '#f1f5f9';
-        bodyFill = '#94a3b8';
-        hatFill = '#475569';
-        statusDesc = '<span style="font-size: 9px; opacity: 0.85; margin-left: 2px;">(下线)</span>';
-      } else if (isBusy) {
-        tagBg = '#dc2626'; // 忙/接单状态/报单：红色
-        circleFill = '#fef2f2';
-        bodyFill = '#dc2626';
-        hatFill = '#b91c1c';
-      } else {
-        tagBg = '#16a34a'; // 在线空闲状态：绿色
-        circleFill = '#f0fdf4';
-        bodyFill = '#16a34a';
-        hatFill = '#15803d';
+        tagBg = '#64748b'; // 灰色: 下线
+        tagText = `${driverName}(下线)`;
+      } else if (isBusyState) {
+        tagBg = '#ef4444'; // 红色: 报单中/接单做单中
+        tagText = `${driverName}(做单中)`;
+      } else if (isMe) {
+        tagText = `${driverName} (我)`;
       }
 
-      const div = document.createElement('div');
-      div.className = 'flex flex-col items-center select-none cursor-pointer';
-      div.style.transform = 'translate(-50%, -100%)';
+      const hatFill = isOnlineState ? (isBusyState ? '#dc2626' : '#059669') : '#475569';
+      const bodyFill = isOnlineState ? (isBusyState ? '#f87171' : '#34d399') : '#94a3b8';
+      const circleFill = isOnlineState ? (isBusyState ? '#fee2e2' : '#d1fae5') : '#f1f5f9';
+
       div.innerHTML = `
         <div style="
-          position: relative;
-          padding: 3px 8px;
-          border-radius: 6px;
-          background-color: ${tagBg};
+          background: ${tagBg};
           color: #ffffff;
           font-size: 11px;
           font-weight: 800;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          padding: 2px 7px;
+          border-radius: 9999px;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.22);
           white-space: nowrap;
+          border: 1.5px solid #ffffff;
+          line-height: 1.3;
           letter-spacing: -0.2px;
-          border: 1px solid rgba(255,255,255,0.4);
-          ${isMe ? 'outline: 2px solid #ffffff; outline-offset: 1px;' : ''}
         ">
-          ${name} ${isMe ? '<span style="font-size: 9px; opacity: 0.9;">(我)</span>' : ''}${statusDesc}
-          <div style="
-            position: absolute;
-            bottom: -5px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 0;
-            height: 0;
-            border-left: 5px solid transparent;
-            border-right: 5px solid transparent;
-            border-top: 5px solid ${tagBg};
-          "></div>
+          ${tagText}
         </div>
         <div style="
           position: relative;
@@ -734,146 +870,22 @@ export default function NearbyMapView({
       return div;
     };
 
-    // 1. Current Driver "吴彦祖 (我)" (15509601222) - Centered at GPS location
-    const meMarker = new AMap.Marker({
-      position: [gpsLocation.lng, gpsLocation.lat],
-      content: createDriverMarkerDom(currentDriverName, isCurrentDriverOnline, isCurrentDriverBusy, true),
-      offset: new AMap.Pixel(0, 0),
-      zIndex: 150,
-      title: `${currentDriverName} (我的位置) - ${!isCurrentDriverOnline ? '下线/离线' : (isCurrentDriverBusy ? '做单中' : '空闲')}`
-    });
-    meMarker.setMap(map);
-    newMarkers.push(meMarker);
-
-    // 2. Real Squad Members & Drivers (Alibaba Cloud Baota Panel & Firestore)
-    // 严格规则：
-    // - 只有当前登录软件app的司机本人显示全名（如“吴彦祖 (我)”），下线显示“吴彦祖 (我)(下线)”
-    // - 其他上线的司机显示隐藏名字（如“李扬”->“李师傅”，“王元平”->“王师傅”，改名“A李扬”->“A李师傅”）
-    // - 所有下线的其他司机：名字、头像、Marker图标绝不显示，不让任何人看见下线的司机
-    const candidateDriversMap = new Map<string, {
-      phone: string;
-      name: string;
-      lat: number;
-      lng: number;
-      isOnline: boolean;
-      isBusy: boolean;
-      uploadTime: number;
-    }>();
-
-    // Helper to get Beijing 05:59 AM cutoff
-    const getBeijing0559CutoffMs = (): number => {
-      const now = new Date();
-      const beijingMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (8 * 3600000);
-      const beijingDate = new Date(beijingMs);
-      const cutoffDate = new Date(beijingDate);
-      cutoffDate.setHours(5, 59, 0, 0);
-      if (beijingDate.getTime() < cutoffDate.getTime()) {
-        cutoffDate.setDate(cutoffDate.getDate() - 1);
-      }
-      return cutoffDate.getTime() - (8 * 3600000) - (now.getTimezoneOffset() * 60000);
-    };
-    const cutoff0559Ms = getBeijing0559CutoffMs();
-
-    // Collect from squadList
-    squadList.forEach((member) => {
-      const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
-      const name = String(member.name || member.driverName || '').trim();
-      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
-      const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
-      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
-      const rawOnline = Boolean(member.isOnline === true || member.isOnline === 'true');
-
-      candidateDriversMap.set(phone, {
-        phone,
-        name,
-        lat: member.lat !== undefined ? Number(member.lat) : 0,
-        lng: member.lng !== undefined ? Number(member.lng) : 0,
-        isOnline: rawOnline && !isExpired,
-        isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
-        uploadTime
-      });
-    });
-
-    // Merge/Overlay live locations from Baota Server
-    Object.keys(realtimeLocations).forEach((phoneKey) => {
-      const liveLoc = realtimeLocations[phoneKey];
-      if (!liveLoc) return;
-      const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
-      const name = String(liveLoc.driverName || liveLoc.name || '').trim();
-      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
-
-      const existing = candidateDriversMap.get(phone);
-
-      const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
-      const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : (existing?.lng || 0);
-      const uploadTime = liveLoc.lastLocationTime 
-        ? Number(liveLoc.lastLocationTime)
-        : (liveLoc.timestamp
-          ? Number(liveLoc.timestamp)
-          : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0)));
-      
-      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
-      const rawIsOnline = liveLoc.isOnline !== undefined
-        ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
-        : (existing?.isOnline || false);
-      const isOnline = rawIsOnline && !isExpired;
-
-      const isBusy = liveLoc.isBusy !== undefined
-        ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
-        : (existing?.isBusy || false);
-      
-      const candidateName = existing?.name || name || '';
-      const resolvedName = resolveDriverRealName(phone, candidateName);
-
-      candidateDriversMap.set(phone, {
-        phone,
-        name: resolvedName,
-        lat,
-        lng,
-        isOnline,
-        isBusy,
-        uploadTime
-      });
-    });
-
-    // Render other drivers according to Hubble settings
-    candidateDriversMap.forEach((driver) => {
-      // 1. Strictly exclude current driver "我" or removed drivers
-      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone)) return;
-
-      // 2. 必须有真实有效GPS坐标
-      if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) return;
-
-      // 3. 状态筛选判断
-      if (driver.isOnline) {
-        // 在线状态分流
-        if (driver.isBusy) {
-          if (!hubbleFilters.showBusy) return;
-        } else {
-          if (!hubbleFilters.showIdle) return;
-        }
-      } else {
-        // 下线司机
-        if (!hubbleFilters.showOffline) return;
-      }
-
-      // 4. 名字显示逻辑：若勾选显示全名，则显示真实全名；否则隐藏为“X师傅”
-      const rawName = resolveDriverRealName(driver.phone, driver.name);
-      const displayName = hubbleFilters.showFullName ? rawName : formatDriverMaskedName(rawName);
-
-      const driverMarker = new AMap.Marker({
+    activeMapDrivers.forEach((driver) => {
+      if (!driver.lat || !driver.lng) return;
+      const isMe = driver.isMe;
+      const marker = new AMap.Marker({
         position: [driver.lng, driver.lat],
-        content: createDriverMarkerDom(displayName, driver.isOnline, driver.isBusy, false),
+        content: createDriverMarkerDom(driver.name, driver.isOnline, driver.isBusy, isMe),
         offset: new AMap.Pixel(0, 0),
-        zIndex: 100,
-        title: `${displayName} - ${!driver.isOnline ? '下线状态(离线位置)' : (driver.isBusy ? '做单中' : '空闲接单中')}`
+        zIndex: isMe ? 150 : 100,
+        title: `${driver.name} - ${!driver.isOnline ? '下线状态(离线位置)' : (driver.isBusy ? '做单中' : '空闲接单中')}`
       });
-      driverMarker.setMap(map);
-      newMarkers.push(driverMarker);
+      marker.setMap(map);
+      newMarkers.push(marker);
     });
 
     markersRef.current = newMarkers;
-  }, [mapLoaded, gpsLocation, isCurrentDriverOnline, isCurrentDriverBusy, localBusyState, currentDriverName, squadList, realtimeLocations, effectiveMyPhone, removedPhones, hubbleFilters]);
+  }, [mapLoaded, activeMapDrivers]);
 
   // Center map on current GPS location
   const handleRecenter = () => {
@@ -1046,6 +1058,7 @@ export default function NearbyMapView({
           currentTrip={currentTrip}
           todayOrdersCount={todayOrdersCount}
           showFullName={hubbleFilters.showFullName}
+          mapDrivers={renderedMapDrivers}
           onClose={() => setShowSquadDriverList(false)}
         />
       )}

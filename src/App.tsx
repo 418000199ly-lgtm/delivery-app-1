@@ -1800,15 +1800,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           setIncomingOrder(null);
           clearPendingOrderCache();
           if (activeOnlineOrder) {
-            setActiveOnlineOrder(null);
-            setCurrentTrip(null);
-            setCurrentView('home');
-            setMobileActiveTab('app');
-            reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-            triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
-            try {
-              speakText('该代叫订单已被商户取消');
-            } catch (_) {}
+            const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
+            const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
+            const isMatch = (data.orderId && (data.orderId === activeId || data.orderId === activeNo)) ||
+                            (data.orderNo && (data.orderNo === activeNo || data.orderNo === activeId));
+            if (isMatch) {
+              setActiveOnlineOrder(null);
+              setCurrentTrip(null);
+              setCurrentView('home');
+              setMobileActiveTab('app');
+              reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+              triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+              try {
+                speakText('该代叫订单已被商户取消');
+              } catch (_) {}
+            }
           } else {
             reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
             triggerToast('⚠️ 该代叫订单已被商户取消');
@@ -1836,15 +1842,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           setIncomingOrder(null);
           clearPendingOrderCache();
           if (activeOnlineOrder) {
-            setActiveOnlineOrder(null);
-            setCurrentTrip(null);
-            setCurrentView('home');
-            setMobileActiveTab('app');
-            reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-            triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
-            try {
-              speakText('该代叫订单已被商户取消');
-            } catch (_) {}
+            const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
+            const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
+            const isMatch = (data.orderId && (data.orderId === activeId || data.orderId === activeNo)) ||
+                            (data.orderNo && (data.orderNo === activeNo || data.orderNo === activeId));
+            if (isMatch) {
+              setActiveOnlineOrder(null);
+              setCurrentTrip(null);
+              setCurrentView('home');
+              setMobileActiveTab('app');
+              reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+              triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+              try {
+                speakText('该代叫订单已被商户取消');
+              } catch (_) {}
+            }
           }
         }
       }
@@ -2035,6 +2047,31 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         body: JSON.stringify({ collection: 'merchant_orders', docId: orderIdToClaim, data: claimUpdateData })
       }).catch(() => {});
     }
+
+    // Update active_orders collection to reflect claimed state and wipe old cancellation
+    if (db && cleanUserPhone) {
+      setDoc(doc(db, 'active_orders', cleanUserPhone), {
+        ...claimUpdateData,
+        orderId: orderIdToClaim,
+        orderNo: orderNoToClaim,
+        isCancelled: false
+      }, { merge: true }).catch(() => {});
+    }
+    const baseUrl = getBaseApiUrl();
+    fetch(`${baseUrl}/api/db/set`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        collection: 'active_orders',
+        docId: cleanUserPhone,
+        data: { ...claimUpdateData, orderId: orderIdToClaim, orderNo: orderNoToClaim, isCancelled: false }
+      })
+    }).catch(() => {});
+
+    // Clear stale cancelled order tracker
+    try {
+      localStorage.removeItem('dd_latest_cancelled_order');
+    } catch (_) {}
 
     const mergedActive = {
       ...(incomingOrder || {}),

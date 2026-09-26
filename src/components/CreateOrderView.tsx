@@ -113,35 +113,114 @@ const SvgQrCode = ({ seed, url }: { seed: number; url?: string }) => {
   );
 };
 
-const getRobustLocation = (
+function isDefaultYinchuanCoords(coords: { lat: number; lng: number } | null | undefined) {
+  if (!coords) return true;
+  if (Math.abs(coords.lat - 38.487193) < 0.003 && Math.abs(coords.lng - 106.230912) < 0.003) return true;
+  if (Math.abs(coords.lat - 38.487167) < 0.003 && Math.abs(coords.lng - 106.23091) < 0.003) return true;
+  if (Math.abs(coords.lat - 38.4830) < 0.005 && Math.abs(coords.lng - 106.2350) < 0.005) return true;
+  return false;
+}
+
+function isApprovedSquadMember(m: any) {
+  if (!m) return false;
+  const phone = m.phone || m.id || '';
+  if (!phone) return false;
+  try {
+    const savedRemoved = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
+    if (savedRemoved) {
+      const removed = JSON.parse(savedRemoved);
+      if (Array.isArray(removed) && removed.includes(phone)) {
+        return false;
+      }
+    }
+  } catch (_) {}
+
+  const role = m.role || m.userRole || '';
+  if (role === '商户、商家' || role.includes('商户') || role.includes('商家')) {
+    return false; // Merchants are not squad drivers
+  }
+  const status = m.status || m.approvalStatus || '';
+  if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(status)) {
+    return false;
+  }
+  const mgmtRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者', '小队长', '队员', '普通司机'];
+  if (mgmtRoles.includes(role)) return true;
+  return ['已通过', 'approved', '通过'].includes(status);
+}
+
+function getDriverGpsName(): string {
+  try {
+    if (typeof window === 'undefined') return '正在获取当前位置...';
+    const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
+    if (cachedName && cachedName !== '正在获取当前位置...' && cachedName !== '请授权开启定位权限' && cachedName !== '未定位起点' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
+      return cachedName;
+    }
+  } catch (_) {}
+  return '正在获取当前位置...';
+}
+
+function getPassengerDepartureAddress(activeOnlineOrder?: any): string {
+  try {
+    const addr = activeOnlineOrder?.startLocation || activeOnlineOrder?.originName;
+    if (addr && typeof addr === 'string' && addr.trim() !== '' && addr !== '出发地') {
+      return addr.trim();
+    }
+  } catch (_) {}
+  return '银川大悦城音乐餐吧';
+}
+
+function getRobustLocation(
   AMap: any,
   onSuccess: (gcjLng: number, gcjLat: number, isHighAccuracy: boolean, addressName?: string) => void,
   onFailure: (err: any) => void
-) => {
+) {
   if (!AMap) {
     onFailure(new Error('AMap is not loaded'));
     return;
   }
 
   let hasHighAccuracy = false;
+  let watchdog: any = null;
 
-  const handleSuccess = (gcjLng: number, gcjLat: number, isHighAcc: boolean, addressName?: string) => {
+  function handleSuccess(gcjLng: number, gcjLat: number, isHighAcc: boolean, addressName?: string) {
     if (hasHighAccuracy) {
       return;
     }
     hasHighAccuracy = true;
-    clearTimeout(watchdog);
+    if (watchdog) clearTimeout(watchdog);
     onSuccess(gcjLng, gcjLat, true, addressName);
-  };
+  }
 
-  const safeOnFailure = (err: any) => {
+  function safeOnFailure(err: any) {
     if (hasHighAccuracy) return;
-    clearTimeout(watchdog);
+    if (watchdog) clearTimeout(watchdog);
     onFailure(err);
-  };
+  }
+
+  function fallbackToCitySearch() {
+    if (hasHighAccuracy) return;
+    AMap.plugin('AMap.CitySearch', () => {
+      try {
+        const citySearch = new AMap.CitySearch();
+        citySearch.getLocalCity((cityStatus: string, cityResult: any) => {
+          if (cityStatus === 'complete' && cityResult.bounds) {
+            const bounds = cityResult.bounds;
+            const finalLng = (bounds.southWest.lng + bounds.northEast.lng) / 2;
+            const finalLat = (bounds.southWest.lat + bounds.northEast.lat) / 2;
+            console.log('⚡ [City Search Fallback] Resolved:', finalLng, finalLat);
+            handleSuccess(finalLng, finalLat, false, cityResult.city ? `${cityResult.city}中心` : undefined);
+          } else {
+            safeOnFailure(new Error('All geolocation and IP fallbacks failed'));
+          }
+        });
+      } catch (e) {
+        safeOnFailure(e);
+      }
+    });
+  }
 
   // Watchdog timer: If GPS takes too long, fall back to city search
-  const watchdog = setTimeout(() => {
+  watchdog = setTimeout(() => {
     if (!hasHighAccuracy) {
       console.warn('⚡ [GPS Watchdog] Positioning took too long (>6s), triggering IP/City fallback!');
       fallbackToCitySearch();
@@ -190,29 +269,7 @@ const getRobustLocation = (
       console.warn('⚡ [AMap Geolocation] Exception:', e);
     }
   });
-
-  const fallbackToCitySearch = () => {
-    if (hasHighAccuracy) return;
-    AMap.plugin('AMap.CitySearch', () => {
-      try {
-        const citySearch = new AMap.CitySearch();
-        citySearch.getLocalCity((cityStatus: string, cityResult: any) => {
-          if (cityStatus === 'complete' && cityResult.bounds) {
-            const bounds = cityResult.bounds;
-            const finalLng = (bounds.southWest.lng + bounds.northEast.lng) / 2;
-            const finalLat = (bounds.southWest.lat + bounds.northEast.lat) / 2;
-            console.log('⚡ [City Search Fallback] Resolved:', finalLng, finalLat);
-            handleSuccess(finalLng, finalLat, false, cityResult.city ? `${cityResult.city}中心` : undefined);
-          } else {
-            safeOnFailure(new Error('All geolocation and IP fallbacks failed'));
-          }
-        });
-      } catch (e) {
-        safeOnFailure(e);
-      }
-    });
-  };
-};
+}
 
 interface CreateOrderViewProps {
   billingRules: BillingRules;
@@ -380,51 +437,37 @@ export default function CreateOrderView({
 
   const registeredCity = settings?.city || '';
 
-  // Driver's current location address name
-  const getDriverGpsName = () => {
-    const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
-    if (cachedName && cachedName !== '正在获取当前位置...' && cachedName !== '请授权开启定位权限' && cachedName !== '未定位起点' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
-      return cachedName;
-    }
-    return '正在获取当前位置...';
-  };
-
-  // Passenger's pickup / departure address name
-  const getPassengerDepartureAddress = () => {
-    const addr = activeOnlineOrder?.startLocation || activeOnlineOrder?.originName;
-    if (addr && addr.trim() !== '' && addr !== '出发地') {
-      return addr.trim();
-    }
-    return '银川大悦城音乐餐吧';
-  };
-
   const [startLocation, setStartLocation] = useState(() => {
-    if (activeOnlineOrder) {
-      if (isMerchantValetOrder && !arrivedAtDeparture) {
-        return getDriverGpsName();
+    try {
+      if (activeOnlineOrder) {
+        if (isMerchantValetOrder && !arrivedAtDeparture) {
+          return getDriverGpsName();
+        }
+        return getPassengerDepartureAddress(activeOnlineOrder);
       }
-      return getPassengerDepartureAddress();
-    }
-    const cachedName = localStorage.getItem('dd_bg_driver_coords_name');
-    if (cachedName && cachedName !== '玉皇阁北街铂金大厦' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
-      return cachedName;
-    }
+      const cachedName = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_name') : null;
+      if (cachedName && cachedName !== '玉皇阁北街铂金大厦' && !cachedName.includes('铂金大厦') && !cachedName.includes('马斯特')) {
+        return cachedName;
+      }
+    } catch (_) {}
     return '正在获取当前位置...';
   });
 
   const [destination, setDestination] = useState(() => {
-    if (activeOnlineOrder) {
-      if (isMerchantValetOrder && !arrivedAtDeparture) {
-        // Stage 1: Destination input is automatically filled with passenger departure address!
-        return getPassengerDepartureAddress();
+    try {
+      if (activeOnlineOrder) {
+        if (isMerchantValetOrder && !arrivedAtDeparture) {
+          // Stage 1: Destination input is automatically filled with passenger departure address!
+          return getPassengerDepartureAddress(activeOnlineOrder);
+        }
+        // Stage 2 or regular order: fill passenger destination if valid
+        const passDest = activeOnlineOrder.destination;
+        if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头') && !passDest.includes('报单转单')) {
+          return passDest;
+        }
+        return '';
       }
-      // Stage 2 or regular order: fill passenger destination if valid
-      const passDest = activeOnlineOrder.destination;
-      if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头') && !passDest.includes('报单转单')) {
-        return passDest;
-      }
-      return '';
-    }
+    } catch (_) {}
     return '';
   });
 
@@ -436,11 +479,11 @@ export default function CreateOrderView({
         // Departure input (startLocation): Driver's current GPS location
         setStartLocation(getDriverGpsName());
         // Destination input (destination): Passenger's departure address (e.g. "凯宾斯基饭店宴会厅")
-        setDestination(getPassengerDepartureAddress());
+        setDestination(getPassengerDepartureAddress(activeOnlineOrder));
       } else {
         // Stage 2: Arrived at passenger departure location
         // Departure input (startLocation): Passenger's departure address
-        setStartLocation(getPassengerDepartureAddress());
+        setStartLocation(getPassengerDepartureAddress(activeOnlineOrder));
         // Destination input (destination): Passenger's final destination if specified, else empty for verbal negotiation
         const passDest = activeOnlineOrder.destination;
         if (passDest && passDest !== activeOnlineOrder.startLocation && !passDest.includes('口头') && !passDest.includes('报单转单')) {
@@ -481,42 +524,6 @@ export default function CreateOrderView({
     setTimeout(() => {
       setToastMsg(null);
     }, 3000);
-  };
-
-  const isDefaultYinchuanCoords = (coords: { lat: number; lng: number } | null | undefined) => {
-    if (!coords) return true;
-    if (Math.abs(coords.lat - 38.487193) < 0.003 && Math.abs(coords.lng - 106.230912) < 0.003) return true;
-    if (Math.abs(coords.lat - 38.487167) < 0.003 && Math.abs(coords.lng - 106.23091) < 0.003) return true;
-    if (Math.abs(coords.lat - 38.4830) < 0.005 && Math.abs(coords.lng - 106.2350) < 0.005) return true;
-    return false;
-  };
-
-  // Check if current driver is an approved team member (只有已通过审批的小队司机才显示)
-  const isApprovedSquadMember = (m: any) => {
-    if (!m) return false;
-    const phone = m.phone || m.id || '';
-    if (!phone) return false;
-    try {
-      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (savedRemoved) {
-        const removed = JSON.parse(savedRemoved);
-        if (Array.isArray(removed) && removed.includes(phone)) {
-          return false;
-        }
-      }
-    } catch (_) {}
-
-    const role = m.role || m.userRole || '';
-    if (role === '商户、商家' || role.includes('商户') || role.includes('商家')) {
-      return false; // Merchants are not squad drivers
-    }
-    const status = m.status || m.approvalStatus || '';
-    if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(status)) {
-      return false;
-    }
-    const mgmtRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者', '小队长', '队员', '普通司机'];
-    if (mgmtRoles.includes(role)) return true;
-    return ['已通过', 'approved', '通过'].includes(status);
   };
 
   const [isTeamDriver, setIsTeamDriver] = useState<boolean>(() => {
@@ -589,7 +596,12 @@ export default function CreateOrderView({
   }, [userPhone]);
 
   const [showPermissionPrompt, setShowPermissionPrompt] = useState(() => {
-    return !localStorage.getItem('dd_location_permission_prompt_shown');
+    try {
+      if (typeof window === 'undefined') return false;
+      return !localStorage.getItem('dd_location_permission_prompt_shown');
+    } catch (_) {
+      return false;
+    }
   });
 
   // AMap AutoComplete suggestions
@@ -1122,7 +1134,7 @@ export default function CreateOrderView({
 
     // 1. Merchant Valet Order Riding Navigation: Driver location (startLocation) -> Passenger Pickup Location (getPassengerDepartureAddress)
     if (isMerchantValetOrder && !arrivedAtDeparture) {
-      const pickupLoc = activeOnlineOrder?.startLocation || activeOnlineOrder?.originName || getPassengerDepartureAddress();
+      const pickupLoc = activeOnlineOrder?.startLocation || activeOnlineOrder?.originName || getPassengerDepartureAddress(activeOnlineOrder);
       if (!pickupLoc.trim()) return;
 
       const currentRouteKey = `riding|${startLocation.trim()}|${pickupLoc.trim()}|${activeOnlineOrder?.id || ''}`;
@@ -1500,7 +1512,10 @@ export default function CreateOrderView({
       hostname.includes('127.0.0.1')
     );
     
-    const customWorkerApiUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('cloudflare_worker_api_url') || '';
+    let customWorkerApiUrl = '';
+    try {
+      customWorkerApiUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('cloudflare_worker_api_url') || '';
+    } catch (_) {}
     let baseOrigin = "https://lyheiwandaijiamax.com";
     const basePath = '/passenger_order.html';
     
@@ -1546,16 +1561,16 @@ export default function CreateOrderView({
 
   // Find active time slot for the current time or order creation time (minute accurate)
   const activeSlot = getTimeSlotForTime(billingRules);
-  const baseStartingPrice = activeSlot.startingPrice ?? 40;
+  const baseStartingPrice = activeSlot?.startingPrice ?? 40;
   
   // Calculate estimation fee: show starting price as minimum even if destination is empty
   const isEstimated = destination.trim().length > 0;
   
   // Calculate distance cost and return fee if we have a routeDistance
   let estimatedPriceSubtotal = baseStartingPrice;
-  const freeKm = activeSlot.includedDistance ?? 7;
-  const interval = activeSlot.distanceInterval || 1;
-  const increase = activeSlot.priceIncrease ?? activeSlot.unitPricePerKm ?? 5;
+  const freeKm = activeSlot?.includedDistance ?? 7;
+  const interval = activeSlot?.distanceInterval || 1;
+  const increase = activeSlot?.priceIncrease ?? activeSlot?.unitPricePerKm ?? 5;
 
   if (routeDistance !== null) {
     let distanceCost = 0;
@@ -1564,10 +1579,11 @@ export default function CreateOrderView({
     }
     
     let returnFee = 0;
-    if (billingRules.returnFeeStartKm > 0 && routeDistance > billingRules.returnFeeStartKm) {
-      const rInterval = billingRules.returnFeeIntervalKm || 1;
-      const rIncrease = billingRules.returnFeeIncreaseYuan ?? billingRules.returnFeePerKm ?? 0;
-      returnFee = Math.ceil((routeDistance - billingRules.returnFeeStartKm) / rInterval) * rIncrease;
+    const rStartKm = billingRules?.returnFeeStartKm ?? 0;
+    if (rStartKm > 0 && routeDistance > rStartKm) {
+      const rInterval = billingRules?.returnFeeIntervalKm || 1;
+      const rIncrease = billingRules?.returnFeeIncreaseYuan ?? billingRules?.returnFeePerKm ?? 0;
+      returnFee = Math.ceil((routeDistance - rStartKm) / rInterval) * rIncrease;
     }
     
     estimatedPriceSubtotal = baseStartingPrice + distanceCost + returnFee;
@@ -1857,10 +1873,10 @@ export default function CreateOrderView({
         <div className="w-full px-4 mb-4 flex justify-between items-end gap-2 pointer-events-none" data-purpose="map-tools">
           <div className="flex flex-col gap-2 items-start pointer-events-auto">
             <button 
-              onClick={() => alert(`当前代驾规则模板：${billingRules.templateName}`)}
+              onClick={() => alert(`当前代驾规则模板：${billingRules?.templateName || '标准计费'}`)}
               className="bg-white px-3.5 py-2 rounded-xl text-xs font-bold shadow-md flex items-center gap-1 active:scale-95 transition-transform text-gray-800"
             >
-              <span>{billingRules.templateName}</span>
+              <span>{billingRules?.templateName || '标准计费'}</span>
             </button>
             <button 
               id="weather-multiplier-trigger-button"
@@ -1993,7 +2009,7 @@ export default function CreateOrderView({
           <div 
             onClick={() => {
               if (isMerchantValetOrder && !arrivedAtDeparture) {
-                setSearchText(getPassengerDepartureAddress());
+                setSearchText(getPassengerDepartureAddress(activeOnlineOrder));
                 setShowDestinationSearch(true);
               } else {
                 setSearchText(destination);
@@ -2011,7 +2027,7 @@ export default function CreateOrderView({
                     乘客出发地
                   </span>
                   <span className="text-sm font-bold text-gray-800 truncate">
-                    {getPassengerDepartureAddress()}
+                    {getPassengerDepartureAddress(activeOnlineOrder)}
                   </span>
                 </div>
               ) : (
@@ -2352,8 +2368,11 @@ export default function CreateOrderView({
           className="absolute inset-0 bg-white z-[70] flex flex-col animate-in slide-in-from-bottom duration-300 pointer-events-auto"
           id="destination-search-page"
         >
+          {/* 手机顶部电量/信号/状态栏安全占位区 (彻底避免手机信号、电量、时间遮挡返回与取消目的地按钮) */}
+          <div className="w-full shrink-0 bg-gray-700 status-bar-safe-spacer" />
+
           {/* Header */}
-          <div className="bg-gray-700 border-b border-gray-600 px-4 py-7 flex items-center justify-between shrink-0">
+          <div className="bg-gray-700 border-b border-gray-600 px-4 pt-2 pb-4 flex items-center justify-between shrink-0">
             <button 
               onClick={() => setShowDestinationSearch(false)}
               className="text-white hover:text-gray-200 p-1 rounded-full active:scale-95 transition-all cursor-pointer flex items-center gap-1"

@@ -63,12 +63,12 @@ button:focus, button:focus-visible, button:active {
 
 /* Safe area padding utilities for native mobile apps & mobile web - prevent navigation bar overlap */
 .status-bar-safe-spacer {
-  height: env(safe-area-inset-top, 0px);
-  min-height: 0px;
+  height: max(env(safe-area-inset-top, 0px), 32px);
+  min-height: 28px;
 }
 
 .pt-safe {
-  padding-top: max(env(safe-area-inset-top, 0px), 8px);
+  padding-top: max(env(safe-area-inset-top, 0px), 28px);
 }
 
 .pb-safe {
@@ -80,11 +80,11 @@ button:focus, button:focus-visible, button:active {
 }
 
 .header-safe-pt {
-  padding-top: max(env(safe-area-inset-top, 0px), 10px) !important;
+  padding-top: max(env(safe-area-inset-top, 0px), 32px) !important;
 }
 
 .header-safe-pt-sm {
-  padding-top: max(env(safe-area-inset-top, 0px), 6px) !important;
+  padding-top: max(env(safe-area-inset-top, 0px), 24px) !important;
 }
 
 .footer-safe-pb {

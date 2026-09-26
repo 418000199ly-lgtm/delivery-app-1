@@ -17,6 +17,7 @@ interface SquadDriverListProps {
   currentTrip?: any;
   todayOrdersCount?: number;
   showFullName?: boolean;
+  mapDrivers?: any[];
   onClose: () => void;
 }
 
@@ -51,6 +52,7 @@ export default function SquadDriverList({
   currentTrip,
   todayOrdersCount = 0,
   showFullName: propShowFullName,
+  mapDrivers,
   onClose
 }: SquadDriverListProps) {
   // Normalize current user phone
@@ -298,6 +300,9 @@ export default function SquadDriverList({
 
   // Subscribe and poll squad members (strictly real squad_members, no raw driver_users)
   useEffect(() => {
+    if (Array.isArray(mapDrivers)) {
+      return; // mapDrivers from NearbyMapView is authoritative, avoid duplicate polling
+    }
     let unsubscribe = () => {};
     if (db) {
       const q = collection(db, 'squad_members');
@@ -361,6 +366,9 @@ export default function SquadDriverList({
 
   // Subscribe and poll realtime locations of drivers
   useEffect(() => {
+    if (Array.isArray(mapDrivers)) {
+      return; // mapDrivers from NearbyMapView is authoritative
+    }
     let unsubscribe = () => {};
     if (db) {
       const q = collection(db, 'driver_locations');
@@ -412,13 +420,55 @@ export default function SquadDriverList({
   };
 
   // Merge and calculate driver list according to strict requirements:
-  // 1. 只显示小队内所有上线的真实司机 (Offline drivers strictly hidden, no virtual/unapproved drivers)
+  // 1. 严格 1:1 同步图片w1地图界面当前显示的司机（如果w1地图上没有林师傅，w2列表里也绝对没有林师傅）
   // 2. 列表中第一名永远是自己 (例如：李扬 (我) 或 吴彦祖 (我)，今日成单多少)
-  // 3. 然后随机排名其他上线的真实小队司机 (第二名，吴师傅/吴彦祖，今日成单多少)
-  // 4. 空闲的司机显示绿色，做单和报单页面的司机显示红色
-  // 5. 哈勃选择显示全名时，显示全名(林俊杰)；否则显示隐藏名字(林师傅)；自己永远显示全名(李扬 (我))
-  // 6. 今日成单全部计算真实数据，不展示虚拟数据
+  // 3. 然后排序其他在地图上真实显示的在线小队司机 (绿色代表空闲接单，红色代表做单中/报单中)
+  // 4. 哈勃选择显示全名时，显示全名；否则显示隐藏名字(如“王师傅”)；自己永远显示全名(李扬 (我))
+  // 5. 今日成单全部计算真实数据，不展示虚拟数据
   const sortedOnlineDrivers = useMemo(() => {
+    // 0. If mapDrivers from NearbyMapView (w1) is provided, strictly synchronize with map drivers 1:1
+    if (Array.isArray(mapDrivers)) {
+      const resultList: DriverItem[] = [];
+      mapDrivers.forEach((d: any) => {
+        if (!d) return;
+        // 严格遵循小队在线司机显示：仅展示在线司机（与w1地图保持完全一致）
+        if (d.isOnline === false) return;
+
+        const cleanP = String(d.phone || '').replace(/\D/g, '').trim();
+        const isMe = d.isMe || isMeMember(cleanP);
+        const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
+        const displayName = isMe
+          ? currentDriverFullName
+          : (showFullName ? rawRealName : formatDriverMaskedName(rawRealName));
+
+        if (!isMe && !sessionRandomSeedMap.current.has(cleanP)) {
+          sessionRandomSeedMap.current.set(cleanP, Math.random());
+        }
+        const sortKey = isMe ? -1 : (sessionRandomSeedMap.current.get(cleanP) || 0.5);
+        
+        resultList.push({
+          phone: cleanP,
+          name: displayName,
+          rawRealName,
+          isMe,
+          isOnline: true,
+          isBusy: isMe ? isCurrentDriverBusy : Boolean(d.isBusy),
+          todayOrders: isMe ? myComputedTodayOrders : (d.todayOrders || 0),
+          lat: d.lat,
+          lng: d.lng,
+          uploadTime: d.uploadTime,
+          randomSortKey: sortKey
+        });
+      });
+
+      resultList.sort((a, b) => {
+        if (a.isMe) return -1;
+        if (b.isMe) return 1;
+        return a.randomSortKey - b.randomSortKey;
+      });
+      return resultList;
+    }
+
     const list: DriverItem[] = [];
     const cutoff0559Ms = getBeijing0559CutoffMs();
 
@@ -445,6 +495,8 @@ export default function SquadDriverList({
       isBusy: boolean;
       todayOrders: number;
       uploadTime: number;
+      lat?: number;
+      lng?: number;
       status?: string;
     }>();
 
@@ -477,6 +529,8 @@ export default function SquadDriverList({
         isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
         todayOrders: initialTodayOrders,
         uploadTime: memberLastUpdated,
+        lat: member.lat !== undefined ? Number(member.lat) : 0,
+        lng: member.lng !== undefined ? Number(member.lng) : 0,
         status: member.status
       });
     });
@@ -519,6 +573,9 @@ export default function SquadDriverList({
       const candidateName = existing?.name || rawName || `司机${phone.slice(-4)}`;
       const resolvedRealName = resolveDriverRealName(phone, existing?.rawRealName || candidateName);
 
+      const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
+      const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : (existing?.lng || 0);
+
       candidateMap.set(phone, {
         phone,
         name: candidateName,
@@ -527,11 +584,13 @@ export default function SquadDriverList({
         isBusy: isBusyVal,
         todayOrders: finalTodayOrders,
         uploadTime: Math.max(uploadTimeVal, existing?.uploadTime || 0),
+        lat,
+        lng,
         status: existing?.status || '已通过'
       });
     });
 
-    // 4. Filter other drivers: only genuinely ONLINE with active heartbeat
+    // 4. Filter other drivers: only genuinely ONLINE with active heartbeat AND valid GPS coordinates
     const otherOnlineDrivers: DriverItem[] = [];
     const now = Date.now();
     // Inactivity threshold: 10 minutes (600,000 ms)
@@ -540,6 +599,11 @@ export default function SquadDriverList({
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
       if (!driver.isOnline) return;
+
+      // 必须有真实有效GPS坐标（与地图w1保持严格一致）
+      if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) {
+        return;
+      }
 
       // If location timestamp is before today's 05:59 AM cutoff, strictly treat as offline
       if (driver.uploadTime > 0 && driver.uploadTime < cutoff0559Ms) {
@@ -569,6 +633,8 @@ export default function SquadDriverList({
         isOnline: true,
         isBusy: driver.isBusy,
         todayOrders: driver.todayOrders,
+        lat: driver.lat,
+        lng: driver.lng,
         uploadTime: driver.uploadTime,
         randomSortKey
       });
@@ -579,6 +645,7 @@ export default function SquadDriverList({
 
     return [...list, ...otherOnlineDrivers];
   }, [
+    mapDrivers,
     isCurrentDriverOnline, 
     effectiveMyPhone, 
     currentDriverFullName, 
