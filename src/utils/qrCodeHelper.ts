@@ -3,9 +3,9 @@ import QRCode from 'qrcode';
 
 /**
  * Memory-safe helper to downscale high-resolution mobile photos (12MP~48MP)
- * down to max 800px to prevent Android OOM crashes and iOS WKWebView white-screen reloads.
+ * down to max 600px to prevent Android OOM crashes and iOS WKWebView white-screen reloads.
  */
-export function downscaleImage(img: HTMLImageElement, maxDim = 800): HTMLCanvasElement {
+export function downscaleImage(img: HTMLImageElement, maxDim = 600): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   let width = img.naturalWidth || img.width || 800;
   let height = img.naturalHeight || img.height || 800;
@@ -378,4 +378,138 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
 export async function regenerateQRCode(dataUrl: string, _type?: 'wechat' | 'alipay'): Promise<string> {
   if (!dataUrl) return '';
   return await cropQRCodeFromImage(dataUrl);
+}
+
+/**
+ * Safely processes a mobile photo file (File object) directly into a lightweight,
+ * cropped, clean QR code DataURL without storing multi-megabyte base64 strings in memory.
+ * Completely eliminates iOS WKWebView Jetsam OOM crashes (white screen flash) and Android WebView freezes.
+ */
+export function processImageFileToCleanQR(file: File, type: 'wechat' | 'alipay' = 'wechat'): Promise<string> {
+  return new Promise((resolve) => {
+    if (!file) {
+      resolve('');
+      return;
+    }
+
+    // Use URL.createObjectURL for 0-memory footprint loading
+    let objectUrl = '';
+    try {
+      if (typeof window !== 'undefined' && window.URL && window.URL.createObjectURL) {
+        objectUrl = window.URL.createObjectURL(file);
+      }
+    } catch (_) {}
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    const cleanup = () => {
+      if (objectUrl) {
+        try { window.URL.revokeObjectURL(objectUrl); } catch (_) {}
+      }
+    };
+
+    img.onload = async () => {
+      try {
+        // Step 1: Immediately downscale on a memory-capped Canvas (max 800px)
+        const downscaledCanvas = downscaleImage(img, 800);
+        cleanup();
+
+        // Step 2: Try scanning and regenerating high-fidelity QR Code
+        const fullScanPayload = tryScanCanvas(downscaledCanvas);
+        if (fullScanPayload) {
+          try {
+            const reconstructed = await QRCode.toDataURL(fullScanPayload, {
+              errorCorrectionLevel: 'H',
+              margin: 2,
+              width: 450,
+              color: { dark: '#000000', light: '#ffffff' }
+            });
+            resolve(reconstructed);
+            return;
+          } catch (_) {}
+        }
+
+        // Step 3: Crop bounding box on downscaled canvas
+        const dw = downscaledCanvas.width;
+        const dh = downscaledCanvas.height;
+        const dctx = downscaledCanvas.getContext('2d', { willReadFrequently: true });
+        if (dctx) {
+          const bbox = detectQRBoundingBox(dctx, dw, dh);
+          const cropX = bbox ? bbox.x : Math.round((dw - Math.min(dw, dh)) / 2);
+          const cropY = bbox ? bbox.y : Math.round((dh - Math.min(dw, dh)) / 2);
+          const cropW = bbox ? bbox.width : Math.min(dw, dh);
+          const cropH = bbox ? bbox.height : Math.min(dw, dh);
+
+          const croppedCanvas = document.createElement('canvas');
+          croppedCanvas.width = 400;
+          croppedCanvas.height = 400;
+          const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true });
+          if (croppedCtx) {
+            croppedCtx.imageSmoothingEnabled = true;
+            croppedCtx.imageSmoothingQuality = 'high';
+            croppedCtx.drawImage(downscaledCanvas, cropX, cropY, cropW, cropH, 0, 0, 400, 400);
+
+            const croppedScan = tryScanCanvas(croppedCanvas);
+            if (croppedScan) {
+              try {
+                const reconstructed = await QRCode.toDataURL(croppedScan, {
+                  errorCorrectionLevel: 'H',
+                  margin: 2,
+                  width: 450,
+                  color: { dark: '#000000', light: '#ffffff' }
+                });
+                resolve(reconstructed);
+                return;
+              } catch (_) {}
+            }
+
+            resolve(croppedCanvas.toDataURL('image/png'));
+            return;
+          }
+        }
+
+        resolve(downscaledCanvas.toDataURL('image/png'));
+      } catch (err) {
+        cleanup();
+        resolve('');
+      }
+    };
+
+    img.onerror = () => {
+      cleanup();
+      // Fallback: Try FileReader if createObjectURL failed
+      try {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+          const raw = e.target?.result as string;
+          if (raw) {
+            const cleaned = await regenerateQRCode(raw, type);
+            resolve(cleaned || raw);
+          } else {
+            resolve('');
+          }
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      } catch (_) {
+        resolve('');
+      }
+    };
+
+    if (objectUrl) {
+      img.src = objectUrl;
+    } else {
+      try {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          img.src = e.target?.result as string;
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      } catch (_) {
+        resolve('');
+      }
+    }
+  });
 }

@@ -4,6 +4,7 @@ import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats
 import { getTimeSlotForTime } from '../utils/billingUtils';
 import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { speakText } from '../utils/speech';
+import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 import PassengerOrderView from './PassengerOrderView';
 import ReportTransferOrderModal from './ReportTransferOrderModal';
 import QRCode from 'qrcode';
@@ -322,16 +323,23 @@ export default function CreateOrderView({
         activeOnlineOrder.rawOrder?.passengerPhone
       ].filter(Boolean)));
 
+      const cancelPayload = {
+        in_hall: false,
+        status: 'cancelled',
+        statusCategory: '已取消',
+        isCancelled: true,
+        cancelledAt: Date.now(),
+        cancelledBy: 'driver',
+        cancelledByRole: 'driver',
+        cancelReason: '司机已取消订单',
+        cancelledDriverPhone: userPhone || ''
+      };
+
       if (candidateIds.length > 0) {
         for (const targetId of candidateIds) {
           try {
             if (db) {
-              await setDoc(doc(db, 'merchant_orders', targetId as string), {
-                in_hall: false,
-                status: 'cancelled',
-                statusCategory: '已取消',
-                cancelledAt: Date.now()
-              }, { merge: true });
+              await setDoc(doc(db, 'merchant_orders', targetId as string), cancelPayload, { merge: true });
             }
           } catch (e) {
             console.error("Error cancelling merchant order in Firestore:", e);
@@ -341,7 +349,12 @@ export default function CreateOrderView({
             fetch(`${baseUrl}/api/order/cancel`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ orderId: targetId, driverPhone: userPhone, reason: '司机取消订单' })
+              body: JSON.stringify({
+                orderId: targetId,
+                driverPhone: userPhone,
+                reason: '司机已取消订单',
+                cancelledBy: 'driver'
+              })
             }).catch(() => {});
           } catch (_) {}
         }
@@ -360,10 +373,7 @@ export default function CreateOrderView({
               found = true;
               return {
                 ...o,
-                in_hall: false,
-                status: 'cancelled',
-                statusCategory: '已取消',
-                cancelledAt: Date.now()
+                ...cancelPayload
               };
             }
             return o;
@@ -374,20 +384,61 @@ export default function CreateOrderView({
               ...activeOnlineOrder,
               id: candidateIds[0] || `ord_${Date.now()}`,
               orderId: candidateIds[0] || `ord_${Date.now()}`,
-              in_hall: false,
-              status: 'cancelled',
-              statusCategory: '已取消',
-              cancelledAt: Date.now()
+              ...cancelPayload
             });
           }
 
           localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
+          localStorage.setItem('dd_latest_cancelled_order', JSON.stringify({
+            orderId: candidateIds[0],
+            driverPhone: userPhone,
+            cancelledBy: 'driver',
+            cancelReason: '司机已取消订单',
+            cancelledAt: Date.now()
+          }));
           window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
         } catch (_) {}
       }
+
+      // Clean up passenger_links and active_orders for this driver
+      const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+      if (cleanUserPhone) {
+        try {
+          if (db) {
+            deleteDoc(doc(db, 'passenger_links', cleanUserPhone)).catch(() => {});
+            deleteDoc(doc(db, 'active_orders', cleanUserPhone)).catch(() => {});
+          }
+        } catch (_) {}
+        try {
+          const baseUrl = typeof window !== 'undefined' ? (window.location.origin.includes('localhost') ? 'http://localhost:3000' : window.location.origin) : '';
+          fetch(`${baseUrl}/api/db/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ collection: 'passenger_links', docId: cleanUserPhone })
+          }).catch(() => {});
+          fetch(`${baseUrl}/api/db/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ collection: 'active_orders', docId: cleanUserPhone })
+          }).catch(() => {});
+        } catch (_) {}
+
+        // Crucial: Instantly reset driver's busy status back to online & idle!
+        reportDriverBusyStatus(cleanUserPhone, false, { currentView: 'home', isBusy: false });
+      }
+
+      try {
+        localStorage.removeItem('dd_current_trip');
+        localStorage.removeItem('dd_current_order');
+        localStorage.removeItem('dd_active_incoming_order');
+      } catch (_) {}
     }
+
     setShowCancelConfirmModal(false);
     if (onClearOnlineOrder) onClearOnlineOrder();
+    try {
+      speakText('司机已取消订单');
+    } catch (_) {}
     onNavigateBack();
   };
 

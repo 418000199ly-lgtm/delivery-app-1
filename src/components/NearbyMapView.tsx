@@ -815,8 +815,8 @@ export default function NearbyMapView({
         tagBg = '#64748b'; // 灰色: 下线
         tagText = `${driverName}(下线)`;
       } else if (isBusyState) {
-        tagBg = '#ef4444'; // 红色: 报单中/接单做单中
-        tagText = `${driverName}(做单中)`;
+        tagBg = '#ef4444'; // 红色: 报单中/接单做单中 (仅通过红色背景与红帽标识，不附带文字)
+        tagText = isMe ? `${driverName} (我)` : driverName;
       } else if (isMe) {
         tagText = `${driverName} (我)`;
       }

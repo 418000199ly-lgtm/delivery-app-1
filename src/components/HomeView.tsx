@@ -357,6 +357,90 @@ export default function HomeView({
     }
   });
 
+  const calculatePendingApplicants = () => {
+    try {
+      const isMock = (id: string, phone: string, name: string) => {
+        const mockIds = ['app-1', 'app-2', 'app-3'];
+        const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
+        const mockNames = ['王心凌', '张一山', '李小龙'];
+        return Boolean(
+          mockIds.includes(id) ||
+          (phone && mockPhones.includes(phone)) ||
+          (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
+        );
+      };
+
+      const allApps: any[] = [];
+      try {
+        const savedApps = localStorage.getItem('dd_applicants_v2');
+        if (savedApps) {
+          const parsed = JSON.parse(savedApps);
+          if (Array.isArray(parsed)) allApps.push(...parsed);
+        }
+      } catch (_) {}
+      try {
+        const savedApps2 = localStorage.getItem('dd_squad_applications_v2');
+        if (savedApps2) {
+          const parsed = JSON.parse(savedApps2);
+          if (Array.isArray(parsed)) allApps.push(...parsed);
+        }
+      } catch (_) {}
+
+      const pendingMap = new Map<string, any>();
+      allApps.forEach((app: any) => {
+        if (!app) return;
+        const phone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
+        const id = String(app.id || '').trim();
+        const name = String(app.name || app.driverName || app.applicantName || '').trim();
+        if (isMock(id, phone, name)) return;
+        const st = String(app.status || app.approvalStatus || '').trim();
+        // 仅当状态为待审核（未审批）时才计数；若审批通过（已通过）或审批拒绝（已拒绝），则不计入
+        if (['待审核', 'pending', '审核中'].includes(st)) {
+          const key = phone || id;
+          if (key) pendingMap.set(key, app);
+        }
+      });
+      return pendingMap.size;
+    } catch (_) {
+      return 0;
+    }
+  };
+
+  const [pendingSquadApplicantCount, setPendingSquadApplicantCount] = useState<number>(() => calculatePendingApplicants());
+
+  // 只有开发者司机、城市老板司机、城市管理司机、城市派单员司机才有权限在商户代叫右上角显示待审核申请人数角标
+  const canViewPendingApplicantBadge = () => {
+    const currentPhone = getCurrentPhone();
+    if (currentPhone === '15509601222') return true;
+
+    const effectiveRoles: string[] = [
+      userRole,
+      typeof window !== 'undefined' ? localStorage.getItem('dd_user_role') : null,
+      typeof window !== 'undefined' ? localStorage.getItem(`dd_squad_member_${currentPhone}`) : null,
+      typeof window !== 'undefined' ? localStorage.getItem('dd_driver_role') : null
+    ].filter(Boolean) as string[];
+
+    try {
+      const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+      const localAppObj = savedApps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
+      if (localAppObj) {
+        if (localAppObj.role) effectiveRoles.push(localAppObj.role);
+        if (localAppObj.userRole) effectiveRoles.push(localAppObj.userRole);
+      }
+    } catch (_) {}
+
+    return effectiveRoles.some(r => {
+      const rStr = String(r || '').trim();
+      return (
+        rStr.includes('开发者') ||
+        rStr.includes('老板') ||
+        rStr.includes('管理') ||
+        rStr.includes('派单') ||
+        rStr.includes('指挥')
+      ) && !rStr.includes('商户') && !rStr.includes('商家');
+    });
+  };
+
   const isDriverRemoved = (phoneToCheck?: string) => {
     const phone = (phoneToCheck || getCurrentPhone()).trim();
     if (!phone) return false;
@@ -597,10 +681,36 @@ export default function HomeView({
         }
         
         let localMemberList: any[] = [];
-        const savedMembers = localStorage.getItem('dd_squad_members_v2');
-        if (savedMembers && Array.isArray(JSON.parse(savedMembers))) {
-          localMemberList = JSON.parse(savedMembers);
-        }
+        try {
+          const savedMembers = localStorage.getItem('dd_squad_members_v2');
+          if (savedMembers && Array.isArray(JSON.parse(savedMembers))) {
+            localMemberList = JSON.parse(savedMembers);
+          }
+        } catch (_) {}
+
+        // 同时合并审核通过的申请者，保证与小队团队页面(w9)人数100%严格一致，绝不跳变
+        try {
+          const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+          if (Array.isArray(savedApps)) {
+            savedApps.forEach((app: any) => {
+              const st = String(app.status || app.approvalStatus || '').trim();
+              if (['已通过', 'approved', '通过'].includes(st)) {
+                localMemberList.push(app);
+              }
+            });
+          }
+        } catch (_) {}
+        try {
+          const savedApps2 = JSON.parse(localStorage.getItem('dd_squad_applications_v2') || '[]');
+          if (Array.isArray(savedApps2)) {
+            savedApps2.forEach((app: any) => {
+              const st = String(app.status || app.approvalStatus || '').trim();
+              if (['已通过', 'approved', '通过'].includes(st)) {
+                localMemberList.push(app);
+              }
+            });
+          }
+        } catch (_) {}
 
         setSquadMembers(prev => {
           const map = new Map<string, any>();
@@ -637,18 +747,23 @@ export default function HomeView({
           return nextArr;
         });
       } catch (_) {}
+      try {
+        setPendingSquadApplicantCount(calculatePendingApplicants());
+      } catch (_) {}
     };
 
     window.addEventListener('storage', syncRemoved);
     window.addEventListener('focus', syncRemoved);
     window.addEventListener('squad_members_updated', syncRemoved);
     window.addEventListener('squad_member_approved', syncRemoved);
+    window.addEventListener('squad_applicants_updated', syncRemoved);
     const timer = setInterval(syncRemoved, 2000);
     return () => {
       window.removeEventListener('storage', syncRemoved);
       window.removeEventListener('focus', syncRemoved);
       window.removeEventListener('squad_members_updated', syncRemoved);
       window.removeEventListener('squad_member_approved', syncRemoved);
+      window.removeEventListener('squad_applicants_updated', syncRemoved);
       clearInterval(timer);
     };
   }, []);
@@ -678,19 +793,18 @@ export default function HomeView({
 
     const isApprovedStatus = (st: string) => !st || ['已通过', 'approved', '通过'].includes(st.trim());
 
-    // 2. 构建与 w30 页面（小队管理）完全一致的 membersMap
+    // 2. 构建与 w9（小队管理团队页面）完全一致的 membersMap
     const membersMap = new Map<string, any>();
-    membersMap.set('15509601222', { phone: '15509601222', role: '开发者司机' });
+    membersMap.set('15509601222', { phone: '15509601222', role: '开发者司机', name: '吴彦祖' });
 
     // 从 squadMembers state 读取
     (squadMembers || []).forEach((m: any) => {
       if (!m) return;
       const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
       const name = String(m.name || m.driverName || '').trim();
-      if (!phone || isMock(phone, name)) return;
+      if (!phone || isMock(phone, name) || (phone !== '15509601222' && removedSet.has(phone))) return;
       const st = String(m.status || m.approvalStatus || (m.data && m.data.status) || '').trim();
       if (phone === '15509601222' || isApprovedStatus(st)) {
-        removedSet.delete(phone);
         membersMap.set(phone, m);
       }
     });
@@ -703,31 +817,33 @@ export default function HomeView({
           if (!m) return;
           const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
           const name = String(m.name || m.driverName || '').trim();
-          if (!phone || isMock(phone, name)) return;
+          if (!phone || isMock(phone, name) || (phone !== '15509601222' && removedSet.has(phone))) return;
           const st = String(m.status || m.approvalStatus || '').trim();
           if (phone === '15509601222' || isApprovedStatus(st)) {
-            removedSet.delete(phone);
             if (!membersMap.has(phone)) membersMap.set(phone, m);
           }
         });
       }
     } catch (_) {}
 
-    // 从 squadApplications / applicants 读取（与 w30 页面审核通过的申请完全同步）
+    // 从 squadApplications / applicants 读取（与 w9 页面审核通过的申请完全同步）
     const allApps: any[] = [];
     try {
-      const savedApps = JSON.parse(localStorage.getItem('dd_squad_applications_v2') || '[]');
+      const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
       if (Array.isArray(savedApps)) allApps.push(...savedApps);
+    } catch (_) {}
+    try {
+      const savedApps2 = JSON.parse(localStorage.getItem('dd_squad_applications_v2') || '[]');
+      if (Array.isArray(savedApps2)) allApps.push(...savedApps2);
     } catch (_) {}
 
     allApps.forEach((app: any) => {
       if (!app) return;
       const phone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
       const name = String(app.name || app.driverName || app.applicantName || '').trim();
-      if (!phone || isMock(phone, name)) return;
+      if (!phone || isMock(phone, name) || (phone !== '15509601222' && removedSet.has(phone))) return;
       const st = String(app.status || app.approvalStatus || '').trim();
       if (phone === '15509601222' || isApprovedStatus(st)) {
-        removedSet.delete(phone);
         if (!membersMap.has(phone)) membersMap.set(phone, app);
       }
     });
@@ -2275,6 +2391,9 @@ export default function HomeView({
           localStorage.setItem('dd_applicants_v2', JSON.stringify(combinedApps));
         } catch (_) {}
       }
+      try {
+        setPendingSquadApplicantCount(calculatePendingApplicants());
+      } catch (_) {}
 
       const allRemovedSet = new Set(
         [...cloudRemovedPhones, ...(removedMemberPhones || [])]
@@ -2583,6 +2702,9 @@ export default function HomeView({
             localStorage.setItem('dd_applicants_v2', JSON.stringify(apps));
           } catch (_) {}
         }
+        try {
+          setPendingSquadApplicantCount(calculatePendingApplicants());
+        } catch (_) {}
         const curP = getCurrentPhone();
         if (curP && curP !== '15509601222') {
           const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === curP);
@@ -2719,6 +2841,24 @@ export default function HomeView({
           status: '已通过'
         });
       }
+
+      // 同时合并已有 squad_members 中的有效成员，避免单一集合快照覆盖丢失成员
+      try {
+        const savedMembers = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+        if (Array.isArray(savedMembers)) {
+          savedMembers.forEach((m: any) => {
+            const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+            if (p && !map.has(p) && !isMock(m)) {
+              if (p === '15509601222' || (!removedList.includes(p) && !isDriverRemoved(p))) {
+                const st = String(m?.status || m?.approvalStatus || '').trim();
+                if (p === '15509601222' || !st || ['已通过', 'approved', '通过'].includes(st)) {
+                  map.set(p, m);
+                }
+              }
+            }
+          });
+        }
+      } catch (_) {}
 
       // 保留本地已通过审核且未被移出的司机
       if (curP && curP !== '15509601222' && !removedList.includes(curP) && !isDriverRemoved(curP) && (localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true')) {
@@ -4834,6 +4974,14 @@ export default function HomeView({
               </div>
             </div>
             <span className="text-[10px] text-gray-700 font-bold font-sans whitespace-nowrap">商户代叫</span>
+            {canViewPendingApplicantBadge() && pendingSquadApplicantCount > 0 && (
+              <span 
+                className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#ba1a1a] text-white text-[9px] font-bold shadow-xs leading-none"
+                title={`当前有 ${pendingSquadApplicantCount} 位司机申请加入小队待审批`}
+              >
+                {pendingSquadApplicantCount}
+              </span>
+            )}
           </button>
 
           <button 

@@ -776,8 +776,15 @@ export default function SquadDriverList({
                     {/* Driver Details */}
                     <div className="min-w-0 flex flex-col">
                       <div className="flex items-center space-x-1.5">
-                        <span className="text-sm font-black text-slate-900 truncate">
-                          {driver.name}
+                        <span className={`text-sm font-black truncate ${
+                          isBusy ? 'text-red-500' : 'text-slate-900'
+                        }`}>
+                          {String(driver.name || '')
+                            .replace(/\(做单中\)/g, '')
+                            .replace(/\(做单\)/g, '')
+                            .replace(/\(忙碌\)/g, '')
+                            .replace(/\(报单中\)/g, '')
+                            .trim()}
                         </span>
                         {isMe && (
                           <span className={`px-1.5 py-0.2 rounded text-[10px] font-black text-white ${

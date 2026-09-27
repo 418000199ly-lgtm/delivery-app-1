@@ -1895,12 +1895,13 @@ async function startServer() {
       const orderId = String(req.body.orderId || req.body.id || '').trim();
       const driverPhone = String(req.body.driverPhone || req.body.phone || '').replace(/\D/g, '').trim();
       const cancelReason = String(req.body.reason || req.body.cancelReason || '订单已彻底取消').trim();
+      const cancelledBy = String(req.body.cancelledBy || (driverPhone ? 'driver' : 'admin')).trim();
 
       if (!orderId) {
         return res.status(400).json({ success: false, error: 'Missing orderId' });
       }
 
-      console.log(`[Order Cancel] Permanent cancellation for orderId: ${orderId}`);
+      console.log(`[Order Cancel] Permanent cancellation for orderId: ${orderId}, by: ${cancelledBy}, reason: ${cancelReason}`);
 
       const now = Date.now();
       const cancelPayload = {
@@ -1908,6 +1909,8 @@ async function startServer() {
         statusCategory: '已取消',
         in_hall: false,
         cancelledAt: now,
+        cancelledBy: cancelledBy,
+        cancelledByRole: cancelledBy,
         cancelReason: cancelReason
       };
 
@@ -1939,10 +1942,41 @@ async function startServer() {
         };
       }
 
-      // Clear from passenger_links for associated driver
+      // Clear from passenger_links & active_orders for associated driver and reset driver busy state
       const assignedDriver = driverPhone || targetMerchant.dispatchedDriverPhone || targetMerchant.claimedDriverPhone;
-      if (assignedDriver && dbData['passenger_links'] && dbData['passenger_links'][assignedDriver]) {
-        delete dbData['passenger_links'][assignedDriver];
+      if (assignedDriver) {
+        if (dbData['passenger_links'] && dbData['passenger_links'][assignedDriver]) {
+          delete dbData['passenger_links'][assignedDriver];
+        }
+        if (dbData['active_orders'] && dbData['active_orders'][assignedDriver]) {
+          delete dbData['active_orders'][assignedDriver];
+        }
+
+        // Reset busy status in driver_users, driver_locations, and squad_members
+        if (dbData['driver_users'] && dbData['driver_users'][assignedDriver]) {
+          dbData['driver_users'][assignedDriver] = {
+            ...dbData['driver_users'][assignedDriver],
+            isBusy: false,
+            status: 'idle',
+            lastStatusUpdateTime: now
+          };
+        }
+        if (dbData['driver_locations'] && dbData['driver_locations'][assignedDriver]) {
+          dbData['driver_locations'][assignedDriver] = {
+            ...dbData['driver_locations'][assignedDriver],
+            isBusy: false,
+            status: 'idle',
+            lastStatusUpdateTime: now
+          };
+        }
+        if (dbData['squad_members'] && dbData['squad_members'][assignedDriver]) {
+          dbData['squad_members'][assignedDriver] = {
+            ...dbData['squad_members'][assignedDriver],
+            isBusy: false,
+            status: 'idle',
+            lastStatusUpdateTime: now
+          };
+        }
       }
 
       writeLocalJsonDb(dbData);
@@ -1956,9 +1990,15 @@ async function startServer() {
           );
           if (assignedDriver) {
             await mysqlPool.query(
-              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
-              ['passenger_links', assignedDriver]
+              'DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?) AND `doc_id` = ?',
+              ['passenger_links', 'active_orders', assignedDriver]
             );
+            if (dbData['driver_users'] && dbData['driver_users'][assignedDriver]) {
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                ['driver_users', assignedDriver, JSON.stringify(dbData['driver_users'][assignedDriver])]
+              );
+            }
           }
         } catch (_) {}
       }
@@ -2011,6 +2051,35 @@ async function startServer() {
             if (dbData['passenger_links'] && dbData['passenger_links'][timedOutDriverPhone]) {
               delete dbData['passenger_links'][timedOutDriverPhone];
             }
+            if (dbData['active_orders'] && dbData['active_orders'][timedOutDriverPhone]) {
+              delete dbData['active_orders'][timedOutDriverPhone];
+            }
+
+            // Reset driver busy state in driver_users, driver_locations, squad_members
+            if (dbData['driver_users'] && dbData['driver_users'][timedOutDriverPhone]) {
+              dbData['driver_users'][timedOutDriverPhone] = {
+                ...dbData['driver_users'][timedOutDriverPhone],
+                isBusy: false,
+                status: 'idle',
+                lastStatusUpdateTime: now
+              };
+            }
+            if (dbData['driver_locations'] && dbData['driver_locations'][timedOutDriverPhone]) {
+              dbData['driver_locations'][timedOutDriverPhone] = {
+                ...dbData['driver_locations'][timedOutDriverPhone],
+                isBusy: false,
+                status: 'idle',
+                lastStatusUpdateTime: now
+              };
+            }
+            if (dbData['squad_members'] && dbData['squad_members'][timedOutDriverPhone]) {
+              dbData['squad_members'][timedOutDriverPhone] = {
+                ...dbData['squad_members'][timedOutDriverPhone],
+                isBusy: false,
+                status: 'idle',
+                lastStatusUpdateTime: now
+              };
+            }
 
             if (isMySQLEnabled && mysqlPool) {
               try {
@@ -2019,8 +2088,8 @@ async function startServer() {
                   ['merchant_orders', orderId, JSON.stringify(updatedOrder)]
                 );
                 await mysqlPool.query(
-                  'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
-                  ['passenger_links', timedOutDriverPhone]
+                  'DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?) AND `doc_id` = ?',
+                  ['passenger_links', 'active_orders', timedOutDriverPhone]
                 );
               } catch (_) {}
             }

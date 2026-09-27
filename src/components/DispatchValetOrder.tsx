@@ -5,7 +5,7 @@ import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
-import { regenerateQRCode } from '../utils/qrCodeHelper';
+import { regenerateQRCode, processImageFileToCleanQR } from '../utils/qrCodeHelper';
 import { 
   MapPin, 
   Phone, 
@@ -49,6 +49,7 @@ import {
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64 } from '../assets/images/driverImageConstants';
 import { getFormattedDispatcherName, resolveDriverRealName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName } from '../utils/nameResolver';
+import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -430,26 +431,13 @@ export default function DispatchValetOrder({
   }, []);
 
   // Helper to auto-compress, crop and convert QR image to lightweight PNG (~50KB)
-  const compressAndConvertToPng = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const rawDataUrl = e.target?.result as string;
-          if (!rawDataUrl) {
-            resolve('');
-            return;
-          }
-          // Auto-crop QR code bounding box and convert to lossless vector / lightweight image (~20KB-80KB)
-          const croppedQr = await regenerateQRCode(rawDataUrl, 'wechat');
-          resolve(croppedQr || rawDataUrl);
-        } catch (err) {
-          resolve(e.target?.result as string || '');
-        }
-      };
-      reader.onerror = (err) => reject(err);
-      reader.readAsDataURL(file);
-    });
+  const compressAndConvertToPng = async (file: File): Promise<string> => {
+    try {
+      const cleanQr = await processImageFileToCleanQR(file, 'wechat');
+      return cleanQr || '';
+    } catch (_) {
+      return '';
+    }
   };
 
   // Form states
@@ -537,6 +525,10 @@ export default function DispatchValetOrder({
 
   const handleExecuteClearAllOrders = async () => {
     setShowConfirmClearOrdersModal(false);
+    if (!canClearOrderList) {
+      onShowToast('⚠️ 您暂无权限清空列表，仅开发者司机、城市老板司机、城市管理司机可操作');
+      return;
+    }
     const clearNow = Date.now();
     try {
       localStorage.setItem('dd_merchant_orders_cleared_at', String(clearNow));
@@ -662,6 +654,9 @@ export default function DispatchValetOrder({
   useEffect(() => {
     try {
       localStorage.setItem('dd_applicants_v2', JSON.stringify(applicants));
+      window.dispatchEvent(new CustomEvent('squad_applicants_updated', { 
+        detail: { count: applicants.filter(a => a.status === '待审核').length } 
+      }));
     } catch (_) {}
   }, [applicants]);
 
@@ -1241,35 +1236,40 @@ export default function DispatchValetOrder({
     try {
       const targetId = activeOrderId || (allDispatchedOrders.length > 0 ? allDispatchedOrders[0].id : null);
       if (targetId) {
+        const cancelPayload = {
+          status: 'cancelled',
+          in_hall: false,
+          statusCategory: '已取消',
+          isCancelled: true,
+          cancelledAt: Date.now(),
+          cancelledBy: 'merchant',
+          cancelledByRole: 'merchant',
+          cancelReason: '商户已手动取消代叫订单'
+        };
+
         // 1. Update Firestore merchant_orders
         try {
-          await setDoc(doc(db, 'merchant_orders', targetId), {
-            status: 'cancelled',
-            in_hall: false,
-            statusCategory: '已取消',
-            cancelReason: '商户已手动取消代叫订单'
-          }, { merge: true });
+          await setDoc(doc(db, 'merchant_orders', targetId), cancelPayload, { merge: true });
         } catch (e) {
           console.warn('Failed to update merchant_orders cancel status', e);
         }
 
-        // 2. Update passenger_links if dispatched
-        try {
-          if (dispatchResult?.driver?.phone) {
-            await setDoc(doc(db, 'passenger_links', dispatchResult.driver.phone), {
-              status: 'cancelled',
-              in_hall: false,
-              cancelReason: '商户已手动取消代叫订单'
-            }, { merge: true });
-          }
-        } catch (e) {}
+        // 2. Update passenger_links and active_orders if dispatched, and reset driver busy status
+        const assignedDriverPhone = dispatchResult?.driver?.phone ? String(dispatchResult.driver.phone).replace(/\D/g, '').trim() : '';
+        if (assignedDriverPhone) {
+          try {
+            await setDoc(doc(db, 'passenger_links', assignedDriverPhone), cancelPayload, { merge: true });
+            await setDoc(doc(db, 'active_orders', assignedDriverPhone), cancelPayload, { merge: true });
+          } catch (e) {}
+          reportDriverBusyStatus(assignedDriverPhone, false, { currentView: 'home', isBusy: false });
+        }
 
         // 3. Clear from localStorage
         try {
           const savedLocal = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
           const updated = savedLocal.map((o: any) => {
             if (o.id === targetId || o.orderNo === targetId) {
-              return { ...o, status: 'cancelled', in_hall: false, statusCategory: '已取消' };
+              return { ...o, ...cancelPayload };
             }
             return o;
           });
@@ -1351,34 +1351,41 @@ export default function DispatchValetOrder({
 
     // 1. Update Firestore & Node DB merchant_orders to cancelled strictly on valid order doc IDs
     const targetDocId = primaryDocId || (docIdsToUpdate.length > 0 ? docIdsToUpdate[0] : `ord_${Date.now()}`);
+    const adminCancelPayload = {
+      in_hall: false,
+      status: 'cancelled',
+      statusCategory: '已取消',
+      isCancelled: true,
+      cancelledAt: Date.now(),
+      cancelledBy: 'admin',
+      cancelledByRole: 'admin',
+      cancelReason: '管理员取消订单'
+    };
+
     try {
       if (db) {
-        await setDoc(doc(db, 'merchant_orders', targetDocId), {
-          in_hall: false,
-          status: 'cancelled',
-          statusCategory: '已取消',
-          cancelledAt: Date.now(),
-          cancelReason: '商户派单管理员取消派单'
-        }, { merge: true });
+        await setDoc(doc(db, 'merchant_orders', targetDocId), adminCancelPayload, { merge: true });
       }
       fetch(`${baseUrl}/api/order/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId: targetDocId, orderNo: targetOrderNo, driverPhone: cleanDriverPhone, reason: '商户派单管理员取消派单' })
+        body: JSON.stringify({
+          orderId: targetDocId,
+          orderNo: targetOrderNo,
+          driverPhone: cleanDriverPhone,
+          reason: '管理员取消订单',
+          cancelledBy: 'admin'
+        })
       }).catch(() => {});
     } catch (e) {
       console.error("Error setting merchant order to cancelled:", e);
     }
 
-    // 2. Notify assigned driver via passenger_links and active_orders so driver App instantly triggers cancellation
+    // 2. Notify assigned driver via passenger_links and active_orders so driver App instantly triggers cancellation and resets busy status
     const cancelPayload = {
-      status: 'cancelled',
-      statusCategory: '已取消',
-      isCancelled: true,
+      ...adminCancelPayload,
       orderId: targetDocId,
-      orderNo: targetOrderNo,
-      cancelledAt: Date.now(),
-      cancelReason: '商户派单管理员取消派单'
+      orderNo: targetOrderNo
     };
 
     if (cleanDriverPhone) {
@@ -1400,6 +1407,9 @@ export default function DispatchValetOrder({
           body: JSON.stringify({ collection: 'active_orders', docId: cleanDriverPhone, data: cancelPayload })
         }).catch(() => {});
       } catch (_) {}
+
+      // Crucial: Instantly reset assigned driver's busy status so they can immediately receive new orders
+      reportDriverBusyStatus(cleanDriverPhone, false, { currentView: 'home', isBusy: false });
     }
 
     // 3. Clean and mark cancelled in local storage dd_merchant_orders_v2
@@ -1414,10 +1424,7 @@ export default function DispatchValetOrder({
         if (isMatch) {
           return {
             ...o,
-            in_hall: false,
-            status: 'cancelled',
-            statusCategory: '已取消',
-            cancelledAt: Date.now()
+            ...adminCancelPayload
           };
         }
         return o;
@@ -1427,6 +1434,8 @@ export default function DispatchValetOrder({
         orderId: targetDocId,
         orderNo: targetOrderNo,
         driverPhone: cleanDriverPhone,
+        cancelledBy: 'admin',
+        cancelReason: '管理员取消订单',
         cancelledAt: Date.now()
       }));
     } catch (_) {}
@@ -1567,6 +1576,32 @@ export default function DispatchValetOrder({
       adminProfile.role.includes('管理') ||
       adminProfile.role.includes('指挥')
     ))
+  );
+
+  // 仅开发者司机、城市老板司机、城市管理司机才有权限清空列表；城市派单员司机自动隐藏清空列表组件按钮
+  const canClearOrderList = Boolean(
+    userPhone === '15509601222' || 
+    userRole === '开发者司机' || 
+    userRole === '开发者' || 
+    userRole === '总指挥官' || 
+    userRole === '城市老板司机' || 
+    userRole === '城市老板' || 
+    userRole === '城市管理司机' || 
+    userRole === '城市管理' ||
+    (adminProfile?.role && (
+      adminProfile.role === '开发者司机' ||
+      adminProfile.role === '开发者' ||
+      adminProfile.role === '总指挥官' ||
+      adminProfile.role === '城市老板司机' ||
+      adminProfile.role === '城市老板' ||
+      adminProfile.role === '城市管理司机' ||
+      adminProfile.role === '城市管理'
+    ))
+  ) && !(
+    userRole === '城市派单员司机' ||
+    userRole === '城市派单员' ||
+    adminProfile?.role === '城市派单员司机' ||
+    adminProfile?.role === '城市派单员'
   );
 
   // 格式化成员列表中显示的手机号：小队内所有成员看到的开发者司机 15509601222 均隐藏显示为 155****1222，仅 15509601222 自己登录时显示完整 15509601222
@@ -4125,22 +4160,24 @@ export default function DispatchValetOrder({
                 <span className="text-[11px] font-bold px-2.5 py-1 bg-[#ffdbc8] text-[#311300] rounded-full">
                   共 {filteredOrders.length} 单
                 </span>
-                <button
-                  type="button"
-                  title="点击一键清空列表所有订单"
-                  aria-label="点击一键清空列表所有订单"
-                  data-action="点击一键清空列表所有订单"
-                  onClick={() => {
-                    if (allDispatchedOrders.length === 0) {
-                      onShowToast('当前代叫订单中心列表已经是空的');
-                      return;
-                    }
-                    setShowConfirmClearOrdersModal(true);
-                  }}
-                  className="text-[11px] font-bold px-2.5 py-1 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 active:scale-95 transition-all cursor-pointer shrink-0"
-                >
-                  清空列表
-                </button>
+                {canClearOrderList && (
+                  <button
+                    type="button"
+                    title="点击一键清空列表所有订单"
+                    aria-label="点击一键清空列表所有订单"
+                    data-action="点击一键清空列表所有订单"
+                    onClick={() => {
+                      if (allDispatchedOrders.length === 0) {
+                        onShowToast('当前代叫订单中心列表已经是空的');
+                        return;
+                      }
+                      setShowConfirmClearOrdersModal(true);
+                    }}
+                    className="text-[11px] font-bold px-2.5 py-1 bg-rose-100 text-rose-700 rounded-lg hover:bg-rose-200 active:scale-95 transition-all cursor-pointer shrink-0"
+                  >
+                    清空列表
+                  </button>
+                )}
               </div>
             </header>
 
@@ -4581,10 +4618,10 @@ export default function DispatchValetOrder({
               <div className="relative flex items-center">
                 <Search className="w-5 h-5 absolute left-3.5 text-[#584235]/70 pointer-events-none" />
                 <input 
-                  type="tel"
+                  type="text"
                   value={memberSearchQuery}
                   onChange={(e) => setMemberSearchQuery(e.target.value)}
-                  placeholder="输入手机号码查找小队成员"
+                  placeholder="输入手机号码或者小队成员名字查找小队成员"
                   className="w-full h-12 pl-11 pr-4 bg-white border border-[#dfc0af] rounded-2xl focus:ring-2 focus:ring-[#ff7d00] focus:border-[#ff7d00] transition-all text-sm placeholder:text-[#584235]/50 outline-none"
                 />
                 {memberSearchQuery && (
@@ -4627,12 +4664,25 @@ export default function DispatchValetOrder({
 
               {/* Members Data List */}
               {(() => {
-                // Filter by search query & category tab
+                // Filter by search query & category tab (supports both phone number and real/display driver name)
                 const filteredMembers = allMembersList.filter(item => {
                   if (memberSearchQuery.trim()) {
                     const q = memberSearchQuery.trim().toLowerCase();
-                    const matchPhone = item.phone?.toLowerCase().includes(q);
-                    const matchName = item.name?.toLowerCase().includes(q);
+                    const cleanQ = q.replace(/\s+/g, '');
+                    const rawPhone = String(item.phone || '').toLowerCase();
+                    const cleanPhone = rawPhone.replace(/\D/g, '');
+                    const resolvedName = resolveDriverRealName(item.phone, item.name || item.driverName || item.realName || '').toLowerCase();
+                    const rawName = String(item.name || '').toLowerCase();
+                    const driverName = String(item.driverName || '').toLowerCase();
+                    const realName = String(item.realName || '').toLowerCase();
+
+                    const matchPhone = rawPhone.includes(q) || (cleanQ.length > 0 && cleanPhone.includes(cleanQ));
+                    const matchName = 
+                      rawName.includes(q) || 
+                      driverName.includes(q) || 
+                      realName.includes(q) || 
+                      resolvedName.includes(q);
+
                     if (!matchPhone && !matchName) return false;
                   }
 

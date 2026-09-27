@@ -4,10 +4,10 @@ import { ChauffeurSettings, checkVipActive } from '../types';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
-import { regenerateQRCode, cropQRCodeFromImage } from '../utils/qrCodeHelper';
+import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR } from '../utils/qrCodeHelper';
 import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
 
-export { regenerateQRCode, cropQRCodeFromImage };
+export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR };
 
 interface SettingsViewProps {
   settings: ChauffeurSettings;
@@ -472,93 +472,80 @@ export default function SettingsView({
   const wechatInputRef = useRef<HTMLInputElement>(null);
   const alipayInputRef = useRef<HTMLInputElement>(null);
 
-  const handleWechatFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleWechatFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // Reset input to allow selecting the same file again
     if (file) {
       setIsProcessingWechat(true);
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const rawDataUrl = reader.result as string;
-          // Step 1: Immediately save the raw data URL as fallback so it's never lost
-          const targetPhone = (settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').trim();
-          if (targetPhone) {
-            try {
-              localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, rawDataUrl);
-              localStorage.setItem('dd_dispatch_wechat_qr', rawDataUrl);
-              localStorage.setItem('dd_user_wechat_qr', rawDataUrl);
-            } catch (_) {}
-          }
-
-          // Step 2: Memory-safe reconstruction and background border elimination
-          const cleanedQr = await regenerateQRCode(rawDataUrl, 'wechat');
-          const finalQr = cleanedQr || rawDataUrl;
-
-          // Step 3: Immediate state update and permanent storage sync
-          onUpdateSettings({ ...settings, wechatQrCode: finalQr });
-
-          if (targetPhone) {
-            try {
-              localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, finalQr);
-              localStorage.setItem('dd_dispatch_wechat_qr', finalQr);
-              localStorage.setItem('dd_user_wechat_qr', finalQr);
-            } catch (_) {}
-
-            const baseUrl = getBaseApiUrl();
-            fetch(`${baseUrl}/api/upload-wechat-qr`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ phone: targetPhone, imageBase64: finalQr })
-            }).catch(err => console.error('Upload QR to server error:', err));
-          }
-        } catch (err) {
-          console.error('Process QR error:', err);
-        } finally {
+      try {
+        // Zero-memory downscaled extraction - completely prevents iOS WKWebView Jetsam OOM white-screen and Android freeze
+        const cleanQr = await processImageFileToCleanQR(file, 'wechat');
+        if (!cleanQr) {
           setIsProcessingWechat(false);
+          return;
         }
-      };
-      reader.onerror = () => setIsProcessingWechat(false);
-      reader.readAsDataURL(file);
+
+        // Update state with lightweight clean QR (< 25KB)
+        onUpdateSettings({ ...settings, wechatQrCode: cleanQr });
+
+        const targetPhone = (settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').trim();
+        if (targetPhone) {
+          try {
+            localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, cleanQr);
+            localStorage.setItem('dd_dispatch_wechat_qr', cleanQr);
+            localStorage.setItem('dd_user_wechat_qr', cleanQr);
+            localStorage.setItem('dd_user_wechat_clean_qr', cleanQr);
+          } catch (_) {}
+
+          const baseUrl = getBaseApiUrl();
+          fetch(`${baseUrl}/api/upload-wechat-qr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
+          }).catch(err => console.error('Upload QR to server error:', err));
+        }
+      } catch (err) {
+        console.error('Process QR error:', err);
+      } finally {
+        setIsProcessingWechat(false);
+      }
     }
   };
 
-  const handleAlipayFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAlipayFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ''; // Reset input
     if (file) {
       setIsProcessingAlipay(true);
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const rawDataUrl = reader.result as string;
-          const cleanedQr = await regenerateQRCode(rawDataUrl, 'alipay');
-          const finalQr = cleanedQr || rawDataUrl;
-          onUpdateSettings({ ...settings, alipayQrCode: finalQr });
-
-          const targetPhone = (settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').trim();
-          if (targetPhone) {
-            try {
-              localStorage.setItem(`dd_dispatch_alipay_qr_${targetPhone}`, finalQr);
-              localStorage.setItem('dd_dispatch_alipay_qr', finalQr);
-              localStorage.setItem('dd_user_alipay_qr', finalQr);
-            } catch (_) {}
-
-            const baseUrl = getBaseApiUrl();
-            fetch(`${baseUrl}/api/upload-alipay-qr`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ phone: targetPhone, imageBase64: finalQr })
-            }).catch(err => console.error('Upload Alipay QR to server error:', err));
-          }
-        } catch (err) {
-          console.error('Process Alipay QR error:', err);
-        } finally {
+      try {
+        const cleanQr = await processImageFileToCleanQR(file, 'alipay');
+        if (!cleanQr) {
           setIsProcessingAlipay(false);
+          return;
         }
-      };
-      reader.onerror = () => setIsProcessingAlipay(false);
-      reader.readAsDataURL(file);
+
+        onUpdateSettings({ ...settings, alipayQrCode: cleanQr });
+
+        const targetPhone = (settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').trim();
+        if (targetPhone) {
+          try {
+            localStorage.setItem(`dd_dispatch_alipay_qr_${targetPhone}`, cleanQr);
+            localStorage.setItem('dd_dispatch_alipay_qr', cleanQr);
+            localStorage.setItem('dd_user_alipay_qr', cleanQr);
+          } catch (_) {}
+
+          const baseUrl = getBaseApiUrl();
+          fetch(`${baseUrl}/api/upload-alipay-qr`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
+          }).catch(err => console.error('Upload Alipay QR to server error:', err));
+        }
+      } catch (err) {
+        console.error('Process Alipay QR error:', err);
+      } finally {
+        setIsProcessingAlipay(false);
+      }
     }
   };
 

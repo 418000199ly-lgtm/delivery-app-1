@@ -1791,6 +1791,35 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
     };
 
+    // Helper to get correct toast and speech for cancellation source
+    const getCancelNotification = (data?: any): { toastMsg: string; voiceMsg: string } => {
+      const reason = String(data?.cancelReason || data?.reason || '').trim();
+      const by = String(data?.cancelledBy || data?.cancelledByRole || '').toLowerCase();
+      
+      if (by === 'admin' || by.includes('admin') || reason.includes('管理员') || reason.includes('后台')) {
+        return {
+          toastMsg: '⚠️ 管理员取消订单，已为您返回首页',
+          voiceMsg: '管理员取消订单'
+        };
+      }
+      if (by === 'driver' || reason.includes('司机')) {
+        return {
+          toastMsg: '⚠️ 司机已取消订单，已为您返回首页',
+          voiceMsg: '司机已取消订单'
+        };
+      }
+      if (by === 'passenger' || reason.includes('乘客')) {
+        return {
+          toastMsg: '⚠️ 乘客已取消订单，已为您返回首页',
+          voiceMsg: '乘客已取消订单'
+        };
+      }
+      return {
+        toastMsg: '⚠️ 该代叫订单已被商户取消，已为您返回首页',
+        voiceMsg: '该代叫订单已被商户取消'
+      };
+    };
+
     // 1. Primary Baota DB Proxy realtime listener (handles low-latency updates via dbProxy)
     const docRef = doc(db, 'passenger_links', cleanPhone);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -1799,6 +1828,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
           setIncomingOrder(null);
           clearPendingOrderCache();
+          const { toastMsg, voiceMsg } = getCancelNotification(data);
           if (activeOnlineOrder) {
             const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
             const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
@@ -1810,14 +1840,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               setCurrentView('home');
               setMobileActiveTab('app');
               reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-              triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+              triggerToast(toastMsg);
               try {
-                speakText('该代叫订单已被商户取消');
+                speakText(voiceMsg);
               } catch (_) {}
             }
           } else {
             reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-            triggerToast('⚠️ 该代叫订单已被商户取消');
+            triggerToast(toastMsg);
           }
           // Clean up passenger_links doc after cancellation handled
           try {
@@ -1841,6 +1871,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
           setIncomingOrder(null);
           clearPendingOrderCache();
+          const { toastMsg, voiceMsg } = getCancelNotification(data);
           if (activeOnlineOrder) {
             const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
             const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
@@ -1852,9 +1883,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               setCurrentView('home');
               setMobileActiveTab('app');
               reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-              triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+              triggerToast(toastMsg);
               try {
-                speakText('该代叫订单已被商户取消');
+                speakText(voiceMsg);
               } catch (_) {}
             }
           }
@@ -1886,7 +1917,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (candidateIds.length === 0) return;
 
     let isTriggered = false;
-    const handleOrderCancelled = () => {
+    const handleOrderCancelled = (cancelledData?: any) => {
       if (isTriggered) return;
       isTriggered = true;
       setActiveOnlineOrder(null);
@@ -1894,9 +1925,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       setCurrentView('home');
       setMobileActiveTab('app');
       reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-      triggerToast('⚠️ 该代叫订单已被商户取消，已为您返回首页');
+      
+      const reason = String(cancelledData?.cancelReason || cancelledData?.reason || '').trim();
+      const by = String(cancelledData?.cancelledBy || cancelledData?.cancelledByRole || '').toLowerCase();
+      let toastMsg = '⚠️ 该代叫订单已被商户取消，已为您返回首页';
+      let voiceMsg = '该代叫订单已被商户取消';
+      
+      if (by === 'admin' || by.includes('admin') || reason.includes('管理员') || reason.includes('后台')) {
+        toastMsg = '⚠️ 管理员取消订单，已为您返回首页';
+        voiceMsg = '管理员取消订单';
+      } else if (by === 'driver' || reason.includes('司机')) {
+        toastMsg = '⚠️ 司机已取消订单，已为您返回首页';
+        voiceMsg = '司机已取消订单';
+      } else if (by === 'passenger' || reason.includes('乘客')) {
+        toastMsg = '⚠️ 乘客已取消订单，已为您返回首页';
+        voiceMsg = '乘客已取消订单';
+      }
+
+      triggerToast(toastMsg);
       try {
-        speakText('该代叫订单已被商户取消');
+        speakText(voiceMsg);
       } catch (_) {}
     };
 
@@ -1909,7 +1957,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           if (docSnap.exists()) {
             const data = docSnap.data();
             if (data?.status === 'cancelled' || data?.statusCategory === '已取消' || data?.statusCategory === '订单已取消') {
-              handleOrderCancelled();
+              handleOrderCancelled(data);
             }
           }
         }, (err) => {
@@ -1927,7 +1975,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           const parsed = JSON.parse(latestRaw);
           const isMatch = candidateIds.some(cid => cid === parsed.orderId || cid === parsed.orderNo);
           if (isMatch) {
-            handleOrderCancelled();
+            handleOrderCancelled(parsed);
             return;
           }
         }
@@ -1941,7 +1989,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           )
         );
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
-          handleOrderCancelled();
+          handleOrderCancelled(match);
           return;
         }
 
@@ -1952,7 +2000,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             const json = await res.json();
             if (json && json.data) {
               if (json.data.status === 'cancelled' || json.data.statusCategory === '已取消') {
-                handleOrderCancelled();
+                handleOrderCancelled(json.data);
                 return;
               }
             }
