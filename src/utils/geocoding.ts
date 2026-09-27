@@ -153,6 +153,10 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
     coords: { lat: 38.4480, lng: 106.2200 } // ~ 4.5km
   },
   {
+    keywords: ['望远人家A区', '望远人家B区', '望远人家', '望远镇', '双庆路', '四季鲜'],
+    coords: { lat: 38.3880, lng: 106.2580 } // 永宁县望远镇/望远人家 ~ 10.8km south
+  },
+  {
     keywords: ['机场', '河东机场', '银川机场'],
     coords: { lat: 38.3220, lng: 106.3920 } // ~ 23km
   }

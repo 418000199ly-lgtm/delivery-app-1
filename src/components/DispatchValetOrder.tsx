@@ -3307,11 +3307,8 @@ export default function DispatchValetOrder({
           // 如果有多名符合资格的小队司机直线距离完全一样，随机派单给这几名司机之一
           chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
         }
-      } else if (eligibleDrivers.length > 0) {
-        // 智能优选：当同城范围内有在线空闲小队司机时，优先指派给最近的空闲小队司机
-        eligibleDrivers.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-        chosenDriver = eligibleDrivers[0];
       }
+      // 严格规则：当代驾商家起点附近直线距离3公里内无上线空闲司机（或最近司机超过3公里），绝不直接派单，订单必须进入选单大厅供小队司机抢单！
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
         ? scheduledTime.trim()
@@ -3485,7 +3482,11 @@ export default function DispatchValetOrder({
         distance: chosenDriver ? chosenDriver.distance : 0
       });
 
-      onShowToast('订单已发送');
+      if (chosenDriver) {
+        onShowToast(`已派单给3公里内最近小队司机【${chosenDriver.name || chosenDriver.driverName || '小队司机'}】`);
+      } else {
+        onShowToast('3公里内无空闲上线小队司机，订单已进入选单大厅供抢单');
+      }
 
       setTimeout(() => {
         setButtonState('idle');
