@@ -2578,7 +2578,6 @@ export default function HomeView({
 
             if (wasApproved || (oldRole && oldRole !== '普通司机')) {
               window.dispatchEvent(new CustomEvent('user_role_updated'));
-              window.dispatchEvent(new CustomEvent('squad_members_updated'));
             }
           } catch (_) {}
         } else if (isCurrentInSquad) {
@@ -2662,7 +2661,6 @@ export default function HomeView({
 
                 if (wasApproved || (oldRole && oldRole !== '普通司机')) {
                   window.dispatchEvent(new CustomEvent('user_role_updated'));
-                  window.dispatchEvent(new CustomEvent('squad_members_updated'));
                 }
               } catch (_) {}
             }

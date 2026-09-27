@@ -3222,11 +3222,12 @@ export default function DispatchValetOrder({
         return true;
       };
 
-      const geocodedStart = geocodeAddress(passengerAddress);
+      const geocodedStart = geocodeAddress(passengerAddress, passengerCoords);
       const isDefaultCoords = (
         !passengerCoords ||
         (Math.abs(passengerCoords.lat - 38.487167) < 0.0001 && Math.abs(passengerCoords.lng - 106.23091) < 0.0001) ||
-        (Math.abs(passengerCoords.lat - 38.487193) < 0.0001 && Math.abs(passengerCoords.lng - 106.230912) < 0.0001)
+        (Math.abs(passengerCoords.lat - 38.487193) < 0.0001 && Math.abs(passengerCoords.lng - 106.230912) < 0.0001) ||
+        (Math.abs(passengerCoords.lat - 38.4830) < 0.0001 && Math.abs(passengerCoords.lng - 106.2350) < 0.0001)
       );
       const finalLat = (!isDefaultCoords && isValidCoords(passengerCoords.lat, passengerCoords.lng))
         ? passengerCoords.lat

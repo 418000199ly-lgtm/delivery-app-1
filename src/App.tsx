@@ -821,12 +821,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             const oldRole = localStorage.getItem('dd_user_role');
             if (wasApproved || (oldRole && oldRole !== '普通司机')) {
               try {
+                localStorage.setItem('dd_user_role', '普通司机');
                 localStorage.removeItem(`dd_approved_${userPhone}`);
                 localStorage.removeItem(`dd_squad_member_${userPhone}`);
                 localStorage.removeItem(`dd_in_squad_${userPhone}`);
-                localStorage.setItem('dd_user_role', '普通司机');
                 window.dispatchEvent(new CustomEvent('user_role_updated'));
-                window.dispatchEvent(new CustomEvent('squad_members_updated'));
               } catch (_) {}
             }
             return;

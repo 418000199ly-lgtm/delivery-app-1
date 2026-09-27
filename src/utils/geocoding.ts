@@ -17,6 +17,10 @@ export const DEFAULT_YINCHUAN_COORDS: Coords = {
 // Known POI dictionary for Yinchuan and major regional landmarks
 const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
   {
+    keywords: ['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'],
+    coords: { lat: 38.47513, lng: 106.28665 }
+  },
+  {
     keywords: ['运祥小区', '运祥', '运祥小区南门', '运祥小区北门'],
     coords: DEFAULT_YINCHUAN_COORDS
   },
@@ -222,6 +226,13 @@ export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): C
 
   const cleanAddr = addressName.trim();
 
+  // If address explicitly contains merchant start terms, prefer fallbackCenter (merchant/driver location) if valid
+  if (['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'].some(kw => cleanAddr.includes(kw))) {
+    if (fallbackCenter && isValidCoords(fallbackCenter.lat, fallbackCenter.lng)) {
+      return fallbackCenter;
+    }
+  }
+
   // 1. Keyword search against known POI dictionary
   for (const poi of YINCHUAN_POI_MAP) {
     if (poi.keywords.some(kw => cleanAddr.includes(kw))) {
@@ -294,8 +305,13 @@ export function calculateOrderDriverDistance(
   let oLat = Number(orderLat);
   let oLng = Number(orderLng);
 
-  // If order coordinates are missing or invalid, resolve via geocodeAddress
-  if (!isValidCoords(oLat, oLng)) {
+  const isDefaultCityCoords = (
+    (Math.abs(oLat - 38.4830) < 0.0001 && Math.abs(oLng - 106.2350) < 0.0001) ||
+    (Math.abs(oLat - 38.487167) < 0.0001 && Math.abs(oLng - 106.23091) < 0.0001)
+  );
+
+  // If order coordinates are missing, invalid, or default city center, re-geocode using start location name with driver coordinates as fallback
+  if (!isValidCoords(oLat, oLng) || isDefaultCityCoords) {
     if (orderStartLocation && typeof orderStartLocation === 'string' && orderStartLocation.trim()) {
       const geocodedPOI = geocodeAddress(orderStartLocation, { lat: dLat, lng: dLng });
       oLat = geocodedPOI.lat;
