@@ -474,7 +474,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         <div className="border border-white/40 rounded-full py-1 px-4 sm:py-1.5 sm:px-6 font-medium text-xs sm:text-sm mt-2 sm:mt-3 bg-white/5 backdrop-blur-xs tracking-wide">
           {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'
             ? "报单转单订单"
-            : ((order.isPlatformDispatch || order.isValetOrder) ? "商户代叫订单" : (onlineBillingRules?.templateName?.trim() ? onlineBillingRules.templateName : "滴滴代驾"))}
+            : ((order.isPlatformDispatch || order.isValetOrder) ? "商户代叫订单" : (onlineBillingRules?.templateName?.trim() ? onlineBillingRules.templateName : "某D代驾计费模版"))}
         </div>
       </header>
 

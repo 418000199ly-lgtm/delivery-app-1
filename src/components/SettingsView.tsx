@@ -152,7 +152,7 @@ export default function SettingsView({
     } catch (_) {}
   }
 
-  const displayTemplateName = billingRules?.templateName || cachedRuleName || settings.billingTemplateName || '滴滴代驾';
+  const displayTemplateName = billingRules?.templateName || cachedRuleName || settings.billingTemplateName || '某D代驾计费模版';
 
   // Ensure settings.billingTemplateName stays synchronized with active rule name
   React.useEffect(() => {

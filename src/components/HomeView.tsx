@@ -338,6 +338,25 @@ export default function HomeView({
     ).replace(/\D/g, '').trim();
   };
 
+  // --- Squad Management States (Declared first to avoid TDZ in role and squad helper functions) ---
+  const [squadMembers, setSquadMembers] = useState<any[]>(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('dd_squad_members_v2') : null;
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [removedMemberPhones, setRemovedMemberPhones] = useState<string[]>(() => {
+    try {
+      const saved = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const isDriverRemoved = (phoneToCheck?: string) => {
     const phone = (phoneToCheck || getCurrentPhone()).trim();
     if (!phone) return false;
@@ -346,11 +365,15 @@ export default function HomeView({
     // 检查是否在被移出黑名单中
     let removedList: string[] = [];
     try {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          removedList = parsed.map((p: any) => String(p).trim()).filter(Boolean);
+      if (typeof removedMemberPhones !== 'undefined' && Array.isArray(removedMemberPhones) && removedMemberPhones.length > 0) {
+        removedList = removedMemberPhones;
+      } else if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            removedList = parsed.map((p: any) => String(p).trim()).filter(Boolean);
+          }
         }
       }
     } catch (_) {}
@@ -376,7 +399,17 @@ export default function HomeView({
     } catch (_) {}
 
     // 检查 squadMembers 列表中是否已处于小队或已通过审核
-    const inSquadList = (squadMembers || []).some((m: any) => {
+    let squadList: any[] = [];
+    try {
+      if (typeof squadMembers !== 'undefined' && Array.isArray(squadMembers)) {
+        squadList = squadMembers;
+      } else if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('dd_squad_members_v2');
+        squadList = saved ? JSON.parse(saved) : [];
+      }
+    } catch (_) {}
+
+    const inSquadList = squadList.some((m: any) => {
       const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
       const st = String(m?.status || m?.approvalStatus || '').trim();
       return p === phone && (!st || ['已通过', 'approved', '通过'].includes(st));
@@ -401,7 +434,17 @@ export default function HomeView({
     if (isDriverRemoved(phone)) return false;
 
     // 1. 检查 squadMembers 列表中是否有该司机且审核通过
-    const inList = (squadMembers || []).some((m: any) => {
+    let squadList: any[] = [];
+    try {
+      if (typeof squadMembers !== 'undefined' && Array.isArray(squadMembers)) {
+        squadList = squadMembers;
+      } else if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('dd_squad_members_v2');
+        squadList = saved ? JSON.parse(saved) : [];
+      }
+    } catch (_) {}
+
+    const inList = squadList.some((m: any) => {
       const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
       const st = String(m?.status || m?.approvalStatus || '').trim();
       return p === phone && (!st || ['已通过', 'approved', '通过'].includes(st));
@@ -516,24 +559,6 @@ export default function HomeView({
   const [dispatchCity, setDispatchCity] = useState(effectiveCity);
   const [dispatchCityQuery, setDispatchCityQuery] = useState('');
   const [showDispatchCityDropdown, setShowDispatchCityDropdown] = useState(false);
-
-  // --- Squad Management States ---
-  const [squadMembers, setSquadMembers] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem('dd_squad_members_v2');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-  const [removedMemberPhones, setRemovedMemberPhones] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
 
   useEffect(() => {
     const syncRemoved = () => {

@@ -104,7 +104,7 @@ export const DEFAULT_SLOTS: TimeSlot[] = [
 ];
 
 export const DEFAULT_BILLING_RULES: BillingRules = {
-  templateName: '滴滴代驾',
+  templateName: '某D代驾计费模版',
   slots: DEFAULT_SLOTS,
   returnFeeStartKm: 0,
   returnFeePerKm: 0,
@@ -117,7 +117,7 @@ export const DEFAULT_BILLING_RULES: BillingRules = {
 };
 
 export const DEFAULT_SETTINGS: ChauffeurSettings = {
-  billingTemplateName: '滴滴代驾',
+  billingTemplateName: '某D代驾计费模版',
   voiceBroadcast: '开单语音播报',
   accountBalance: 0.00,
   startServiceSMS: false,
