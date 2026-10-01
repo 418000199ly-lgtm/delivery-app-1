@@ -171,13 +171,17 @@ export default function PaymentQRView({
               {(() => {
                 const driverOwnWechat = wechatClean || settings?.wechatQrCode || (() => {
                   try {
-                    const userP = settings?.phoneNumber || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '';
+                    const userP = (settings?.phoneNumber || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
                     const cachedSet = userP ? localStorage.getItem(`dd_settings_${userP}`) : null;
                     if (cachedSet) {
                       const parsed = JSON.parse(cachedSet);
                       if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return parsed.wechatQrCode.trim();
                     }
-                    return (localStorage.getItem('dd_user_wechat_qr') || '').trim();
+                    const localQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) || localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr'))?.trim();
+                    if (localQr) return localQr;
+                    if (userP && userP.length === 11) {
+                      return `/uploads/qrcodes/${userP}.png`;
+                    }
                   } catch (_) {}
                   return '';
                 })();

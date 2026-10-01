@@ -43,9 +43,8 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     if (base) {
       urls.push(`${base}${endpoint}`);
     }
-    urls.push(`https://api.lyheiwandaijiamax.com${endpoint}`);
-    urls.push(`https://lyheiwandaijiamax.com${endpoint}`);
     urls.push(`https://admin.lyheiwandaijiamax.com${endpoint}`);
+    urls.push(`https://lyheiwandaijiamax.com${endpoint}`);
     if (typeof window !== 'undefined' && !window.location.hostname.includes('daijia')) {
       urls.push(endpoint);
     }
@@ -68,13 +67,24 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     setInfoMsg('');
     setIsSending(true);
 
+    const formatLoginError = (err: any): string => {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('signal is aborted') || msg.includes('aborted') || msg.includes('AbortError')) {
+        return '网络响应超时，请重试或重新获取验证码';
+      }
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        return '网络连接异常，请检查宝塔服务端网络连通性';
+      }
+      return msg || '网络连接超时，请重试';
+    };
+
     const postApi = async (endpoint: string, bodyObj: any) => {
       const candidateUrls = getCandidateApiUrls(endpoint);
       let lastError: any = null;
       for (const url of candidateUrls) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
           const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -105,7 +115,7 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     } catch (err: any) {
       console.error('[Login] Send SMS failed:', err);
       setIsSending(false);
-      setErrorMsg(`❌ 验证码发送失败: ${err.message || '网络连接异常，请检查宝塔服务端接口连通性'}`);
+      setErrorMsg(`❌ 验证码发送失败: ${formatLoginError(err)}`);
     }
   };
 
@@ -133,13 +143,24 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
 
     setIsLoggingIn(true);
 
+    const formatLoginError = (err: any): string => {
+      const msg = String(err?.message || err || '');
+      if (msg.includes('signal is aborted') || msg.includes('aborted') || msg.includes('AbortError')) {
+        return '网络响应超时，请重试或重新获取验证码';
+      }
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        return '网络连接异常，请检查宝塔服务端网络连通性';
+      }
+      return msg || '网络连接超时，请重试';
+    };
+
     const postApi = async (endpoint: string, bodyObj: any) => {
       const candidateUrls = getCandidateApiUrls(endpoint);
       let lastError: any = null;
       for (const url of candidateUrls) {
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 6000);
+          const timeoutId = setTimeout(() => controller.abort(), 15000);
           const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -178,7 +199,7 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
     } catch (err: any) {
       console.error('[Login] Verify network failed:', err);
       setIsLoggingIn(false);
-      setErrorMsg(`❌ 校验登录失败: ${err.message || '网络连接超时'}`);
+      setErrorMsg(`❌ 校验登录失败: ${formatLoginError(err)}`);
     }
   };
 

@@ -248,10 +248,16 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     const timestampIso = new Date().toISOString();
     const currentTodayOrders = Number(stats?.todayOrders || 0);
     const resolvedSelfName = resolveDriverRealName(userPhone, settings?.driverName, settings);
+    const isGenericName = !resolvedSelfName || 
+      resolvedSelfName === '代驾司机' || 
+      resolvedSelfName === '在线代驾司机' || 
+      resolvedSelfName === '司机' || 
+      resolvedSelfName === '代驾师傅' || 
+      /^司机\d{4}$/.test(resolvedSelfName) || 
+      resolvedSelfName === `司机${userPhone.slice(-4)}`;
 
-    const payload = {
+    const payload: any = {
       phone: userPhone,
-      driverName: resolvedSelfName,
       lat,
       lng,
       isOnline: true,
@@ -267,6 +273,11 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       lastUpdatedTime: timestampIso,
       lastLocationTime: Date.now()
     };
+
+    if (!isGenericName) {
+      payload.driverName = resolvedSelfName;
+      payload.name = resolvedSelfName;
+    }
 
     // 1. 异步更新各大集合（静默失败不阻塞）
     setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(() => {});
@@ -297,7 +308,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           phone: userPhone,
-          driverName: resolvedSelfName,
+          ...(isGenericName ? {} : { driverName: resolvedSelfName }),
           lat,
           lng,
           isOnline: true,

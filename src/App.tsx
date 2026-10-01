@@ -21,7 +21,7 @@ import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName, getHighPrecisionLocationName, calculateHaversineDistanceKm } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
 import { findNearestKnownPoi } from './utils/geocoding';
-import { resolveDriverRealName } from './utils/nameResolver';
+import { resolveDriverRealName, pickAuthoritativeVipExpiry, calculateDaysFromExpiry } from './utils/nameResolver';
 
 import { 
   ChauffeurSettings, 
@@ -523,7 +523,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       setSquadRole('普通司机');
     }
 
-    // Realtime listeners for squad_members & driver_users
+    // Realtime listeners for squad_members & driver_users (roles only; vipExpiry is exclusively managed by driver_users userDocRef)
     const unsub1 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
       try {
         const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
@@ -534,14 +534,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (_) {}
       if (snap.exists()) {
         const sm = snap.data();
-        const r = sm?.role || sm?.userRole;
+        const r = sm?.role || sm?.userRole || sm?.position;
         if (r) {
           setSquadRole(r);
-        } else {
-          setSquadRole('普通司机');
+          try {
+            localStorage.setItem('dd_user_role', r);
+          } catch (_) {}
         }
-      } else {
-        setSquadRole('普通司机');
       }
     }, () => {});
 
@@ -555,16 +554,148 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (_) {}
       if (snap.exists()) {
         const d = snap.data();
-        const r = d?.role || d?.userRole;
+        const r = d?.role || d?.userRole || d?.position;
         if (r) {
           setSquadRole(r);
+          try {
+            localStorage.setItem('dd_user_role', r);
+          } catch (_) {}
+        }
+        if (d?.vipExpiry !== undefined) {
+          setSettings(prev => {
+            if (prev.vipExpiry !== d.vipExpiry) {
+              const updated = { ...prev, vipExpiry: d.vipExpiry };
+              try {
+                safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                safeSetItem('dd_settings', JSON.stringify(updated));
+              } catch (_) {}
+              return updated;
+            }
+            return prev;
+          });
         }
       }
     }, () => {});
 
+    // 1. Instant real-time listener for admin VIP expiry changes within current applet window/session
+    const handleVipEvent = (e: any) => {
+      const detail = e.detail;
+      const cleanDetailPhone = String(detail?.phone || '').replace(/\D/g, '').trim();
+      const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+      const isBatch = Boolean(detail?.isBatch || !cleanDetailPhone);
+
+      if ((isBatch || cleanDetailPhone === cleanUserPhone) && detail.vipExpiry !== undefined) {
+        if (cleanUserPhone !== '15509601222' || !isBatch) {
+          setSettings(prev => {
+            if (prev.vipExpiry !== detail.vipExpiry) {
+              const updated = { ...prev, vipExpiry: detail.vipExpiry };
+              try {
+                if (cleanUserPhone) {
+                  safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+                }
+                safeSetItem('dd_settings', JSON.stringify(updated));
+              } catch (_) {}
+              return updated;
+            }
+            return prev;
+          });
+        }
+      }
+    };
+    window.addEventListener('driver_vip_updated', handleVipEvent);
+
+    // 2. Direct db_doc_updated listener for instant zero-latency internal updates
+    const handleDbDocUpdated = (e: any) => {
+      const detail = e.detail;
+      if (!detail) return;
+      const cleanDocId = String(detail.id || '').replace(/\D/g, '').trim();
+      const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+      if (detail.col === 'driver_users' && cleanDocId === cleanUserPhone && detail.data?.vipExpiry !== undefined) {
+        setSettings(prev => {
+          if (prev.vipExpiry !== detail.data.vipExpiry) {
+            const updated = { ...prev, vipExpiry: detail.data.vipExpiry };
+            try {
+              safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+              safeSetItem('dd_settings', JSON.stringify(updated));
+            } catch (_) {}
+            return updated;
+          }
+          return prev;
+        });
+      }
+    };
+    window.addEventListener('db_doc_updated', handleDbDocUpdated);
+
+    // 3. Storage event listener for sub-millisecond cross-tab synchronization
+    const handleStorageEvent = (ev: StorageEvent) => {
+      const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+      if (ev.key === `dd_settings_${cleanUserPhone}` || ev.key === 'dd_settings') {
+        try {
+          if (ev.newValue) {
+            const parsed = JSON.parse(ev.newValue);
+            if (parsed && parsed.vipExpiry !== undefined) {
+              setSettings(prev => {
+                if (prev.vipExpiry !== parsed.vipExpiry) {
+                  return { ...prev, vipExpiry: parsed.vipExpiry };
+                }
+                return prev;
+              });
+            }
+          }
+        } catch (_) {}
+      }
+    };
+    window.addEventListener('storage', handleStorageEvent);
+
+    // 4. BroadcastChannel listener across multiple browsing contexts
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('daijia_db_sync');
+        bc.onmessage = (ev) => {
+          const msg = ev.data;
+          const cleanMsgPhone = String(msg?.phone || '').replace(/\D/g, '').trim();
+          const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+          if (msg && msg.type === 'batch_vip_50d_update' && msg.targetExpiry) {
+            if (cleanUserPhone !== '15509601222') {
+              setSettings(prev => {
+                if (prev.vipExpiry !== msg.targetExpiry) {
+                  const updated = { ...prev, vipExpiry: msg.targetExpiry };
+                  try {
+                    localStorage.setItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+                    localStorage.setItem('dd_settings', JSON.stringify(updated));
+                  } catch (_) {}
+                  return updated;
+                }
+                return prev;
+              });
+            }
+          } else if (msg && msg.type === 'vip_update' && cleanMsgPhone === cleanUserPhone && msg.vipExpiry !== undefined) {
+            setSettings(prev => {
+              if (prev.vipExpiry !== msg.vipExpiry) {
+                const updated = { ...prev, vipExpiry: msg.vipExpiry };
+                try {
+                  localStorage.setItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+                  localStorage.setItem('dd_settings', JSON.stringify(updated));
+                } catch (_) {}
+                return updated;
+              }
+              return prev;
+            });
+          }
+        };
+      }
+    } catch (_) {}
+
     return () => {
       unsub1();
       unsub2();
+      window.removeEventListener('driver_vip_updated', handleVipEvent);
+      window.removeEventListener('db_doc_updated', handleDbDocUpdated);
+      window.removeEventListener('storage', handleStorageEvent);
+      if (bc) {
+        try { bc.close(); } catch (_) {}
+      }
     };
   }, [userPhone]);
 
@@ -836,6 +967,60 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           return;
         }
 
+        // Sub-second instant real-time sync for driver vipExpiry from Baota server
+        try {
+          const resUser = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
+          if (resUser.ok) {
+            const uJson = await resUser.json();
+            if (uJson && uJson.exists && uJson.data) {
+              const uData = uJson.data;
+              if (uData?.vipExpiry !== undefined && uData?.vipExpiry !== null && uData.vipExpiry !== '') {
+                setSettings(prev => {
+                  if (prev.vipExpiry !== uData.vipExpiry) {
+                    const updated = { ...prev, vipExpiry: uData.vipExpiry };
+                    try {
+                      localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                      localStorage.setItem('dd_settings', JSON.stringify(updated));
+                    } catch (_) {}
+                    return updated;
+                  }
+                  return prev;
+                });
+              }
+
+              // Realtime role synchronization from driver_users
+              const freshRole = uData?.role || uData?.userRole || uData?.position || '普通司机';
+              if (userPhone && userPhone !== '15509601222') {
+                setSquadRole(freshRole);
+                try {
+                  const currentLocalRole = localStorage.getItem('dd_user_role');
+                  if (currentLocalRole !== freshRole) {
+                    localStorage.setItem('dd_user_role', freshRole);
+                    window.dispatchEvent(new CustomEvent('user_role_updated', { detail: { phone: userPhone, role: freshRole } }));
+                  }
+
+                  const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+                  if (Array.isArray(savedM)) {
+                    let dirty = false;
+                    const updatedM = savedM.map((m: any) => {
+                      const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+                      if (p === userPhone && m.role !== freshRole) {
+                        dirty = true;
+                        return { ...m, role: freshRole, userRole: freshRole, position: freshRole };
+                      }
+                      return m;
+                    });
+                    if (dirty) {
+                      localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedM));
+                      window.dispatchEvent(new CustomEvent('squad_members_updated'));
+                    }
+                  }
+                } catch (_) {}
+              }
+            }
+          }
+        } catch (_) {}
+
         const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
           const resJson = await res.json();
@@ -884,7 +1069,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
 
     checkStatusSync();
-    const syncInterval = setInterval(checkStatusSync, 1500);
+    const syncInterval = setInterval(checkStatusSync, 2000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkStatusSync();
+      }
+    };
+    window.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', checkStatusSync);
 
     const handleApprovedEvent = (e: any) => {
       const p = e?.detail?.phone;
@@ -921,6 +1113,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       unsub2();
       unsub3();
       clearInterval(syncInterval);
+      window.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', checkStatusSync);
       window.removeEventListener('squad_member_approved', handleApprovedEvent);
       window.removeEventListener('storage', checkStatusSync);
       window.removeEventListener('user_role_updated', handleRoleUpdateForApp);
@@ -1458,6 +1652,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               nextSettings.homepageColorway = data.homepageColorway;
               changed = true;
             }
+            const incomingWechatQr = data.wechatQrCode || data.qrCode || data.qrcode_url;
+            if (incomingWechatQr && typeof incomingWechatQr === 'string' && incomingWechatQr.trim() && prev.wechatQrCode !== incomingWechatQr) {
+              nextSettings.wechatQrCode = incomingWechatQr.trim();
+              changed = true;
+              try {
+                localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, incomingWechatQr.trim());
+                localStorage.setItem('dd_dispatch_wechat_qr', incomingWechatQr.trim());
+                localStorage.setItem('dd_user_wechat_qr', incomingWechatQr.trim());
+              } catch (_) {}
+            }
+            const incomingAlipayQr = data.alipayQrCode;
+            if (incomingAlipayQr && typeof incomingAlipayQr === 'string' && incomingAlipayQr.trim() && prev.alipayQrCode !== incomingAlipayQr) {
+              nextSettings.alipayQrCode = incomingAlipayQr.trim();
+              changed = true;
+              try {
+                localStorage.setItem(`dd_dispatch_alipay_qr_${userPhone}`, incomingAlipayQr.trim());
+                localStorage.setItem('dd_dispatch_alipay_qr', incomingAlipayQr.trim());
+                localStorage.setItem('dd_user_alipay_qr', incomingAlipayQr.trim());
+              } catch (_) {}
+            }
             const isVipNow = checkVipActive(nextSettings.vipExpiry || prev.vipExpiry);
             const locallyTurnedOn = typeof window !== 'undefined' && userPhone
               ? localStorage.getItem(`dd_deviation_mitigation_${userPhone}`) === 'true'
@@ -1500,7 +1714,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               changed = true;
             }
             if (changed) {
-              localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(nextSettings));
+              safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(nextSettings));
             }
             return changed ? nextSettings : prev;
           });
@@ -1511,12 +1725,22 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           setIsUserDataLoaded(true);
         }
       } else {
-        // Create user doc if it doesn't exist yet, checking online_applications for any pre-assigned vipExpiry
-        let initialExpiry = '待激活';
+        // Create user doc if it doesn't exist yet, checking online_applications / squad_members for any pre-assigned vipExpiry
+        let initialExpiry = '待开通';
         try {
           const appSnap = await getDoc(doc(db, 'online_applications', userPhone));
           if (appSnap.exists() && appSnap.data()?.vipExpiry) {
             initialExpiry = appSnap.data().vipExpiry;
+          } else {
+            const squadSnap = await getDoc(doc(db, 'squad_members', userPhone));
+            if (squadSnap.exists() && squadSnap.data()?.vipExpiry) {
+              initialExpiry = squadSnap.data().vipExpiry;
+            } else {
+              const squadAppSnap = await getDoc(doc(db, 'squad_applications', userPhone));
+              if (squadAppSnap.exists() && squadAppSnap.data()?.vipExpiry) {
+                initialExpiry = squadAppSnap.data().vipExpiry;
+              }
+            }
           }
         } catch (_) {}
 
@@ -1550,10 +1774,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           console.error("Error registering driver user in Baota DB:", err);
         });
 
-        if (initialExpiry !== '待激活') {
+        if (initialExpiry !== '待开通') {
           setSettings(prev => {
             const updated = { ...prev, vipExpiry: initialExpiry };
-            localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+            safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
             return updated;
           });
         }
@@ -2885,18 +3109,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   const handleUpdateSettings = (newSettings: ChauffeurSettings) => {
     setSettings(newSettings);
     if (userPhone) {
-      localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(newSettings));
-      localStorage.setItem('dd_settings', JSON.stringify(newSettings));
+      safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(newSettings));
+      safeSetItem('dd_settings', JSON.stringify(newSettings));
       if (newSettings.deviationMitigation !== undefined) {
-        localStorage.setItem(`dd_deviation_mitigation_${userPhone}`, newSettings.deviationMitigation ? 'true' : 'false');
+        safeSetItem(`dd_deviation_mitigation_${userPhone}`, newSettings.deviationMitigation ? 'true' : 'false');
       }
       
       const baseUrl = getBaseApiUrl();
 
       if (newSettings.wechatQrCode) {
-        localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, newSettings.wechatQrCode);
-        localStorage.setItem('dd_dispatch_wechat_qr', newSettings.wechatQrCode);
-        localStorage.setItem('dd_user_wechat_qr', newSettings.wechatQrCode);
+        safeSetItem(`dd_dispatch_wechat_qr_${userPhone}`, newSettings.wechatQrCode);
+        safeSetItem('dd_dispatch_wechat_qr', newSettings.wechatQrCode);
+        safeSetItem('dd_user_wechat_qr', newSettings.wechatQrCode);
       } else {
         localStorage.removeItem(`dd_dispatch_wechat_qr_${userPhone}`);
         localStorage.removeItem(`dd_dispatch_fee_qr_${userPhone}`);

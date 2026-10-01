@@ -44,9 +44,6 @@ export function getBaseApiUrl(): string {
     const customUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('custom_api_base_url');
     if (customUrl && customUrl.trim()) {
       let trimmed = customUrl.trim().replace(/\/$/, '');
-      if (!trimmed.includes('.') && !trimmed.includes('localhost') && !trimmed.includes('127.0.0.1')) {
-        trimmed = trimmed + '.com';
-      }
       if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
         return trimmed;
       }
@@ -54,26 +51,31 @@ export function getBaseApiUrl(): string {
     }
   } catch (_) {}
   
-  if (typeof window !== 'undefined') {
-    // Check if running inside native Capacitor mobile application (Android / iOS)
-    if ((window as any).Capacitor?.isNativePlatform?.() || (window as any).Capacitor?.platform === 'android' || (window as any).Capacitor?.platform === 'ios') {
+  if (typeof window !== 'undefined' && window.location) {
+    const hostname = window.location.hostname || '';
+    const protocol = window.location.protocol || '';
+    
+    // Check if running inside a native mobile app (Capacitor WebView has localhost hostname but with capacitor:// or app:// protocol, or runs inside file://)
+    const isNativeMobileApp = 
+      protocol.startsWith('capacitor') || 
+      protocol.startsWith('app') || 
+      protocol.startsWith('file') || 
+      (typeof (window as any).Capacitor !== 'undefined') ||
+      (typeof (window as any).webkit !== 'undefined') ||
+      ((window as any).Capacitor?.isNativePlatform?.());
+
+    if (isNativeMobileApp) {
+      // Packaged mobile apps on Android/iOS MUST always connect to the Aliyun Baota production server!
       return 'https://api.lyheiwandaijiamax.com';
     }
 
-    const hostname = window.location.hostname || '';
-    
-    // AI Studio Cloud Run preview environment
-    if (hostname.includes('run.app') || hostname.includes('localhost') || hostname.includes('127.0.0.1')) {
-      return window.location.origin;
-    }
-
-    // Direct web browser access to your Baota API domain
-    if (hostname.includes('lyheiwandaijiamax')) {
+    // Development or AI Studio Cloud Run preview environments (only for browser previews)
+    if (hostname.includes('run.app') || (hostname.includes('localhost') && !isNativeMobileApp) || hostname.includes('127.0.0.1')) {
       return window.location.origin;
     }
   }
   
-  // For all packaged native mobile applications (Android APK, iOS IPA, Capacitor WebView) and client sync
+  // Direct production API endpoint of the Baota Server
   return 'https://api.lyheiwandaijiamax.com';
 }
 
@@ -123,7 +125,7 @@ export function where(field: string, operator: string, value: any) {
 }
 
 // Safe fetch with AbortController timeout to prevent unhandled Network errors
-async function safeFetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 3000): Promise<Response> {
+async function safeFetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = 12000): Promise<Response> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -183,6 +185,13 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
     }
   } catch (_) {}
 
+  // Dispatch local event for sub-second reactive sync
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('db_doc_updated', {
+      detail: { col: docRef.collectionName, id: cleanId, data }
+    }));
+  }
+
   try {
     const res = await safeFetchWithTimeout(url, {
       method: 'POST',
@@ -216,6 +225,13 @@ export async function updateDoc(docRef: any, data: any) {
     const merged = { ...parsed, ...data };
     safeSetItem(cacheKey, JSON.stringify(merged));
   } catch (_) {}
+
+  // Dispatch local event for sub-second reactive sync
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('db_doc_updated', {
+      detail: { col: docRef.collectionName, id: cleanId, data }
+    }));
+  }
 
   try {
     const res = await safeFetchWithTimeout(url, {
@@ -417,13 +433,47 @@ export function onSnapshot(
   // Initial immediate fetch
   checkUpdate();
 
-  // Low latency interval (2000ms is perfectly seamless for代驾 order matching)
-  intervalId = setInterval(checkUpdate, 2000);
+  // Instant local reactive sync listener
+  const handleLocalUpdate = (e: any) => {
+    if (isUnsubscribed) return;
+    const detail = e.detail;
+    if (!detail) return;
+    if (targetRef.type === 'document') {
+      const cleanId = String(targetRef.id || '').replace(/\s+/g, '').trim();
+      if (detail.col === targetRef.collectionName && detail.id === cleanId) {
+        checkUpdate();
+      }
+    } else {
+      if (detail.col === targetRef.collectionName) {
+        checkUpdate();
+      }
+    }
+  };
+
+  let bc: BroadcastChannel | null = null;
+  if (typeof window !== 'undefined') {
+    window.addEventListener('db_doc_updated', handleLocalUpdate);
+    try {
+      bc = new BroadcastChannel('daijia_db_sync');
+      bc.onmessage = () => {
+        if (!isUnsubscribed) checkUpdate();
+      };
+    } catch (_) {}
+  }
+
+  // High-frequency 800ms polling for true sub-second synchronization
+  intervalId = setInterval(checkUpdate, 800);
 
   return () => {
     isUnsubscribed = true;
     if (intervalId) {
       clearInterval(intervalId);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('db_doc_updated', handleLocalUpdate);
+    }
+    if (bc) {
+      try { bc.close(); } catch (_) {}
     }
   };
 }

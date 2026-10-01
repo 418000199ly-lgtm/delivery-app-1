@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
-import { formatDriverMaskedName, resolveDriverRealName } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, REMOVED_GENERIC_DRIVER_PHONES } from '../utils/nameResolver';
 
 interface SquadDriverListProps {
   userPhone?: string;
@@ -313,9 +313,10 @@ export default function SquadDriverList({
           const phone = String(data?.phone || docSnap.id || '').trim();
           const rawName = String(data?.name || data?.driverName || '').trim();
           const resolvedName = resolveDriverRealName(phone, rawName);
+          const isGeneric = isGenericDriverName(resolvedName, phone) || isGenericDriverName(rawName, phone) || /^司机\d+/.test(resolvedName) || /^司机\d+/.test(rawName);
           if (isMeMember(phone)) {
             if (resolvedName) setMySquadName(resolvedName);
-          } else if (phone) {
+          } else if (phone && !REMOVED_GENERIC_DRIVER_PHONES.includes(phone) && !isGeneric) {
             list.push({ id: docSnap.id, phone, name: resolvedName, ...data });
           }
         });
@@ -338,7 +339,10 @@ export default function SquadDriverList({
             const filtered = data.list
               .filter((m: any) => {
                 const phone = String(m?.phone || m?.id || '').trim();
-                return phone && !isMeMember(phone);
+                const rawName = String(m?.name || m?.driverName || '').trim();
+                const real = resolveDriverRealName(phone, rawName);
+                const isGeneric = isGenericDriverName(real, phone) || isGenericDriverName(rawName, phone) || /^司机\d+/.test(real) || /^司机\d+/.test(rawName);
+                return phone && !isMeMember(phone) && !REMOVED_GENERIC_DRIVER_PHONES.includes(phone) && !isGeneric;
               })
               .map((m: any) => {
                 const phone = String(m?.phone || m?.id || '').trim();
@@ -436,6 +440,7 @@ export default function SquadDriverList({
 
         const cleanP = String(d.phone || '').replace(/\D/g, '').trim();
         const isMe = d.isMe || isMeMember(cleanP);
+        if (!isMe && (REMOVED_GENERIC_DRIVER_PHONES.includes(cleanP) || isGenericDriverName(d.rawRealName || d.name, cleanP))) return;
         const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
         const displayName = isMe
           ? currentDriverFullName
@@ -570,7 +575,7 @@ export default function SquadDriverList({
       const liveOrders = liveLoc.todayOrders !== undefined ? Number(liveLoc.todayOrders) : (existing?.todayOrders || 0);
       const finalTodayOrders = isFromToday ? Math.max(0, liveOrders) : 0;
 
-      const candidateName = existing?.name || rawName || `司机${phone.slice(-4)}`;
+      const candidateName = existing?.name || rawName;
       const resolvedRealName = resolveDriverRealName(phone, existing?.rawRealName || candidateName);
 
       const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
@@ -598,6 +603,7 @@ export default function SquadDriverList({
 
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
+      if (REMOVED_GENERIC_DRIVER_PHONES.includes(driver.phone) || isGenericDriverName(driver.name, driver.phone) || isGenericDriverName(driver.rawRealName, driver.phone)) return;
       if (!driver.isOnline) return;
 
       // 必须有真实有效GPS坐标（与地图w1保持严格一致）

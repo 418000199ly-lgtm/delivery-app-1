@@ -8,8 +8,49 @@ const COMPOUND_SURNAMES = [
   '欧阳', '诸葛', '司马', '上官', '夏侯', '东方', '独孤', '南宫', '皇甫', '司徒', '尉迟', '公孙', '慕容', '宇文'
 ];
 
+/**
+ * Authoritative mapping of genuine squad drivers to prevent fallbacks like "司机6333" on any device
+ */
+export const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
+  '15509601222': '吴彦祖',
+  '18695119126': '李扬',
+  '18695174428': '童兵',
+  '14709696333': '王贤亮',
+  '15209678783': '禹全江',
+  '15378921387': '王灵',
+  '13995071199': '赵文举',
+  '13995388888': '于涛',
+  '15121888888': '张瑞',
+  '15121904440': '周杰伦',
+  '15295188888': '李金锋',
+  '15226203822': '杨刚',
+  '18695161718': '王平',
+  '13995213747': '宋伟',
+  '19995387350': '滴杨明7350',
+  '19995377975': '纳林7975',
+  '13895081030': '夏伟1030',
+  '15296972638': '杨存安',
+};
+
+/**
+ * Permanently kicked-out mock / generic / unauthorized driver phones
+ */
+export const REMOVED_GENERIC_DRIVER_PHONES = [
+  '13895299147', // 司机9147
+  '17660453634', // 司机3634
+  '13812345678', // 司机5678
+  '13912345678', // 司机5678
+  '19995426058', // 司机6058
+  '18195005671', // 司机5671
+  '15509601223', // 司机1223
+  '18695103399', // 司机3399
+  '18695106647', // 司机6647
+  '15555556666',
+  'm-1', 'm-2', 'm-3'
+];
+
 // Global in-memory cache for customized driver names to ensure instantaneous, zero-latency reactive updates
-const driverCustomNameRegistry = new Map<string, string>();
+const driverCustomNameRegistry = new Map<string, string>(Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES));
 
 /**
  * Register a driver name into memory and localStorage cache
@@ -199,9 +240,9 @@ export function formatDriverMaskedName(rawName?: string | null): string {
   // 已包含“师傅”后缀
   if (trimmed.endsWith('师傅')) return trimmed;
 
-  // 手机号或特殊编号如 "司机5678"
-  if (/^司机\d+$/.test(trimmed)) return trimmed;
-  if (/^\d{11}$/.test(trimmed)) return `司机${trimmed.slice(-4)}`;
+  // 手机号或特殊编号如 "司机5678" -> 绝不能直接显示 "司机5678" 或 "司机6333"，统一转为 "代驾师傅"
+  if (/^司机\d+$/.test(trimmed)) return '代驾师傅';
+  if (/^\d{11}$/.test(trimmed)) return '代驾师傅';
 
   // 检查是否带有后缀字母/数字，例如 "李扬A" -> prefix = "A", base = "李扬"
   let workingName = trimmed;
@@ -236,11 +277,36 @@ export function formatDriverMaskedName(rawName?: string | null): string {
   return `${prefix}${workingName}师傅`;
 }
 
+export function isGenericDriverName(name?: string | null, phone?: string | null): boolean {
+  const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+  // 权威真实小队司机绝不属于通用司机
+  if (cleanPhone && (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || cleanPhone === '15509601222' || cleanPhone === '18695119126' || cleanPhone === '15121904440')) {
+    return false;
+  }
+  if (!cleanPhone || cleanPhone.length !== 11) return true;
+  if (cleanPhone && REMOVED_GENERIC_DRIVER_PHONES.includes(cleanPhone)) return true;
+
+  if (!name || typeof name !== 'string') {
+    return true;
+  }
+  const str = String(name).trim();
+  if (!str) {
+    return true;
+  }
+  if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名' || str === '代驾师傅' || str === '虚拟司机') return true;
+  if (/^司机\d+$/.test(str)) return true;
+  if (cleanPhone && (str === `司机${cleanPhone.slice(-4)}` || str.endsWith(cleanPhone.slice(-4)))) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * 权威解析指定手机号司机的真实姓名：
- * 1. 优先读取全局内存登记与专属存储中最新的自定义名字（例如 15509601222 更改为“吴彦”，15121904440 改为“周杰伦”，18695119126 改为“林俊杰”）
- * 2. 默认兜底：15509601222 为“吴彦祖”，15121904440/18695119126 为“李扬”
- * 3. 其他手机号回退为“司机”+后4位
+ * 1. 优先读取权威真实姓名清单（如 14709696333 为“王贤亮”，15209678783 为“禹全江”，15378921387 为“王灵”等）
+ * 2. 优先读取全局内存登记与专属存储中最新的自定义名字
+ * 3. 默认兜底：15509601222 为“吴彦祖”，15121904440/18695119126 为“李扬”
+ * 4. 严禁对小队内已有真实名字的司机回退为“司机XXXX”！
  */
 export function resolveDriverRealName(
   phone?: string | null,
@@ -251,18 +317,18 @@ export function resolveDriverRealName(
   if (!cleanPhone) return '代驾司机';
 
   const isWu = cleanPhone === '15509601222';
-  const isLiYang = cleanPhone === '18695119126' || cleanPhone === '15121904440';
+  const isLiYang = cleanPhone === '18695119126';
 
   const isValidCustomName = (name?: string | null): boolean => {
     if (!name) return false;
     const str = String(name).trim();
     if (!str) return false;
-    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名') return false;
+    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名' || str === '虚拟司机') return false;
     if (str.startsWith('网页商户商家') || str.startsWith('商户商家')) return false;
     // 非 15509601222 账号绝不能默认叫“吴彦祖”或“吴师傅”（除非被特意改名为吴彦祖相关）
     if (!isWu && (str === '吴彦祖' || str === '吴师傅')) return false;
-    // 如果是 18695119126 或 15121904440，像“司机9126”这种临时兜底名绝不采纳
-    if (isLiYang && (/^司机\d{4}$/.test(str) || str === `司机${cleanPhone.slice(-4)}`)) return false;
+    // 如果是类似 “司机4428” 这种兜底临时名，绝不当做自定义名称采纳（对所有司机通用）
+    if (/^司机\d{4}$/.test(str) || str === `司机${cleanPhone.slice(-4)}`) return false;
     return true;
   };
 
@@ -273,7 +339,14 @@ export function resolveDriverRealName(
     return cleanCandidate;
   }
 
-  // 2. 检查全局内存注册表（保证改名瞬间全应用各界面统一同步）
+  // 2. 优先检查小队权威官方真实名字对照表
+  if (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) {
+    const authName = AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone];
+    driverCustomNameRegistry.set(cleanPhone, authName);
+    return authName;
+  }
+
+  // 3. 检查全局内存注册表（保证改名瞬间全应用各界面统一同步）
   if (driverCustomNameRegistry.has(cleanPhone)) {
     const regName = driverCustomNameRegistry.get(cleanPhone);
     if (isValidCustomName(regName)) {
@@ -545,5 +618,87 @@ export async function resolveAndSyncDuplicateNames(): Promise<void> {
     }
   } catch (error) {
     console.error("Error resolving duplicate driver names:", error);
+  }
+}
+
+/**
+ * Picks the authoritative (maximum) VIP expiry date string among multiple candidate dates/strings.
+ * If any candidate is '永久有效' / '永久', returns '永久有效'.
+ * Otherwise picks the date furthest in the future.
+ */
+export function pickAuthoritativeVipExpiry(...expiries: (string | undefined | null)[]): string {
+  for (const exp of expiries) {
+    if (!exp) continue;
+    const trimmed = String(exp).trim();
+    if (trimmed === '永久有效' || trimmed === '永久' || trimmed === 'permanent' || trimmed === '终身') return '永久有效';
+  }
+  let maxTime = -1;
+  let maxExpiryString = '待开通';
+  for (const exp of expiries) {
+    if (!exp) continue;
+    const trimmed = String(exp).trim();
+    if (trimmed && trimmed !== '待开通' && trimmed !== '待激活' && trimmed !== '未激活' && trimmed !== '未开通' && trimmed !== '0' && trimmed !== '0天' && trimmed !== '已到期' && trimmed !== '已过期') {
+      const match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+      if (match) {
+        const year = parseInt(match[1], 10);
+        const month = parseInt(match[2], 10) - 1;
+        const day = parseInt(match[3], 10);
+        const time = new Date(year, month, day, 0, 0, 0, 0).getTime();
+        if (time > maxTime) {
+          maxTime = time;
+          maxExpiryString = trimmed;
+        }
+      } else {
+        const parsed = new Date(trimmed);
+        if (!isNaN(parsed.getTime()) && parsed.getTime() > maxTime) {
+          maxTime = parsed.getTime();
+          maxExpiryString = trimmed;
+        } else if (maxTime === -1) {
+          maxExpiryString = trimmed;
+        }
+      }
+    }
+  }
+  return maxExpiryString;
+}
+
+/**
+ * Standardized VIP remaining days calculation.
+ * Ensures 100% mathematical & timezone consistency across Admin Panel, Driver App, and Backend.
+ */
+export function calculateDaysFromExpiry(expiry?: string): string {
+  if (!expiry) return '0';
+  const trimmed = String(expiry).trim();
+  if (trimmed === '永久有效' || trimmed === '永久' || trimmed === 'permanent' || trimmed === '终身') return '永久';
+  if (!trimmed || trimmed === '待开通' || trimmed === '待激活' || trimmed === '未激活' || trimmed === '未开通' || trimmed === '0' || trimmed === '0天' || trimmed === '已到期' || trimmed === '已过期') return '0';
+
+  try {
+    let year = 0, month = 0, day = 0;
+    const match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    if (match) {
+      year = parseInt(match[1], 10);
+      month = parseInt(match[2], 10) - 1;
+      day = parseInt(match[3], 10);
+    } else {
+      const parsed = new Date(trimmed);
+      if (!isNaN(parsed.getTime())) {
+        year = parsed.getFullYear();
+        month = parsed.getMonth();
+        day = parsed.getDate();
+      } else {
+        return '0';
+      }
+    }
+
+    const expDate = new Date(year, month, day, 0, 0, 0, 0);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+
+    const diffTime = expDate.getTime() - today.getTime();
+    const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+    return diffDays > 0 ? String(diffDays) : '0';
+  } catch (_) {
+    return '0';
   }
 }

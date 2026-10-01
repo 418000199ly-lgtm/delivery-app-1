@@ -88,6 +88,9 @@ include_items = [
     'src',
     'public',
     'dist',
+    'uploads',
+    'local_db.json',
+    'scripts',
     'server.js',
     'server.js.map',
     'server.ts',
@@ -129,7 +132,13 @@ def add_to_zip(zipf, full_path, archive_name):
             data = f.read()
         zinfo = zipfile.ZipInfo(archive_name)
         zinfo.compress_type = zipfile.ZIP_DEFLATED
-        zinfo.external_attr = 0o644 << 16  # rw-r--r--
+        
+        # Grant executable permissions (rwxr-xr-x) for script extensions so Baota can launch them directly
+        is_executable = any(archive_name.endswith(ext) for ext in ['.cjs', '.js', '.sh', '.py'])
+        if is_executable:
+            zinfo.external_attr = 0o755 << 16  # rwxr-xr-x
+        else:
+            zinfo.external_attr = 0o644 << 16  # rw-r--r--
         zipf.writestr(zinfo, data)
 
 print(f"Creating {zip_filename} with Linux permissions...")

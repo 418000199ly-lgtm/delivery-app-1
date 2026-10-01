@@ -1,5 +1,6 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { ShieldAlert, RefreshCw, Trash2 } from 'lucide-react';
+import { pruneLocalStorage } from '../utils/safeStorage';
 
 interface Props {
   children: ReactNode;
@@ -26,10 +27,34 @@ export class AppErrorBoundary extends React.Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error("AppErrorBoundary caught an error:", error, errorInfo);
+
+    // Auto-recover if the error was caused by LocalStorage Quota Exceeded
+    const errMsg = String(error?.message || error || '').toLowerCase();
+    if (errMsg.includes('quota') || errMsg.includes('setitem') || errMsg.includes('storage')) {
+      console.warn("Storage Quota error detected in AppErrorBoundary. Automatically pruning storage and resetting...");
+      try {
+        pruneLocalStorage();
+        // Clear mock db keys
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith('mock_db_') || k.startsWith('dd_dispatch_wechat_qr_'))) {
+            localStorage.removeItem(k);
+          }
+        }
+      } catch (_) {}
+
+      // Auto recover immediately
+      setTimeout(() => {
+        try {
+          (this as any).setState({ hasError: false, error: null });
+        } catch (_) {}
+      }, 50);
+    }
   }
 
   private handleReset = () => {
     try {
+      pruneLocalStorage();
       (this as any).setState({ hasError: false, error: null });
       if ((this as any).props?.onReset) {
         (this as any).props.onReset();
@@ -41,6 +66,7 @@ export class AppErrorBoundary extends React.Component<Props, State> {
 
   private handleFullReset = () => {
     try {
+      pruneLocalStorage();
       localStorage.removeItem('dd_current_trip');
       localStorage.removeItem('dd_merchant_orders_v2');
       sessionStorage.clear();

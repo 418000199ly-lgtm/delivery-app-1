@@ -61,7 +61,7 @@ import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
@@ -413,32 +413,27 @@ export default function HomeView({
     const currentPhone = getCurrentPhone();
     if (currentPhone === '15509601222') return true;
 
-    const effectiveRoles: string[] = [
-      userRole,
-      typeof window !== 'undefined' ? localStorage.getItem('dd_user_role') : null,
-      typeof window !== 'undefined' ? localStorage.getItem(`dd_squad_member_${currentPhone}`) : null,
-      typeof window !== 'undefined' ? localStorage.getItem('dd_driver_role') : null
-    ].filter(Boolean) as string[];
+    const storedRole = typeof window !== 'undefined' ? localStorage.getItem('dd_user_role') : null;
+    let activeRole = storedRole || userRole || '普通司机';
 
-    try {
-      const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-      const localAppObj = savedApps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
-      if (localAppObj) {
-        if (localAppObj.role) effectiveRoles.push(localAppObj.role);
-        if (localAppObj.userRole) effectiveRoles.push(localAppObj.userRole);
-      }
-    } catch (_) {}
-
-    return effectiveRoles.some(r => {
-      const rStr = String(r || '').trim();
-      return (
-        rStr.includes('开发者') ||
-        rStr.includes('老板') ||
-        rStr.includes('管理') ||
-        rStr.includes('派单') ||
-        rStr.includes('指挥')
-      ) && !rStr.includes('商户') && !rStr.includes('商家');
+    const squadMemberObj = (squadMembers || []).find((m: any) => {
+      const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+      return p && p === currentPhone;
     });
+
+    if (squadMemberObj && squadMemberObj.role) {
+      activeRole = squadMemberObj.role;
+    }
+
+    if (activeRole === '普通司机' || activeRole === '队员') return false;
+
+    return (
+      activeRole.includes('开发者') ||
+      activeRole.includes('老板') ||
+      activeRole.includes('管理') ||
+      activeRole.includes('派单') ||
+      activeRole.includes('指挥')
+    );
   };
 
   const isDriverRemoved = (phoneToCheck?: string) => {
@@ -802,7 +797,7 @@ export default function HomeView({
       if (!m) return;
       const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
       const name = String(m.name || m.driverName || '').trim();
-      if (!phone || isMock(phone, name) || (phone !== '15509601222' && removedSet.has(phone))) return;
+      if (!phone || isMock(phone, name) || (phone !== '15509601222' && (removedSet.has(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)))) return;
       const st = String(m.status || m.approvalStatus || (m.data && m.data.status) || '').trim();
       if (phone === '15509601222' || isApprovedStatus(st)) {
         membersMap.set(phone, m);
@@ -817,7 +812,7 @@ export default function HomeView({
           if (!m) return;
           const phone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
           const name = String(m.name || m.driverName || '').trim();
-          if (!phone || isMock(phone, name) || (phone !== '15509601222' && removedSet.has(phone))) return;
+          if (!phone || isMock(phone, name) || (phone !== '15509601222' && (removedSet.has(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)))) return;
           const st = String(m.status || m.approvalStatus || '').trim();
           if (phone === '15509601222' || isApprovedStatus(st)) {
             if (!membersMap.has(phone)) membersMap.set(phone, m);
@@ -841,7 +836,7 @@ export default function HomeView({
       if (!app) return;
       const phone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
       const name = String(app.name || app.driverName || app.applicantName || '').trim();
-      if (!phone || isMock(phone, name) || (phone !== '15509601222' && removedSet.has(phone))) return;
+      if (!phone || isMock(phone, name) || (phone !== '15509601222' && (removedSet.has(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)))) return;
       const st = String(app.status || app.approvalStatus || '').trim();
       if (phone === '15509601222' || isApprovedStatus(st)) {
         if (!membersMap.has(phone)) membersMap.set(phone, app);
@@ -859,7 +854,7 @@ export default function HomeView({
     membersMap.forEach((m, phone) => {
       if (phone === '15509601222') {
         count++;
-      } else if (!removedSet.has(phone) && !isMerchantMember(m)) {
+      } else if (!removedSet.has(phone) && !REMOVED_GENERIC_DRIVER_PHONES.includes(phone) && !isMerchantMember(m) && !isGenericDriverName(m?.name || m?.driverName, phone)) {
         count++;
       }
     });
@@ -1640,22 +1635,8 @@ export default function HomeView({
         rejectionTime: '',
         selectedReasons: []
       };
-      const memberPayload = {
-        name: freshName,
-        phone: currentPhone,
-        role: '普通司机',
-        status: '待审核',
-        note: noteText,
-        city: effectiveCity || '银川市',
-        lastUpdatedTime: new Date().toLocaleString(),
-        approvedBy: '',
-        approvedRole: '',
-        approvalTime: ''
-      };
-
       if (db) {
         setDoc(doc(db, 'squad_applications', currentPhone), appPayload).catch(() => {});
-        setDoc(doc(db, 'squad_members', currentPhone), memberPayload).catch(() => {});
         setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(() => {});
       }
 
@@ -1664,11 +1645,6 @@ export default function HomeView({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: currentPhone, data: memberPayload })
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
@@ -1769,13 +1745,12 @@ export default function HomeView({
 
   const hasDriverUploadedQrCode = (): boolean => {
     try {
-      // 1. 严格以当前软件 App 设置 (settings.wechatQrCode) 为准！
-      // 只要图片w9页面显示“暂未设置微信收款码”，即判定为未设置！
+      // 1. 检查当前软件 App 设置 (settings.wechatQrCode)
       if (settings?.wechatQrCode && typeof settings.wechatQrCode === 'string' && settings.wechatQrCode.trim()) {
         return true;
       }
-      // 2. 检查本地当前手机账号个性化设置
-      const currentPhone = (userPhone || applyPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').trim();
+      // 2. 检查本地当前手机账号个性化设置与缓存
+      const currentPhone = (userPhone || applyPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
       if (currentPhone && typeof window !== 'undefined') {
         const userSettingsStr = localStorage.getItem(`dd_settings_${currentPhone}`);
         if (userSettingsStr) {
@@ -1785,6 +1760,16 @@ export default function HomeView({
               return true;
             }
           } catch (_) {}
+        }
+        const cachedQr = (
+          localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`) ||
+          localStorage.getItem(`dd_dispatch_fee_qr_${currentPhone}`) ||
+          localStorage.getItem('dd_user_wechat_qr') ||
+          localStorage.getItem('dd_dispatch_wechat_qr') ||
+          localStorage.getItem('dd_user_wechat_clean_qr')
+        )?.trim();
+        if (cachedQr) {
+          return true;
         }
       }
     } catch (_) {}
@@ -2468,7 +2453,7 @@ export default function HomeView({
         }
         const name = String(m.name || m.driverName || '').trim();
         const st = String(m.status || m.approvalStatus || '').trim();
-        const isApproved = phone === '15509601222' || name === '吴彦祖' || ['已通过', 'approved', '通过'].includes(st) || !st;
+        const isApproved = phone === '15509601222' || name === '吴彦祖' || ['已通过', 'approved', '通过'].includes(st);
 
         if (phone === '15509601222' || name === '吴彦祖') {
           map.set('15509601222', {
@@ -2483,8 +2468,12 @@ export default function HomeView({
           return;
         }
 
-        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId)) {
+        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId) || phone.includes('3747') || name.includes('3747') || REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) {
           return; // 彻底跳过已被删除的司机
+        }
+
+        if (phone !== '18695119126' && isGenericDriverName(name, phone)) {
+          return; // 过滤无真实姓名或自动生成的司机
         }
 
         if (phone && isApproved) {
@@ -2492,7 +2481,7 @@ export default function HomeView({
             ...m,
             id: m.id || phone,
             phone,
-            name: m.name || m.driverName || (phone === '18695119126' ? '李扬' : (phone === '15121904440' ? '李扬' : `司机${phone.slice(-4)}`)),
+            name: m.name || m.driverName || resolveDriverRealName(phone, m.name),
             role: m.role || m.userRole || '普通司机',
             userRole: m.userRole || m.role || '普通司机',
             status: '已通过'
@@ -2504,14 +2493,16 @@ export default function HomeView({
       apiApps.forEach(rawA => {
         const a = (rawA?.data && typeof rawA.data === 'object') ? { ...rawA.data, ...rawA, id: rawA.id || rawA.data.id } : rawA;
         let phone = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+        const aName = String(a.name || a.driverName || a.applicantName || '').trim();
         const st = String(a.status || '').trim();
-        if (allRemovedSet.has(phone)) return; // 彻底跳过已被移出的司机
+        if (allRemovedSet.has(phone) || phone.includes('3747') || aName.includes('3747') || REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) return; // 彻底跳过已被移出的司机
+        if (phone !== '18695119126' && isGenericDriverName(aName, phone)) return;
         if (phone && ['已通过', 'approved', '通过'].includes(st)) {
           if (!map.has(phone)) {
             map.set(phone, {
               id: a.id || phone,
               phone,
-              name: a.name || a.driverName || (phone === '18695119126' ? '李扬' : `司机${phone.slice(-4)}`),
+              name: a.name || a.driverName || resolveDriverRealName(phone, a.name),
               role: a.role || a.userRole || '普通司机',
               userRole: a.userRole || a.role || '普通司机',
               status: '已通过'
@@ -2532,6 +2523,20 @@ export default function HomeView({
           status: '已通过'
         });
       }
+
+      // 保证真实权威小队成员 (如王贤亮, 禹全江, 王灵, 赵文举, 于涛, 张瑞, 周杰伦, 李金锋) 始终在列表中
+      Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(([p, realName]) => {
+        if (!map.has(p)) {
+          map.set(p, {
+            id: p,
+            phone: p,
+            name: realName,
+            role: p === '15509601222' ? '开发者司机' : (p === '18695119126' ? '最高开发者' : '普通司机'),
+            userRole: p === '15509601222' ? '开发者司机' : (p === '18695119126' ? '最高开发者' : '普通司机'),
+            status: '已通过'
+          });
+        }
+      });
       const mergedList = Array.from(map.values());
 
       // 云端返回的数据是唯一下发标准：更新 React state 严格同步云端
@@ -4552,26 +4557,8 @@ export default function HomeView({
   };
 
   const getVipCountdown = () => {
-    const normalized = (settings.vipExpiry || '').trim();
-    if (!settings.vipExpiry || normalized === '未激活' || normalized === '待激活' || normalized === '未激活待激活' || normalized === '') {
-      return { 
-        text: '待激活', 
-        daysText: '待激活', 
-        colorClass: 'text-slate-400 bg-slate-100 border border-slate-200 font-extrabold text-[9px]', 
-        subColor: 'text-slate-400', 
-        badgeText: '待激活' 
-      };
-    }
-    if (normalized === '0' || normalized === '0天') {
-      return { 
-        text: '已到期', 
-        daysText: '0天', 
-        colorClass: 'text-red-500 bg-red-50 border border-red-200 font-bold text-[11px]', 
-        subColor: 'text-slate-400', 
-        badgeText: '已到期' 
-      };
-    }
-    if (normalized === '永久有效') {
+    const days = calculateDaysFromExpiry(settings.vipExpiry);
+    if (days === '永久') {
       return { 
         text: '永久', 
         daysText: '永久', 
@@ -4580,40 +4567,32 @@ export default function HomeView({
         badgeText: '终身' 
       };
     }
-    try {
-      const expDate = new Date(settings.vipExpiry);
-      const now = new Date();
-      expDate.setHours(0, 0, 0, 0);
-      now.setHours(0, 0, 0, 0);
-      
-      const diffTime = expDate.getTime() - now.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      
-      if (diffDays <= 0) {
+    if (days === '0' || !days) {
+      const isStillActiveToday = checkVipActive(settings.vipExpiry);
+      if (isStillActiveToday) {
         return { 
-          text: '已过期', 
-          daysText: '0天', 
-          colorClass: 'text-red-500 bg-red-50 border border-red-200 font-bold text-[11px]', 
-          subColor: 'text-slate-400', 
-          badgeText: '已过期' 
+          text: '今日到期', 
+          daysText: '今日到期', 
+          colorClass: 'text-amber-700 bg-amber-100/90 border border-amber-300 font-bold font-mono text-[9px] shadow-xs', 
+          subColor: 'text-amber-700 font-bold', 
+          badgeText: '今日到期' 
         };
       }
       return { 
-        text: `${diffDays}天`, 
-        daysText: `${diffDays}天`, 
-        colorClass: 'text-amber-600 bg-amber-50 border border-amber-200 font-bold font-mono text-[11px] shadow-xs', 
-        subColor: 'text-amber-600 font-bold',
-        badgeText: '已授权'
-      };
-    } catch {
-      return { 
-        text: '错误', 
-        daysText: '未知', 
-        colorClass: 'text-slate-400 bg-slate-50 border border-slate-200 font-semibold text-[10px]', 
+        text: '待开通', 
+        daysText: '待开通', 
+        colorClass: 'text-slate-400 bg-slate-100 border border-slate-200 font-extrabold text-[9px]', 
         subColor: 'text-slate-400', 
-        badgeText: '未知' 
+        badgeText: '待激活' 
       };
     }
+    return { 
+      text: `${days}天`, 
+      daysText: `${days}天`, 
+      colorClass: 'text-amber-600 bg-amber-50 border border-amber-200 font-bold font-mono text-[11px] shadow-xs', 
+      subColor: 'text-amber-600 font-bold', 
+      badgeText: '已授权' 
+    };
   };
 
   const vipInfo = getVipCountdown();
@@ -4893,60 +4872,46 @@ export default function HomeView({
               }
 
               // 权限校验：在小队内具有管理职位的司机方可进入商户代叫派单系统
-              let effectiveRoles: string[] = [];
-              if (userRole) effectiveRoles.push(userRole);
-              if ((settings as any)?.role) effectiveRoles.push((settings as any).role);
+              let currentActiveRole = '普通司机';
 
-              // 查找小队成员中的角色记录
-              const squadMemberObj = (squadMembers || []).find((m: any) => {
-                const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
-                return p && p === currentPhone;
-              });
-              if (squadMemberObj) {
-                if (squadMemberObj.role) effectiveRoles.push(squadMemberObj.role);
-                if (squadMemberObj.userRole) effectiveRoles.push(squadMemberObj.userRole);
+              if (isSuperDev) {
+                currentActiveRole = '开发者司机';
+              } else {
+                const storedRole = localStorage.getItem('dd_user_role');
+                if (storedRole) {
+                  currentActiveRole = storedRole;
+                } else if (userRole) {
+                  currentActiveRole = userRole;
+                }
+
+                const squadMemberObj = (squadMembers || []).find((m: any) => {
+                  const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+                  return p && p === currentPhone;
+                });
+
+                if (squadMemberObj && squadMemberObj.role) {
+                  currentActiveRole = squadMemberObj.role;
+                }
               }
 
-              // 进一步查找本地存储中的最新角色记录
-              try {
-                const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-                const localObj = savedM.find((m: any) => String(m?.phone || m?.id || '').replace(/\D/g, '').trim() === currentPhone);
-                if (localObj) {
-                  if (localObj.role) effectiveRoles.push(localObj.role);
-                  if (localObj.userRole) effectiveRoles.push(localObj.userRole);
-                }
-              } catch (_) {}
-
-              try {
-                const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-                const localAppObj = savedA.find((m: any) => String(m?.phone || m?.id || '').replace(/\D/g, '').trim() === currentPhone);
-                if (localAppObj) {
-                  if (localAppObj.role) effectiveRoles.push(localAppObj.role);
-                  if (localAppObj.userRole) effectiveRoles.push(localAppObj.userRole);
-                }
-              } catch (_) {}
-
-              const allowedRoles = [
-                '开发者司机',
-                '开发者',
-                '总指挥官',
-                '城市老板司机',
-                '城市老板',
-                '城市管理司机',
-                '城市管理',
-                '城市派单员司机',
-                '城市派单员',
-                '管理团队',
-                '管理员',
-                '队长'
+              const allowedManagerRoles = [
+                '开发者司机', '开发者', '总指挥官',
+                '城市老板司机', '城市老板',
+                '城市管理司机', '城市管理',
+                '城市派单员司机', '城市派单员',
+                '管理团队', '管理员', '队长'
               ];
 
-              const canAccess = isSuperDev || effectiveRoles.some(r => allowedRoles.some(ar => String(r).includes(ar)));
+              const isManager = isSuperDev || (
+                currentActiveRole !== '普通司机' &&
+                currentActiveRole !== '队员' &&
+                allowedManagerRoles.some(ar => String(currentActiveRole).includes(ar))
+              );
 
-              if (!canAccess) {
+              if (!isManager) {
                 setLocalAlert({
                   title: '提示',
-                  message: '您无权限',
+                  message: '您没有权限！',
                   type: 'warning'
                 });
                 return;

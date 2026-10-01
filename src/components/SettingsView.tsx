@@ -488,7 +488,7 @@ export default function SettingsView({
         // Update state with lightweight clean QR (< 25KB)
         onUpdateSettings({ ...settings, wechatQrCode: cleanQr });
 
-        const targetPhone = (settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').trim();
+        const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
         if (targetPhone) {
           try {
             localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, cleanQr);
@@ -526,7 +526,7 @@ export default function SettingsView({
 
         onUpdateSettings({ ...settings, alipayQrCode: cleanQr });
 
-        const targetPhone = (settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').trim();
+        const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
         if (targetPhone) {
           try {
             localStorage.setItem(`dd_dispatch_alipay_qr_${targetPhone}`, cleanQr);

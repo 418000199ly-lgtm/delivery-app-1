@@ -339,9 +339,10 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent.toLowerCase() : '';
   const isWeChat = ua.indexOf('micromessenger') !== -1;
   const isAlipay = ua.indexOf('alipayclient') !== -1;
-  const isWeChatOrAlipay = isWeChat || isAlipay;
+  const isMobile = /android|iphone|ipad|ipod|windows phone/i.test(ua);
+  const isWeChatOrAlipay = isWeChat || isAlipay || isMobile;
 
-  // Strict blocking: Block if NOT WeChat/Alipay OR if driver VIP is unactivated/expired/0 (rapidly within 3 seconds)
+  // Strict blocking: Block if NOT WeChat/Alipay/Mobile OR if driver VIP is unactivated/expired/0 (rapidly within 3 seconds)
   const isBlocked = (forceView === 'vip_blocked') || ((!isWeChatOrAlipay || (isVipChecked && !isVipActive) || (threeSecondChecked && !isVipActive)) && !isDeveloperSimulator && forceView !== 'normal');
 
   // Check 3-minute QR expiration condition ONLY if NOT blocked!

@@ -129,7 +129,7 @@ export const DEFAULT_SETTINGS: ChauffeurSettings = {
   deviationWaitSec: 30,
   wechatQrCode: '',
   alipayQrCode: '',
-  vipExpiry: '待激活',
+  vipExpiry: '待开通',
   customAppName: 'XX代驾',
   onlineOrdersEnabled: false,
   city: '',
@@ -139,10 +139,10 @@ export const DEFAULT_SETTINGS: ChauffeurSettings = {
 export function checkVipActive(vipExpiry?: string): boolean {
   if (!vipExpiry) return false;
   const s = String(vipExpiry).trim();
-  if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '未激活待激活' || s === '已到期' || s === '已过期' || s === '未开通' || s === '') {
+  if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '待开通' || s === '未开通' || s === '未激活待激活' || s === '已到期' || s === '已过期' || s === '') {
     return false;
   }
-  if (s === '永久有效') return true;
+  if (s === '永久有效' || s === '永久') return true;
   try {
     let year: number | undefined, month: number | undefined, day: number | undefined;
     const match = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);

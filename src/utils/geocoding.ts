@@ -17,6 +17,26 @@ export const DEFAULT_YINCHUAN_COORDS: Coords = {
 // Known POI dictionary for Yinchuan and major regional landmarks
 const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
   {
+    keywords: ['华江大肉夹馍', '华江肉夹馍', '大肉夹馍'],
+    coords: { lat: 38.4812, lng: 106.2348 }
+  },
+  {
+    keywords: ['光大国旅中山街营业部', '光大国旅中山街', '光大国旅', '中山街营业部'],
+    coords: { lat: 38.4855, lng: 106.2410 }
+  },
+  {
+    keywords: ['德隆楼德鼎逸品(北京路店)', '德隆楼德鼎逸品', '德隆楼(北京东路店)', '德隆楼', '德鼎逸品'],
+    coords: { lat: 38.4875, lng: 106.2620 }
+  },
+  {
+    keywords: ['人社服务窗口（阳澄社区）', '人社服务窗口', '阳澄社区', '阳澄'],
+    coords: { lat: 38.4920, lng: 106.2550 }
+  },
+  {
+    keywords: ['西桥巷粉条大盘鸡', '粉条大盘鸡', '西桥巷'],
+    coords: { lat: 38.4873, lng: 106.2625 }
+  },
+  {
     keywords: ['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'],
     coords: { lat: 38.47513, lng: 106.28665 }
   },

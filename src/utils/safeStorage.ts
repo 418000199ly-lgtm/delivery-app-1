@@ -12,7 +12,7 @@ export function safeSetItem(key: string, value: string): boolean {
   } catch (err: any) {
     console.warn(`[safeSetItem] Storage quota exceeded or error when setting key "${key}":`, err);
 
-    // Attempt automatic cleanup of non-essential bulky cached items
+    // 1. Attempt automatic cleanup of non-essential bulky cached items
     try {
       pruneLocalStorage();
       // Retry setting item after pruning
@@ -21,31 +21,51 @@ export function safeSetItem(key: string, value: string): boolean {
       return true;
     } catch (retryErr) {
       console.error(`[safeSetItem] Secondary failure setting key "${key}". Attempting trimmed save.`, retryErr);
-      
-      // If it's a JSON array or trip object, attempt to trim base64 or heavy arrays
+
+      // 2. If setting still fails, attempt payload-specific trimming (base64 image stripping)
       try {
-        if (key === 'dd_current_trip') {
-          const trip = JSON.parse(value);
-          // Strip heavy base64 QR images before saving trip state to storage
-          if (trip.paymentQrCode && trip.paymentQrCode.length > 500) {
-            delete trip.paymentQrCode;
-          }
-          if (trip.merchantPaymentQrCode && trip.merchantPaymentQrCode.length > 500) {
-            delete trip.merchantPaymentQrCode;
-          }
-          localStorage.setItem(key, JSON.stringify(trip));
-          return true;
-        } else if (key === 'dd_merchant_orders_v2') {
-          const orders = JSON.parse(value);
-          if (Array.isArray(orders)) {
-            // Keep only latest 10 orders
-            localStorage.setItem(key, JSON.stringify(orders.slice(0, 10)));
-            return true;
-          }
+        let trimmedValue = value;
+
+        // If key is settings, strip heavy base64 images from settings object
+        if (key.startsWith('dd_settings')) {
+          try {
+            const parsed = JSON.parse(value);
+            if (parsed.wechatQrCode && parsed.wechatQrCode.length > 1000 && parsed.wechatQrCode.startsWith('data:')) {
+              delete parsed.wechatQrCode;
+            }
+            if (parsed.alipayQrCode && parsed.alipayQrCode.length > 1000 && parsed.alipayQrCode.startsWith('data:')) {
+              delete parsed.alipayQrCode;
+            }
+            trimmedValue = JSON.stringify(parsed);
+          } catch (_) {}
+        } else if (key === 'dd_current_trip') {
+          try {
+            const trip = JSON.parse(value);
+            if (trip.paymentQrCode && trip.paymentQrCode.length > 500) {
+              delete trip.paymentQrCode;
+            }
+            if (trip.merchantPaymentQrCode && trip.merchantPaymentQrCode.length > 500) {
+              delete trip.merchantPaymentQrCode;
+            }
+            trimmedValue = JSON.stringify(trip);
+          } catch (_) {}
+        } else if (key === 'dd_merchant_orders_v2' || key.startsWith('dd_declined_orders_')) {
+          try {
+            const orders = JSON.parse(value);
+            if (Array.isArray(orders)) {
+              trimmedValue = JSON.stringify(orders.slice(-5));
+            }
+          } catch (_) {}
         }
-      } catch (_) {}
-      
-      return false;
+
+        // Retry saving trimmed value
+        localStorage.setItem(key, trimmedValue);
+        return true;
+      } catch (finalErr) {
+        console.error(`[safeSetItem] Critical: Unable to save key "${key}" even after trimming:`, finalErr);
+        // Safely fail without throwing to prevent React AppErrorBoundary crash
+        return false;
+      }
     }
   }
 }
@@ -86,15 +106,17 @@ export function pruneLocalStorage(): void {
     if (
       k.startsWith('mock_db_') ||
       k.startsWith('dd_dispatch_wechat_qr_') ||
+      k.startsWith('dd_dispatch_alipay_qr_') ||
       k.startsWith('dd_driver_loc_') ||
+      k.startsWith('dd_declined_orders_') ||
       k.includes('temp') ||
       k.includes('cache')
     ) {
       keysToRemove.push(k);
     }
 
-    // 2. Identify heavy JSON lists to trim
-    if (k === 'dd_merchant_orders_v2' || k === 'dd_rules_list' || k === 'dd_squad_members_v2') {
+    // 2. Identify heavy JSON lists / settings to trim
+    if (k === 'dd_merchant_orders_v2' || k === 'dd_rules_list' || k === 'dd_squad_members_v2' || k.startsWith('dd_settings')) {
       keysToTrim.push(k);
     }
   }
@@ -104,14 +126,32 @@ export function pruneLocalStorage(): void {
     try { localStorage.removeItem(k); } catch (_) {}
   }
 
-  // Trim heavy arrays
+  // Trim heavy arrays / settings
   for (const k of keysToTrim) {
     try {
       const raw = localStorage.getItem(k);
       if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 15) {
-          localStorage.setItem(k, JSON.stringify(parsed.slice(0, 15)));
+        if (k.startsWith('dd_settings')) {
+          try {
+            const parsed = JSON.parse(raw);
+            let modified = false;
+            if (parsed.wechatQrCode && parsed.wechatQrCode.length > 1000 && parsed.wechatQrCode.startsWith('data:')) {
+              delete parsed.wechatQrCode;
+              modified = true;
+            }
+            if (parsed.alipayQrCode && parsed.alipayQrCode.length > 1000 && parsed.alipayQrCode.startsWith('data:')) {
+              delete parsed.alipayQrCode;
+              modified = true;
+            }
+            if (modified) {
+              localStorage.setItem(k, JSON.stringify(parsed));
+            }
+          } catch (_) {}
+        } else {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 10) {
+            localStorage.setItem(k, JSON.stringify(parsed.slice(-10)));
+          }
         }
       }
     } catch (_) {}

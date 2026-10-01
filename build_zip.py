@@ -42,9 +42,9 @@ with open('README_BAOTA.md', 'w', encoding='utf-8') as f:
    - 配置反向代理: 目标 URL `http://127.0.0.1:3000`。
 """)
 
-include_dirs = ['src', 'public', 'dist']
+include_dirs = ['src', 'public', 'dist', 'uploads', 'scripts']
 include_files = [
-    'server.ts', 'package.json', 'package-lock.json', 
+    'server.ts', 'local_db.json', 'package.json', 'package-lock.json', 
     '.env.example', 'ecosystem.config.js', 'README_BAOTA.md',
     'tsconfig.json', 'vite.config.ts', 'tailwind.config.js', 'metadata.json'
 ]
