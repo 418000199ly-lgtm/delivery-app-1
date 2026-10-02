@@ -176,4 +176,3 @@ if os.path.exists('public'):
 
 print("=== Baota Deployment Package Created Successfully ===")
 print(f"Zip size: {os.path.getsize(zip_filename)} bytes ({os.path.getsize(zip_filename)/1024/1024:.2f} MB)")
-print(f"Tar.gz size: {os.path.getsize(tar_filename)} bytes ({os.path.getsize(tar_filename)/1024/1024:.2f} MB)")
