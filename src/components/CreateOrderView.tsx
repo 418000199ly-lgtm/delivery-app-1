@@ -310,6 +310,18 @@ export default function CreateOrderView({
   const [arrivedAtDeparture, setArrivedAtDeparture] = useState(false);
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
 
+  // 严格规则：进入报单页面即刻将司机置为忙碌状态，退出/返回则即刻恢复为空闲接单状态
+  useEffect(() => {
+    if (userPhone) {
+      reportDriverBusyStatus(userPhone, true, { currentView: 'create_order', isBusy: true });
+    }
+    return () => {
+      if (userPhone) {
+        reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+      }
+    };
+  }, [userPhone]);
+
   const handleConfirmCancelOrder = async () => {
     if (activeOnlineOrder) {
       const candidateIds = Array.from(new Set([
@@ -1530,6 +1542,10 @@ export default function CreateOrderView({
   useEffect(() => {
     const driverPhoneNum = (userPhone || '18609518888').replace(/\s+/g, '').trim();
     const docRef = doc(db, 'passenger_links', driverPhoneNum);
+    const effectiveBrandName = (settings?.customAppName?.trim() && settings.customAppName.trim() !== 'XX代驾') 
+      ? settings.customAppName.trim() 
+      : (driverPhoneNum === '15509601222' ? '滴滴代驾' : (settings?.customAppName?.trim() || 'XX代驾'));
+    const effectiveVipExpiry = (driverPhoneNum === '15509601222') ? '永久有效' : (settings?.vipExpiry || 'permanent');
     
     getDoc(docRef).then(snap => {
       if (snap.exists()) {
@@ -1541,36 +1557,32 @@ export default function CreateOrderView({
       setDoc(docRef, {
         driverPhone: driverPhoneNum,
         driverStartLocation: startLocation,
+        driverBrandName: effectiveBrandName,
+        vipExpiry: effectiveVipExpiry,
         updatedAt: Date.now()
       }, { merge: true }).catch(err => console.error('Error persisting driver start location in passenger_links:', err));
     }).catch(() => {});
-  }, [startLocation, userPhone]);
+  }, [startLocation, userPhone, settings?.customAppName, settings?.vipExpiry]);
 
 
   const passengerScanUrl = (() => {
     const currentTs = qrTimestamp || Date.now();
+    const cleanDriverPhone = (userPhone || '18609518888').replace(/\s+/g, '').trim();
+    const isVip = checkVipActive(settings?.vipExpiry) || cleanDriverPhone === '15509601222';
+    const effectiveBrandName = (isVip && settings?.customAppName?.trim() && settings.customAppName.trim() !== 'XX代驾')
+      ? settings.customAppName.trim()
+      : (cleanDriverPhone === '15509601222' ? '滴滴代驾' : (settings?.customAppName?.trim() || 'XX代驾'));
+    const effectiveVipExpiry = (cleanDriverPhone === '15509601222') ? '永久有效' : (settings?.vipExpiry || 'permanent');
+
     if (typeof window === 'undefined') {
-      return `https://lyheiwandaijiamax.com/passenger_order.html?driver=${encodeURIComponent(userPhone || '18609518888')}&name=${encodeURIComponent(settings?.customAppName?.trim() || 'XX代驾')}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
+      return `https://lyheiwandaijiamax.com/passenger_order.html?driver=${encodeURIComponent(cleanDriverPhone)}&name=${encodeURIComponent(effectiveBrandName)}&vip=${encodeURIComponent(effectiveVipExpiry)}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
     }
     const hostname = window.location.hostname;
-    const origin = window.location.origin;
     
-    // Only force production domain fallback for non-accessible private local hosts.
-    // Public container/cloud preview environments (like Cloud Run or AI Studio) are globally accessible by phones, 
-    // so they should generate native preview scan URLs for accurate live testing.
-    const isPrivateLocal = (
-      hostname.includes('localhost') || 
-      hostname.includes('127.0.0.1')
-    );
-    
-    let customWorkerApiUrl = '';
-    try {
-      customWorkerApiUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('cloudflare_worker_api_url') || '';
-    } catch (_) {}
     let baseOrigin = "https://lyheiwandaijiamax.com";
     const basePath = '/passenger_order.html';
     
-    return `${baseOrigin}${basePath}?driver=${encodeURIComponent(userPhone || '18609518888')}&name=${encodeURIComponent(settings?.customAppName?.trim() || 'XX代驾')}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
+    return `${baseOrigin}${basePath}?driver=${encodeURIComponent(cleanDriverPhone)}&name=${encodeURIComponent(effectiveBrandName)}&vip=${encodeURIComponent(effectiveVipExpiry)}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
   })();
 
   const formatCountdown = (seconds: number) => {

@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ECF9F7" />
+      <stop offset="100%" stop-color="#DDF5F2" />
+    </linearGradient>
+
+    <!-- Cloud Gradient -->
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.4" />
+    </linearGradient>
+
+    <!-- Shadow for bubble -->
+    <filter id="bubbleShadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00695C" flood-opacity="0.08" />
+    </filter>
+  </defs>
+
+  <!-- 1. Background Canvas -->
+  <rect width="1000" height="380" rx="0" fill="url(#bgGradient)" />
+
+  <!-- 2. City Buildings Silhouette (Right Side) -->
+  <g fill="#CEEDE8" opacity="0.65">
+    <rect x="760" y="140" width="40" height="240" rx="3" />
+    <polygon points="760,140 780,80 800,140" />
+    <line x1="780" y1="80" x2="780" y2="60" stroke="#CEEDE8" stroke-width="3" />
+    <rect x="810" y="190" width="55" height="190" rx="3" />
+    <rect x="875" y="160" width="45" height="220" rx="3" />
+    <rect x="930" y="180" width="60" height="200" rx="3" />
+    <rect x="710" y="210" width="42" height="170" rx="3" />
+  </g>
+
+  <!-- 3. Soft Floating Clouds -->
+  <g fill="url(#cloudGrad)">
+    <!-- Right cloud behind driver -->
+    <path d="M 680,210 Q 695,190 725,195 Q 750,180 775,200 Q 800,200 810,215 Q 815,225 805,230 L 685,230 Z" />
+    <path d="M 850,140 Q 865,120 890,125 Q 910,115 930,130 Q 945,130 950,142 L 850,142 Z" />
+  </g>
+
+  <!-- 4. Left Bold Typography: 服务完成 期待下次再见 -->
+  <g fill="#009F8C" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif">
+    <text x="70" y="170" font-size="76" font-weight="900" letter-spacing="4">服务完成</text>
+    <text x="70" y="275" font-size="76" font-weight="900" letter-spacing="4">期待下次再见</text>
+  </g>
+
+  <!-- 5. Middle Map Route Graphic -->
+  <!-- Start Pin (Top) -->
+  <g transform="translate(560, 95)">
+    <path d="M 0,0 C -18,0 -26,14 -26,26 C -26,42 0,65 0,65 C 0,65 26,42 26,26 C 26,14 18,0 0,0 Z" fill="#8AD1C8" />
+    <circle cx="0" cy="24" r="9" fill="#E8F8F5" />
+  </g>
+
+  <!-- Route Pathway Lines -->
+  <path d="M 560,160 L 560,200 Q 560,210 570,210 L 630,210" fill="none" stroke="#9FE0D8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 630,210 L 630,285 Q 630,295 645,295 L 670,295" fill="none" stroke="#9FE0D8" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Route Mid Point (Yellow Node) -->
+  <circle cx="630" cy="210" r="11" fill="#FFA726" />
+  <circle cx="630" cy="210" r="5" fill="#FFFFFF" />
+
+  <!-- Speech Bubble: 下次再见 -->
+  <g filter="url(#bubbleShadow)" transform="translate(605, 125)">
+    <rect x="0" y="0" width="145" height="52" rx="26" fill="#FFFFFF" />
+    <!-- Small arrow/tail pointing down to yellow node -->
+    <path d="M 25,52 L 25,62 L 34,52 Z" fill="#FFFFFF" />
+    <circle cx="25" cy="58" r="2.5" fill="#26A69A" />
+    <text x="72" y="35" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif" font-size="22" font-weight="800" fill="#00897B" text-anchor="middle">下次再见</text>
+  </g>
+
+  <!-- End Pin (Bottom) -->
+  <g transform="translate(685, 275)">
+    <path d="M 0,0 C -16,0 -23,12 -23,23 C -23,38 0,58 0,58 C 0,58 23,38 23,23 C 23,12 16,0 0,0 Z" fill="#8AD1C8" />
+    <circle cx="0" cy="21" r="8" fill="#E8F8F5" />
+  </g>
+
+  <!-- 6. Driver Character (Right Side) -->
+  <g transform="translate(835, 360)">
+    <!-- Ground Shadow -->
+    <ellipse cx="0" cy="0" rx="46" ry="7" fill="#004D40" opacity="0.15" />
+
+    <!-- Feet / Shoes -->
+    <ellipse cx="-13" cy="-5" rx="14" ry="7" fill="#263238" />
+    <ellipse cx="15" cy="-5" rx="14" ry="7" fill="#263238" />
+
+    <!-- Pants (Dark Charcoal) -->
+    <path d="M -23,-125 L -26,-10 L -4,-10 L -4,-85 L 4,-85 L 4,-10 L 26,-10 L 23,-125 Z" fill="#37474F" />
+
+    <!-- Belt -->
+    <rect x="-24" y="-128" width="48" height="6" fill="#212121" rx="1" />
+    <rect x="-6" y="-129" width="12" height="8" fill="#B0BEC5" rx="1" />
+
+    <!-- White Shirt Underneath & Tie -->
+    <polygon points="-16,-195 0,-130 16,-195" fill="#FFFFFF" />
+    <!-- Black Tie -->
+    <polygon points="-3,-180 3,-180 5,-140 0,-130 -5,-140" fill="#212121" />
+
+    <!-- Driver Uniform Vest (Striped Reflective Vest) -->
+    <path d="M -26,-130 L -33,-195 L -16,-195 L -8,-150 L 0,-150 L 8,-150 L 16,-195 L 33,-195 L 26,-130 Z" fill="#546E7A" />
+    <!-- Fluorescent Stripes on Vest -->
+    <path d="M -24,-130 L -22,-190 L -14,-190 L -16,-130 Z" fill="#ECEFF1" opacity="0.9" />
+    <path d="M 24,-130 L 22,-190 L 14,-190 L 16,-130 Z" fill="#ECEFF1" opacity="0.9" />
+    <!-- Vest Badge / Logo -->
+    <circle cx="16" cy="-155" r="5" fill="#FFFFFF" />
+    <circle cx="16" cy="-155" r="3.5" fill="#00897B" />
+
+    <!-- Left Arm (Resting on side) -->
+    <path d="M 26,-195 Q 40,-160 36,-130 Q 34,-120 30,-115" fill="none" stroke="#546E7A" stroke-width="13" stroke-linecap="round" />
+    <!-- Left Hand -->
+    <circle cx="28" cy="-110" r="7" fill="#FFCC80" />
+
+    <!-- Right Arm (Waving Hand Upwards) -->
+    <path d="M -26,-195 Q -42,-180 -44,-160 Q -46,-195 -40,-215" fill="none" stroke="#546E7A" stroke-width="13" stroke-linecap="round" />
+    <!-- Right Hand (Waving Palm) -->
+    <g transform="translate(-40, -230)">
+      <ellipse cx="0" cy="0" rx="9" ry="11" fill="#FFCC80" transform="rotate(-15)" />
+      <!-- Fingers -->
+      <rect x="-11" y="-12" width="4.5" height="11" rx="2" fill="#FFCC80" transform="rotate(-30)" />
+      <rect x="-5" y="-16" width="4.5" height="13" rx="2" fill="#FFCC80" transform="rotate(-10)" />
+      <rect x="2" y="-16" width="4.5" height="13" rx="2" fill="#FFCC80" transform="rotate(5)" />
+      <rect x="8" y="-13" width="4.5" height="11" rx="2" fill="#FFCC80" transform="rotate(20)" />
+      <rect x="-11" y="0" width="4" height="8" rx="2" fill="#FFCC80" transform="rotate(-70)" />
+    </g>
+
+    <!-- Neck & Collar -->
+    <rect x="-7" y="-208" width="14" height="14" fill="#FFCC80" rx="2" />
+    <polygon points="-12,-204 -5,-190 -16,-194" fill="#FFFFFF" />
+    <polygon points="12,-204 5,-190 16,-194" fill="#FFFFFF" />
+
+    <!-- Head & Face -->
+    <ellipse cx="0" cy="-218" rx="17" ry="19" fill="#FFCC80" />
+    <!-- Hair sideburns -->
+    <path d="M -16,-226 C -18,-215 -17,-205 -14,-205 C -13,-215 -14,-225 -16,-226 Z" fill="#4E342E" />
+    <path d="M 16,-226 C 18,-215 17,-205 14,-205 C 13,-215 14,-225 16,-226 Z" fill="#4E342E" />
+    <!-- Ears -->
+    <circle cx="-17" cy="-218" r="4.5" fill="#FFB74D" />
+    <circle cx="17" cy="-218" r="4.5" fill="#FFB74D" />
+
+    <!-- Eyes (Friendly Smile) -->
+    <path d="M -9,-219 Q -5,-223 -2,-219" fill="none" stroke="#37474F" stroke-width="2" stroke-linecap="round" />
+    <path d="M 2,-219 Q 5,-223 9,-219" fill="none" stroke="#37474F" stroke-width="2" stroke-linecap="round" />
+    <!-- Cheeks (Blush) -->
+    <ellipse cx="-10" cy="-213" rx="4" ry="2" fill="#FF8A80" opacity="0.6" />
+    <ellipse cx="10" cy="-213" rx="4" ry="2" fill="#FF8A80" opacity="0.6" />
+    <!-- Smiling Mouth -->
+    <path d="M -5,-208 Q 0,-203 5,-208" fill="none" stroke="#D32F2F" stroke-width="2.2" stroke-linecap="round" />
+
+    <!-- Driver Cap (Green Visor Hat) -->
+    <!-- Cap Dome -->
+    <path d="M -18,-226 C -18,-248 18,-248 18,-226 Z" fill="#00897B" />
+    <!-- Cap Visor / Brim -->
+    <ellipse cx="0" cy="-226" rx="22" ry="5.5" fill="#00695C" />
+    <ellipse cx="0" cy="-227" rx="20" ry="4" fill="#00897B" />
+    <!-- Little Car Badge on Cap -->
+    <g transform="translate(0, -236) scale(0.65)">
+      <circle cx="0" cy="0" r="8.5" fill="#FFFFFF" />
+      <!-- Small green car icon -->
+      <path d="M -5,2 L -4,-2 L 4,-2 L 5,2 Z" fill="#00897B" />
+      <circle cx="-3" cy="3" r="1.5" fill="#004D40" />
+      <circle cx="3" cy="3" r="1.5" fill="#004D40" />
+      <rect x="-5" y="0" width="10" height="3" rx="1" fill="#00897B" />
+    </g>
+  </g>
+</svg>

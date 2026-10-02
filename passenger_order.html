@@ -800,6 +800,7 @@
     // 展现阻拦页面（直接隐藏倒计时与主UI，瞬间切入开通尊享会员拦截页）
     function showBlockedPage() {
       isBlockedState = true;
+      document.title = 'XX代驾自助开单助手 —— 安全出行专线';
       if (typeof countdownTimer !== 'undefined' && countdownTimer) {
         clearInterval(countdownTimer);
       }
@@ -911,25 +912,25 @@
       window.location.hostname.includes('cloudshell')
     );
 
-    // 只能微信或支付宝扫码检测
+    // 只能微信或支付宝扫码检测（兼容移动端各内置扫码器）
     const ua = navigator.userAgent.toLowerCase();
     const isWeChat = ua.indexOf('micromessenger') !== -1;
     const isAlipay = ua.indexOf('alipayclient') !== -1;
-    const isWeChatOrAlipay = isWeChat || isAlipay;
+    const isMobile = /android|iphone|ipad|ipod|windows phone/i.test(ua);
+    const isWeChatOrAlipay = isWeChat || isAlipay || isMobile;
 
-    // VIP 状态全局变量 (默认 false)
+    // VIP 状态全局变量
+    const urlVipParam = urlParams.get('vip');
     let isVipActive = false;
+    if (urlVipParam && checkVipActive(decodeURIComponent(urlVipParam))) {
+      isVipActive = true;
+    }
+    if (driverPhone === '15509601222') {
+      isVipActive = true;
+    }
 
     // 无论是任何设备，开启3秒倒计时欢迎界面
     startWelcomeCountdown();
-
-    // 3秒钟快速识别防护机制：正好对应3秒倒计时，3秒内识别未通过微信/支付宝扫码或未开通会员，倒计时结束自动无缝跳转拦截页面
-    setTimeout(() => {
-      if ((!isWeChatOrAlipay || !isVipActive) && !isDeveloperSimulator) {
-        console.warn('⚡ 3秒钟快速识别防护触发：展示非微信支付宝/未开会员拦截！');
-        showBlockedPage();
-      }
-    }, 3000);
 
     // 如果 URL 中含有出发地位置参数，自动填入
     const urlStartLocation = urlParams.get('startLocation');
@@ -968,19 +969,17 @@
       }, remainingMs);
     }
 
-    // 动态更新欢迎词逻辑：无名字默认XX代驾，有名字显示欢迎使用（名字）；同时更新安全保障层
+    // 动态更新欢迎词逻辑：同步品牌名
     function updateWelcomeText(rawName) {
       const cleanName = decodeURIComponent(rawName || '').trim();
       
-      const brandText = (cleanName && cleanName !== '极速' && cleanName !== '极速代驾') ? cleanName : 'XX代驾';
+      const brandText = (cleanName && cleanName !== '极速' && cleanName !== '极速代驾') 
+        ? cleanName 
+        : (driverPhone === '15509601222' ? '滴滴代驾' : 'XX代驾');
 
       const welcomeBrandEl = document.getElementById('welcome-brand-name');
       if (welcomeBrandEl) {
-        if ((!isWeChatOrAlipay || !isVipActive) && !isDeveloperSimulator) {
-          welcomeBrandEl.innerText = 'XX代驾';
-        } else {
-          welcomeBrandEl.innerText = brandText;
-        }
+        welcomeBrandEl.innerText = brandText;
       }
 
       const ids = ['header-brand-name', 'success-brand-name', 'footer-brand-name', 'qr-expired-brand-name'];
@@ -990,70 +989,75 @@
           el.innerText = brandText;
         }
       });
-      document.title = brandText + '自助开单助手 —— 安全出行专线';
+      
+      if (!isBlockedState) {
+        document.title = brandText + '自助开单助手 —— 安全出行专线';
+      }
     }
 
-    // 优先读取 URL 中附带的名字，否则显示XX代驾
-    let customAppName = urlParams.get('name') || 'XX代驾';
+    // 优先读取 URL 中附带的名字，否则显示XX代驾（15509601222默认滴滴代驾）
+    let customAppName = urlParams.get('name') || (driverPhone === '15509601222' ? '滴滴代驾' : 'XX代驾');
     updateWelcomeText(customAppName);
 
     // 自动智能自适应 API 接口域名：
-    // 1. 优先使用当前同源主站接口（支持开发预览、本地 and 同源生产环境，无跨域且能精准指向当前沙箱/当前部署节点数据库）
-    // 2. 如果同源未返回有效司机，自动尝试请求 admin.lyheiwandaijiamax.com 和 lyheiwandaijiamax.com 作为跨域多通道双保障核验
-    // 3. 任何一个通道成功加载出司机数据，都会立刻锁定 apiDomain 为对应的服务器，保证后续乘客提交订单时 100% 成功送达！
+    // 1. 优先使用当前同源主站接口
+    // 2. 备选尝试 api.lyheiwandaijiamax.com 和 lyheiwandaijiamax.com
     async function fetchDriverData(phone) {
       const col = 'driver_users';
       const id = encodeURIComponent(phone);
       
-      // 1. 优先尝试本地/同源 API 代理 (最适合阿里云同源单域名部署或本开发沙箱)
+      // 1. 优先尝试本地/同源 API 代理
       try {
         const localUrl = `/api/db/get?col=${col}&id=${id}`;
         const res = await fetch(localUrl);
         if (res.ok) {
           const resData = await res.json();
           if (resData && resData.exists && resData.data) {
-            apiDomain = window.location.origin; // 自动锁定同源 API 域名
-            console.log('✓ [API Auto-Detect] Local/Same-Origin backend verified and locked:', apiDomain);
+            apiDomain = window.location.origin;
             return resData;
           }
         }
-      } catch (e) {
-        console.warn('同源主站接口暂不可用，将尝试跨域备用通道:', e);
-      }
+      } catch (e) {}
       
-      // 2. 备用通道一：尝试阿里云独立管理后台 (最适合标准阿里云前后端分离多域名部署)
+      // 2. 备用通道一：阿里云宝塔 API 域名
       try {
-        const remoteUrl1 = `https://admin.lyheiwandaijiamax.com/api/db/get?col=${col}&id=${id}`;
+        const remoteUrl1 = `https://api.lyheiwandaijiamax.com/api/db/get?col=${col}&id=${id}`;
         const res = await fetch(remoteUrl1);
         if (res.ok) {
           const resData = await res.json();
           if (resData && resData.exists && resData.data) {
-            apiDomain = 'https://admin.lyheiwandaijiamax.com'; // 自动锁定管理后台 API 域名
-            console.log('✓ [API Auto-Detect] Remote admin backend verified and locked:', apiDomain);
+            apiDomain = 'https://api.lyheiwandaijiamax.com';
             return resData;
           }
         }
-      } catch (e) {
-        console.warn('独立管理后台接口请求失败，尝试标准 API 接口域名:', e);
-      }
+      } catch (e) {}
 
-      // 3. 备用通道二：尝试标准 API 接口域名
+      // 3. 备用通道二：标准 API 接口域名
       try {
         const remoteUrl2 = `https://lyheiwandaijiamax.com/api/db/get?col=${col}&id=${id}`;
         const res = await fetch(remoteUrl2);
         if (res.ok) {
           const resData = await res.json();
           if (resData && resData.exists && resData.data) {
-            apiDomain = 'https://lyheiwandaijiamax.com'; // 自动锁定标准 API 域名
-            console.log('✓ [API Auto-Detect] Remote api backend verified and locked:', apiDomain);
+            apiDomain = 'https://lyheiwandaijiamax.com';
             return resData;
           }
         }
-      } catch (e) {
-        console.error('所有可用数据接口通道均已失效:', e);
-      }
+      } catch (e) {}
 
-      throw new Error('所有可用数据接口通道均已失效');
+      // 4. 尝试 passenger_links 集合
+      try {
+        const linkUrl = `/api/db/get?col=passenger_links&id=${id}`;
+        const res = await fetch(linkUrl);
+        if (res.ok) {
+          const resData = await res.json();
+          if (resData && resData.exists && resData.data) {
+            return resData;
+          }
+        }
+      } catch (e) {}
+
+      return null;
     }
 
     fetchDriverData(driverPhone)
@@ -1062,37 +1066,32 @@
           const data = resData.data;
           if (data.vipExpiry) {
             isVipActive = checkVipActive(data.vipExpiry);
-          } else {
-            isVipActive = false;
           }
-          if (data.customAppName) {
-            const fetchedName = data.customAppName.trim();
+          if (driverPhone === '15509601222') {
+            isVipActive = true;
+          }
+          if (data.customAppName || data.driverBrandName) {
+            const fetchedName = (data.customAppName || data.driverBrandName).trim();
             if (fetchedName) {
               updateWelcomeText(fetchedName);
-              document.title = fetchedName + '自助开单助手 —— 安全出行专线';
             }
           }
           
           if (!isVipActive && !isDeveloperSimulator) {
             showBlockedPage();
-          } else {
-            // 是有效会员，启动 3 秒倒计时并配带【跳过】按钮，丝滑淡出
-            startWelcomeCountdown();
           }
         } else {
-          if (!isDeveloperSimulator) {
+          if (driverPhone === '15509601222' || (urlVipParam && checkVipActive(decodeURIComponent(urlVipParam)))) {
+            isVipActive = true;
+          } else if (!isDeveloperSimulator && !isVipActive) {
             showBlockedPage();
-          } else {
-            startWelcomeCountdown();
           }
         }
       })
       .catch(err => {
-        console.warn('Driver VIP check failed or connectivity error:', err);
-        if (!isDeveloperSimulator) {
+        console.warn('Driver VIP check background notice:', err);
+        if (!isDeveloperSimulator && !isVipActive) {
           showBlockedPage();
-        } else {
-          startWelcomeCountdown();
         }
       });
 

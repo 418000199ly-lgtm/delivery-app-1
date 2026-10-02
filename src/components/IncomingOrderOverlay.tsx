@@ -78,7 +78,24 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   onAccept,
   onDecline,
 }) => {
-  const [timeLeft, setTimeLeft] = useState(30);
+  // 60秒倒计时：实时同步服务器与宝塔面板计算的时间
+  const [timeLeft, setTimeLeft] = useState<number>(() => {
+    const now = Date.now();
+    const dispatchedAt = Number((order as any).dispatchedAt || order.timestamp || now);
+    const expiresAt = Number((order as any).dispatchExpiresAt || (dispatchedAt + 60 * 1000));
+    const remainingSecs = Math.ceil((expiresAt - now) / 1000);
+    return Math.max(1, Math.min(60, remainingSecs || 60));
+  });
+
+  // 实时同步服务器与宝塔面板倒计时变动
+  useEffect(() => {
+    if ((order as any)?.dispatchExpiresAt) {
+      const remaining = Math.max(0, Math.ceil((Number((order as any).dispatchExpiresAt) - Date.now()) / 1000));
+      setTimeLeft(Math.min(60, remaining));
+    } else if ((order as any)?.dispatchCountdown !== undefined) {
+      setTimeLeft(Math.max(0, Math.min(60, Number((order as any).dispatchCountdown))));
+    }
+  }, [order]);
 
   // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
   useEffect(() => {

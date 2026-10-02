@@ -843,6 +843,15 @@ export default function HomeView({
       }
     });
 
+    // 确保权威真实小队司机全部包含
+    Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(([p, realName]) => {
+      if (p !== '15509601222' && !removedSet.has(p) && !REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
+        if (!membersMap.has(p)) {
+          membersMap.set(p, { phone: p, name: realName, role: p === '18695119126' ? '最高开发者' : '普通司机', status: '已通过' });
+        }
+      }
+    });
+
     // 3. 过滤商户账号及被删除账号，仅保留小队司机成员
     const isMerchantMember = (item: any) => {
       const p = String(item?.phone || item?.id || '').trim();
@@ -979,13 +988,13 @@ export default function HomeView({
         } catch (_) {}
       }
 
-      // 3. 检查是否有指派给其他司机且处于30秒强弹倒计时中的订单（若已超时30秒则自动开放给大厅抢单）
+      // 3. 检查是否有指派给其他司机且处于60秒强弹倒计时中的订单（若已超时60秒则自动开放给大厅抢单）
       const dispatchedPhone = String(data.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
       if (dispatchedPhone && st !== 'hall' && data.in_hall !== true) {
         const dispatchedAt = Number(data.dispatchedAt || data.timestamp || 0);
         const elapsed = Date.now() - dispatchedAt;
-        if (dispatchedAt > 0 && elapsed < 30000) {
-          // 仍在30秒指派倒计时中，暂不进入选单大厅
+        if (dispatchedAt > 0 && elapsed < 60000) {
+          // 仍在60秒指派倒计时中，暂不进入选单大厅
           return false;
         }
       }
@@ -1745,32 +1754,11 @@ export default function HomeView({
 
   const hasDriverUploadedQrCode = (): boolean => {
     try {
-      // 1. 检查当前软件 App 设置 (settings.wechatQrCode)
-      if (settings?.wechatQrCode && typeof settings.wechatQrCode === 'string' && settings.wechatQrCode.trim()) {
+      // 严格检查当前软件 App 设置 (settings.wechatQrCode)
+      // 只要在设置 -> 上传二维码 -> 我的收款码页面里显示“暂时未设置微信收款码”，则严格判定为未设置
+      const qr = settings?.wechatQrCode;
+      if (qr && typeof qr === 'string' && qr.trim().length > 0) {
         return true;
-      }
-      // 2. 检查本地当前手机账号个性化设置与缓存
-      const currentPhone = (userPhone || applyPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
-      if (currentPhone && typeof window !== 'undefined') {
-        const userSettingsStr = localStorage.getItem(`dd_settings_${currentPhone}`);
-        if (userSettingsStr) {
-          try {
-            const parsed = JSON.parse(userSettingsStr);
-            if (parsed?.wechatQrCode && typeof parsed.wechatQrCode === 'string' && parsed.wechatQrCode.trim()) {
-              return true;
-            }
-          } catch (_) {}
-        }
-        const cachedQr = (
-          localStorage.getItem(`dd_dispatch_wechat_qr_${currentPhone}`) ||
-          localStorage.getItem(`dd_dispatch_fee_qr_${currentPhone}`) ||
-          localStorage.getItem('dd_user_wechat_qr') ||
-          localStorage.getItem('dd_dispatch_wechat_qr') ||
-          localStorage.getItem('dd_user_wechat_clean_qr')
-        )?.trim();
-        if (cachedQr) {
-          return true;
-        }
       }
     } catch (_) {}
     return false;

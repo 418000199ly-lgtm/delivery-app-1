@@ -1841,6 +1841,31 @@ export default function MobileDispatchValetOrder({
     return [];
   });
 
+  const [teamMembers, setTeamMembers] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_team_members');
+      if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return [];
+  });
+
+  useEffect(() => {
+    if (!db) return;
+    const unsub = onSnapshot(collection(db, 'team_members'), (snap) => {
+      const list: any[] = [];
+      snap.forEach((d) => {
+        list.push({ id: d.id, ...d.data() });
+      });
+      if (list.length > 0) {
+        setTeamMembers(list);
+        try {
+          localStorage.setItem('dd_team_members', JSON.stringify(list));
+        } catch (_) {}
+      }
+    }, (err) => console.warn('Error fetching team_members:', err));
+    return () => unsub();
+  }, []);
+
   useEffect(() => {
     if (!db) return;
     const unsub = onSnapshot(collection(db, 'merchant_users'), (snap) => {
@@ -3899,16 +3924,47 @@ export default function MobileDispatchValetOrder({
 
       window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 
-      const chosenPhone = String(chosenDriver?.phone || '').trim();
+      const chosenPhone = String(chosenDriver?.phone || '').replace(/\D/g, '').trim();
       const isTargetingCurrentDriver = Boolean(
         chosenDriver && chosenPhone && (
-          chosenPhone === String(activePhone || '').trim() ||
-          chosenPhone === String(userPhone || '').trim()
+          chosenPhone === String(activePhone || '').replace(/\D/g, '').trim() ||
+          chosenPhone === String(userPhone || '').replace(/\D/g, '').trim()
         )
       );
 
+      const passengerLinkPayload = {
+        ...newOrderData,
+        status: 'submitted',
+        orderId,
+        dispatchCountdown: 60,
+        dispatchedAt: ts,
+        dispatchExpiresAt: ts + 60000,
+        dispatchedDriverPhone: chosenPhone,
+        dispatchedDriverName: chosenDriver?.name || chosenDriver?.driverName || ''
+      };
+
+      // 实时向目标小队司机的 passenger_links 写入派单数据，驱动对方手机瞬时弹窗与语音播报
+      if (chosenDriver && chosenPhone) {
+        try {
+          if (db) {
+            setDoc(doc(db, 'passenger_links', chosenPhone), passengerLinkPayload).catch(() => {});
+          }
+        } catch (_) {}
+      }
+
+      // 同时实时向 merchant_orders 写入
+      try {
+        if (db) {
+          setDoc(doc(db, 'merchant_orders', orderId), {
+            ...newOrderData,
+            dispatchCountdown: 60,
+            dispatchedAt: ts,
+            dispatchExpiresAt: ts + 60000
+          }).catch(() => {});
+        }
+      } catch (_) {}
+
       if (isTargetingCurrentDriver) {
-        const passengerLinkPayload = { ...newOrderData, status: 'submitted', orderId };
         try {
           safeSetItem('dd_active_incoming_order', JSON.stringify(passengerLinkPayload));
         } catch (_) {}
@@ -3926,7 +3982,12 @@ export default function MobileDispatchValetOrder({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              orderData: newOrderData,
+              orderData: {
+                ...newOrderData,
+                dispatchCountdown: 60,
+                dispatchedAt: ts,
+                dispatchExpiresAt: ts + 60000
+              },
               reporterPhone: activePhone || userPhone || '',
               pickupLat: finalLat,
               pickupLng: finalLng,
@@ -3938,14 +3999,37 @@ export default function MobileDispatchValetOrder({
             if (resData.success) {
               if (resData.isHall) {
                 onShowToast('3公里内无在线空闲小队司机，订单已全员广播转入选单大厅');
-              } else if (resData.dispatchedDriverName) {
-                onShowToast(`已派单给3公里内最近小队司机【${resData.dispatchedDriverName}】`);
+                if (chosenPhone && db) {
+                  deleteDoc(doc(db, 'passenger_links', chosenPhone)).catch(() => {});
+                }
+                if (db) {
+                  setDoc(doc(db, 'merchant_orders', orderId), {
+                    ...newOrderData,
+                    status: 'hall',
+                    in_hall: true,
+                    statusCategory: '等待接单',
+                    dispatchedDriverPhone: '',
+                    dispatchedDriverName: ''
+                  }, { merge: true }).catch(() => {});
+                }
+              } else if (resData.dispatchedDriverPhone) {
+                const srvPhone = String(resData.dispatchedDriverPhone).replace(/\D/g, '').trim();
+                if (db && srvPhone) {
+                  setDoc(doc(db, 'passenger_links', srvPhone), {
+                    ...passengerLinkPayload,
+                    dispatchedDriverPhone: srvPhone,
+                    dispatchedDriverName: resData.dispatchedDriverName || ''
+                  }).catch(() => {});
+                }
+                onShowToast(`已派单给3公里内最近小队司机【${resData.dispatchedDriverName || '小队司机'}】`);
               }
             }
           }
         } catch (_) {
           // Fallback Firestore setDoc
-          setDoc(doc(db, 'merchant_orders', orderId), newOrderData).catch(() => {});
+          if (db) {
+            setDoc(doc(db, 'merchant_orders', orderId), newOrderData).catch(() => {});
+          }
         }
       };
       syncRemote();
@@ -4917,26 +5001,28 @@ export default function MobileDispatchValetOrder({
         // 2. 遍历真实 squadMembers (仅包含已审核通过的成员)
         squadMembers.forEach((m, idx) => {
           if (!isRemovedItem(m)) {
-            const isMaster = m.phone === '15509601222';
+            const cleanPhone = String(m.phone || m.id || '').replace(/\D/g, '').trim();
+            const isMaster = cleanPhone === '15509601222';
             const status = String(m.status || (isMaster ? '已通过' : '')).trim();
             // 只有审核通过的司机才进入成员列表！未审核或待审核绝不计入！
             if (isMaster || ['已通过', 'approved', '通过'].includes(status)) {
-              const isMerchant = m.role === '商户、商家' || m.role?.includes('商户') || m.role?.includes('商家') || m.userRole?.includes('商户') || m.userRole?.includes('商家');
+              const tm = teamMembers.find(t => String(t.phone || t.id).replace(/\D/g, '').trim() === cleanPhone);
+              const isMerchant = String(m.phone || '').toUpperCase().endsWith('A') || m.role === '商户、商家';
               const memberName = isMerchant 
-                ? '商户、商家' 
-                : (isMaster ? masterDevName : resolveDriverRealName(m.phone, m.name || m.driverName || m.realName || m.applicantName));
-              const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (m.role || m.userRole || '普通司机');
+                ? `司机${cleanPhone.slice(-4)}商`
+                : (isMaster ? masterDevName : resolveDriverRealName(cleanPhone, m.name || m.driverName || m.realName || m.applicantName));
+              const memberRole = tm?.role || (isMerchant ? '商户、商家' : (isMaster ? '开发者司机' : (m.role || m.userRole || '普通司机')));
 
               // 只有拥有真实姓名的正式小队成员才会在 App 成员列表 (w14) 展示！非小队通用账号 (如 司机0116) 彻底排除！
-              if (!isMerchant && (isGenericDriverName(memberName, m.phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(m.phone))) {
+              if (!isMerchant && (isGenericDriverName(memberName, cleanPhone) || REMOVED_GENERIC_DRIVER_PHONES.includes(cleanPhone))) {
                 return;
               }
 
-              membersMap.set(m.phone, {
-                id: m.id || m.phone || `real-${idx}`,
+              membersMap.set(cleanPhone, {
+                id: m.id || cleanPhone || `real-${idx}`,
                 name: memberName,
                 role: memberRole,
-                phone: m.phone,
+                phone: cleanPhone,
                 status: '已通过',
                 approvedBy: m.approvedBy || '最高开发者',
                 approvedRole: m.approvedRole || '开发者司机',
@@ -4950,27 +5036,29 @@ export default function MobileDispatchValetOrder({
         // 关键：只有审核通过的申请才进入成员列表！状态为待审核/审核批复中/已拒绝的，绝不在小队成员列表显示，也不计入小队人数！
         applicants.forEach(app => {
           if (!isRemovedItem(app)) {
-            const isMaster = app.phone === '15509601222';
+            const cleanPhone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
+            const isMaster = cleanPhone === '15509601222';
             const status = String(app.status || '').trim();
             if (isMaster || ['已通过', 'approved', '通过'].includes(status)) {
-              const existing = membersMap.get(app.phone);
-              const isMerchant = app.role === '商户、商家' || app.role?.includes('商户') || app.role?.includes('商家') || app.userRole?.includes('商户') || app.userRole?.includes('商家') || existing?.role?.includes('商户') || existing?.role?.includes('商家');
+              const existing = membersMap.get(cleanPhone);
+              const tm = teamMembers.find(t => String(t.phone || t.id).replace(/\D/g, '').trim() === cleanPhone);
+              const isMerchant = String(app.phone || '').toUpperCase().endsWith('A') || app.role === '商户、商家';
               const memberName = isMerchant 
-                ? '商户、商家' 
-                : (isMaster ? masterDevName : resolveDriverRealName(app.phone, existing?.name || app.name || app.driverName || app.realName || app.applicantName));
-              const memberRole = isMerchant ? '商户、商家' : isMaster ? '开发者司机' : (existing?.role || app.role || '普通司机');
+                ? `司机${cleanPhone.slice(-4)}商`
+                : (isMaster ? masterDevName : resolveDriverRealName(cleanPhone, existing?.name || app.name || app.driverName || app.realName || app.applicantName));
+              const memberRole = tm?.role || (isMerchant ? '商户、商家' : (isMaster ? '开发者司机' : (existing?.role || app.role || '普通司机')));
               const approvedBy = existing?.approvedBy || app.approvedBy || '最高开发者';
               const approvedRole = existing?.approvedRole || app.approvedRole || '开发者司机';
 
-              if (!isMerchant && (isGenericDriverName(memberName, app.phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(app.phone))) {
+              if (!isMerchant && (isGenericDriverName(memberName, cleanPhone) || REMOVED_GENERIC_DRIVER_PHONES.includes(cleanPhone))) {
                 return;
               }
 
-              membersMap.set(app.phone, {
-                id: app.id || app.phone,
+              membersMap.set(cleanPhone, {
+                id: app.id || cleanPhone,
                 name: memberName,
                 role: memberRole,
-                phone: app.phone,
+                phone: cleanPhone,
                 status: '已通过',
                 approvedBy,
                 approvedRole,
@@ -4984,10 +5072,11 @@ export default function MobileDispatchValetOrder({
         Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(([p, realName]) => {
           if (p !== '15509601222' && !membersMap.has(p)) {
             const isLi = p === '18695119126';
+            const tm = teamMembers.find(t => String(t.phone || t.id).replace(/\D/g, '').trim() === p);
             membersMap.set(p, {
               id: p,
               name: realName,
-              role: isLi ? '最高开发者' : '普通司机',
+              role: tm?.role || (isLi ? '最高开发者' : '普通司机'),
               phone: p,
               status: '已通过',
               approvedBy: '吴彦祖',
@@ -4999,14 +5088,17 @@ export default function MobileDispatchValetOrder({
 
         // 4. 遍历 merchantUsers (绝不覆盖开发者/管理员/司机角色)
         merchantUsers.forEach((mu, idx) => {
-          if (mu?.phone && mu.phone !== '15509601222' && !isRemovedItem(mu)) {
-            const existing = membersMap.get(mu.phone);
+          const rawP = String(mu?.phone || mu?.id || '').trim();
+          const cleanP = rawP.replace(/\D/g, '').trim();
+          if (rawP && rawP !== '15509601222' && !isRemovedItem(mu)) {
+            const existing = membersMap.get(cleanP);
             if (!existing || existing.role === '商户、商家') {
-              membersMap.set(mu.phone, {
-                id: mu.id || mu.phone || `merchant-${idx}`,
-                name: '商户、商家',
+              const last4 = cleanP.slice(-4) || '1222';
+              membersMap.set(rawP, {
+                id: mu.id || rawP || `merchant-${idx}`,
+                name: `司机${last4}商`,
                 role: '商户、商家',
-                phone: mu.phone,
+                phone: rawP,
                 status: '已通过',
                 approvedBy: '系统自动审批',
                 approvedRole: '系统自动',

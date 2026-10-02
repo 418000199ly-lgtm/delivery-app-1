@@ -66,6 +66,10 @@
 	<string>黑湾代驾需要持续访问您的位置，以便实时记录代驾轨迹与实时计费。</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>黑湾代驾需要后台获取您的位置，以便实时更新代驾行程路线与派单信息。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>黑湾代驾需要使用您的相机，以便扫描二维码报单或核验收款码。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>黑湾代驾需要访问相册，以便选择并上传微信收款二维码。</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

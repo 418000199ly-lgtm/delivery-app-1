@@ -59,7 +59,7 @@ jobs:
 
       - name: Install Dependencies & Build Web App
         run: |
-          npm install --legacy-peer-deps --no-audit --no-fund
+          npm ci --legacy-peer-deps
           npm run build
 
       - name: Generate Mobile Assets & Icons
@@ -117,7 +117,7 @@ jobs:
 
       - name: Install Dependencies & Build Web App
         run: |
-          npm install --legacy-peer-deps --no-audit --no-fund
+          npm ci --legacy-peer-deps
           npm run build
 
       - name: Generate Mobile Assets & Icons

@@ -60,7 +60,7 @@ export function registerDriverCustomName(phone: string, name: string): void {
   const finalName = String(name || '').trim().slice(0, 8);
   if (!cleanPhone || !finalName) return;
   if (finalName === '代驾司机' || finalName === '在线代驾司机' || finalName === '司机' || finalName === '未命名') return;
-  if (finalName.startsWith('网页商户商家') || finalName.startsWith('商户商家')) return;
+  if (finalName.includes('商户') || finalName.includes('商家')) return;
   driverCustomNameRegistry.set(cleanPhone, finalName);
   if (typeof window !== 'undefined') {
     try {
@@ -324,7 +324,7 @@ export function resolveDriverRealName(
     const str = String(name).trim();
     if (!str) return false;
     if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名' || str === '虚拟司机') return false;
-    if (str.startsWith('网页商户商家') || str.startsWith('商户商家')) return false;
+    if (str.includes('商户') || str.includes('商家') || str.includes('店铺') || str.includes('门店')) return false;
     // 非 15509601222 账号绝不能默认叫“吴彦祖”或“吴师傅”（除非被特意改名为吴彦祖相关）
     if (!isWu && (str === '吴彦祖' || str === '吴师傅')) return false;
     // 如果是类似 “司机4428” 这种兜底临时名，绝不当做自定义名称采纳（对所有司机通用）

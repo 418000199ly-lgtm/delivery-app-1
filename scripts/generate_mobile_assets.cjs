@@ -151,6 +151,7 @@ async function main() {
         copyRecursiveSync(path.join(src, childItemName), path.join(dest, childItemName));
       });
     } else if (exists && stats.isFile()) {
+      if (src.endsWith('.zip') || src.endsWith('.tar.gz') || src.endsWith('.gz')) return;
       const parentDir = path.dirname(dest);
       if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
       fs.copyFileSync(src, dest);

@@ -6,12 +6,15 @@ import subprocess
 
 print("=== Starting Perfect Baota Deployment Package Generation ===")
 
-# 1. Run build
-try:
-    print("Executing npm run build...")
-    subprocess.run(["npm", "run", "build"], check=True)
-except Exception as e:
-    print(f"Build note: {e}")
+# 1. Run build if dist is missing
+if not os.path.exists("dist/server.cjs"):
+    try:
+        print("Executing npm run build...")
+        subprocess.run(["npm", "run", "build"], check=True)
+    except Exception as e:
+        print(f"Build note: {e}")
+else:
+    print("dist/ already built, skipping redundant build...")
 
 # 2. Copy server.cjs to server.js for zero-setup Node execution in Baota Panel
 if os.path.exists("dist/server.cjs"):
@@ -165,27 +168,11 @@ with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
             else:
                 add_to_zip(zipf, item, item)
 
-print(f"Creating {tar_filename}...")
-with tarfile.open(tar_filename, 'w:gz') as tarf:
-    for item in include_items:
-        if os.path.exists(item):
-            if os.path.isdir(item):
-                for root, dirs, files in os.walk(item):
-                    if 'node_modules' in root or '.git' in root:
-                        continue
-                    for file in files:
-                        if file.endswith('.zip') or file.endswith('.gz'):
-                            continue
-                        full_path = os.path.join(root, file)
-                        rel_path = os.path.relpath(full_path, os.getcwd())
-                        tarf.add(full_path, rel_path)
-            else:
-                tarf.add(item, item)
-
-# Also copy to dist/daijia_deploy.zip for static fallback
+# Also copy to dist/daijia_deploy.zip and public/daijia_deploy.zip for static fallback
 if os.path.exists('dist'):
     shutil.copy(zip_filename, os.path.join('dist', zip_filename))
-    shutil.copy(tar_filename, os.path.join('dist', tar_filename))
+if os.path.exists('public'):
+    shutil.copy(zip_filename, os.path.join('public', zip_filename))
 
 print("=== Baota Deployment Package Created Successfully ===")
 print(f"Zip size: {os.path.getsize(zip_filename)} bytes ({os.path.getsize(zip_filename)/1024/1024:.2f} MB)")

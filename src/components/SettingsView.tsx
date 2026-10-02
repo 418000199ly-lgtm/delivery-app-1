@@ -1061,34 +1061,57 @@ export default function SettingsView({
                       settings.wechatQrCode ? (
                         <img 
                           src={settings.wechatQrCode} 
-                          alt="WeChat QrCode" 
+                          alt="微信收款码" 
+                          onError={(e) => {
+                            (e.currentTarget as HTMLElement).style.display = 'none';
+                            const fallbackEl = document.getElementById('wechat-qr-fallback');
+                            if (fallbackEl) fallbackEl.style.display = 'flex';
+                          }}
                           className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
                         />
-                      ) : (
-                        <div className="flex flex-col items-center justify-center text-center p-4">
-                          <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 mb-2">
-                            <PlusSquare className="w-5 h-5" />
-                          </div>
-                          <span className="text-xs font-bold text-gray-700 font-sans">暂未设置微信收款码</span>
-                          <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
-                        </div>
-                      )
+                      ) : null
                     ) : (
                       settings.alipayQrCode ? (
                         <img 
                           src={settings.alipayQrCode} 
-                          alt="Alipay QrCode" 
+                          alt="支付宝收款码" 
+                          onError={(e) => {
+                            (e.currentTarget as HTMLElement).style.display = 'none';
+                            const fallbackEl = document.getElementById('alipay-qr-fallback');
+                            if (fallbackEl) fallbackEl.style.display = 'flex';
+                          }}
                           className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
                         />
-                      ) : (
-                        <div className="flex flex-col items-center justify-center text-center p-4">
-                          <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center text-sky-600 mb-2">
-                            <PlusSquare className="w-5 h-5" />
-                          </div>
-                          <span className="text-xs font-bold text-gray-700 font-sans">暂未设置支付宝收款码</span>
-                          <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
+                      ) : null
+                    )}
+
+                    {/* Fallback placeholders matching Image w9 */}
+                    {selectedQrTab === 'wechat' && (
+                      <div 
+                        id="wechat-qr-fallback"
+                        style={{ display: settings.wechatQrCode ? 'none' : 'flex' }}
+                        className="flex-col items-center justify-center text-center p-4"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 mb-2">
+                          <PlusSquare className="w-5 h-5" />
                         </div>
-                      )
+                        <span className="text-xs font-bold text-gray-700 font-sans">暂时未设置微信收款码</span>
+                        <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
+                      </div>
+                    )}
+
+                    {selectedQrTab === 'alipay' && (
+                      <div 
+                        id="alipay-qr-fallback"
+                        style={{ display: settings.alipayQrCode ? 'none' : 'flex' }}
+                        className="flex-col items-center justify-center text-center p-4"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center text-sky-600 mb-2">
+                          <PlusSquare className="w-5 h-5" />
+                        </div>
+                        <span className="text-xs font-bold text-gray-700 font-sans">暂时未设置支付宝收款码</span>
+                        <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
+                      </div>
                     )}
 
                     {/* Fancy hover banner */}

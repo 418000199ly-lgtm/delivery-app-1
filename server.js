@@ -1409,7 +1409,7 @@ async function startServer() {
       writeLocalJsonDb(dbData);
       const hostHeader = String(req.headers.host || "");
       if (!hostHeader.includes("lyheiwandaijiamax.com")) {
-        const baotaBaseUrl = "https://admin.lyheiwandaijiamax.com";
+        const baotaBaseUrl = "https://api.lyheiwandaijiamax.com";
         fetch(`${baotaBaseUrl}/api/admin/update-driver-expiry`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1498,7 +1498,7 @@ async function startServer() {
       writeLocalJsonDb(dbData);
       const hostHeader = String(req.headers.host || "");
       if (!hostHeader.includes("lyheiwandaijiamax.com")) {
-        const baotaBaseUrl = "https://admin.lyheiwandaijiamax.com";
+        const baotaBaseUrl = "https://api.lyheiwandaijiamax.com";
         fetch(`${baotaBaseUrl}/api/admin/update-driver-role`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1804,6 +1804,48 @@ async function startServer() {
       return res.json({ success: true, phone, isOnline: false });
     } catch (err) {
       console.error("[Baota API /api/driver/offline Error]:", err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+  app.post("/api/driver/status", async (req, res) => {
+    try {
+      const phone = String(req.body.phone || req.body.driverPhone || "").trim();
+      if (!phone) {
+        return res.status(400).json({ success: false, error: "Missing driver phone" });
+      }
+      const isBusy = Boolean(req.body.isBusy);
+      const status = isBusy ? "busy" : "idle";
+      const currentView = req.body.currentView || (isBusy ? "create_order" : "home");
+      const timestamp = req.body.timestamp || Date.now();
+      const patch = {
+        isBusy,
+        status,
+        currentView,
+        lastStatusUpdateTime: timestamp,
+        lastUpdatedTime: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      const dbData = readLocalJsonDb();
+      ["driver_users", "squad_members", "driver_locations"].forEach((col) => {
+        if (!dbData[col]) dbData[col] = {};
+        const prev = dbData[col][phone] || {};
+        dbData[col][phone] = { ...prev, ...patch, phone };
+      });
+      writeLocalJsonDb(dbData);
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query(
+            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+            ["driver_locations", phone, JSON.stringify({ ...dbData.driver_locations?.[phone] || {}, ...patch, phone })]
+          );
+          await mysqlPool.query(
+            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+            ["squad_members", phone, JSON.stringify({ ...dbData.squad_members?.[phone] || {}, ...patch, phone })]
+          );
+        } catch (_) {
+        }
+      }
+      return res.json({ success: true, phone, isBusy, status });
+    } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -2370,7 +2412,9 @@ async function startServer() {
         const loc = locationMap[cleanPhone] || {};
         const isOnline = Boolean(loc.isOnline ?? data.isOnline);
         if (!isOnline) return;
-        const isBusy = Boolean(data.hasActiveOrder || data.currentStatus === "serving" || data.isBusy || loc.isBusy);
+        const isBusy = Boolean(
+          data.hasActiveOrder || data.currentStatus === "serving" || data.isBusy || loc.isBusy || data.currentView === "create_order" || loc.currentView === "create_order" || data.isInReportView === true || loc.isInReportView === true || data.status === "busy" || loc.status === "busy"
+        );
         if (isBusy) return;
         let dLat = Number(loc.lat ?? data.lat);
         let dLng = Number(loc.lng ?? data.lng);
@@ -2413,7 +2457,9 @@ async function startServer() {
           qrcode_url: driverQrUrl,
           driverQrCode: driverQrUrl,
           distanceText: distText,
+          dispatchCountdown: 60,
           dispatchedAt: nowTs,
+          dispatchExpiresAt: nowTs + 6e4,
           timestamp: nowTs
         };
         if (!dbData["passenger_links"]) dbData["passenger_links"] = {};
@@ -2423,7 +2469,9 @@ async function startServer() {
           ...dispatchedPayload,
           status: "dispatched",
           statusCategory: "\u5DF2\u6307\u6D3E",
+          dispatchCountdown: 60,
           dispatchedAt: nowTs,
+          dispatchExpiresAt: nowTs + 6e4,
           timestamp: nowTs
         };
         writeLocalJsonDb(dbData);
@@ -2722,7 +2770,7 @@ async function startServer() {
         const isDispatched = (order.status === "dispatched" || order.status === "submitted" && Boolean(order.dispatchedDriverPhone)) && !order.claimedAt && order.status !== "claimed" && order.status !== "serving" && order.status !== "completed" && order.status !== "cancelled" && order.in_hall !== true;
         if (isDispatched && order.dispatchedDriverPhone) {
           const dispatchedTime = Number(order.dispatchedAt || order.timestamp || 0);
-          if (dispatchedTime > 0 && now - dispatchedTime >= 3e4) {
+          if (dispatchedTime > 0 && now - dispatchedTime >= 6e4) {
             const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, "").trim();
             const existingDeclined = Array.isArray(order.declinedDriverPhones) ? order.declinedDriverPhones : [];
             const existingTimeout = Array.isArray(order.timeoutDriverPhones) ? order.timeoutDriverPhones : [];

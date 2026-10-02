@@ -1029,6 +1029,7 @@ export default function AdminPanel({
     const devPhone = '15509601222';
     const existingDev = driverMap.get(devPhone) || {};
     driverMap.set(devPhone, {
+      ...existingDev,
       id: devPhone,
       phone: devPhone,
       phoneNumber: devPhone,
@@ -1038,11 +1039,10 @@ export default function AdminPanel({
       userRole: '开发者',
       status: '已通过',
       city: existingDev.city || '银川市',
-      vipExpiry: '永久有效',
+      vipExpiry: (existingDev.vipExpiry && existingDev.vipExpiry !== '待开通') ? existingDev.vipExpiry : '永久有效',
       isOnline: Boolean(existingDev.isOnline),
       onlineOrdersEnabled: Boolean(existingDev.onlineOrdersEnabled !== false),
-      isBanned: false,
-      ...existingDev
+      isBanned: false
     });
 
     const unifiedList = Array.from(driverMap.values());
@@ -1679,6 +1679,7 @@ export default function AdminPanel({
 
       // 1. Call server-side batch recharge endpoint
       const baseUrl = getBaseApiUrl();
+      const baotaUrl = 'https://api.lyheiwandaijiamax.com';
 
       const rechargePromises = [
         fetch(`${baseUrl}/api/admin/batch-recharge-squad`, {
@@ -3789,7 +3790,7 @@ export default function AdminPanel({
                               setEditingDriverName(driverDoc.driverName || driverDoc.name || '');
                             }}>
                               <span className="text-amber-500 border-b border-dashed border-slate-700 hover:border-amber-400 transition-colors pb-0.5 font-sans font-extrabold text-xs">
-                                {driverDoc.driverName || driverDoc.name || ((driverDoc.phoneNumber || driverDoc.phone || targetPhone.trim()) === '15509601222' ? '吴彦祖' : '（未同步名字，点击设置）')}
+                                {resolveDriverRealName(driverDoc.phoneNumber || driverDoc.phone || targetPhone.trim(), driverDoc.driverName || driverDoc.name)}
                               </span>
                               <Edit3 className="w-3 h-3 text-slate-500 hover:text-slate-300 transition-colors" />
                             </div>
