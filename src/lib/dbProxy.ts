@@ -38,7 +38,7 @@ export class ProxyQuerySnapshot {
   }
 }
 
-// Global settings to route API requests to Mainland China Aliyun Baota server (https://api.lyheiwandaijiamax.com)
+// Global settings to route API requests to Mainland China Aliyun Baota server
 export function getBaseApiUrl(): string {
   try {
     const customUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('custom_api_base_url');
@@ -60,17 +60,22 @@ export function getBaseApiUrl(): string {
       protocol.startsWith('capacitor') || 
       protocol.startsWith('app') || 
       protocol.startsWith('file') || 
-      (typeof (window as any).Capacitor !== 'undefined') ||
-      (typeof (window as any).webkit !== 'undefined') ||
-      ((window as any).Capacitor?.isNativePlatform?.());
+      (typeof (window as any).Capacitor !== 'undefined' && (window as any).Capacitor?.isNativePlatform?.()) ||
+      (typeof (window as any).webkit !== 'undefined' && !(window as any).webkit?.messageHandlers?.length);
 
     if (isNativeMobileApp) {
-      // Packaged mobile apps on Android/iOS MUST always connect to the Aliyun Baota production server!
+      // Packaged mobile apps on Android/iOS connect directly to the primary Baota API endpoint
       return 'https://api.lyheiwandaijiamax.com';
     }
 
-    // Development or AI Studio Cloud Run preview environments (only for browser previews)
-    if (hostname.includes('run.app') || (hostname.includes('localhost') && !isNativeMobileApp) || hostname.includes('127.0.0.1')) {
+    // In web browsers:
+    // If on admin.lyheiwandaijiamax.com or lyheiwandaijiamax.com, data communicates through https://api.lyheiwandaijiamax.com
+    if (hostname.includes('lyheiwandaijiamax.com')) {
+      return 'https://api.lyheiwandaijiamax.com';
+    }
+
+    // For preview environments (e.g. run.app, localhost), use same-origin which proxies to Baota
+    if (window.location.origin && !window.location.origin.includes('null')) {
       return window.location.origin;
     }
   }

@@ -6,23 +6,59 @@ import subprocess
 
 print("=== Starting Perfect Baota Deployment Package Generation ===")
 
-# 1. Run build if dist is missing
-if not os.path.exists("dist/server.cjs"):
-    try:
-        print("Executing npm run build...")
-        subprocess.run(["npm", "run", "build"], check=True)
-    except Exception as e:
-        print(f"Build note: {e}")
-else:
-    print("dist/ already built, skipping redundant build...")
+# 1. Run fresh build
+try:
+    print("Executing npm run build...")
+    subprocess.run(["npm", "run", "build"], check=True)
+except Exception as e:
+    print(f"Build warning/note: {e}")
 
-# 2. Copy server.cjs to server.js for zero-setup Node execution in Baota Panel
+# Ensure dist exists
+os.makedirs("dist", exist_ok=True)
+
+# 2. Copy server.cjs to server.js in root and dist for zero-setup Node execution in Baota Panel
 if os.path.exists("dist/server.cjs"):
     shutil.copy("dist/server.cjs", "server.js")
+    shutil.copy("dist/server.cjs", "dist/server.js")
     if os.path.exists("dist/server.cjs.map"):
         shutil.copy("dist/server.cjs.map", "server.js.map")
+        shutil.copy("dist/server.cjs.map", "dist/server.js.map")
 
-# 3. Create ecosystem.config.js for Baota PM2 Manager
+# 3. Ensure passenger_order.html and other standalone HTMLs are in dist root
+standalone_htmls = ['passenger_order.html', 'aliyun_passenger_deploy.html']
+for html in standalone_htmls:
+    if os.path.exists(html):
+        shutil.copy(html, os.path.join("dist", html))
+
+# 4. Ensure all public assets & image files are synced to dist root as shown in image w6
+image_files_to_sync = [
+    'driver_mascot.jpg',
+    'favicon.ico',
+    'fuwu.png',
+    'fuwu.svg',
+    'hwdjtb.png',
+    'icon.png',
+    'manifest.json',
+    'ready_driver.jpg',
+    't041a040bace9bbe659.jpg',
+    'valet_car_banner.jpg',
+    'vip_banner.jpg',
+    'wechat_card_banner.jpg',
+    'welcome_bg.jpg',
+    'beian.png',
+    'beian.svg',
+    'beiantubiao.png',
+    'apple-touch-icon.png'
+]
+
+for img in image_files_to_sync:
+    src_p = os.path.join('public', img)
+    if os.path.exists(src_p):
+        shutil.copy(src_p, os.path.join('dist', img))
+    elif os.path.exists(img):
+        shutil.copy(img, os.path.join('dist', img))
+
+# 5. Create ecosystem.config.js for Baota PM2 Manager
 ecosystem_content = """module.exports = {
   apps: [
     {
@@ -40,13 +76,13 @@ ecosystem_content = """module.exports = {
 with open('ecosystem.config.js', 'w', encoding='utf-8') as f:
     f.write(ecosystem_content)
 
-# 4. Create README_BAOTA.md
+# 6. Create README_BAOTA.md
 readme_content = """# 🚗 黑湾代驾MAX平台 - 阿里云宝塔面板一键部署指南
 
 ## 核心特性：
-- **完全中国大陆本地化运行**：已完全切断 Firebase、Cloudflare 等国外被墙 API 依赖。
+- **完全中国大陆本地化运行**：完全基于国内高德地图与阿里云网络环境，无任何境外被墙依赖。
 - **内置零配置服务端**：直接运行 `node server.js` 即可启动独立全栈服务端。
-- **包含了全套功能模块**：商户代叫（手机网页版）、乘客自助端（代开单）、3分钟二维码防伪超时失效、非微信支付宝/未开会员拦截、管理后台及 MySQL 数据持久化。
+- **包含了全套功能模块**：商户代叫（手机网页版）、小队正式成员/隔离区司机权限管理、乘客自助扫码开单（3分钟防伪倒计时）、管理后台、MySQL 数据持久化。
 
 ---
 
@@ -73,7 +109,7 @@ readme_content = """# 🚗 黑湾代驾MAX平台 - 阿里云宝塔面板一键�
      - **运行环境**：选择 Node 18+
      - **项目名称**：`daijia-app`
      - **端口**：`3000`
-   - 点击【提交】后，在项目列表中点击【模块/依赖】执行 `npm install --production`（或依赖包安装）。
+   - 点击【提交】后，在项目列表中点击【模块/依赖】执行 `npm install --production`。
    - 点击【启动】。
 
 5. **配置域名反向代理**：
@@ -117,12 +153,13 @@ include_items = [
 ]
 
 zip_filename = 'daijia_deploy.zip'
+baota_zip = 'baota_deploy.zip'
 tar_filename = 'daijia_deploy.tar.gz'
 
-if os.path.exists(zip_filename):
-    os.remove(zip_filename)
-if os.path.exists(tar_filename):
-    os.remove(tar_filename)
+for fn in [zip_filename, baota_zip, tar_filename]:
+    if os.path.exists(fn):
+        try: os.remove(fn)
+        except: pass
 
 def add_to_zip(zipf, full_path, archive_name):
     """Add a file or dir to zip with proper Unix permissions for Baota unzip"""
@@ -168,11 +205,16 @@ with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
             else:
                 add_to_zip(zipf, item, item)
 
-# Also copy to dist/daijia_deploy.zip and public/daijia_deploy.zip for static fallback
+# Also create baota_deploy.zip as exact duplicate
+shutil.copy(zip_filename, baota_zip)
+
+# Also copy to dist/ and public/ for static fallback download
 if os.path.exists('dist'):
     shutil.copy(zip_filename, os.path.join('dist', zip_filename))
+    shutil.copy(zip_filename, os.path.join('dist', baota_zip))
 if os.path.exists('public'):
     shutil.copy(zip_filename, os.path.join('public', zip_filename))
+    shutil.copy(zip_filename, os.path.join('public', baota_zip))
 
 print("=== Baota Deployment Package Created Successfully ===")
 print(f"Zip size: {os.path.getsize(zip_filename)} bytes ({os.path.getsize(zip_filename)/1024/1024:.2f} MB)")

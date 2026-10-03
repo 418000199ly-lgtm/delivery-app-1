@@ -13,7 +13,6 @@ const COMPOUND_SURNAMES = [
  */
 export const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
   '15509601222': '吴彦祖',
-  '18695119126': '李扬',
   '18695174428': '童兵',
   '14709696333': '王贤亮',
   '15209678783': '禹全江',
@@ -21,15 +20,18 @@ export const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
   '13995071199': '赵文举',
   '13995388888': '于涛',
   '15121888888': '张瑞',
-  '15121904440': '周杰伦',
   '15295188888': '李金锋',
   '15226203822': '杨刚',
   '18695161718': '王平',
   '13995213747': '宋伟',
   '19995387350': '滴杨明7350',
-  '19995377975': '纳林7975',
+  '19995377975': '纳琳7975',
   '13895081030': '夏伟1030',
   '15296972638': '杨存安',
+  '19995429551': '白耀宗',
+  '17866167770': '魏秉金',
+  '18161583039': '拓万东',
+  '18169102771': '赵岩',
 };
 
 /**
@@ -280,7 +282,7 @@ export function formatDriverMaskedName(rawName?: string | null): string {
 export function isGenericDriverName(name?: string | null, phone?: string | null): boolean {
   const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
   // 权威真实小队司机绝不属于通用司机
-  if (cleanPhone && (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || cleanPhone === '15509601222' || cleanPhone === '18695119126' || cleanPhone === '15121904440')) {
+  if (cleanPhone && (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || cleanPhone === '15509601222')) {
     return false;
   }
   if (!cleanPhone || cleanPhone.length !== 11) return true;
@@ -415,11 +417,8 @@ export function resolveDriverRealName(
   if (isWu) {
     return '吴彦祖';
   }
-  if (isLiYang) {
-    return '李扬';
-  }
 
-  // 6. 兜底格式
+  // 6. 兜底格式（删除后或普通账号格式化为：司机XXXX，例如：司机4440、司机9126）
   return `司机${cleanPhone.slice(-4)}`;
 }
 
@@ -622,44 +621,19 @@ export async function resolveAndSyncDuplicateNames(): Promise<void> {
 }
 
 /**
- * Picks the authoritative (maximum) VIP expiry date string among multiple candidate dates/strings.
- * If any candidate is '永久有效' / '永久', returns '永久有效'.
- * Otherwise picks the date furthest in the future.
+ * Picks the authoritative VIP expiry date string among candidate dates/strings in precedence order.
+ * Respects the first non-empty valid expiry provided by the primary source.
  */
 export function pickAuthoritativeVipExpiry(...expiries: (string | undefined | null)[]): string {
   for (const exp of expiries) {
-    if (!exp) continue;
-    const trimmed = String(exp).trim();
-    if (trimmed === '永久有效' || trimmed === '永久' || trimmed === 'permanent' || trimmed === '终身') return '永久有效';
-  }
-  let maxTime = -1;
-  let maxExpiryString = '待开通';
-  for (const exp of expiries) {
-    if (!exp) continue;
-    const trimmed = String(exp).trim();
-    if (trimmed && trimmed !== '待开通' && trimmed !== '待激活' && trimmed !== '未激活' && trimmed !== '未开通' && trimmed !== '0' && trimmed !== '0天' && trimmed !== '已到期' && trimmed !== '已过期') {
-      const match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-      if (match) {
-        const year = parseInt(match[1], 10);
-        const month = parseInt(match[2], 10) - 1;
-        const day = parseInt(match[3], 10);
-        const time = new Date(year, month, day, 0, 0, 0, 0).getTime();
-        if (time > maxTime) {
-          maxTime = time;
-          maxExpiryString = trimmed;
-        }
-      } else {
-        const parsed = new Date(trimmed);
-        if (!isNaN(parsed.getTime()) && parsed.getTime() > maxTime) {
-          maxTime = parsed.getTime();
-          maxExpiryString = trimmed;
-        } else if (maxTime === -1) {
-          maxExpiryString = trimmed;
-        }
+    if (exp !== undefined && exp !== null) {
+      const trimmed = String(exp).trim();
+      if (trimmed !== '') {
+        return trimmed;
       }
     }
   }
-  return maxExpiryString;
+  return '待开通';
 }
 
 /**

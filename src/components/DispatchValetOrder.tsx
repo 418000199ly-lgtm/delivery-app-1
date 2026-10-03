@@ -670,7 +670,7 @@ export default function DispatchValetOrder({
             phone: p,
             name: realName,
             status: '已通过',
-            role: p === '18695119126' ? '最高开发者' : '普通司机',
+            role: '普通司机',
             approvedBy: '吴彦祖',
             approvedRole: '开发者司机',
             approvalTime: new Date().toLocaleString(),
@@ -791,7 +791,7 @@ export default function DispatchValetOrder({
                 phone: p,
                 name: realName,
                 status: '已通过',
-                role: p === '18695119126' ? '最高开发者' : '普通司机',
+                role: '普通司机',
                 approvedBy: existing?.approvedBy || '吴彦祖',
                 approvedRole: existing?.approvedRole || '开发者司机',
                 approvalTime: existing?.approvalTime || new Date().toLocaleString(),
@@ -1616,8 +1616,27 @@ export default function DispatchValetOrder({
     }
   };
   
-  // Real active drivers from Firestore
-  const [realDrivers, setRealDrivers] = useState<any[]>([]);
+  // Real active drivers from Firestore with immediate local cache restoration
+  const [realDrivers, setRealDrivers] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_real_drivers_cache_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (_) {}
+    return Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES).map(([phone, name]) => ({
+      phone,
+      name,
+      drivingYears: 5,
+      isOnline: phone === '15509601222',
+      isBusy: false,
+      role: phone === '15509601222' ? '开发者司机' : '普通司机',
+      onlineOrdersEnabled: true,
+      lastUpdatedTime: new Date().toLocaleTimeString(),
+      version: 'V2.0'
+    }));
+  });
   const [squadPhones, setSquadPhones] = useState<string[]>([]);
   const [squadMembers, setSquadMembers] = useState<any[]>(() => {
     try {
@@ -1628,7 +1647,7 @@ export default function DispatchValetOrder({
           return parsed.filter(m => {
             const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
             const n = String(m?.name || m?.driverName || '').trim();
-            if (p === '15509601222' || p === '18695119126') return true;
+            if (p === '15509601222') return true;
             if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return false;
             if (isGenericDriverName(n, p)) return false;
             return true;
@@ -1828,6 +1847,7 @@ export default function DispatchValetOrder({
   // Member list inline editing states
   const [editingMemberPhone, setEditingMemberPhone] = useState<string | null>(null);
   const [editingMemberNameTemp, setEditingMemberNameTemp] = useState<string>('');
+  const [applicantFilterTab, setApplicantFilterTab] = useState<'all' | 'approved' | 'rejected' | 'pending'>('all');
 
   // Helper to check allowed roles that current user can assign to target member
   // 分级权限与职务分配规则：
@@ -2018,7 +2038,7 @@ export default function DispatchValetOrder({
     }
 
     const targetPhone = String(targetMember.phone || targetMember.id || '').replace(/\D/g, '').trim();
-    const targetName = String(targetMember.name || targetMember.driverName || (targetPhone === '18695119126' ? '李扬' : `司机${targetPhone.slice(-4)}`)).trim();
+    const targetName = resolveDriverRealName(targetPhone, targetMember.name || targetMember.driverName);
 
     // Update local React state immediately so UI updates without external database/network dependency
     setSquadMembers(prev => {
@@ -3646,6 +3666,7 @@ export default function DispatchValetOrder({
       }
 
       // 2. Delegate dispatch calculation and sync to Aliyun Baota Server /api/dispatch/nearest
+      let finalAssignedDriver = chosenDriver;
       const syncRemote = async () => {
         const baseUrl = getBaseApiUrl();
         try {
@@ -3660,6 +3681,7 @@ export default function DispatchValetOrder({
                 dispatchExpiresAt: ts + 60000
               },
               reporterPhone: effectivePhone || userPhone || '',
+              excludePhone: effectivePhone || userPhone || '',
               pickupLat: finalLat,
               pickupLng: finalLng,
               radiusKm: 3.0
@@ -3669,6 +3691,7 @@ export default function DispatchValetOrder({
             const resData = await resp.json();
             if (resData.success) {
               if (resData.isHall) {
+                finalAssignedDriver = null;
                 onShowToast('3公里内无在线空闲小队司机，订单已全员广播转入选单大厅');
                 if (chosenPhone && db) {
                   deleteDoc(doc(db, 'passenger_links', chosenPhone)).catch(() => {});
@@ -3685,14 +3708,16 @@ export default function DispatchValetOrder({
                 }
               } else if (resData.dispatchedDriverPhone) {
                 const srvPhone = String(resData.dispatchedDriverPhone).replace(/\D/g, '').trim();
+                const srvName = resData.dispatchedDriverName || '小队司机';
+                finalAssignedDriver = { name: srvName, phone: srvPhone, distance: resData.distKm };
                 if (db && srvPhone) {
                   setDoc(doc(db, 'passenger_links', srvPhone), {
                     ...passengerLinkPayload,
                     dispatchedDriverPhone: srvPhone,
-                    dispatchedDriverName: resData.dispatchedDriverName || ''
+                    dispatchedDriverName: srvName
                   }).catch(() => {});
                 }
-                onShowToast(`已派单给3公里内最近小队司机【${resData.dispatchedDriverName || '小队司机'}】`);
+                onShowToast(`已派单给3公里内最近小队司机【${srvName}】！对方APP已弹出新来单确认页面（60秒倒计时）`);
               }
             }
           }
@@ -3703,22 +3728,20 @@ export default function DispatchValetOrder({
           }
         }
       };
-      syncRemote();
+      await syncRemote();
 
-      // 3. Update UI state to success immediately
+      // 3. Update UI state to success
       clearTimeout(safetyTimer);
       setIsDispatching(false);
       setButtonState('success');
       setDispatchResult({
-        driver: chosenDriver || { name: '选单大厅 (开放抢单)' },
+        driver: finalAssignedDriver || { name: '选单大厅 (开放抢单)' },
         passengerPhone: finalPhone,
         startLocation: passengerAddress,
-        distance: chosenDriver ? chosenDriver.distance : 0
+        distance: finalAssignedDriver ? finalAssignedDriver.distance : 0
       });
 
-      if (chosenDriver) {
-        onShowToast(`已派单给3公里内最近小队司机【${chosenDriver.name || chosenDriver.driverName || '小队司机'}】`);
-      } else {
+      if (!finalAssignedDriver) {
         onShowToast('3公里内无空闲上线小队司机，订单已进入选单大厅供抢单');
       }
 
@@ -4453,9 +4476,42 @@ export default function DispatchValetOrder({
                                      order.statusCategory === '已取消' ? 'bg-gray-100 text-gray-600 border-gray-200' :
                                      'bg-[#ff7d00]/10 text-[#ff7d00] border-[#ff7d00]/20';
 
+                    const dispatcherFullPhone = order.dispatchedByPhone || order.adminPhone || order.creatorPhone || userPhone || '18795165552';
+                    const dispatcherName = getFormattedDispatcherName(order, dispatcherFullPhone);
+
+                    const isHallOrder = Boolean(
+                      order.in_hall === true ||
+                      order.status === 'hall' ||
+                      order.statusCategory === '呼叫中' ||
+                      order.statusCategory === '等待接单' ||
+                      (!order.dispatchedDriverPhone && !order.driverPhone && !order.acceptedDriverPhone)
+                    );
+                    const rawDriverPhone = isHallOrder ? '' : (
+                      order.dispatchedDriverPhone ||
+                      order.rawOrder?.driverPhone || 
+                      order.driverPhone || 
+                      order.acceptedDriverPhone ||
+                      ''
+                    ).toString().replace(/[-\s]/g, '');
+
+                    let resolvedDriverName = '';
+                    if (isHallOrder) {
+                      resolvedDriverName = '选单大厅 (开放抢单)';
+                    } else {
+                      const matchedMember = squadMembers.find(
+                        (m: any) => (m.phone && m.phone.replace(/[-\s]/g, '') === rawDriverPhone) || m.id === rawDriverPhone
+                      );
+                      if (matchedMember && matchedMember.name) {
+                        resolvedDriverName = matchedMember.name;
+                      } else {
+                        const candidate = order.driverDisplayName || order.driverName || order.rawOrder?.driverName || order.rawOrder?.driverDisplayName;
+                        resolvedDriverName = candidate || resolveDriverRealName(rawDriverPhone, '在线接单司机');
+                      }
+                    }
+
                     return (
                       <div 
-                        key={`d-ord-${order.id || order.orderNo || ''}-${idx}`}
+                        key={`m-ord-${order.id || order.orderNo || ''}-${idx}`}
                         onClick={() => setSelectedOrderDetail(order)}
                         className="bg-white p-4 rounded-2xl border border-[#dfc0af] shadow-2xs hover:border-[#ff7d00] transition-all cursor-pointer space-y-3 active:scale-[0.99]"
                       >
@@ -4484,14 +4540,24 @@ export default function DispatchValetOrder({
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between pt-2 border-t border-[#f0f0f0] text-xs text-[#584235]">
-                          <div className="flex items-center gap-3">
-                            <span>乘客: <strong className="text-[#1a1c1c]">{order.passengerPhone || '真实乘客'}</strong></span>
-                            <span>派单人: <strong className="text-[#1a1c1c]">{getFormattedDispatcherName(order, userPhone)}</strong></span>
+                        <div className="pt-2 border-t border-[#f0f0f0] text-xs text-[#584235] space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-[11px] truncate">
+                              <span>乘客: <strong className="text-[#1a1c1c]">{order.passengerPhone || '真实乘客'}</strong></span>
+                              <span className="text-gray-300">|</span>
+                              <span>派单人: <strong className="text-[#1a1c1c]">{dispatcherName} ({dispatcherFullPhone})</strong></span>
+                            </div>
+                            <span className="font-bold text-sm text-[#ff7d00] shrink-0 ml-2">
+                              {getOrderSyncPrice(order)}
+                            </span>
                           </div>
-                          <span className="font-bold text-sm text-[#ff7d00]">
-                            {getOrderSyncPrice(order)}
-                          </span>
+                          <div className="flex items-center gap-2 text-[11px] text-slate-600 truncate bg-[#f9f9f9] px-2.5 py-1 rounded-lg">
+                            <span>接单司机:</span>
+                            <strong className="text-[#1a1c1c] truncate">{resolvedDriverName}</strong>
+                            {rawDriverPhone && (
+                              <span className="font-mono text-[#ff7d00] font-bold shrink-0">({rawDriverPhone})</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -4542,10 +4608,8 @@ export default function DispatchValetOrder({
           if (REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) return true;
 
           const rawName = String(item.name || item.driverName || item.applicantName || item.realName || '').trim();
-          if (phone !== '18695119126') {
-            if (isGenericDriverName(rawName, phone) || rawName.includes('3747') || phone.endsWith('3747') || phone === '13995213747') {
-              return true;
-            }
+          if (isGenericDriverName(rawName, phone) || rawName.includes('3747') || phone.endsWith('3747') || phone === '13995213747') {
+            return true;
           }
           if (
             phone && removedMemberPhones.some(p => {
@@ -4632,15 +4696,14 @@ export default function DispatchValetOrder({
           }
         });
 
-        // 确保权威真实小队司机始终展示在成员列表中
+        // 确保权威真实小队司机展示在成员列表中（已剔除除外）
         Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(([p, realName]) => {
-          if (p !== '15509601222' && !membersMap.has(p)) {
-            const isLi = p === '18695119126';
+          if (p !== '15509601222' && !membersMap.has(p) && !removedMemberPhones.includes(p) && !REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
             const tm = teamMembers.find(t => String(t.phone || t.id).replace(/\D/g, '').trim() === p);
             membersMap.set(p, {
               id: p,
               name: realName,
-              role: tm?.role || (isLi ? '最高开发者' : '普通司机'),
+              role: tm?.role || '普通司机',
               phone: p,
               status: '已通过',
               approvedBy: '吴彦祖',
@@ -4711,10 +4774,17 @@ export default function DispatchValetOrder({
         const isMerchantMember = (item: any) => {
           const p = String(item?.phone || item?.id || '').trim();
           const r = String(item?.role || item?.userRole || '').trim();
-          return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
+          return p.toUpperCase().endsWith('A') || ((r.includes('商户') || r.includes('商家')) && !r.includes('司机'));
         };
 
-        const driverMembersList = allMembersList.filter(item => !isMerchantMember(item));
+        const driverMembersList = allMembersList.filter(item => {
+          const p = String(item?.phone || item?.id || '').replace(/\D/g, '').trim();
+          if (p === '15509601222') return true; // 开发者司机也算一个人，统计时绝不排除
+          if (isMerchantMember(item)) return false;
+          if (removedMemberPhones.includes(p) || REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return false;
+          if (isGenericDriverName(item?.name || item?.driverName, p)) return false;
+          return item.status === '已通过' || item.status === 'approved' || item.status === '通过' || !item.status;
+        });
         const merchantMembersList = allMembersList.filter(item => isMerchantMember(item));
 
         const driverCount = driverMembersList.length;
@@ -5903,13 +5973,52 @@ export default function DispatchValetOrder({
 
           {/* Main Content Canvas */}
           <main className="flex-1 px-4 sm:px-5 py-4 space-y-4 overflow-y-auto pb-24">
-            {/* Permission Banner */}
-            <div className="bg-[#fff2e6] border border-[#ff7d00]/30 rounded-xl p-3 flex items-start gap-2.5 shadow-xs">
-              <ShieldCheck className="w-5 h-5 text-[#ff7d00] shrink-0 mt-0.5" />
-              <div className="text-xs text-[#584235] space-y-0.5">
-                <p className="font-bold text-[#311300]">审核审批权限说明：</p>
-                <p>【开发者司机】、【城市老板司机】、【城市管理司机】、【城市派单员司机】均拥有全权对申请人进行<strong>审批通过</strong>或<strong>审批不通过</strong>的判定。</p>
-              </div>
+            {/* 4 Category Filter Tab Buttons */}
+            <div className="grid grid-cols-4 gap-1.5 p-1 bg-[#f3e3d8] rounded-xl border border-[#dfc0af]/50 shrink-0 select-none">
+              <button
+                type="button"
+                onClick={() => setApplicantFilterTab('all')}
+                className={`py-2 px-1 rounded-lg text-xs font-bold transition-all text-center cursor-pointer ${
+                  applicantFilterTab === 'all'
+                    ? 'bg-[#ff7d00] text-white shadow-xs font-black'
+                    : 'text-[#584235] hover:text-[#311300]'
+                }`}
+              >
+                全部申请司机
+              </button>
+              <button
+                type="button"
+                onClick={() => setApplicantFilterTab('approved')}
+                className={`py-2 px-1 rounded-lg text-xs font-bold transition-all text-center cursor-pointer ${
+                  applicantFilterTab === 'approved'
+                    ? 'bg-emerald-600 text-white shadow-xs font-black'
+                    : 'text-[#584235] hover:text-[#311300]'
+                }`}
+              >
+                已通过
+              </button>
+              <button
+                type="button"
+                onClick={() => setApplicantFilterTab('rejected')}
+                className={`py-2 px-1 rounded-lg text-xs font-bold transition-all text-center cursor-pointer ${
+                  applicantFilterTab === 'rejected'
+                    ? 'bg-rose-600 text-white shadow-xs font-black'
+                    : 'text-[#584235] hover:text-[#311300]'
+                }`}
+              >
+                已拒绝
+              </button>
+              <button
+                type="button"
+                onClick={() => setApplicantFilterTab('pending')}
+                className={`py-2 px-1 rounded-lg text-xs font-bold transition-all text-center cursor-pointer ${
+                  applicantFilterTab === 'pending'
+                    ? 'bg-amber-600 text-white shadow-xs font-black'
+                    : 'text-[#584235] hover:text-[#311300]'
+                }`}
+              >
+                待审核
+              </button>
             </div>
 
             {applicants.length === 0 ? (
@@ -5928,10 +6037,21 @@ export default function DispatchValetOrder({
                     if (cleanPhone === '15509601222') return false;
                     const rawName = String(applicant.name || applicant.applicantName || applicant.driverName || '').trim();
                     const isGeneric = isGenericDriverName(rawName, cleanPhone);
-                    const isRejected = applicant.status === '已拒绝';
-                    // 规则：像司机3747、司机6333、司机5678等，如果显示已通过则彻底删除/不显示；已拒绝的予以保留（证明未入队）
+                    const isApprovedInSquad = squadMembers.some(m => {
+                      const mPhone = String(m.phone || m.phoneNumber || m.id || '').replace(/\D/g, '').trim();
+                      return mPhone === cleanPhone && (m.status === '已通过' || m.status === 'approved' || m.status === '通过' || !m.status);
+                    }) || Boolean(AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]);
+
+                    const isRejectedStatus = applicant.status === '已拒绝' && !isApprovedInSquad;
+                    const isPendingStatus = (applicant.status === '待审核' || applicant.status === 'pending' || applicant.status === '审核中') && !isApprovedInSquad;
+                    const curStatusCode = isRejectedStatus ? 'rejected' : isPendingStatus ? 'pending' : 'approved';
+
+                    if (applicantFilterTab === 'approved' && curStatusCode !== 'approved') return false;
+                    if (applicantFilterTab === 'rejected' && curStatusCode !== 'rejected') return false;
+                    if (applicantFilterTab === 'pending' && curStatusCode !== 'pending') return false;
+
                     if (isGeneric) {
-                      return isRejected;
+                      return isRejectedStatus;
                     }
                     return true;
                   })

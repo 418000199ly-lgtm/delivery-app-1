@@ -40,11 +40,10 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   const getCandidateApiUrls = (endpoint: string) => {
     const base = getBaseApiUrl();
     const urls: string[] = [];
-    if (base) {
+    urls.push(`https://api.lyheiwandaijiamax.com${endpoint}`);
+    if (base && !urls.includes(`${base}${endpoint}`)) {
       urls.push(`${base}${endpoint}`);
     }
-    urls.push(`https://admin.lyheiwandaijiamax.com${endpoint}`);
-    urls.push(`https://lyheiwandaijiamax.com${endpoint}`);
     if (typeof window !== 'undefined' && !window.location.hostname.includes('daijia')) {
       urls.push(endpoint);
     }

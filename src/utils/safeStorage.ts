@@ -26,16 +26,10 @@ export function safeSetItem(key: string, value: string): boolean {
       try {
         let trimmedValue = value;
 
-        // If key is settings, strip heavy base64 images from settings object
+        // If key is settings, trim history arrays if quota exceeded, but preserve payment QR codes
         if (key.startsWith('dd_settings')) {
           try {
             const parsed = JSON.parse(value);
-            if (parsed.wechatQrCode && parsed.wechatQrCode.length > 1000 && parsed.wechatQrCode.startsWith('data:')) {
-              delete parsed.wechatQrCode;
-            }
-            if (parsed.alipayQrCode && parsed.alipayQrCode.length > 1000 && parsed.alipayQrCode.startsWith('data:')) {
-              delete parsed.alipayQrCode;
-            }
             trimmedValue = JSON.stringify(parsed);
           } catch (_) {}
         } else if (key === 'dd_current_trip') {
@@ -132,21 +126,7 @@ export function pruneLocalStorage(): void {
       const raw = localStorage.getItem(k);
       if (raw) {
         if (k.startsWith('dd_settings')) {
-          try {
-            const parsed = JSON.parse(raw);
-            let modified = false;
-            if (parsed.wechatQrCode && parsed.wechatQrCode.length > 1000 && parsed.wechatQrCode.startsWith('data:')) {
-              delete parsed.wechatQrCode;
-              modified = true;
-            }
-            if (parsed.alipayQrCode && parsed.alipayQrCode.length > 1000 && parsed.alipayQrCode.startsWith('data:')) {
-              delete parsed.alipayQrCode;
-              modified = true;
-            }
-            if (modified) {
-              localStorage.setItem(k, JSON.stringify(parsed));
-            }
-          } catch (_) {}
+          // Keep settings intact, preserve QR codes
         } else {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed) && parsed.length > 10) {

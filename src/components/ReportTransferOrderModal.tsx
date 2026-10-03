@@ -3,6 +3,7 @@ import { ArrowLeft, MapPin, Phone, Info, CheckCircle2 } from 'lucide-react';
 import { db, doc, setDoc, getDocs, collection, getBaseApiUrl } from '../lib/dbProxy';
 import { geocodeAddress, calculateHaversineDistanceKm, formatDistance, DEFAULT_YINCHUAN_COORDS, isValidCoords } from '../utils/geocoding';
 import { speakText } from '../utils/speech';
+import { REMOVED_GENERIC_DRIVER_PHONES } from '../utils/nameResolver';
 import readyDriverImg from '../assets/images/ready_driver.jpg';
 import valetCarBannerImg from '../assets/images/valet_car_banner.jpg';
 import { READY_DRIVER_BASE64, VALET_CAR_BANNER_BASE64 } from '../assets/images/driverImageConstants';
@@ -126,11 +127,30 @@ export default function ReportTransferOrderModal({
         } catch (_) {}
       }
 
+      // Read removed squad members blacklist
+      const removedSet = new Set<string>();
+      try {
+        const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (savedRemoved) {
+          const parsed = JSON.parse(savedRemoved);
+          if (Array.isArray(parsed)) parsed.forEach((p: any) => removedSet.add(String(p).replace(/\D/g, '').trim()));
+        }
+      } catch (_) {}
+      REMOVED_GENERIC_DRIVER_PHONES.forEach(p => removedSet.add(p));
+
       // Always include master developer
       squadPhones.add('15509601222');
       if (!driverMap.has('15509601222')) {
         driverMap.set('15509601222', { phone: '15509601222', name: '吴彦祖', role: '开发者司机', status: '已通过' });
       }
+
+      // Purge any removed drivers from squadPhones and driverMap (except master developer)
+      removedSet.forEach(p => {
+        if (p !== '15509601222') {
+          squadPhones.delete(p);
+          driverMap.delete(p);
+        }
+      });
 
       // D. Read driver_locations for real-time online status and GPS
       try {
@@ -253,18 +273,83 @@ export default function ReportTransferOrderModal({
 
       let chosenDriver: any = null;
 
-      if (candidates.length > 0) {
-        // Find closest distance
+      // 呼叫中国大陆阿里云服务器宝塔面板派单逻辑系统（3秒考虑时间、坐标解析、3公里内寻找最近空闲小队司机，绝不派单给自己）
+      let serverResult: any = null;
+      try {
+        const dispatchResp = await fetch(`${baseUrl}/api/dispatch/nearest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderData: {
+              id: orderId,
+              orderId: orderId,
+              passengerPhone: cleanPhone,
+              startLocation: currentPickup,
+              destination: '',
+              status: 'submitted',
+              timestamp: Date.now(),
+              dispatchedAt: Date.now(),
+              dispatchCountdown: 60,
+              dispatchExpiresAt: Date.now() + 60000,
+              isValetOrder: true,
+              isPlatformDispatch: true,
+              orderRemark: '报单转单',
+              orderType: '报单转单',
+              type: '报单转单',
+              passengerLat: originLat,
+              passengerLng: originLng,
+              lat: originLat,
+              lng: originLng,
+              startLat: originLat,
+              startLng: originLng,
+              approxPrice: '未知',
+              scheduledTime: '现在出发',
+              needScooter: false,
+              merchantPhone: cleanUserPhone,
+              reporterPhone: cleanUserPhone,
+              dispatchedByPhone: cleanUserPhone,
+              dispatchedBy: cleanUserPhone,
+              paymentQrCode: myQrCode,
+              merchantPaymentQrCode: myQrCode,
+              merchantName: '报单转单'
+            },
+            reporterPhone: cleanUserPhone,
+            excludePhone: cleanUserPhone,
+            pickupLat: originLat,
+            pickupLng: originLng,
+            radiusKm: 3.0
+          })
+        });
+
+        if (dispatchResp.ok) {
+          serverResult = await dispatchResp.json();
+        }
+      } catch (e) {
+        console.warn('[ReportTransfer] Server nearest dispatch fallback to local:', e);
+      }
+
+      const isServerHandled = serverResult && serverResult.success;
+      const isHallFromServer = isServerHandled ? serverResult.isHall : (candidates.length === 0);
+
+      if (isServerHandled && !serverResult.isHall && serverResult.dispatchedDriverPhone) {
+        // Server assigned to nearest driver
+        const srvPhone = String(serverResult.dispatchedDriverPhone).replace(/\D/g, '').trim();
+        const srvName = serverResult.dispatchedDriverName || `司机${srvPhone.slice(-4)}`;
+        chosenDriver = { phone: srvPhone, name: srvName, distKm: serverResult.distKm || 0.5 };
+
+        setDispatchResultMsg({
+          title: '报单转单派单成功',
+          desc: `已派单给报单司机附近3公里内最近的小队司机【${srvName} (${srvPhone})】，直线距离 ${serverResult.distanceText || formatDistance(serverResult.distKm || 0.5)}，对方司机APP已实时弹出新来单界面（60秒倒计时）！`,
+          isHall: false
+        });
+      } else if (!isServerHandled && candidates.length > 0) {
+        // Local fallback when server unreachable
         const minDist = Math.min(...candidates.map(c => c.distKm));
-        // Find all candidates with exact same minimum distance (within 1 meter threshold)
         const sameMinDistCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) < 0.001);
-        // If multiple drivers have same distance, randomly select one
         const selectedDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
         chosenDriver = selectedDriver;
-
         const calculatedDistText = selectedDriver.distKm < 0.05 ? '0米' : formatDistance(selectedDriver.distKm);
 
-        // Order Payload for Direct Dispatch
         const orderPayload = {
           id: orderId,
           orderId: orderId,
@@ -274,6 +359,8 @@ export default function ReportTransferOrderModal({
           status: 'submitted',
           timestamp: Date.now(),
           dispatchedAt: Date.now(),
+          dispatchCountdown: 60,
+          dispatchExpiresAt: Date.now() + 60000,
           isValetOrder: true,
           isPlatformDispatch: true,
           orderRemark: '报单转单',
@@ -299,28 +386,21 @@ export default function ReportTransferOrderModal({
           distanceText: calculatedDistText,
         };
 
-        // 1. Dispatch directly into passenger_links of nearest driver
-        await setDoc(doc(db, 'passenger_links', selectedDriver.phone), orderPayload).catch(() => {});
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collection: 'passenger_links', docId: selectedDriver.phone, data: orderPayload })
-        }).catch(() => {});
-
-        // 2. Also record in merchant_orders
-        await setDoc(doc(db, 'merchant_orders', orderId), {
-          ...orderPayload,
-          status: 'dispatched',
-          statusCategory: '派单给司机',
-          createdAt: Date.now()
-        }).catch(() => {});
+        if (db) {
+          await setDoc(doc(db, 'passenger_links', selectedDriver.phone), orderPayload).catch(() => {});
+          await setDoc(doc(db, 'merchant_orders', orderId), {
+            ...orderPayload,
+            status: 'dispatched',
+            statusCategory: '派单给司机',
+            createdAt: Date.now()
+          }).catch(() => {});
+        }
 
         setDispatchResultMsg({
           title: '报单转单派单成功',
-          desc: `已派单给报单司机附近3公里内最近的小队司机【${selectedDriver.name} (${selectedDriver.phone})】，直线距离 ${formatDistance(minDist)}，对方司机APP已实时弹出新来单界面！`,
+          desc: `已派单给报单司机附近3公里内最近的小队司机【${selectedDriver.name} (${selectedDriver.phone})】，直线距离 ${calculatedDistText}，对方司机APP已实时弹出新来单界面（60秒倒计时）！`,
           isHall: false
         });
-
       } else {
         // No driver within 3km -> Enter Order Lobby (选单大厅)
         const reporterPhoneNum = cleanUserPhone || (userPhone ? String(userPhone).replace(/\D/g, '').trim() : '');
@@ -360,15 +440,15 @@ export default function ReportTransferOrderModal({
           merchantName: '报单转单'
         };
 
-        await setDoc(doc(db, 'merchant_orders', orderId), hallOrderPayload).catch(() => {});
+        if (db) {
+          await setDoc(doc(db, 'merchant_orders', orderId), hallOrderPayload).catch(() => {});
+        }
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: hallOrderPayload })
         }).catch(() => {});
 
-        // Note: Do NOT add to current driver's own local dd_merchant_orders_v2, and do NOT announce voice on reporting driver's device!
-        // Other drivers listening to merchant_orders will receive this order in their 选单大厅 and hear the voice alert.
         window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 
         setDispatchResultMsg({

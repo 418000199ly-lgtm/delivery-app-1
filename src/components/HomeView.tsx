@@ -847,7 +847,7 @@ export default function HomeView({
     Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(([p, realName]) => {
       if (p !== '15509601222' && !removedSet.has(p) && !REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
         if (!membersMap.has(p)) {
-          membersMap.set(p, { phone: p, name: realName, role: p === '18695119126' ? '最高开发者' : '普通司机', status: '已通过' });
+          membersMap.set(p, { phone: p, name: realName, role: '普通司机', status: '已通过' });
         }
       }
     });
@@ -2460,7 +2460,7 @@ export default function HomeView({
           return; // 彻底跳过已被删除的司机
         }
 
-        if (phone !== '18695119126' && isGenericDriverName(name, phone)) {
+        if (isGenericDriverName(name, phone)) {
           return; // 过滤无真实姓名或自动生成的司机
         }
 
@@ -2484,7 +2484,7 @@ export default function HomeView({
         const aName = String(a.name || a.driverName || a.applicantName || '').trim();
         const st = String(a.status || '').trim();
         if (allRemovedSet.has(phone) || phone.includes('3747') || aName.includes('3747') || REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) return; // 彻底跳过已被移出的司机
-        if (phone !== '18695119126' && isGenericDriverName(aName, phone)) return;
+        if (isGenericDriverName(aName, phone)) return;
         if (phone && ['已通过', 'approved', '通过'].includes(st)) {
           if (!map.has(phone)) {
             map.set(phone, {
@@ -2519,8 +2519,8 @@ export default function HomeView({
             id: p,
             phone: p,
             name: realName,
-            role: p === '15509601222' ? '开发者司机' : (p === '18695119126' ? '最高开发者' : '普通司机'),
-            userRole: p === '15509601222' ? '开发者司机' : (p === '18695119126' ? '最高开发者' : '普通司机'),
+            role: p === '15509601222' ? '开发者司机' : '普通司机',
+            userRole: p === '15509601222' ? '开发者司机' : '普通司机',
             status: '已通过'
           });
         }
@@ -2578,7 +2578,7 @@ export default function HomeView({
           const myRecord = mergedList.find(item => String(item.phone || item.id).trim() === currentPhone) || {
             id: currentPhone,
             phone: currentPhone,
-            name: currentPhone === '18695119126' ? '李扬' : '代驾司机',
+            name: resolveDriverRealName(currentPhone),
             role: '普通司机',
             status: '已通过'
           };
@@ -2602,7 +2602,7 @@ export default function HomeView({
     fetchLatestSquadData();
     const interval = setInterval(() => {
       fetchLatestSquadData();
-    }, 3000);
+    }, 10000);
 
     // 实时监听被删除成员名单 config/removed_squad_members
     let unsubConfig: (() => void) | undefined;
@@ -2722,7 +2722,7 @@ export default function HomeView({
               const memberObj = {
                 id: curP,
                 phone: curP,
-                name: myApp.name || (curP === '18695119126' ? '李扬' : '代驾司机'),
+                name: resolveDriverRealName(curP, myApp.name || myApp.driverName || myApp.applicantName),
                 role: myApp.role || '普通司机',
                 userRole: myApp.role || '普通司机',
                 status: '已通过'
@@ -2797,7 +2797,7 @@ export default function HomeView({
             id: docSnap.id,
             ...data,
             phone,
-            name: data?.name || data?.driverName || (phone === '15509601222' ? '吴彦祖' : (phone === '18695119126' ? '李扬' : `司机${phone.slice(-4)}`)),
+            name: data?.name || data?.driverName || (phone === '15509601222' ? '吴彦祖' : `司机${phone.slice(-4)}`),
             role: data?.role || data?.userRole || '普通司机',
             userRole: data?.userRole || data?.role || '普通司机',
             status: '已通过'
@@ -2857,7 +2857,7 @@ export default function HomeView({
           map.set(curP, {
             id: curP,
             phone: curP,
-            name: curP === '18695119126' ? '李扬' : '代驾司机',
+            name: resolveDriverRealName(curP, '代驾司机'),
             role: '普通司机',
             userRole: '普通司机',
             status: '已通过'

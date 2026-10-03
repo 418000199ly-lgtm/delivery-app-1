@@ -78,24 +78,41 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   onAccept,
   onDecline,
 }) => {
-  // 60秒倒计时：实时同步服务器与宝塔面板计算的时间
+  // 60秒倒计时：实时同步服务器与宝塔面板计算的剩余时间
   const [timeLeft, setTimeLeft] = useState<number>(() => {
     const now = Date.now();
-    const dispatchedAt = Number((order as any).dispatchedAt || order.timestamp || now);
-    const expiresAt = Number((order as any).dispatchExpiresAt || (dispatchedAt + 60 * 1000));
-    const remainingSecs = Math.ceil((expiresAt - now) / 1000);
+    const exp = Number((order as any)?.dispatchExpiresAt || ((order as any)?.dispatchedAt ? Number((order as any).dispatchedAt) + 60000 : (order.timestamp ? Number(order.timestamp) + 60000 : now + 60000)));
+    const remainingSecs = Math.max(0, Math.ceil((exp - now) / 1000));
     return Math.max(1, Math.min(60, remainingSecs || 60));
   });
 
-  // 实时同步服务器与宝塔面板倒计时变动
+  // 倒计时核心引擎：根据服务器派单到期时间戳每秒精准同步，杜绝前端漂移或后台休眠误差
   useEffect(() => {
-    if ((order as any)?.dispatchExpiresAt) {
-      const remaining = Math.max(0, Math.ceil((Number((order as any).dispatchExpiresAt) - Date.now()) / 1000));
-      setTimeLeft(Math.min(60, remaining));
-    } else if ((order as any)?.dispatchCountdown !== undefined) {
-      setTimeLeft(Math.max(0, Math.min(60, Number((order as any).dispatchCountdown))));
+    const calculateServerRemaining = () => {
+      const now = Date.now();
+      const exp = Number((order as any)?.dispatchExpiresAt || ((order as any)?.dispatchedAt ? Number((order as any).dispatchedAt) + 60000 : (order.timestamp ? Number(order.timestamp) + 60000 : now + 60000)));
+      const remaining = Math.max(0, Math.ceil((exp - now) / 1000));
+      return Math.min(60, remaining);
+    };
+
+    const initialRemaining = calculateServerRemaining();
+    setTimeLeft(initialRemaining);
+    if (initialRemaining <= 0) {
+      onDecline();
+      return;
     }
-  }, [order]);
+
+    const timer = setInterval(() => {
+      const curRemaining = calculateServerRemaining();
+      setTimeLeft(curRemaining);
+      if (curRemaining <= 0) {
+        clearInterval(timer);
+        onDecline();
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [order, onDecline]);
 
   // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
   useEffect(() => {
@@ -226,20 +243,6 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     }
     return '需要';
   }, [order.needScooter]);
-
-  // Countdown timer effect
-  useEffect(() => {
-    if (timeLeft <= 0) {
-      onDecline();
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => prev - 1);
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [timeLeft, onDecline]);
 
   // Active cancellation listener while incoming order modal is open
   useEffect(() => {

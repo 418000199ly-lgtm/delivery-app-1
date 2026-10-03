@@ -1114,11 +1114,13 @@ export default function SettingsView({
                       </div>
                     )}
 
-                    {/* Fancy hover banner */}
-                    <div className="absolute inset-0 bg-black/40 text-white rounded-2xl flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-1 text-center">
-                      <PlusSquare className="w-6 h-6 text-white" />
-                      <span className="text-[10px] font-bold">轻触重新上传/更换</span>
-                    </div>
+                    {/* Hover banner for existing QR code only */}
+                    {(selectedQrTab === 'wechat' ? Boolean(settings.wechatQrCode) : Boolean(settings.alipayQrCode)) && (
+                      <div className="absolute inset-0 bg-black/50 text-white rounded-2xl flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-1 text-center pointer-events-none">
+                        <PlusSquare className="w-6 h-6 text-white" />
+                        <span className="text-[10px] font-bold">轻触重新上传/更换</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Channel tag below QR inside card */}

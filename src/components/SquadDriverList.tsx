@@ -116,7 +116,14 @@ export default function SquadDriverList({
     } catch (_) {}
     return [];
   });
-  const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>({});
+  const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>(() => {
+    try {
+      const cached = localStorage.getItem('dd_driver_locations_v2');
+      return cached ? JSON.parse(cached) : {};
+    } catch (_) {
+      return {};
+    }
+  });
   const [mySquadName, setMySquadName] = useState<string>(() => {
     return resolveDriverRealName(
       effectiveMyPhone,
@@ -381,7 +388,11 @@ export default function SquadDriverList({
         snapshot.forEach((docSnap) => {
           locMap[docSnap.id] = docSnap.data();
         });
-        setRealtimeLocations((prev) => ({ ...prev, ...locMap }));
+        setRealtimeLocations((prev) => {
+          const merged = { ...prev, ...locMap };
+          try { localStorage.setItem('dd_driver_locations_v2', JSON.stringify(merged)); } catch (_) {}
+          return merged;
+        });
       }, () => {});
     }
 

@@ -258,7 +258,6 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
         } catch (_) {}
 
         if (targetPhone === '15509601222') {
-          fetchedExpiry = '永久有效';
           if (!fetchedName || fetchedName === 'XX代驾') fetchedName = '滴滴代驾';
         }
 

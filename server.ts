@@ -180,50 +180,34 @@ let lastDbReadTime = 0;
 
 function pickAuthoritativeVipExpiry(...expiries: (string | undefined | null)[]): string {
   for (const exp of expiries) {
-    if (!exp) continue;
-    const trimmed = String(exp).trim();
-    if (trimmed === '永久有效' || trimmed === '永久' || trimmed === 'permanent' || trimmed === '终身') return '永久有效';
-  }
-  let maxTime = -1;
-  let maxExpiryString = '';
-  for (const exp of expiries) {
-    if (!exp) continue;
-    const trimmed = String(exp).trim();
-    if (trimmed && trimmed !== '待开通' && trimmed !== '待激活' && trimmed !== '未激活' && trimmed !== '未开通' && trimmed !== '0' && trimmed !== '0天' && trimmed !== '已到期' && trimmed !== '已过期') {
-      const match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-      if (match) {
-        const time = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, parseInt(match[3], 10)).getTime();
-        if (time > maxTime) {
-          maxTime = time;
-          maxExpiryString = trimmed;
-        }
-      } else {
-        const parsed = new Date(trimmed);
-        if (!isNaN(parsed.getTime()) && parsed.getTime() > maxTime) {
-          maxTime = parsed.getTime();
-          maxExpiryString = trimmed;
-        }
+    if (exp !== undefined && exp !== null) {
+      const trimmed = String(exp).trim();
+      if (trimmed !== '') {
+        return trimmed;
       }
     }
   }
-  return maxExpiryString || '待开通';
+  return '待开通';
 }
 
 function isGenericDriverName(name: string, phone: string): boolean {
   const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
   const AUTHORITATIVE_REAL_PHONES = [
-    '15509601222', '18695119126', '18695174428', '14709696333', '15209678783', 
-    '15378921387', '13995071199', '13995388888', '15121888888', '15121904440', 
+    '15509601222', '18695174428', '14709696333', '15209678783', 
+    '15378921387', '13995071199', '13995388888', '15121888888', 
     '15295188888', '15226203822', '14709503822', '18695111001', '18695111002', 
-    '18695117350', '18695117975', '18695111030', '18695111003'
+    '18695117350', '18695117975', '18695111030', '18695111003',
+    '13895081030', '19995429551', '13995213747', '19995377975',
+    '19995387350', '17866167770', '18161583039', '18169102771',
+    '18695161718', '15296972638'
   ];
   if (AUTHORITATIVE_REAL_PHONES.includes(cleanPhone)) return false;
 
   if (!cleanPhone || cleanPhone.length !== 11) return true;
 
-  const REMOVED_PHONES = ['13995213747', '13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '18695161718', '15509601223', '15555556666'];
+  const REMOVED_PHONES = ['13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '15509601223', '15555556666'];
   if (REMOVED_PHONES.includes(cleanPhone)) return true;
-  if (['3747', '9147', '3634', '5678', '6058', '1718', '0116', '1223', '1958'].some(s => cleanPhone.endsWith(s))) return true;
+  if (['9147', '3634', '5678', '6058', '0116', '1223', '1958'].some(s => cleanPhone.endsWith(s))) return true;
 
   if (!name || typeof name !== 'string') return true;
   const clean = String(name).trim();
@@ -231,7 +215,7 @@ function isGenericDriverName(name: string, phone: string): boolean {
   if (clean === '代驾司机' || clean === '在线代驾司机' || clean === '司机' || clean === '未命名' || clean === '代驾师傅' || clean === '虚拟司机') return true;
   if (/^司机\d+/.test(clean)) return true;
   if (clean.startsWith('司机') && /\d/.test(clean)) return true;
-  if (['3747', '9147', '3634', '5678', '6058', '1718', '0116', '1223', '1958'].some(s => clean.includes(s))) return true;
+  if (['9147', '3634', '5678', '6058', '0116', '1223', '1958'].some(s => clean.includes(s))) return true;
   const last4 = cleanPhone.slice(-4);
   if (last4 && (clean === `司机${last4}` || clean.endsWith(last4))) return true;
   return false;
@@ -241,21 +225,21 @@ let isDbWriteScheduled = false;
 let isDbWriting = false;
 
 function readLocalJsonDb(): Record<string, Record<string, any>> {
-  const now = Date.now();
-  if (cachedDbData && (now - lastDbReadTime < 5000)) {
+  if (cachedDbData) {
     return cachedDbData;
   }
   try {
     if (fs.existsSync(LOCAL_JSON_DB_PATH)) {
       const content = fs.readFileSync(LOCAL_JSON_DB_PATH, 'utf8');
       cachedDbData = JSON.parse(content || '{}');
-      lastDbReadTime = now;
+      lastDbReadTime = Date.now();
       return cachedDbData!;
     }
   } catch (e) {
     console.error('[Local JSON DB] Read error:', e);
   }
-  return cachedDbData || {};
+  if (!cachedDbData) cachedDbData = {};
+  return cachedDbData;
 }
 
 function writeLocalJsonDb(data: Record<string, Record<string, any>>, immediate = false) {
@@ -465,7 +449,7 @@ async function startServer() {
 
   // Purge simulated/mock driver data & unapproved generic drivers (like 司机3747, 13995213747, 13895299147)
   const purgeMockDriverData = async () => {
-    const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3', '13995213747', '13895299147'];
+    const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3', '13895299147'];
     const mockNames = ['王心凌', '张一山', '李小龙'];
 
     try {
@@ -476,7 +460,7 @@ async function startServer() {
       if (!dbData.config) dbData.config = {};
       if (!dbData.config.removed_squad_members) dbData.config.removed_squad_members = { phones: [] };
       const removedPhones: string[] = dbData.config.removed_squad_members.phones || [];
-      const kickedPhones = ['13995213747', '13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '18695161718', '15509601223', '15555556666'];
+      const kickedPhones = ['13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '15509601223', '15555556666'];
       kickedPhones.forEach(p => {
         if (!removedPhones.includes(p)) {
           removedPhones.push(p);
@@ -546,23 +530,23 @@ async function startServer() {
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
            WHERE \`collection\` = 'squad_members' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13995213747', '13895299147', '17660453634', '13812345678', '19995426058', '18695161718', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%3747%' OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%' OR \`doc_id\` LIKE '%1718%'
+           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
+                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
                 OR \`data\` LIKE '%王心凌%' OR \`data\` LIKE '%张一山%' OR \`data\` LIKE '%李小龙%' OR \`data\` LIKE '%虚拟%' 
-                OR \`data\` LIKE '%3747%' OR \`data\` LIKE '%司机3747%' OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%司机9147%'
+                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%司机9147%'
                 OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%司机3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%司机5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%司机6058%' OR \`data\` LIKE '%1718%' OR \`data\` LIKE '%司机1718%')`
+                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%司机6058%')`
         );
         // Delete approved generic drivers from squad_applications (keep rejected ones)
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
            WHERE \`collection\` = 'squad_applications' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13995213747', '13895299147', '17660453634', '13812345678', '19995426058', '18695161718', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%3747%' OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%' OR \`doc_id\` LIKE '%1718%'
+           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
+                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
                 OR \`data\` LIKE '%王心凌%' OR \`data\` LIKE '%张一山%' OR \`data\` LIKE '%李小龙%' OR \`data\` LIKE '%虚拟%' 
-                OR \`data\` LIKE '%3747%' OR \`data\` LIKE '%司机3747%' OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%司机9147%'
+                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%司机9147%'
                 OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%司机3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%司机5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%司机6058%' OR \`data\` LIKE '%1718%' OR \`data\` LIKE '%司机1718%')
+                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%司机6058%')
            AND (\`data\` LIKE '%已通过%' OR \`data\` NOT LIKE '%已拒绝%')`
         );
         conn.release();
@@ -580,7 +564,6 @@ async function startServer() {
     try {
       const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
         '15509601222': '吴彦祖',
-        '18695119126': '李扬',
         '18695174428': '童兵',
         '14709696333': '王贤亮',
         '15209678783': '禹全江',
@@ -588,15 +571,18 @@ async function startServer() {
         '13995071199': '赵文举',
         '13995388888': '于涛',
         '15121888888': '张瑞',
-        '15121904440': '周杰伦',
         '15295188888': '李金锋',
         '15226203822': '杨刚',
         '18695161718': '王平',
         '13995213747': '宋伟',
         '19995387350': '滴杨明7350',
-        '19995377975': '纳林7975',
+        '19995377975': '纳琳7975',
         '13895081030': '夏伟1030',
         '15296972638': '杨存安',
+        '19995429551': '白耀宗',
+        '17866167770': '魏秉金',
+        '18161583039': '拓万东',
+        '18169102771': '赵岩',
       };
 
       const dbData = readLocalJsonDb();
@@ -642,8 +628,8 @@ async function startServer() {
         const item = dbData.squad_members[k];
         const cleanPhone = String(item?.phone || item?.phoneNumber || k).replace(/\D/g, '').trim();
         const rawName = String(item?.name || item?.driverName || item?.applicantName || '');
-        if (cleanPhone !== '15509601222' && cleanPhone !== '18695119126') {
-          if (removedList.includes(cleanPhone) || cleanPhone.includes('3747') || cleanPhone.includes('9147') || (isGenericDriverName(rawName, cleanPhone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone])) {
+        if (cleanPhone !== '15509601222') {
+          if (removedList.includes(cleanPhone) || cleanPhone.includes('9147') || (isGenericDriverName(rawName, cleanPhone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone])) {
             delete dbData.squad_members[k];
           }
         }
@@ -651,7 +637,13 @@ async function startServer() {
 
       const approvedSquadPhones = new Set<string>();
       approvedSquadPhones.add('15509601222');
-      approvedSquadPhones.add('18695119126');
+
+      // Explicitly add all authoritative real squad members if not explicitly in removedList
+      Object.keys(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(p => {
+        if (!removedList.includes(p)) {
+          approvedSquadPhones.add(p);
+        }
+      });
 
       // Include all genuine squad members and real applicants (like 王贤亮, 禹全江, 王灵, 赵文举, 于涛, 张瑞等)
       ['squad_members', 'squad_applications'].forEach(col => {
@@ -660,7 +652,7 @@ async function startServer() {
             const cleanPhone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, '').trim();
             const rawName = String(dbData[col][k]?.name || dbData[col][k]?.driverName || dbData[col][k]?.applicantName || '');
             if (cleanPhone && cleanPhone.length === 11 && !removedList.includes(cleanPhone)) {
-              if (cleanPhone === '15509601222' || cleanPhone === '18695119126' || AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || !isGenericDriverName(rawName, cleanPhone)) {
+              if (cleanPhone === '15509601222' || AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || !isGenericDriverName(rawName, cleanPhone)) {
                 approvedSquadPhones.add(cleanPhone);
               }
             }
@@ -685,11 +677,8 @@ async function startServer() {
         
         if (isRejected) {
           vipExpiry = '待开通';
-        } else {
-          const isVipEmpty = !vipExpiry || vipExpiry === '待开通' || vipExpiry === '待激活' || vipExpiry === '未激活' || vipExpiry === '未开通' || vipExpiry === '0' || vipExpiry === '0天' || vipExpiry === '已到期' || vipExpiry === '已过期';
-          if (isVipEmpty) {
-            vipExpiry = default50DaysVip;
-          }
+        } else if (!vipExpiry) {
+          vipExpiry = '待开通';
         }
 
         const role = du.role || du.userRole || sq.role || sq.userRole || (phone === '15509601222' ? '开发者' : '普通司机');
@@ -718,8 +707,8 @@ async function startServer() {
         
         // Maintain approved status and persistent approver record for approved squad members
         if (!isRejected && phone !== '15509601222') {
-          const approvedBy = sq.approvedBy || du.approvedBy || (phone === '18695119126' ? '吴彦祖' : '最高开发者');
-          const approvedRole = sq.approvedRole || du.approvedRole || (phone === '18695119126' ? '开发者司机' : '管理司机');
+          const approvedBy = sq.approvedBy || du.approvedBy || '最高开发者';
+          const approvedRole = sq.approvedRole || du.approvedRole || '管理司机';
           const approvalTime = sq.approvalTime || du.approvalTime || sq.lastUpdatedTime || du.updatedAt || new Date().toLocaleString();
 
           if (!dbData.squad_members) dbData.squad_members = {};
@@ -951,17 +940,24 @@ async function startServer() {
         const isRejected = (raw.status === '已拒绝' || du.status === '已拒绝' || sq.status === '已拒绝' || oa.status === '已拒绝' || sa.status === '已拒绝');
         const status = isRejected ? '已拒绝' : '已通过';
         
-        // Priority: database record raw.vipExpiry is primary, then driver_users, then squad collections
-        let vipExpiry = raw.vipExpiry || du.vipExpiry || sq.vipExpiry || oa.vipExpiry || sa.vipExpiry || '';
-        if (docId === '15509601222') {
-          vipExpiry = '永久有效';
-        } else if (isRejected) {
+        // Authoritative vipExpiry resolution: driver_users takes precedence, then raw document
+        let vipExpiry = '';
+        if (du.vipExpiry !== undefined && du.vipExpiry !== null && du.vipExpiry !== '') {
+          vipExpiry = String(du.vipExpiry).trim();
+        } else if (raw.vipExpiry !== undefined && raw.vipExpiry !== null && raw.vipExpiry !== '') {
+          vipExpiry = String(raw.vipExpiry).trim();
+        } else if (sq.vipExpiry !== undefined && sq.vipExpiry !== null && sq.vipExpiry !== '') {
+          vipExpiry = String(sq.vipExpiry).trim();
+        } else if (oa.vipExpiry !== undefined && oa.vipExpiry !== null && oa.vipExpiry !== '') {
+          vipExpiry = String(oa.vipExpiry).trim();
+        } else if (sa.vipExpiry !== undefined && sa.vipExpiry !== null && sa.vipExpiry !== '') {
+          vipExpiry = String(sa.vipExpiry).trim();
+        }
+
+        if (isRejected) {
           vipExpiry = '待开通';
-        } else {
-          const isVipEmpty = !vipExpiry || vipExpiry === '待开通' || vipExpiry === '待激活' || vipExpiry === '未激活' || vipExpiry === '未开通' || vipExpiry === '0' || vipExpiry === '0天' || vipExpiry === '已到期' || vipExpiry === '已过期';
-          if (isVipEmpty) {
-            vipExpiry = default50DaysVip;
-          }
+        } else if (!vipExpiry) {
+          vipExpiry = '待开通';
         }
 
         const effectiveQr = raw.qrcode_url || raw.wechatQrCode || du.qrcode_url || du.wechatQrCode || sq.qrcode_url || `/uploads/qrcodes/${docId}.png`;
@@ -1055,21 +1051,12 @@ async function startServer() {
           const docs = (rows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
             const obj = typeof data === 'object' && data !== null ? { ...data } : {};
-            const cleanPhone = String(obj.phone || obj.phoneNumber || r.doc_id || '').replace(/\D/g, '').trim();
-            
-            if (isDriverCol && cleanPhone && cleanPhone !== '15509601222') {
-              const vExp = obj.vipExpiry;
-              const isVipEmpty = !vExp || vExp === '待开通' || vExp === '待激活' || vExp === '未激活' || vExp === '未开通' || vExp === '0' || vExp === '0天' || vExp === '已到期' || vExp === '已过期';
-              if (isVipEmpty) {
-                obj.vipExpiry = default50DaysVip;
-              }
-            }
             return { id: r.doc_id, ...obj, data: obj };
           }).filter((doc: any) => {
             const cleanPhone = String(doc.phone || doc.id || '').replace(/\D/g, '').trim();
             const dName = String(doc.name || doc.driverName || doc.applicantName || '').trim();
             if (col === 'squad_members') {
-              if (cleanPhone === '15509601222' || cleanPhone === '18695119126') return true;
+              if (cleanPhone === '15509601222') return true;
               if (isGenericDriverName(dName, cleanPhone)) return false;
             }
             if (col === 'squad_applications') {
@@ -1099,15 +1086,6 @@ async function startServer() {
       const docs = Object.keys(colData).map((k) => {
         const itemData = colData[k];
         const obj = typeof itemData === 'object' && itemData !== null ? { ...itemData } : {};
-        const cleanPhone = String(obj.phone || obj.phoneNumber || k || '').replace(/\D/g, '').trim();
-
-        if (isDriverCol && cleanPhone && cleanPhone !== '15509601222') {
-          const vExp = obj.vipExpiry;
-          const isVipEmpty = !vExp || vExp === '待开通' || vExp === '待激活' || vExp === '未激活' || vExp === '未开通' || vExp === '0' || vExp === '0天' || vExp === '已到期' || vExp === '已过期';
-          if (isVipEmpty) {
-            obj.vipExpiry = default50DaysVip;
-          }
-        }
         return {
           id: k,
           ...obj,
@@ -1117,7 +1095,7 @@ async function startServer() {
         const cleanPhone = String(doc.phone || doc.id || '').replace(/\D/g, '').trim();
         const dName = String(doc.name || doc.driverName || doc.applicantName || '').trim();
         if (col === 'squad_members') {
-          if (cleanPhone === '15509601222' || cleanPhone === '18695119126') return true;
+          if (cleanPhone === '15509601222') return true;
           if (isGenericDriverName(dName, cleanPhone)) return false;
         }
         if (col === 'squad_applications') {
@@ -1227,12 +1205,12 @@ async function startServer() {
               const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
               finalData = { ...prev, ...data };
               if (col === 'driver_users' || col === 'squad_members' || col === 'online_applications' || col === 'squad_applications') {
-                if (docId === '15509601222') {
-                  finalData.vipExpiry = '永久有效';
-                } else if (data.vipExpiry !== undefined) {
+                if (data.vipExpiry !== undefined) {
                   finalData.vipExpiry = data.vipExpiry;
+                } else if (prev && prev.vipExpiry !== undefined) {
+                  finalData.vipExpiry = prev.vipExpiry;
                 } else if (!finalData.vipExpiry) {
-                  finalData.vipExpiry = default50DaysVip;
+                  finalData.vipExpiry = '待开通';
                 }
                 if (data.customAppName !== undefined) {
                   finalData.customAppName = data.customAppName;
@@ -1275,12 +1253,12 @@ async function startServer() {
         const prev = dbData[col][docId];
         finalData = { ...prev, ...data };
         if (col === 'driver_users' || col === 'squad_members' || col === 'online_applications' || col === 'squad_applications') {
-          if (docId === '15509601222') {
-            finalData.vipExpiry = '永久有效';
-          } else if (data.vipExpiry !== undefined) {
+          if (data.vipExpiry !== undefined) {
             finalData.vipExpiry = data.vipExpiry;
+          } else if (prev && prev.vipExpiry !== undefined) {
+            finalData.vipExpiry = prev.vipExpiry;
           } else if (!finalData.vipExpiry) {
-            finalData.vipExpiry = default50DaysVip;
+            finalData.vipExpiry = '待开通';
           }
           if (data.customAppName !== undefined) {
             finalData.customAppName = data.customAppName;
@@ -1314,7 +1292,7 @@ async function startServer() {
           const existingUser = dbData['driver_users'][cleanDriverPhone] || {};
           const name = finalData.name || finalData.driverName || finalData.applicantName || existingUser.driverName || `司机${cleanDriverPhone.slice(-4)}`;
           
-          const resolvedVip = finalData.vipExpiry !== undefined ? finalData.vipExpiry : (existingUser.vipExpiry || default50DaysVip);
+          const resolvedVip = finalData.vipExpiry !== undefined ? finalData.vipExpiry : (existingUser.vipExpiry || '待开通');
 
           const mergedDriverUser = {
             ...existingUser,
@@ -1326,6 +1304,7 @@ async function startServer() {
             role: finalData.role || finalData.userRole || existingUser.role || '普通司机',
             userRole: finalData.role || finalData.userRole || existingUser.userRole || '普通司机',
             status: finalData.status || existingUser.status || '已通过',
+            is_squad_member: (col === 'squad_members' || finalData.status === '已通过' || finalData.is_squad_member === 1) ? 1 : (existingUser.is_squad_member ?? 0),
             city: finalData.city || existingUser.city || '银川市',
             vipExpiry: resolvedVip,
             isOnline: Boolean(finalData.isOnline !== undefined ? finalData.isOnline : existingUser.isOnline),
@@ -1384,6 +1363,18 @@ async function startServer() {
       }
 
       writeLocalJsonDb(dbData);
+
+      // Seamless inter-connectivity: forward writes to Mainland China Aliyun ECS Baota Server if in preview
+      const hostHeader = String(req.headers.host || '');
+      if (!hostHeader.includes('lyheiwandaijiamax.com')) {
+        const baotaBaseUrl = 'https://api.lyheiwandaijiamax.com';
+        fetch(`${baotaBaseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ col, id: docId, data, merge })
+        }).catch(() => {});
+      }
+
       return res.json({ success: true, id: docId });
     } catch (err: any) {
       console.error('[DB Proxy SET Exception]:', err);
@@ -1500,7 +1491,7 @@ async function startServer() {
           const existingUser = dbData['driver_users'][cleanDriverPhone] || {};
           const name = finalData.name || finalData.driverName || finalData.applicantName || existingUser.driverName || `司机${cleanDriverPhone.slice(-4)}`;
           
-          const resolvedVip = pickAuthoritativeVipExpiry(finalData.vipExpiry, existingUser.vipExpiry);
+          const resolvedVip = finalData.vipExpiry !== undefined ? finalData.vipExpiry : (existingUser.vipExpiry || '待开通');
 
           const mergedDriverUser = {
             ...existingUser,
@@ -1512,6 +1503,7 @@ async function startServer() {
             role: finalData.role || finalData.userRole || existingUser.role || '普通司机',
             userRole: finalData.role || finalData.userRole || existingUser.userRole || '普通司机',
             status: finalData.status || existingUser.status || '已通过',
+            is_squad_member: (col === 'squad_members' || finalData.status === '已通过' || finalData.is_squad_member === 1) ? 1 : (existingUser.is_squad_member ?? 0),
             city: finalData.city || existingUser.city || '银川市',
             vipExpiry: resolvedVip,
             isOnline: Boolean(finalData.isOnline !== undefined ? finalData.isOnline : existingUser.isOnline),
@@ -1539,7 +1531,7 @@ async function startServer() {
             if (dbData[mCol] && dbData[mCol][cleanDriverPhone]) {
               const currentM = dbData[mCol][cleanDriverPhone];
               const updatedM = { ...currentM };
-              if (finalData.vipExpiry !== undefined) updatedM.vipExpiry = pickAuthoritativeVipExpiry(finalData.vipExpiry, currentM.vipExpiry);
+              if (finalData.vipExpiry !== undefined) updatedM.vipExpiry = finalData.vipExpiry;
               if (finalData.driverName) {
                 updatedM.driverName = finalData.driverName;
                 updatedM.name = finalData.driverName;
@@ -1573,10 +1565,17 @@ async function startServer() {
   app.post('/api/admin/update-driver-expiry', async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
-      const vipExpiry = String(req.body.vipExpiry || '').trim();
+      const rawVip = String(req.body.vipExpiry || '').trim();
 
       if (!phone || phone.length !== 11) {
         return res.status(400).json({ success: false, error: '请输入有效的11位手机号码' });
+      }
+
+      let vipExpiry = rawVip;
+      if (!vipExpiry || vipExpiry === '0' || vipExpiry === '0天' || vipExpiry === '待激活' || vipExpiry === '未激活' || vipExpiry === '待开通' || vipExpiry === '未开通' || vipExpiry === '已到期' || vipExpiry === '已过期') {
+        vipExpiry = '待开通';
+      } else if (vipExpiry === '永久' || vipExpiry === '永久有效' || vipExpiry === 'permanent' || vipExpiry === '终身') {
+        vipExpiry = '永久有效';
       }
 
       const dbData = readLocalJsonDb();
@@ -1771,7 +1770,7 @@ async function startServer() {
       // Ensure all authoritative real squad drivers (王贤亮, 禹全江, 王灵, 赵文举, 于涛, 张瑞, 周杰伦, 李金锋, 李扬, 童兵, 杨刚, etc.) receive VIP recharge
       const realDriverPhones = [
         '14709696333', '15209678783', '15378921387', '13995071199', '13995388888', 
-        '15121888888', '15121904440', '15295188888', '18695119126', '18695161718',
+        '15121888888', '15121904440', '15295188888', '18695161718',
         '18695174428', '15226203822', '14709503822', '18695111001', '18695111002',
         '18695117350', '18695117975', '18695111030', '18695111003'
       ];
@@ -1869,10 +1868,10 @@ async function startServer() {
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
               ['driver_users', docId]
             );
-            let uData: any = { role: '普通司机', userRole: '普通司机', status: '未申请', approvalStatus: '未申请' };
+            let uData: any = { role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队', is_squad_member: 0 };
             if (uRows && uRows.length > 0) {
               const prevU = typeof uRows[0].data === 'string' ? JSON.parse(uRows[0].data) : uRows[0].data;
-              uData = { ...prevU, ...uData };
+              uData = { ...prevU, ...uData, is_squad_member: 0, status: '未加入小队', approvalStatus: '未加入小队' };
             }
             await mysqlPool.query(
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
@@ -1923,8 +1922,9 @@ async function startServer() {
             ...dbData.driver_users[docId],
             role: '普通司机',
             userRole: '普通司机',
-            status: '未申请',
-            approvalStatus: '未申请'
+            status: '未加入小队',
+            approvalStatus: '未加入小队',
+            is_squad_member: 0
           };
         }
         if (!dbData.config) dbData.config = {};
@@ -2171,10 +2171,12 @@ async function startServer() {
         const prev = dbData[col][phone] || {};
         dbData[col][phone] = { ...prev, ...patch, phone };
       });
+      // Debounced write to avoid disk I/O saturation under 1000-1500 drivers concurrency
       writeLocalJsonDb(dbData);
 
       if (isMySQLEnabled && mysqlPool) {
         const mergedLocation = { ...(dbData.driver_locations?.[phone] || {}), ...patch, phone };
+        // Fire-and-forget async update with error catching
         mysqlPool.query(
           'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
           'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
@@ -2182,7 +2184,7 @@ async function startServer() {
         ).catch(() => {});
       }
 
-      return res.json({ success: true, isOnline: patch.isOnline });
+      return res.json({ success: true, isOnline: patch.isOnline, serverTime: Date.now() });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -2299,7 +2301,7 @@ async function startServer() {
 
       const isInvalidDriver = (phone: string, name?: string) => {
         if (!phone) return true;
-        if (phone === '15509601222' || phone === '18695119126') return false;
+        if (phone === '15509601222') return false;
         if (removedPhones.has(phone)) return true;
         if (name && (name.includes('虚拟') || name.startsWith('测试') || name.includes('test'))) return true;
         if (['13912345678', '15509601223', '15555556666', '13995213747', '13895299147', '17660453634', '13812345678', '19995426058', '18695161718', 'm-1', 'm-2', 'm-3'].includes(phone)) return true;
@@ -2635,11 +2637,14 @@ async function startServer() {
   // 6. Server-Side Nearest Driver Dispatch Engine (阿里云高可用服务端精准距离派单)
   app.post('/api/dispatch/nearest', async (req, res) => {
     try {
-      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3.0 } = req.body || {};
+      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3.0, excludePhone } = req.body || {};
       
       if (!orderData || (!orderData.id && !orderData.orderNo)) {
         return res.status(400).json({ success: false, error: 'Missing orderData' });
       }
+
+      // 给阿里云服务器宝塔面板倒计时3秒考虑的时间（解析坐标、智能寻找3公里内最近空闲小队司机）
+      await new Promise((resolve) => setTimeout(resolve, 3000));
 
       // Resolve merchant start location coordinates (support POI geocoding on server)
       const startLocName = String(orderData.startLocation || orderData.passengerAddress || orderData.pickupAddress || '').trim();
@@ -2718,16 +2723,23 @@ async function startServer() {
 
       // Candidate drivers filter (Strictly approved squad drivers only)
       const candidates: Array<{ phone: string; name: string; distKm: number; data: any }> = [];
+      const removedPhonesArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
 
       squadList.forEach(({ phone, data }) => {
         if (!phone || !data || data.isBanned) return;
         const cleanPhone = String(phone).replace(/\D/g, '').trim();
+        
+        // 0. Exclude removed drivers or generic driver placeholders
+        if (cleanPhone !== '15509601222' && (removedPhonesArr.includes(cleanPhone) || isGenericDriverName(data.driverName || data.name, cleanPhone))) {
+          return;
+        }
         const cleanReporter = reporterPhone ? String(reporterPhone).replace(/\D/g, '').trim() : '';
+        const cleanExclude = excludePhone ? String(excludePhone).replace(/\D/g, '').trim() : '';
         const cleanMerchant = orderData.merchantPhone ? String(orderData.merchantPhone).replace(/\D/g, '').trim() : '';
         const cleanPassenger = orderData.passengerPhone ? String(orderData.passengerPhone).replace(/\D/g, '').trim() : '';
 
-        // Prevent self-dispatch if reporter/merchant is driver
-        if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanMerchant || cleanPhone === cleanPassenger)) {
+        // Prevent self-dispatch if reporter/merchant/creator is driver (报单转单绝对不要派单给自己)
+        if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude || cleanPhone === cleanMerchant || cleanPhone === cleanPassenger)) {
           return;
         }
 
@@ -2773,6 +2785,13 @@ async function startServer() {
         if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
           dLat = 38.487167;
           dLng = 106.230910;
+        }
+
+        // 高并发1000-1500名司机极速网格/边界框初筛（经纬度差大约0.035度即3公里以内，耗时仅微秒级，大幅降低CPU负载）
+        if (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) {
+          if (Math.abs(dLat - pLat) > 0.035 || Math.abs(dLng - pLng) > 0.045) {
+            return;
+          }
         }
 
         const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) 
@@ -2863,7 +2882,12 @@ async function startServer() {
           dispatchedDriverPhone: selected.phone,
           dispatchedDriverName: selected.name,
           distKm: selected.distKm,
-          distanceText: distText
+          distanceText: distText,
+          remainingSeconds: 60,
+          dispatchCountdown: 60,
+          serverTime: nowTs,
+          dispatchedAt: nowTs,
+          dispatchExpiresAt: nowTs + 60000
         });
       } else {
         // Order Lobby fallback: Broadcast to ALL squad members in选单大厅
@@ -2899,6 +2923,7 @@ async function startServer() {
         return res.json({
           success: true,
           isHall: true,
+          serverTime: nowTs,
           message: '方圆3公里内无在线空闲司机，已全员广播转入选单大厅'
         });
       }
@@ -2921,6 +2946,26 @@ async function startServer() {
       }
 
       const dbData = readLocalJsonDb();
+
+      // Check if claiming driver is in removed_squad_members or not an approved squad member
+      const removedPhonesArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
+      const isRemovedDriver = removedPhonesArr.includes(cleanDriverPhone);
+      const isDevDriver = cleanDriverPhone === '15509601222';
+
+      let isSquadApproved = isDevDriver;
+      if (!isDevDriver && !isRemovedDriver) {
+        const squadDoc = dbData['squad_members']?.[cleanDriverPhone];
+        if (squadDoc) {
+          const st = String(squadDoc.status || squadDoc.approvalStatus || '').trim();
+          if (st === '已通过' || st === 'approved' || st === '通过' || !st) {
+            isSquadApproved = true;
+          }
+        }
+      }
+
+      if (isRemovedDriver || !isSquadApproved) {
+        return res.status(403).json({ success: false, error: '❌ 权限不足：只有小队内审批通过的正式司机才能接收商户代叫单与报单转单！非小队成员无接单权限。' });
+      }
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
       const targetOrder = dbData['merchant_orders'][cleanOrderId];
 
@@ -2959,12 +3004,15 @@ async function startServer() {
 
       dbData['merchant_orders'][cleanOrderId] = claimUpdateData;
 
-      // Also set passenger_links for this driver
+      // Also set passenger_links for this driver so incoming order overlay pops up immediately
       if (!dbData['passenger_links']) dbData['passenger_links'] = {};
       dbData['passenger_links'][cleanDriverPhone] = {
         ...claimUpdateData,
         status: 'submitted',
-        isDirectClaim: true
+        isDirectClaim: true,
+        dispatchCountdown: 60,
+        dispatchedAt: now,
+        dispatchExpiresAt: now + 60000
       };
 
       writeLocalJsonDb(dbData);
@@ -2982,14 +3030,14 @@ async function startServer() {
         } catch (_) {}
       }
 
-      return res.json({ success: true, order: claimUpdateData });
+      return res.json({ success: true, order: claimUpdateData, serverTime: now });
     } catch (err: any) {
       console.error('[Order Claim Exception]:', err);
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  // 5.2 30-Second Timeout / Driver Decline Order Reclaim to 选单大厅
+  // 5.2 60-Second Timeout / Driver Decline Order Reclaim to 选单大厅
   app.post('/api/order/decline', async (req, res) => {
     try {
       const { orderId, driverPhone } = req.body;
@@ -3029,6 +3077,20 @@ async function startServer() {
         delete dbData['passenger_links'][cleanDriverPhone];
       }
 
+      // 释放司机忙碌状态，重新恢复可派单空闲状态
+      if (cleanDriverPhone) {
+        ['driver_users', 'driver_locations', 'squad_members'].forEach(col => {
+          if (dbData[col] && dbData[col][cleanDriverPhone]) {
+            dbData[col][cleanDriverPhone] = {
+              ...dbData[col][cleanDriverPhone],
+              isBusy: false,
+              status: 'idle',
+              lastStatusUpdateTime: now
+            };
+          }
+        });
+      }
+
       writeLocalJsonDb(dbData);
 
       if (isMySQLEnabled && mysqlPool) {
@@ -3042,11 +3104,15 @@ async function startServer() {
               'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
               ['passenger_links', cleanDriverPhone]
             );
+            await mysqlPool.query(
+              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", false, "$.status", "idle") WHERE `collection` IN ("driver_users", "driver_locations", "squad_members") AND `doc_id` = ?',
+              [cleanDriverPhone]
+            );
           }
         } catch (_) {}
       }
 
-      return res.json({ success: true, order: updateData });
+      return res.json({ success: true, order: updateData, serverTime: now });
     } catch (err: any) {
       console.error('[Order Decline Exception]:', err);
       res.status(500).json({ success: false, error: err.message });
@@ -3435,17 +3501,34 @@ async function startServer() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>隐私条款与个人信息保护政策</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+      background-color: #f8fafc;
+      color: #334155;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
+    .container { max-width: 800px; margin: 24px auto; padding: 24px; }
+    .card { background: #ffffff; border-radius: 24px; padding: 32px; border: 1px solid #f1f5f9; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); }
+    .header { text-align: center; padding-bottom: 24px; border-bottom: 1px solid #f1f5f9; margin-bottom: 24px; }
+    .header-icon { width: 48px; height: 48px; border-radius: 16px; background: #fff7ed; color: #f97316; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+    .header-badge { font-size: 11px; letter-spacing: 0.1em; color: #94a3b8; font-weight: 800; display: block; margin-bottom: 4px; }
+    .header h1 { font-size: 22px; font-weight: 900; color: #0f172a; }
+    .header p { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+    .preamble { background: #fffbeb; border: 1px solid #fef3c7; border-radius: 16px; padding: 16px; margin-bottom: 28px; font-size: 13px; color: #78350f; }
+    .preamble-title { font-weight: 800; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: #451a03; }
+    .section { margin-bottom: 24px; }
+    .section h2 { font-size: 15px; font-weight: 800; color: #1e293b; border-left: 4px solid #f97316; padding-left: 10px; margin-bottom: 12px; }
+    .section p { font-size: 13px; color: #64748b; margin-bottom: 8px; }
+    .section b { color: #334155; }
+    .footer { text-align: center; margin-top: 32px; padding-top: 20px; border-top: 1px solid #f1f5f9; font-size: 12px; color: #94a3b8; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-800 antialiased selection:bg-orange-100 flex flex-col min-h-screen">
-  <div class="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 md:p-8">
-    <div class="max-w-3xl w-full bg-white rounded-3xl p-6 md:p-10 shadow-xl shadow-slate-100 border border-slate-100 space-y-8">
+  <div class="container">
+    <div class="card space-y-8">
       
       <!-- Top header with lock icon -->
       <div class="flex flex-col items-center text-center gap-2 pb-6 border-b border-slate-100">
@@ -4062,15 +4145,15 @@ async function startServer() {
             id: cleanPhone,
             phone: cleanPhone,
             phoneNumber: cleanPhone,
-            driverName: cleanPhone === '15509601222' ? '吴彦祖' : (cleanPhone === '18695119126' ? '李扬' : `司机${cleanPhone.slice(-4)}`),
-            name: cleanPhone === '15509601222' ? '吴彦祖' : (cleanPhone === '18695119126' ? '李扬' : `司机${cleanPhone.slice(-4)}`),
+            driverName: cleanPhone === '15509601222' ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`,
+            name: cleanPhone === '15509601222' ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`,
             role: cleanPhone === '15509601222' ? '开发者司机' : '普通司机',
             userRole: cleanPhone === '15509601222' ? '开发者司机' : '普通司机',
             position: cleanPhone === '15509601222' ? '开发者司机' : '普通司机',
             squad_position: cleanPhone === '15509601222' ? 'developer' : 'normal',
             is_squad_member: cleanPhone === '15509601222' ? 1 : 0,
             status: cleanPhone === '15509601222' ? '已通过' : '未加入小队',
-            vipExpiry: cleanPhone === '15509601222' ? '永久有效' : '待开通',
+            vipExpiry: existing?.vipExpiry || '待开通',
             city: '银川市',
             isOnline: false,
             onlineOrdersEnabled: false,
@@ -4205,7 +4288,7 @@ async function startServer() {
         name: '吴彦祖',
         role: '开发者',
         userRole: '开发者',
-        vipExpiry: '永久有效',
+        vipExpiry: dbData.driver_users?.[devPhone]?.vipExpiry || '永久有效',
         city: '银川市',
         isOnline: false,
         onlineOrdersEnabled: false,
@@ -4674,40 +4757,44 @@ async function startServer() {
 
   // Helper for binary-safe file download stream (.zip, .tar.gz, .tar)
   const servePackageFile = (req: express.Request, res: express.Response, requestedName = 'daijia_deploy.zip') => {
-    let targetPath = path.join(process.cwd(), requestedName);
-    if (!fs.existsSync(targetPath)) {
-      targetPath = path.join(process.cwd(), 'dist', requestedName);
-    }
-    if (!fs.existsSync(targetPath)) {
-      targetPath = path.join(process.cwd(), 'daijia_deploy.zip');
-    }
-    if (!fs.existsSync(targetPath)) {
-      targetPath = path.join(process.cwd(), 'dist', 'daijia_deploy.zip');
-    }
+    const candidatePaths = [
+      path.join(process.cwd(), 'public', requestedName),
+      path.join(process.cwd(), requestedName),
+      path.join(process.cwd(), 'dist', requestedName),
+      path.join(process.cwd(), 'public', 'daijia_deploy.zip'),
+      path.join(process.cwd(), 'daijia_deploy.zip'),
+      path.join(process.cwd(), 'dist', 'daijia_deploy.zip'),
+    ];
 
-    // Auto-repair/rebuild if file does not exist or is smaller than 1KB
-    if (!fs.existsSync(targetPath) || fs.statSync(targetPath).size < 1000) {
+    let targetPath = candidatePaths.find(p => fs.existsSync(p) && fs.statSync(p).size > 1000000);
+
+    // Auto-repair/rebuild if file does not exist or is smaller than 1MB
+    if (!targetPath) {
       try {
         console.log(`[Package Service] File ${requestedName} missing or invalid, running create_deploy_zip.py...`);
         execSync('python3 create_deploy_zip.py', { cwd: process.cwd() });
-        targetPath = path.join(process.cwd(), requestedName);
-        if (!fs.existsSync(targetPath)) {
-          targetPath = path.join(process.cwd(), 'daijia_deploy.zip');
-        }
+        targetPath = candidatePaths.find(p => fs.existsSync(p) && fs.statSync(p).size > 1000000);
       } catch (e: any) {
         console.error('Build package failed:', e);
       }
     }
 
-    if (fs.existsSync(targetPath)) {
+    if (targetPath && fs.existsSync(targetPath)) {
+      const stat = fs.statSync(targetPath);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${requestedName}"`);
+      res.setHeader('Content-Length', stat.size);
       res.setHeader('Content-Transfer-Encoding', 'binary');
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
-      return res.download(targetPath, requestedName, (err) => {
-        if (err && !res.headersSent) {
-          console.error('[Package Service] Download stream error:', err);
-          res.status(500).send('Download failed');
+
+      const fileStream = fs.createReadStream(targetPath);
+      fileStream.pipe(res);
+      fileStream.on('error', (err) => {
+        console.error('[Package Service] Stream pipe error:', err);
+        if (!res.headersSent) {
+          res.status(500).send('Download stream failed');
         }
       });
     } else {

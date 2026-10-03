@@ -326,79 +326,91 @@ export default function AdminPanel({
     return [];
   });
   const [driverUsersList, setDriverUsersList] = useState<any[]>([]);
-  const [squadMembersList, setSquadMembersList] = useState<any[]>([]);
-  const [squadAppsList, setSquadAppsList] = useState<any[]>([]);
+  const [squadMembersList, setSquadMembersList] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (_) {}
+    return [];
+  });
+  const [squadAppsList, setSquadAppsList] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('dd_applicants_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (_) {}
+    return [];
+  });
   const [driverSearchQuery, setDriverSearchQuery] = useState('');
   const [adminCitySearch, setAdminCitySearch] = useState('');
   const [driverTabCategory, setDriverTabCategory] = useState<'squad' | 'nonsquad' | 'all'>('squad');
 
-  // Helper to strictly identify official squad members based on Aliyun server squad_members DB & real names
+  // Helper to strictly identify official squad members dynamically based on server squad_members DB
   const isOfficialSquadMember = (drv: any) => {
     if (!drv) return false;
     const p = String(drv.phoneNumber || drv.phone || drv.id || '').replace(/\D/g, '').trim();
-    if (p === '15509601222' || p === '18695119126') return true; // 吴彦祖, 李扬
+    if (!p || p.length < 11) return false;
+    if (p === '15509601222') return true; // 最高开发者永远在小队
 
-    // Bulletproof hardcoded whitelist for core squad members
-    const CORE_OFFICIAL_SQUAD_PHONES = [
-      '18695161718', // 王平
-      '13995213747', // 宋伟
-      '19995387350', // 滴杨明7350
-      '19995377975', // 纳林7975
-      '13895081030', // 夏伟1030
-      '15296972638', // 杨存安
-      '18695174428', // 童兵
-      '15226203822', // 杨刚
-      '14709696333', // 王贤亮
-      '15209678783', // 禹全江
-      '15378921387', // 王灵
-      '13995071199', // 赵文举
-      '13995388888', // 于涛
-      '15121888888', // 张瑞
-      '15121904440', // 周杰伦
-      '15295188888', // 李金锋
-    ];
-    if (CORE_OFFICIAL_SQUAD_PHONES.includes(p)) return true;
-
-    // Check if phone is in AUTHORITATIVE_REAL_DRIVER_NAMES (like 18695174428 童兵, 15226203822 杨刚, etc.)
-    if (p && AUTHORITATIVE_REAL_DRIVER_NAMES[p]) return true;
-
-    // Check if phone is in REMOVED_GENERIC_DRIVER_PHONES
-    if (p && REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
+    // Check if phone is in removed / blacklisted phones
+    if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
       return false;
     }
-
-    const drvName = String(drv.driverName || drv.name || drv.applicantName || drv.realName || '').trim();
-
-    // Check if phone or name is generic / virtual driver
-    if (isGenericDriverName(drvName, p) || !drvName || /^司机\d+$/.test(drvName) || drvName.startsWith('（未同步') || drvName === '未命名司机') {
-      return false;
-    }
-
-    // Check if phone is in AUTHORITATIVE_REAL_DRIVER_NAMES (like 18695174428 童兵, 14709696333 王贤亮, etc.)
-    if (p && AUTHORITATIVE_REAL_DRIVER_NAMES[p]) return true;
-
-    // Check against Aliyun squad_members DB (by phone or real name)
-    const inSquadMembersDB = squadMembersList.some((sm: any) => {
-      const smPhone = String(sm.phone || sm.phoneNumber || sm.id || '').replace(/\D/g, '').trim();
-      const smName = String(sm.name || sm.driverName || sm.realName || '').trim();
-      if (p && smPhone && smPhone === p) return true;
-      if (drvName && smName && drvName === smName && !isGenericDriverName(drvName, p)) return true;
-      return false;
-    });
-    if (inSquadMembersDB) return true;
-
-    // Check squadAppsList (by phone or real name)
-    const inSquadAppsDB = squadAppsList.some((app: any) => {
-      const appPhone = String(app.phone || app.phoneNumber || app.id || '').replace(/\D/g, '').trim();
-      const appName = String(app.name || app.driverName || app.realName || app.applicantName || '').trim();
-      const appStatus = String(app.status || '').trim();
-      if (['已通过', 'approved', '通过'].includes(appStatus)) {
-        if (p && appPhone && appPhone === p) return true;
-        if (drvName && appName && drvName === appName && !isGenericDriverName(drvName, p)) return true;
+    try {
+      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (savedRemoved) {
+        const parsed = JSON.parse(savedRemoved);
+        if (Array.isArray(parsed) && parsed.includes(p)) return false;
       }
+    } catch (_) {}
+
+    // Check if driver is explicitly marked as rejected / resigned / not in squad
+    const drvStatus = String(drv.status || drv.approvalStatus || '').trim();
+    if (['已拒绝', '已离职', '未加入小队', 'rejected', '已解散'].includes(drvStatus)) {
       return false;
+    }
+
+    // Check if name is generic (e.g. 司机0116, 司机6058)
+    const dName = String(drv.driverName || drv.name || '').trim();
+    if (isGenericDriverName(dName, p) && !AUTHORITATIVE_REAL_DRIVER_NAMES[p]) {
+      return false;
+    }
+
+    if (AUTHORITATIVE_REAL_DRIVER_NAMES[p]) {
+      return true;
+    }
+
+    // Check against Aliyun squad_members DB
+    const smDoc = squadMembersList.find((sm: any) => {
+      const smPhone = String(sm.phone || sm.phoneNumber || sm.id || '').replace(/\D/g, '').trim();
+      return smPhone === p;
     });
-    if (inSquadAppsDB) return true;
+    if (smDoc) {
+      const smStatus = String(smDoc.status || smDoc.approvalStatus || '').trim();
+      if (['已拒绝', '已离职', '未加入小队'].includes(smStatus)) return false;
+      if (['已通过', 'approved', '通过'].includes(smStatus) || smDoc.role || smDoc.position || !smStatus) return true;
+    }
+
+    // Check squad applications list
+    const appDoc = squadAppsList.find((item: any) => {
+      const appPhone = String(item.phone || item.phoneNumber || item.id || '').replace(/\D/g, '').trim();
+      return appPhone === p;
+    });
+    if (appDoc) {
+      const appStatus = String(appDoc.status || '').trim();
+      if (['已通过', 'approved', '通过'].includes(appStatus)) return true;
+      if (['已拒绝', 'rejected'].includes(appStatus)) return false;
+    }
+
+    // Check driver object status / role
+    if (drv.is_squad_member === 1 || ['已通过', 'approved', '通过'].includes(drvStatus)) {
+      return true;
+    }
 
     return false;
   };
@@ -849,6 +861,9 @@ export default function AdminPanel({
     };
   }, []);
 
+  // Keep an in-memory ref of allDrivers to avoid re-subscribing on every allDrivers update
+  const allDriversRef = useRef<any[]>([]);
+
   // Merge and aggregate all driver profiles into allDrivers state in real-time
   useEffect(() => {
     const driverMap = new Map<string, any>();
@@ -868,23 +883,18 @@ export default function AdminPanel({
     const target50Time = target50d.getTime();
 
     const resolveVip50 = (phone: string, ...expiries: (string | undefined | null)[]) => {
-      if (phone === '15509601222') {
-        const exp = pickAuthoritativeVipExpiry(...expiries);
-        return (exp === '待开通' || !exp) ? '永久有效' : exp;
-      }
-      const chosen = pickAuthoritativeVipExpiry(...expiries);
-      if (!chosen || chosen === '待开通' || chosen === '待激活' || chosen === '未激活' || chosen === '未开通' || chosen === '0' || chosen === '0天' || chosen === '已到期' || chosen === '已过期') {
-        return default50DaysVip;
-      }
-      if (chosen === '永久有效' || chosen === '永久' || chosen === 'permanent' || chosen === '终身') return chosen;
-      const match = chosen.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-      if (match) {
-        const time = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, parseInt(match[3], 10)).getTime();
-        if (time < target50Time) {
-          return default50DaysVip;
+      for (const exp of expiries) {
+        if (exp !== undefined && exp !== null) {
+          const trimmed = String(exp).trim();
+          if (trimmed !== '') {
+            return trimmed;
+          }
         }
       }
-      return chosen;
+      if (phone === '15509601222') {
+        return '永久有效';
+      }
+      return '待开通';
     };
 
     // 1. Process squad_members
@@ -1004,7 +1014,9 @@ export default function AdminPanel({
       if (!phone || phone.length < 11) return;
       const existing = driverMap.get(phone) || {};
       const name = resolveDriverRealName(phone, du.driverName || du.name || existing.driverName || `司机${phone.slice(-4)}`);
-      const vExpiry = resolveVip50(phone, du.vipExpiry, existing.vipExpiry);
+      const vExpiry = (du.vipExpiry !== undefined && du.vipExpiry !== '')
+        ? du.vipExpiry
+        : resolveVip50(phone, existing.vipExpiry);
       driverMap.set(phone, {
         ...existing,
         ...du,
@@ -1039,7 +1051,9 @@ export default function AdminPanel({
       userRole: '开发者',
       status: '已通过',
       city: existingDev.city || '银川市',
-      vipExpiry: (existingDev.vipExpiry && existingDev.vipExpiry !== '待开通') ? existingDev.vipExpiry : '永久有效',
+      vipExpiry: (existingDev.vipExpiry !== undefined && existingDev.vipExpiry !== null && existingDev.vipExpiry !== '')
+        ? existingDev.vipExpiry
+        : '永久有效',
       isOnline: Boolean(existingDev.isOnline),
       onlineOrdersEnabled: Boolean(existingDev.onlineOrdersEnabled !== false),
       isBanned: false
@@ -1080,8 +1094,6 @@ export default function AdminPanel({
     return () => unsubscribe();
   }, []);
 
-  // Keep an in-memory ref of allDrivers to avoid re-subscribing on every allDrivers update
-  const allDriversRef = useRef<any[]>([]);
   useEffect(() => {
     allDriversRef.current = allDrivers;
   }, [allDrivers]);
@@ -1178,8 +1190,8 @@ export default function AdminPanel({
           phone: cleanPhone,
           driverName: realName,
           name: realName,
-          role: combined.role || combined.userRole || (cleanPhone === '15509601222' ? '开发者' : '普通司机'),
-          userRole: combined.role || combined.userRole || (cleanPhone === '15509601222' ? '开发者' : '普通司机'),
+          role: cleanPhone === '15509601222' ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
+          userRole: cleanPhone === '15509601222' ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
           city: combined.city || '银川市',
           vipExpiry: resolvedVip,
           status: combined.status || '已通过',
@@ -1516,13 +1528,20 @@ export default function AdminPanel({
     setTempExpiry(finalExpiry);
     setTempDays(calcDays);
     setDriverDoc(prev => prev ? ({ ...prev, vipExpiry: finalExpiry }) : prev);
-    setAllDrivers(prev => prev.map(d => {
-      const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-      if (p === cleanPhone) {
-        return { ...d, vipExpiry: finalExpiry };
-      }
-      return d;
-    }));
+    setAllDrivers(prev => {
+      const updated = prev.map(d => {
+        const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
+        if (p === cleanPhone) {
+          return { ...d, vipExpiry: finalExpiry };
+        }
+        return d;
+      });
+      allDriversRef.current = updated;
+      try {
+        localStorage.setItem('cached_unified_drivers', JSON.stringify(updated));
+      } catch (_) {}
+      return updated;
+    });
 
     // 2. Immediately update local storage caches for instantaneous sub-millisecond local reads
     try {
@@ -1782,6 +1801,191 @@ export default function AdminPanel({
       triggerToast('批量充值提示：已成功下发充值指令至中国大陆阿里云宝塔服务器！');
     } finally {
       setIsBatchRecharging(false);
+    }
+  };
+
+  // 一键转为非小队内成员（删除/移出小队后保留会员有效期到期时间，名字格式化为 司机XXXX）
+  const handleConvertToNonSquad = async (targetPhoneToConvert: string) => {
+    const cleanPhone = String(targetPhoneToConvert || '').replace(/\D/g, '').trim();
+    if (!cleanPhone || cleanPhone.length !== 11) return;
+    if (cleanPhone === '15509601222') {
+      alert('❌ 15509601222 最高开发者不能转为非小队成员！');
+      return;
+    }
+
+    try {
+      // 1. 读取该司机现有的 vipExpiry 以保留到期时间
+      const currentDrv = allDrivers.find(d => String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '') === cleanPhone);
+      const existingVip = currentDrv?.vipExpiry || '待开通';
+
+      // 2. 本地黑名单记录
+      let savedRemoved: string[] = [];
+      try {
+        const raw = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (raw) savedRemoved = JSON.parse(raw);
+      } catch (_) {}
+      if (!savedRemoved.includes(cleanPhone)) {
+        savedRemoved.push(cleanPhone);
+        localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
+      }
+
+      try {
+        localStorage.setItem(`dd_user_role_${cleanPhone}`, '普通司机');
+        localStorage.removeItem(`dd_squad_member_${cleanPhone}`);
+        localStorage.removeItem(`dd_approved_${cleanPhone}`);
+        localStorage.removeItem(`dd_in_squad_${cleanPhone}`);
+      } catch (_) {}
+
+      // 3. 更新云端数据库
+      const baseUrl = getBaseApiUrl();
+      const updatedUserDoc = {
+        phone: cleanPhone,
+        phoneNumber: cleanPhone,
+        driverName: `司机${cleanPhone.slice(-4)}`,
+        name: `司机${cleanPhone.slice(-4)}`,
+        role: '普通司机',
+        userRole: '普通司机',
+        status: '未加入小队',
+        vipExpiry: existingVip,
+        updatedAt: new Date().toISOString()
+      };
+
+      await Promise.all([
+        deleteDoc(doc(db, 'squad_members', cleanPhone)).catch(() => {}),
+        deleteDoc(doc(db, 'squad_applications', cleanPhone)).catch(() => {}),
+        setDoc(doc(db, 'driver_users', cleanPhone), updatedUserDoc, { merge: true }).catch(() => {}),
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(() => {})
+      ]);
+
+      fetch(`${baseUrl}/api/db/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_members', docId: cleanPhone })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_users', docId: cleanPhone, data: updatedUserDoc })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
+      }).catch(() => {});
+
+      // 4. 更新 React 本地状态
+      setSquadMembersList(prev => prev.filter(m => String(m.phone || m.id).replace(/\D/g, '') !== cleanPhone));
+      setAllDrivers(prev => prev.map(d => {
+        const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '');
+        if (p === cleanPhone) {
+          return {
+            ...d,
+            role: '普通司机',
+            userRole: '普通司机',
+            status: '未加入小队',
+            is_squad_member: 0,
+            driverName: `司机${cleanPhone.slice(-4)}`,
+            vipExpiry: existingVip
+          };
+        }
+        return d;
+      }));
+
+      triggerToast(`✓ 已成功将 ${cleanPhone} 转为【非小队内成员】（会员有效期 ${existingVip} 已保留）`);
+    } catch (err: any) {
+      alert('转换非小队成员失败：' + err.message);
+    }
+  };
+
+  // 一键转为小队内成员（恢复加入小队，状态设置为已通过）
+  const handleConvertToSquadMember = async (targetPhoneToConvert: string) => {
+    const cleanPhone = String(targetPhoneToConvert || '').replace(/\D/g, '').trim();
+    if (!cleanPhone || cleanPhone.length !== 11) return;
+
+    try {
+      // 1. 读取该司机现有的 vipExpiry 以保留到期时间，及真实名字
+      const currentDrv = allDrivers.find(d => String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '') === cleanPhone);
+      const existingVip = currentDrv?.vipExpiry || '待开通';
+      const realName = resolveDriverRealName(cleanPhone, currentDrv?.driverName || currentDrv?.name);
+
+      // 2. 从黑名单中移除
+      let savedRemoved: string[] = [];
+      try {
+        const raw = localStorage.getItem('dd_removed_squad_phones_v2');
+        if (raw) {
+          savedRemoved = JSON.parse(raw);
+          savedRemoved = savedRemoved.filter((p: string) => String(p).replace(/\D/g, '').trim() !== cleanPhone);
+          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
+        }
+      } catch (_) {}
+
+      try {
+        localStorage.setItem(`dd_approved_${cleanPhone}`, 'true');
+        localStorage.setItem(`dd_in_squad_${cleanPhone}`, 'true');
+      } catch (_) {}
+
+      // 3. 写入数据库
+      const baseUrl = getBaseApiUrl();
+      const updatedSquadDoc = {
+        phone: cleanPhone,
+        phoneNumber: cleanPhone,
+        driverName: realName,
+        name: realName,
+        role: '普通司机',
+        userRole: '普通司机',
+        status: '已通过',
+        approvalStatus: '已通过',
+        vipExpiry: existingVip,
+        updatedAt: new Date().toISOString()
+      };
+
+      await Promise.all([
+        setDoc(doc(db, 'squad_members', cleanPhone), updatedSquadDoc, { merge: true }).catch(() => {}),
+        setDoc(doc(db, 'driver_users', cleanPhone), updatedSquadDoc, { merge: true }).catch(() => {}),
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(() => {})
+      ]);
+
+      fetch(`${baseUrl}/api/db/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'squad_members', docId: cleanPhone, data: updatedSquadDoc })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'driver_users', docId: cleanPhone, data: updatedSquadDoc })
+      }).catch(() => {});
+      fetch(`${baseUrl}/api/db/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
+      }).catch(() => {});
+
+      // 4. 更新 React 本地状态
+      setSquadMembersList(prev => {
+        const filtered = prev.filter(m => String(m.phone || m.id).replace(/\D/g, '') !== cleanPhone);
+        return [...filtered, updatedSquadDoc];
+      });
+      setAllDrivers(prev => prev.map(d => {
+        const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '');
+        if (p === cleanPhone) {
+          return {
+            ...d,
+            role: '普通司机',
+            userRole: '普通司机',
+            status: '已通过',
+            approvalStatus: '已通过',
+            is_squad_member: 1,
+            driverName: realName,
+            vipExpiry: existingVip
+          };
+        }
+        return d;
+      }));
+
+      triggerToast(`✓ 已成功将 ${cleanPhone} 转为【小队内正式成员】（名字：${realName}，会员有效期：${existingVip}）`);
+    } catch (err: any) {
+      alert('转化小队成员失败：' + err.message);
     }
   };
 
@@ -2854,7 +3058,6 @@ export default function AdminPanel({
               onClick={() => {
                 setIsAdminAuthenticated(false);
                 localStorage.removeItem('isAdminAuthenticated');
-                localStorage.removeItem('dd_user_phone');
                 setShowToast(true);
                 setToastMsg('🔒 运营安全校验已退出，重新限制面板接管');
                 setTimeout(() => {
@@ -2987,7 +3190,6 @@ export default function AdminPanel({
               onClick={() => {
                 setIsAdminAuthenticated(false);
                 localStorage.removeItem('isAdminAuthenticated');
-                localStorage.removeItem('dd_user_phone');
                 setIsMobileMenuOpen(false);
                 setShowToast(true);
                 setToastMsg('🔒 运营安全校验已退出，重新限制面板接管');
@@ -3119,8 +3321,7 @@ export default function AdminPanel({
                       )}
                     </div>
                     <p className="text-[11px] text-gray-400 mt-1 max-w-2xl leading-relaxed">
-                      管理后台与司机手机客户端、乘客下单端默认全部直连到您的中国大陆阿里云宝塔服务器 MySQL 数据库，完全切断 Cloudflare 与 Firebase 依赖，国内毫秒级极速响应，数据完全自主掌控！
-                      任何一端更改规则、发放优惠卡密、派单，其他终端和您的新域名 <code className="text-teal-400 font-mono select-all">www.lyheiwandaijiamax.com</code> 均会实时响应！
+                      管理后台网页（<code className="text-teal-400 font-mono select-all">admin.lyheiwandaijiamax.com</code>）、乘客扫码开单网页（<code className="text-teal-400 font-mono select-all">lyheiwandaijiamax.com</code>）与司机手机客户端默认全部直连到您的中国大陆阿里云宝塔数据端点（<code className="text-teal-400 font-mono select-all">https://api.lyheiwandaijiamax.com</code>），彻底切断外部海外服务依赖，国内毫秒级极速响应，数据 100% 实时互联互通！
                     </p>
                   </div>
                 </div>
@@ -3135,7 +3336,7 @@ export default function AdminPanel({
                       type="text"
                       value={cfWorkerUrl}
                       onChange={(e) => setCfWorkerUrl(e.target.value)}
-                      placeholder="例如: https://www.lyheiwandaijiamax.com"
+                      placeholder="例如: https://api.lyheiwandaijiamax.com"
                       className="flex-grow bg-[#090b11] border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-teal-300 font-mono focus:outline-none focus:border-teal-500 transition-colors"
                     />
                     <button
@@ -3153,26 +3354,23 @@ export default function AdminPanel({
               <div className="mt-4 pt-4 border-t border-slate-900 flex flex-col gap-2 text-xs">
                 <div className="flex items-center gap-1.5 text-[11px] font-bold text-gray-300">
                   <Zap className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
-                  <span>如何将完整的管理后台部署到您注册的新域名 www.lyheiwandaijiamax.com 下？</span>
+                  <span>管理后台、乘客扫码端与 API 数据中心架构指引</span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 text-[11px] text-gray-400 leading-relaxed mt-1">
                   <div className="bg-[#090b11]/50 border border-slate-900 rounded-xl p-3">
-                    <div className="font-extrabold text-white mb-1">第一步：一键打包前端</div>
-                    在开发工作区运行构建命令，将静态 React 前端项目输出到目录：
-                    <pre className="mt-1 bg-black/60 p-1.5 rounded text-[9px] font-mono text-teal-300 overflow-x-auto">
-                      npm run build
-                    </pre>
-                    生成的内容将完整存放在 <code className="text-amber-500 font-mono">dist/</code> 目录下。
+                    <div className="font-extrabold text-white mb-1">1. 管理后台网页入口</div>
+                    绑定域名：<span className="text-teal-400 font-mono font-bold">admin.lyheiwandaijiamax.com</span><br/>
+                    用于管理员登录控制台、调整会员时长、审批小队成员及调度派单。
                   </div>
                   <div className="bg-[#090b11]/50 border border-slate-900 rounded-xl p-3">
-                    <div className="font-extrabold text-white mb-1">第二步：部署至中国大陆阿里云宝塔面板 Web 服务器</div>
-                    1. 登录您的宝塔面板（Node.js 项目管理器 / Nginx 网站目录）。<br/>
-                    2. 将打包好的 <strong>dist/</strong> 文件夹中的内容上传到该站点的 Web 根目录中。<br/>
-                    3. 在自定义域名绑定中绑定您申请的域名 <span className="text-teal-400 font-mono font-bold">www.lyheiwandaijiamax.com</span>。
+                    <div className="font-extrabold text-white mb-1">2. 乘客扫码开单端</div>
+                    绑定域名：<span className="text-teal-400 font-mono font-bold">lyheiwandaijiamax.com</span><br/>
+                    司机出示二维码后乘客直接扫码打开，自助填写起点终点即刻发起行程。
                   </div>
                   <div className="bg-[#090b11]/50 border border-slate-900 rounded-xl p-3">
-                    <div className="font-extrabold text-white mb-1">第三步：实时数据互联同步</div>
-                    由于您已经在上方将数据库端点绑定为您的宝塔 API 域名（或默认检测到 <code className="text-teal-400 font-mono">www.lyheiwandaijiamax.com</code>），在页面上将<strong>自动共享和互通</strong>所有数据（包括司机、卡密、计费、派单和位置），实现无缝连通。
+                    <div className="font-extrabold text-white mb-1">3. 核心数据互通端点</div>
+                    API 域名：<span className="text-teal-400 font-mono font-bold">https://api.lyheiwandaijiamax.com</span><br/>
+                    所有设备（手机 APP、管理后台、乘客端）通过此 API 互通互联，实现 100% 毫秒级同步。
                   </div>
                 </div>
               </div>
@@ -4111,6 +4309,29 @@ export default function AdminPanel({
                           </div>
                         </div>
 
+                        {/* 快捷小队身份一键转换 */}
+                        <div className="pt-2 border-t border-slate-900">
+                          {isOfficialSquadMember(driverDoc) ? (
+                            <button
+                              type="button"
+                              onClick={() => handleConvertToNonSquad(driverDoc.phoneNumber)}
+                              className="w-full py-2 px-3 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+                            >
+                              <Lock className="w-3.5 h-3.5" />
+                              <span>一键转为【非小队内成员】（保留会员期）</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleConvertToSquadMember(driverDoc.phoneNumber)}
+                              className="w-full py-2 px-3 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>一键转为【小队内正式成员】</span>
+                            </button>
+                          )}
+                        </div>
+
                       </div>
                     </div>
                   ) : (
@@ -4264,6 +4485,7 @@ export default function AdminPanel({
                           <th className="py-2 px-2">听单城市</th>
                           <th className="py-2 px-2">会员有效期</th>
                           <th className="py-2 px-2">会员状态</th>
+                          <th className="py-2 px-2 text-center">一键身份转换</th>
                           <th className="py-2 px-2 text-right">上次同步</th>
                         </tr>
                       </thead>
@@ -4337,6 +4559,35 @@ export default function AdminPanel({
                                       <span className="w-1.5 h-1.5 rounded-full bg-slate-500"></span>
                                       普通司机
                                     </span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-2 text-center">
+                                  {drvPhone === '15509601222' ? (
+                                    <span className="text-indigo-400 text-[9.5px] font-bold font-mono">最高开发者</span>
+                                  ) : isSquadMember ? (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleConvertToNonSquad(drvPhone);
+                                      }}
+                                      className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold rounded-lg text-[9.5px] transition-all cursor-pointer shadow-xs"
+                                      title="一键转为非小队内成员（保留会员到期天数）"
+                                    >
+                                      🔒 转为非小队内成员
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleConvertToSquadMember(drvPhone);
+                                      }}
+                                      className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold rounded-lg text-[9.5px] transition-all cursor-pointer shadow-xs"
+                                      title="一键转为小队内正式成员"
+                                    >
+                                      🏆 转为小队内成员
+                                    </button>
                                   )}
                                 </td>
                                 <td className="py-2.5 px-2 text-right text-slate-500 text-[10px] font-mono">

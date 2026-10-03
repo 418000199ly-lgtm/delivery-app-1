@@ -189,35 +189,9 @@ class AppErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundary
 
 export default function App() {
   // Support WeChat mobile authorization route directly
-  if (window.location.pathname === '/wechat-login-mobile') {
+  if (typeof window !== 'undefined' && window.location.pathname === '/wechat-login-mobile') {
     return <WeChatAuthMobile />;
   }
-
-  const isStandaloneDispatchValet = () => {
-    if (typeof window === 'undefined') return false;
-    const hostname = window.location.hostname;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('passenger') === 'true' || params.has('driver') || params.get('admin') === 'true') {
-      return false;
-    }
-    if (currentView === 'create_order' || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr') {
-      return false;
-    }
-    return hostname === 'api.lyheiwandaijiamax.com' || params.get('dispatch') === 'true';
-  };
-
-  const isStandaloneAdmin = () => {
-    if (typeof window === 'undefined') return false;
-    const hostname = window.location.hostname;
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('passenger') === 'true' || params.has('driver') || params.get('dispatch') === 'true') {
-      return false;
-    }
-    if (currentView === 'create_order' || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr') {
-      return false;
-    }
-    return hostname === 'admin.lyheiwandaijiamax.com' || params.get('admin') === 'true';
-  };
 
   // --- 1. Persistent State Management ---
   const lastCalibratedPhoneRef = useRef<string | null>(null);
@@ -787,7 +761,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const managementRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者'];
     if (userPhone === '15509601222') {
       setIsSquadApprovedOrManagement(true);
-      return;
     }
 
     let isApprovedByAny = false;
@@ -917,7 +890,64 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       try {
         const baseUrl = getBaseApiUrl();
 
-        // 首先检查当前司机是否已被管理员移出小队
+        // 1. Sub-second instant real-time sync for driver vipExpiry from Baota server (Always executed for all drivers)
+        if (userPhone) {
+          try {
+            const resUser = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
+            if (resUser.ok) {
+              const uJson = await resUser.json();
+              if (uJson && uJson.exists && uJson.data) {
+                const uData = uJson.data;
+                if (uData?.vipExpiry !== undefined && uData?.vipExpiry !== null) {
+                  const freshVip = String(uData.vipExpiry).trim();
+                  setSettings(prev => {
+                    if (prev.vipExpiry !== freshVip) {
+                      const updated = { ...prev, vipExpiry: freshVip };
+                      try {
+                        localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                        localStorage.setItem('dd_settings', JSON.stringify(updated));
+                      } catch (_) {}
+                      return updated;
+                    }
+                    return prev;
+                  });
+                }
+
+                // Realtime role synchronization from driver_users
+                const freshRole = uData?.role || uData?.userRole || uData?.position || '普通司机';
+                if (userPhone !== '15509601222') {
+                  setSquadRole(freshRole);
+                  try {
+                    const currentLocalRole = localStorage.getItem('dd_user_role');
+                    if (currentLocalRole !== freshRole) {
+                      localStorage.setItem('dd_user_role', freshRole);
+                      window.dispatchEvent(new CustomEvent('user_role_updated', { detail: { phone: userPhone, role: freshRole } }));
+                    }
+
+                    const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
+                    if (Array.isArray(savedM)) {
+                      let dirty = false;
+                      const updatedM = savedM.map((m: any) => {
+                        const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+                        if (p === userPhone && m.role !== freshRole) {
+                          dirty = true;
+                          return { ...m, role: freshRole, userRole: freshRole, position: freshRole };
+                        }
+                        return m;
+                      });
+                      if (dirty) {
+                        localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedM));
+                        window.dispatchEvent(new CustomEvent('squad_members_updated'));
+                      }
+                    }
+                  } catch (_) {}
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
+        // 2. 检查当前司机是否已被管理员移出小队
         if (userPhone && userPhone !== '15509601222') {
           let isUserRemoved = false;
           try {
@@ -966,60 +996,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (isCurrentUserRemoved()) {
           return;
         }
-
-        // Sub-second instant real-time sync for driver vipExpiry from Baota server
-        try {
-          const resUser = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
-          if (resUser.ok) {
-            const uJson = await resUser.json();
-            if (uJson && uJson.exists && uJson.data) {
-              const uData = uJson.data;
-              if (uData?.vipExpiry !== undefined && uData?.vipExpiry !== null && uData.vipExpiry !== '') {
-                setSettings(prev => {
-                  if (prev.vipExpiry !== uData.vipExpiry) {
-                    const updated = { ...prev, vipExpiry: uData.vipExpiry };
-                    try {
-                      localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
-                      localStorage.setItem('dd_settings', JSON.stringify(updated));
-                    } catch (_) {}
-                    return updated;
-                  }
-                  return prev;
-                });
-              }
-
-              // Realtime role synchronization from driver_users
-              const freshRole = uData?.role || uData?.userRole || uData?.position || '普通司机';
-              if (userPhone && userPhone !== '15509601222') {
-                setSquadRole(freshRole);
-                try {
-                  const currentLocalRole = localStorage.getItem('dd_user_role');
-                  if (currentLocalRole !== freshRole) {
-                    localStorage.setItem('dd_user_role', freshRole);
-                    window.dispatchEvent(new CustomEvent('user_role_updated', { detail: { phone: userPhone, role: freshRole } }));
-                  }
-
-                  const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-                  if (Array.isArray(savedM)) {
-                    let dirty = false;
-                    const updatedM = savedM.map((m: any) => {
-                      const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
-                      if (p === userPhone && m.role !== freshRole) {
-                        dirty = true;
-                        return { ...m, role: freshRole, userRole: freshRole, position: freshRole };
-                      }
-                      return m;
-                    });
-                    if (dirty) {
-                      localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedM));
-                      window.dispatchEvent(new CustomEvent('squad_members_updated'));
-                    }
-                  }
-                } catch (_) {}
-              }
-            }
-          }
-        } catch (_) {}
 
         const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
@@ -1367,7 +1343,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       localStorage.setItem('dd_is_online', 'false');
       localStorage.removeItem('dd_online_session_time');
       localStorage.removeItem('dd_user_phone');
-      localStorage.removeItem('isAdminAuthenticated');
       localStorage.removeItem('dd_settings');
       localStorage.removeItem('dd_user_role');
       localStorage.removeItem('dd_current_trip');
@@ -1403,7 +1378,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     } catch (_) {}
 
     setIsOnline(false);
-    setIsAdminAuthenticated(false);
     setUserPhone(null);
     setSquadRole('普通司机');
     setIsSquadApprovedOrManagement(false);
@@ -1593,8 +1567,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             let changed = false;
 
             const incomingVip = data.vipExpiry;
-            if (incomingVip !== undefined && prev.vipExpiry !== incomingVip) {
-              nextSettings.vipExpiry = incomingVip;
+            if (incomingVip !== undefined && incomingVip !== null && prev.vipExpiry !== String(incomingVip).trim()) {
+              nextSettings.vipExpiry = String(incomingVip).trim();
               changed = true;
             }
 
@@ -1715,6 +1689,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             }
             if (changed) {
               safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(nextSettings));
+              safeSetItem('dd_settings', JSON.stringify(nextSettings));
             }
             return changed ? nextSettings : prev;
           });
@@ -3712,6 +3687,32 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return false;
   };
 
+  const isStandaloneDispatchValet = () => {
+    if (typeof window === 'undefined') return false;
+    const hostname = window.location.hostname;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('passenger') === 'true' || params.has('driver') || params.get('admin') === 'true') {
+      return false;
+    }
+    if (currentView === 'create_order' || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr') {
+      return false;
+    }
+    return hostname === 'api.lyheiwandaijiamax.com' || params.get('dispatch') === 'true';
+  };
+
+  const isStandaloneAdmin = () => {
+    if (typeof window === 'undefined') return false;
+    const hostname = window.location.hostname;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('passenger') === 'true' || params.has('driver') || params.get('dispatch') === 'true') {
+      return false;
+    }
+    if (currentView === 'create_order' || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr') {
+      return false;
+    }
+    return hostname === 'admin.lyheiwandaijiamax.com' || params.get('admin') === 'true';
+  };
+
   if (isStandaloneDispatchValet()) {
     return (
       <div className="h-screen w-screen bg-[#f8fafc] flex flex-col overflow-hidden text-[#333333]">
@@ -3888,7 +3889,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           </button>
 
           <button
-            onClick={() => downloadDeployZip('daijia_deploy.zip')}
+            onClick={() => downloadDeployZip('daijia_deploy.zip', triggerToast)}
             className="px-3 py-1.5 rounded-full flex items-center gap-1.5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black shadow-lg shadow-emerald-500/20 active:scale-95 transition-all cursor-pointer border border-emerald-300 ml-1 shrink-0"
             title="一键下载部署至中国大陆服务器宝塔面板的完整部署压缩包 (daijia_deploy.zip - 0解压错误)"
           >

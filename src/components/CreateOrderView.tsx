@@ -1545,7 +1545,7 @@ export default function CreateOrderView({
     const effectiveBrandName = (settings?.customAppName?.trim() && settings.customAppName.trim() !== 'XX代驾') 
       ? settings.customAppName.trim() 
       : (driverPhoneNum === '15509601222' ? '滴滴代驾' : (settings?.customAppName?.trim() || 'XX代驾'));
-    const effectiveVipExpiry = (driverPhoneNum === '15509601222') ? '永久有效' : (settings?.vipExpiry || 'permanent');
+    const effectiveVipExpiry = settings?.vipExpiry || (driverPhoneNum === '15509601222' ? '永久有效' : '待开通');
     
     getDoc(docRef).then(snap => {
       if (snap.exists()) {
@@ -1568,11 +1568,11 @@ export default function CreateOrderView({
   const passengerScanUrl = (() => {
     const currentTs = qrTimestamp || Date.now();
     const cleanDriverPhone = (userPhone || '18609518888').replace(/\s+/g, '').trim();
-    const isVip = checkVipActive(settings?.vipExpiry) || cleanDriverPhone === '15509601222';
+    const isVip = checkVipActive(settings?.vipExpiry);
     const effectiveBrandName = (isVip && settings?.customAppName?.trim() && settings.customAppName.trim() !== 'XX代驾')
       ? settings.customAppName.trim()
       : (cleanDriverPhone === '15509601222' ? '滴滴代驾' : (settings?.customAppName?.trim() || 'XX代驾'));
-    const effectiveVipExpiry = (cleanDriverPhone === '15509601222') ? '永久有效' : (settings?.vipExpiry || 'permanent');
+    const effectiveVipExpiry = settings?.vipExpiry || (cleanDriverPhone === '15509601222' ? '永久有效' : '待开通');
 
     if (typeof window === 'undefined') {
       return `https://lyheiwandaijiamax.com/passenger_order.html?driver=${encodeURIComponent(cleanDriverPhone)}&name=${encodeURIComponent(effectiveBrandName)}&vip=${encodeURIComponent(effectiveVipExpiry)}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;

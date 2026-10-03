@@ -170,41 +170,10 @@ async function initDatabase() {
 var LOCAL_JSON_DB_PATH = import_path.default.join(process.cwd(), "local_db.json");
 var cachedDbData = null;
 var lastDbReadTime = 0;
-function pickAuthoritativeVipExpiry(...expiries) {
-  for (const exp of expiries) {
-    if (!exp) continue;
-    const trimmed = String(exp).trim();
-    if (trimmed === "\u6C38\u4E45\u6709\u6548" || trimmed === "\u6C38\u4E45" || trimmed === "permanent" || trimmed === "\u7EC8\u8EAB") return "\u6C38\u4E45\u6709\u6548";
-  }
-  let maxTime = -1;
-  let maxExpiryString = "";
-  for (const exp of expiries) {
-    if (!exp) continue;
-    const trimmed = String(exp).trim();
-    if (trimmed && trimmed !== "\u5F85\u5F00\u901A" && trimmed !== "\u5F85\u6FC0\u6D3B" && trimmed !== "\u672A\u6FC0\u6D3B" && trimmed !== "\u672A\u5F00\u901A" && trimmed !== "0" && trimmed !== "0\u5929" && trimmed !== "\u5DF2\u5230\u671F" && trimmed !== "\u5DF2\u8FC7\u671F") {
-      const match = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-      if (match) {
-        const time = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, parseInt(match[3], 10)).getTime();
-        if (time > maxTime) {
-          maxTime = time;
-          maxExpiryString = trimmed;
-        }
-      } else {
-        const parsed = new Date(trimmed);
-        if (!isNaN(parsed.getTime()) && parsed.getTime() > maxTime) {
-          maxTime = parsed.getTime();
-          maxExpiryString = trimmed;
-        }
-      }
-    }
-  }
-  return maxExpiryString || "\u5F85\u5F00\u901A";
-}
 function isGenericDriverName(name, phone) {
   const cleanPhone = String(phone || "").replace(/\D/g, "").trim();
   const AUTHORITATIVE_REAL_PHONES = [
     "15509601222",
-    "18695119126",
     "18695174428",
     "14709696333",
     "15209678783",
@@ -212,7 +181,6 @@ function isGenericDriverName(name, phone) {
     "13995071199",
     "13995388888",
     "15121888888",
-    "15121904440",
     "15295188888",
     "15226203822",
     "14709503822",
@@ -221,20 +189,30 @@ function isGenericDriverName(name, phone) {
     "18695117350",
     "18695117975",
     "18695111030",
-    "18695111003"
+    "18695111003",
+    "13895081030",
+    "19995429551",
+    "13995213747",
+    "19995377975",
+    "19995387350",
+    "17866167770",
+    "18161583039",
+    "18169102771",
+    "18695161718",
+    "15296972638"
   ];
   if (AUTHORITATIVE_REAL_PHONES.includes(cleanPhone)) return false;
   if (!cleanPhone || cleanPhone.length !== 11) return true;
-  const REMOVED_PHONES = ["13995213747", "13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "18695161718", "15509601223", "15555556666"];
+  const REMOVED_PHONES = ["13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "15509601223", "15555556666"];
   if (REMOVED_PHONES.includes(cleanPhone)) return true;
-  if (["3747", "9147", "3634", "5678", "6058", "1718", "0116", "1223", "1958"].some((s) => cleanPhone.endsWith(s))) return true;
+  if (["9147", "3634", "5678", "6058", "0116", "1223", "1958"].some((s) => cleanPhone.endsWith(s))) return true;
   if (!name || typeof name !== "string") return true;
   const clean = String(name).trim();
   if (!clean) return true;
   if (clean === "\u4EE3\u9A7E\u53F8\u673A" || clean === "\u5728\u7EBF\u4EE3\u9A7E\u53F8\u673A" || clean === "\u53F8\u673A" || clean === "\u672A\u547D\u540D" || clean === "\u4EE3\u9A7E\u5E08\u5085" || clean === "\u865A\u62DF\u53F8\u673A") return true;
   if (/^司机\d+/.test(clean)) return true;
   if (clean.startsWith("\u53F8\u673A") && /\d/.test(clean)) return true;
-  if (["3747", "9147", "3634", "5678", "6058", "1718", "0116", "1223", "1958"].some((s) => clean.includes(s))) return true;
+  if (["9147", "3634", "5678", "6058", "0116", "1223", "1958"].some((s) => clean.includes(s))) return true;
   const last4 = cleanPhone.slice(-4);
   if (last4 && (clean === `\u53F8\u673A${last4}` || clean.endsWith(last4))) return true;
   return false;
@@ -242,21 +220,21 @@ function isGenericDriverName(name, phone) {
 var isDbWriteScheduled = false;
 var isDbWriting = false;
 function readLocalJsonDb() {
-  const now = Date.now();
-  if (cachedDbData && now - lastDbReadTime < 5e3) {
+  if (cachedDbData) {
     return cachedDbData;
   }
   try {
     if (import_fs.default.existsSync(LOCAL_JSON_DB_PATH)) {
       const content = import_fs.default.readFileSync(LOCAL_JSON_DB_PATH, "utf8");
       cachedDbData = JSON.parse(content || "{}");
-      lastDbReadTime = now;
+      lastDbReadTime = Date.now();
       return cachedDbData;
     }
   } catch (e) {
     console.error("[Local JSON DB] Read error:", e);
   }
-  return cachedDbData || {};
+  if (!cachedDbData) cachedDbData = {};
+  return cachedDbData;
 }
 function writeLocalJsonDb(data, immediate = false) {
   cachedDbData = data;
@@ -427,7 +405,7 @@ async function startServer() {
   };
   seedSuperAdminAccount();
   const purgeMockDriverData = async () => {
-    const mockPhones = ["13912345678", "15509601223", "15555556666", "m-1", "m-2", "m-3", "13995213747", "13895299147"];
+    const mockPhones = ["13912345678", "15509601223", "15555556666", "m-1", "m-2", "m-3", "13895299147"];
     const mockNames = ["\u738B\u5FC3\u51CC", "\u5F20\u4E00\u5C71", "\u674E\u5C0F\u9F99"];
     try {
       const dbData = readLocalJsonDb();
@@ -435,7 +413,7 @@ async function startServer() {
       if (!dbData.config) dbData.config = {};
       if (!dbData.config.removed_squad_members) dbData.config.removed_squad_members = { phones: [] };
       const removedPhones = dbData.config.removed_squad_members.phones || [];
-      const kickedPhones = ["13995213747", "13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "18695161718", "15509601223", "15555556666"];
+      const kickedPhones = ["13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "15509601223", "15555556666"];
       kickedPhones.forEach((p) => {
         if (!removedPhones.includes(p)) {
           removedPhones.push(p);
@@ -495,22 +473,22 @@ async function startServer() {
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
            WHERE \`collection\` = 'squad_members' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13995213747', '13895299147', '17660453634', '13812345678', '19995426058', '18695161718', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%3747%' OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%' OR \`doc_id\` LIKE '%1718%'
+           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
+                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
                 OR \`data\` LIKE '%\u738B\u5FC3\u51CC%' OR \`data\` LIKE '%\u5F20\u4E00\u5C71%' OR \`data\` LIKE '%\u674E\u5C0F\u9F99%' OR \`data\` LIKE '%\u865A\u62DF%' 
-                OR \`data\` LIKE '%3747%' OR \`data\` LIKE '%\u53F8\u673A3747%' OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%\u53F8\u673A9147%'
+                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%\u53F8\u673A9147%'
                 OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%\u53F8\u673A3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%\u53F8\u673A5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%\u53F8\u673A6058%' OR \`data\` LIKE '%1718%' OR \`data\` LIKE '%\u53F8\u673A1718%')`
+                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%\u53F8\u673A6058%')`
         );
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
            WHERE \`collection\` = 'squad_applications' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13995213747', '13895299147', '17660453634', '13812345678', '19995426058', '18695161718', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%3747%' OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%' OR \`doc_id\` LIKE '%1718%'
+           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
+                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
                 OR \`data\` LIKE '%\u738B\u5FC3\u51CC%' OR \`data\` LIKE '%\u5F20\u4E00\u5C71%' OR \`data\` LIKE '%\u674E\u5C0F\u9F99%' OR \`data\` LIKE '%\u865A\u62DF%' 
-                OR \`data\` LIKE '%3747%' OR \`data\` LIKE '%\u53F8\u673A3747%' OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%\u53F8\u673A9147%'
+                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%\u53F8\u673A9147%'
                 OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%\u53F8\u673A3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%\u53F8\u673A5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%\u53F8\u673A6058%' OR \`data\` LIKE '%1718%' OR \`data\` LIKE '%\u53F8\u673A1718%')
+                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%\u53F8\u673A6058%')
            AND (\`data\` LIKE '%\u5DF2\u901A\u8FC7%' OR \`data\` NOT LIKE '%\u5DF2\u62D2\u7EDD%')`
         );
         conn.release();
@@ -525,7 +503,6 @@ async function startServer() {
     try {
       const AUTHORITATIVE_REAL_DRIVER_NAMES = {
         "15509601222": "\u5434\u5F66\u7956",
-        "18695119126": "\u674E\u626C",
         "18695174428": "\u7AE5\u5175",
         "14709696333": "\u738B\u8D24\u4EAE",
         "15209678783": "\u79B9\u5168\u6C5F",
@@ -533,15 +510,18 @@ async function startServer() {
         "13995071199": "\u8D75\u6587\u4E3E",
         "13995388888": "\u4E8E\u6D9B",
         "15121888888": "\u5F20\u745E",
-        "15121904440": "\u5468\u6770\u4F26",
         "15295188888": "\u674E\u91D1\u950B",
         "15226203822": "\u6768\u521A",
         "18695161718": "\u738B\u5E73",
         "13995213747": "\u5B8B\u4F1F",
         "19995387350": "\u6EF4\u6768\u660E7350",
-        "19995377975": "\u7EB3\u67977975",
+        "19995377975": "\u7EB3\u74337975",
         "13895081030": "\u590F\u4F1F1030",
-        "15296972638": "\u6768\u5B58\u5B89"
+        "15296972638": "\u6768\u5B58\u5B89",
+        "19995429551": "\u767D\u8000\u5B97",
+        "17866167770": "\u9B4F\u79C9\u91D1",
+        "18161583039": "\u62D3\u4E07\u4E1C",
+        "18169102771": "\u8D75\u5CA9"
       };
       const dbData = readLocalJsonDb();
       if (!dbData.driver_users) dbData.driver_users = {};
@@ -578,22 +558,26 @@ async function startServer() {
         const item = dbData.squad_members[k];
         const cleanPhone = String(item?.phone || item?.phoneNumber || k).replace(/\D/g, "").trim();
         const rawName = String(item?.name || item?.driverName || item?.applicantName || "");
-        if (cleanPhone !== "15509601222" && cleanPhone !== "18695119126") {
-          if (removedList.includes(cleanPhone) || cleanPhone.includes("3747") || cleanPhone.includes("9147") || isGenericDriverName(rawName, cleanPhone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) {
+        if (cleanPhone !== "15509601222") {
+          if (removedList.includes(cleanPhone) || cleanPhone.includes("9147") || isGenericDriverName(rawName, cleanPhone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) {
             delete dbData.squad_members[k];
           }
         }
       });
       const approvedSquadPhones = /* @__PURE__ */ new Set();
       approvedSquadPhones.add("15509601222");
-      approvedSquadPhones.add("18695119126");
+      Object.keys(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach((p) => {
+        if (!removedList.includes(p)) {
+          approvedSquadPhones.add(p);
+        }
+      });
       ["squad_members", "squad_applications"].forEach((col) => {
         if (dbData[col]) {
           Object.keys(dbData[col]).forEach((k) => {
             const cleanPhone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, "").trim();
             const rawName = String(dbData[col][k]?.name || dbData[col][k]?.driverName || dbData[col][k]?.applicantName || "");
             if (cleanPhone && cleanPhone.length === 11 && !removedList.includes(cleanPhone)) {
-              if (cleanPhone === "15509601222" || cleanPhone === "18695119126" || AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || !isGenericDriverName(rawName, cleanPhone)) {
+              if (cleanPhone === "15509601222" || AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || !isGenericDriverName(rawName, cleanPhone)) {
                 approvedSquadPhones.add(cleanPhone);
               }
             }
@@ -612,11 +596,8 @@ async function startServer() {
         let vipExpiry = du.vipExpiry || sq.vipExpiry || oa.vipExpiry || sa.vipExpiry || "";
         if (isRejected) {
           vipExpiry = "\u5F85\u5F00\u901A";
-        } else {
-          const isVipEmpty = !vipExpiry || vipExpiry === "\u5F85\u5F00\u901A" || vipExpiry === "\u5F85\u6FC0\u6D3B" || vipExpiry === "\u672A\u6FC0\u6D3B" || vipExpiry === "\u672A\u5F00\u901A" || vipExpiry === "0" || vipExpiry === "0\u5929" || vipExpiry === "\u5DF2\u5230\u671F" || vipExpiry === "\u5DF2\u8FC7\u671F";
-          if (isVipEmpty) {
-            vipExpiry = default50DaysVip;
-          }
+        } else if (!vipExpiry) {
+          vipExpiry = "\u5F85\u5F00\u901A";
         }
         const role = du.role || du.userRole || sq.role || sq.userRole || (phone === "15509601222" ? "\u5F00\u53D1\u8005" : "\u666E\u901A\u53F8\u673A");
         const consolidatedProfile = {
@@ -640,8 +621,8 @@ async function startServer() {
         };
         dbData.driver_users[phone] = consolidatedProfile;
         if (!isRejected && phone !== "15509601222") {
-          const approvedBy = sq.approvedBy || du.approvedBy || (phone === "18695119126" ? "\u5434\u5F66\u7956" : "\u6700\u9AD8\u5F00\u53D1\u8005");
-          const approvedRole = sq.approvedRole || du.approvedRole || (phone === "18695119126" ? "\u5F00\u53D1\u8005\u53F8\u673A" : "\u7BA1\u7406\u53F8\u673A");
+          const approvedBy = sq.approvedBy || du.approvedBy || "\u6700\u9AD8\u5F00\u53D1\u8005";
+          const approvedRole = sq.approvedRole || du.approvedRole || "\u7BA1\u7406\u53F8\u673A";
           const approvalTime = sq.approvalTime || du.approvalTime || sq.lastUpdatedTime || du.updatedAt || (/* @__PURE__ */ new Date()).toLocaleString();
           if (!dbData.squad_members) dbData.squad_members = {};
           const existingSquad = dbData.squad_members[phone] || {};
@@ -833,16 +814,22 @@ async function startServer() {
         const name = raw.driverName || raw.name || du.driverName || du.name || sq.name || sq.driverName || oa.driverName || sa.name || (docId === "15509601222" ? "\u5434\u5F66\u7956" : docId === "15121904440" ? "\u5468\u6770\u4F26" : `\u53F8\u673A${docId.slice(-4)}`);
         const isRejected = raw.status === "\u5DF2\u62D2\u7EDD" || du.status === "\u5DF2\u62D2\u7EDD" || sq.status === "\u5DF2\u62D2\u7EDD" || oa.status === "\u5DF2\u62D2\u7EDD" || sa.status === "\u5DF2\u62D2\u7EDD";
         const status = isRejected ? "\u5DF2\u62D2\u7EDD" : "\u5DF2\u901A\u8FC7";
-        let vipExpiry = raw.vipExpiry || du.vipExpiry || sq.vipExpiry || oa.vipExpiry || sa.vipExpiry || "";
-        if (docId === "15509601222") {
-          vipExpiry = "\u6C38\u4E45\u6709\u6548";
-        } else if (isRejected) {
+        let vipExpiry = "";
+        if (du.vipExpiry !== void 0 && du.vipExpiry !== null && du.vipExpiry !== "") {
+          vipExpiry = String(du.vipExpiry).trim();
+        } else if (raw.vipExpiry !== void 0 && raw.vipExpiry !== null && raw.vipExpiry !== "") {
+          vipExpiry = String(raw.vipExpiry).trim();
+        } else if (sq.vipExpiry !== void 0 && sq.vipExpiry !== null && sq.vipExpiry !== "") {
+          vipExpiry = String(sq.vipExpiry).trim();
+        } else if (oa.vipExpiry !== void 0 && oa.vipExpiry !== null && oa.vipExpiry !== "") {
+          vipExpiry = String(oa.vipExpiry).trim();
+        } else if (sa.vipExpiry !== void 0 && sa.vipExpiry !== null && sa.vipExpiry !== "") {
+          vipExpiry = String(sa.vipExpiry).trim();
+        }
+        if (isRejected) {
           vipExpiry = "\u5F85\u5F00\u901A";
-        } else {
-          const isVipEmpty = !vipExpiry || vipExpiry === "\u5F85\u5F00\u901A" || vipExpiry === "\u5F85\u6FC0\u6D3B" || vipExpiry === "\u672A\u6FC0\u6D3B" || vipExpiry === "\u672A\u5F00\u901A" || vipExpiry === "0" || vipExpiry === "0\u5929" || vipExpiry === "\u5DF2\u5230\u671F" || vipExpiry === "\u5DF2\u8FC7\u671F";
-          if (isVipEmpty) {
-            vipExpiry = default50DaysVip;
-          }
+        } else if (!vipExpiry) {
+          vipExpiry = "\u5F85\u5F00\u901A";
         }
         const effectiveQr = raw.qrcode_url || raw.wechatQrCode || du.qrcode_url || du.wechatQrCode || sq.qrcode_url || `/uploads/qrcodes/${docId}.png`;
         const resolvedDoc = {
@@ -921,20 +908,12 @@ async function startServer() {
           const docs2 = (rows || []).map((r) => {
             const data = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
             const obj = typeof data === "object" && data !== null ? { ...data } : {};
-            const cleanPhone = String(obj.phone || obj.phoneNumber || r.doc_id || "").replace(/\D/g, "").trim();
-            if (isDriverCol2 && cleanPhone && cleanPhone !== "15509601222") {
-              const vExp = obj.vipExpiry;
-              const isVipEmpty = !vExp || vExp === "\u5F85\u5F00\u901A" || vExp === "\u5F85\u6FC0\u6D3B" || vExp === "\u672A\u6FC0\u6D3B" || vExp === "\u672A\u5F00\u901A" || vExp === "0" || vExp === "0\u5929" || vExp === "\u5DF2\u5230\u671F" || vExp === "\u5DF2\u8FC7\u671F";
-              if (isVipEmpty) {
-                obj.vipExpiry = default50DaysVip2;
-              }
-            }
             return { id: r.doc_id, ...obj, data: obj };
           }).filter((doc) => {
             const cleanPhone = String(doc.phone || doc.id || "").replace(/\D/g, "").trim();
             const dName = String(doc.name || doc.driverName || doc.applicantName || "").trim();
             if (col === "squad_members") {
-              if (cleanPhone === "15509601222" || cleanPhone === "18695119126") return true;
+              if (cleanPhone === "15509601222") return true;
               if (isGenericDriverName(dName, cleanPhone)) return false;
             }
             if (col === "squad_applications") {
@@ -960,14 +939,6 @@ async function startServer() {
       const docs = Object.keys(colData).map((k) => {
         const itemData = colData[k];
         const obj = typeof itemData === "object" && itemData !== null ? { ...itemData } : {};
-        const cleanPhone = String(obj.phone || obj.phoneNumber || k || "").replace(/\D/g, "").trim();
-        if (isDriverCol && cleanPhone && cleanPhone !== "15509601222") {
-          const vExp = obj.vipExpiry;
-          const isVipEmpty = !vExp || vExp === "\u5F85\u5F00\u901A" || vExp === "\u5F85\u6FC0\u6D3B" || vExp === "\u672A\u6FC0\u6D3B" || vExp === "\u672A\u5F00\u901A" || vExp === "0" || vExp === "0\u5929" || vExp === "\u5DF2\u5230\u671F" || vExp === "\u5DF2\u8FC7\u671F";
-          if (isVipEmpty) {
-            obj.vipExpiry = default50DaysVip;
-          }
-        }
         return {
           id: k,
           ...obj,
@@ -977,7 +948,7 @@ async function startServer() {
         const cleanPhone = String(doc.phone || doc.id || "").replace(/\D/g, "").trim();
         const dName = String(doc.name || doc.driverName || doc.applicantName || "").trim();
         if (col === "squad_members") {
-          if (cleanPhone === "15509601222" || cleanPhone === "18695119126") return true;
+          if (cleanPhone === "15509601222") return true;
           if (isGenericDriverName(dName, cleanPhone)) return false;
         }
         if (col === "squad_applications") {
@@ -1072,12 +1043,12 @@ async function startServer() {
               const prev = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
               finalData = { ...prev, ...data };
               if (col === "driver_users" || col === "squad_members" || col === "online_applications" || col === "squad_applications") {
-                if (docId === "15509601222") {
-                  finalData.vipExpiry = "\u6C38\u4E45\u6709\u6548";
-                } else if (data.vipExpiry !== void 0) {
+                if (data.vipExpiry !== void 0) {
                   finalData.vipExpiry = data.vipExpiry;
+                } else if (prev && prev.vipExpiry !== void 0) {
+                  finalData.vipExpiry = prev.vipExpiry;
                 } else if (!finalData.vipExpiry) {
-                  finalData.vipExpiry = default50DaysVip;
+                  finalData.vipExpiry = "\u5F85\u5F00\u901A";
                 }
                 if (data.customAppName !== void 0) {
                   finalData.customAppName = data.customAppName;
@@ -1117,12 +1088,12 @@ async function startServer() {
         const prev = dbData[col][docId];
         finalData = { ...prev, ...data };
         if (col === "driver_users" || col === "squad_members" || col === "online_applications" || col === "squad_applications") {
-          if (docId === "15509601222") {
-            finalData.vipExpiry = "\u6C38\u4E45\u6709\u6548";
-          } else if (data.vipExpiry !== void 0) {
+          if (data.vipExpiry !== void 0) {
             finalData.vipExpiry = data.vipExpiry;
+          } else if (prev && prev.vipExpiry !== void 0) {
+            finalData.vipExpiry = prev.vipExpiry;
           } else if (!finalData.vipExpiry) {
-            finalData.vipExpiry = default50DaysVip;
+            finalData.vipExpiry = "\u5F85\u5F00\u901A";
           }
           if (data.customAppName !== void 0) {
             finalData.customAppName = data.customAppName;
@@ -1153,7 +1124,7 @@ async function startServer() {
           if (!dbData["driver_users"]) dbData["driver_users"] = {};
           const existingUser = dbData["driver_users"][cleanDriverPhone] || {};
           const name = finalData.name || finalData.driverName || finalData.applicantName || existingUser.driverName || `\u53F8\u673A${cleanDriverPhone.slice(-4)}`;
-          const resolvedVip = finalData.vipExpiry !== void 0 ? finalData.vipExpiry : existingUser.vipExpiry || default50DaysVip;
+          const resolvedVip = finalData.vipExpiry !== void 0 ? finalData.vipExpiry : existingUser.vipExpiry || "\u5F85\u5F00\u901A";
           const mergedDriverUser = {
             ...existingUser,
             ...finalData,
@@ -1164,6 +1135,7 @@ async function startServer() {
             role: finalData.role || finalData.userRole || existingUser.role || "\u666E\u901A\u53F8\u673A",
             userRole: finalData.role || finalData.userRole || existingUser.userRole || "\u666E\u901A\u53F8\u673A",
             status: finalData.status || existingUser.status || "\u5DF2\u901A\u8FC7",
+            is_squad_member: col === "squad_members" || finalData.status === "\u5DF2\u901A\u8FC7" || finalData.is_squad_member === 1 ? 1 : existingUser.is_squad_member ?? 0,
             city: finalData.city || existingUser.city || "\u94F6\u5DDD\u5E02",
             vipExpiry: resolvedVip,
             isOnline: Boolean(finalData.isOnline !== void 0 ? finalData.isOnline : existingUser.isOnline),
@@ -1218,6 +1190,16 @@ async function startServer() {
         }
       }
       writeLocalJsonDb(dbData);
+      const hostHeader = String(req.headers.host || "");
+      if (!hostHeader.includes("lyheiwandaijiamax.com")) {
+        const baotaBaseUrl = "https://api.lyheiwandaijiamax.com";
+        fetch(`${baotaBaseUrl}/api/db/set`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ col, id: docId, data, merge })
+        }).catch(() => {
+        });
+      }
       return res.json({ success: true, id: docId });
     } catch (err) {
       console.error("[DB Proxy SET Exception]:", err);
@@ -1316,7 +1298,7 @@ async function startServer() {
           if (!dbData["driver_users"]) dbData["driver_users"] = {};
           const existingUser = dbData["driver_users"][cleanDriverPhone] || {};
           const name = finalData.name || finalData.driverName || finalData.applicantName || existingUser.driverName || `\u53F8\u673A${cleanDriverPhone.slice(-4)}`;
-          const resolvedVip = pickAuthoritativeVipExpiry(finalData.vipExpiry, existingUser.vipExpiry);
+          const resolvedVip = finalData.vipExpiry !== void 0 ? finalData.vipExpiry : existingUser.vipExpiry || "\u5F85\u5F00\u901A";
           const mergedDriverUser = {
             ...existingUser,
             ...finalData,
@@ -1327,6 +1309,7 @@ async function startServer() {
             role: finalData.role || finalData.userRole || existingUser.role || "\u666E\u901A\u53F8\u673A",
             userRole: finalData.role || finalData.userRole || existingUser.userRole || "\u666E\u901A\u53F8\u673A",
             status: finalData.status || existingUser.status || "\u5DF2\u901A\u8FC7",
+            is_squad_member: col === "squad_members" || finalData.status === "\u5DF2\u901A\u8FC7" || finalData.is_squad_member === 1 ? 1 : existingUser.is_squad_member ?? 0,
             city: finalData.city || existingUser.city || "\u94F6\u5DDD\u5E02",
             vipExpiry: resolvedVip,
             isOnline: Boolean(finalData.isOnline !== void 0 ? finalData.isOnline : existingUser.isOnline),
@@ -1352,7 +1335,7 @@ async function startServer() {
             if (dbData[mCol] && dbData[mCol][cleanDriverPhone]) {
               const currentM = dbData[mCol][cleanDriverPhone];
               const updatedM = { ...currentM };
-              if (finalData.vipExpiry !== void 0) updatedM.vipExpiry = pickAuthoritativeVipExpiry(finalData.vipExpiry, currentM.vipExpiry);
+              if (finalData.vipExpiry !== void 0) updatedM.vipExpiry = finalData.vipExpiry;
               if (finalData.driverName) {
                 updatedM.driverName = finalData.driverName;
                 updatedM.name = finalData.driverName;
@@ -1381,9 +1364,15 @@ async function startServer() {
   app.post("/api/admin/update-driver-expiry", async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || "").replace(/\D/g, "").trim();
-      const vipExpiry = String(req.body.vipExpiry || "").trim();
+      const rawVip = String(req.body.vipExpiry || "").trim();
       if (!phone || phone.length !== 11) {
         return res.status(400).json({ success: false, error: "\u8BF7\u8F93\u5165\u6709\u6548\u768411\u4F4D\u624B\u673A\u53F7\u7801" });
+      }
+      let vipExpiry = rawVip;
+      if (!vipExpiry || vipExpiry === "0" || vipExpiry === "0\u5929" || vipExpiry === "\u5F85\u6FC0\u6D3B" || vipExpiry === "\u672A\u6FC0\u6D3B" || vipExpiry === "\u5F85\u5F00\u901A" || vipExpiry === "\u672A\u5F00\u901A" || vipExpiry === "\u5DF2\u5230\u671F" || vipExpiry === "\u5DF2\u8FC7\u671F") {
+        vipExpiry = "\u5F85\u5F00\u901A";
+      } else if (vipExpiry === "\u6C38\u4E45" || vipExpiry === "\u6C38\u4E45\u6709\u6548" || vipExpiry === "permanent" || vipExpiry === "\u7EC8\u8EAB") {
+        vipExpiry = "\u6C38\u4E45\u6709\u6548";
       }
       const dbData = readLocalJsonDb();
       const targetCols = ["driver_users", "squad_members", "online_applications", "squad_applications"];
@@ -1561,7 +1550,6 @@ async function startServer() {
         "15121888888",
         "15121904440",
         "15295188888",
-        "18695119126",
         "18695161718",
         "18695174428",
         "15226203822",
@@ -1651,10 +1639,10 @@ async function startServer() {
               "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
               ["driver_users", docId]
             );
-            let uData = { role: "\u666E\u901A\u53F8\u673A", userRole: "\u666E\u901A\u53F8\u673A", status: "\u672A\u7533\u8BF7", approvalStatus: "\u672A\u7533\u8BF7" };
+            let uData = { role: "\u666E\u901A\u53F8\u673A", userRole: "\u666E\u901A\u53F8\u673A", status: "\u672A\u52A0\u5165\u5C0F\u961F", approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F", is_squad_member: 0 };
             if (uRows && uRows.length > 0) {
               const prevU = typeof uRows[0].data === "string" ? JSON.parse(uRows[0].data) : uRows[0].data;
-              uData = { ...prevU, ...uData };
+              uData = { ...prevU, ...uData, is_squad_member: 0, status: "\u672A\u52A0\u5165\u5C0F\u961F", approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F" };
             }
             await mysqlPool.query(
               "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
@@ -1702,8 +1690,9 @@ async function startServer() {
             ...dbData.driver_users[docId],
             role: "\u666E\u901A\u53F8\u673A",
             userRole: "\u666E\u901A\u53F8\u673A",
-            status: "\u672A\u7533\u8BF7",
-            approvalStatus: "\u672A\u7533\u8BF7"
+            status: "\u672A\u52A0\u5165\u5C0F\u961F",
+            approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F",
+            is_squad_member: 0
           };
         }
         if (!dbData.config) dbData.config = {};
@@ -1927,7 +1916,7 @@ async function startServer() {
         ).catch(() => {
         });
       }
-      return res.json({ success: true, isOnline: patch.isOnline });
+      return res.json({ success: true, isOnline: patch.isOnline, serverTime: Date.now() });
     } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -2038,7 +2027,7 @@ async function startServer() {
       }
       const isInvalidDriver = (phone, name) => {
         if (!phone) return true;
-        if (phone === "15509601222" || phone === "18695119126") return false;
+        if (phone === "15509601222") return false;
         if (removedPhones.has(phone)) return true;
         if (name && (name.includes("\u865A\u62DF") || name.startsWith("\u6D4B\u8BD5") || name.includes("test"))) return true;
         if (["13912345678", "15509601223", "15555556666", "13995213747", "13895299147", "17660453634", "13812345678", "19995426058", "18695161718", "m-1", "m-2", "m-3"].includes(phone)) return true;
@@ -2321,10 +2310,11 @@ async function startServer() {
   }
   app.post("/api/dispatch/nearest", async (req, res) => {
     try {
-      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3 } = req.body || {};
+      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3, excludePhone } = req.body || {};
       if (!orderData || !orderData.id && !orderData.orderNo) {
         return res.status(400).json({ success: false, error: "Missing orderData" });
       }
+      await new Promise((resolve) => setTimeout(resolve, 3e3));
       const startLocName = String(orderData.startLocation || orderData.passengerAddress || orderData.pickupAddress || "").trim();
       let pLat = Number(pickupLat || orderData.passengerLat || orderData.startLat || orderData.lat);
       let pLng = Number(pickupLng || orderData.passengerLng || orderData.startLng || orderData.lng);
@@ -2387,13 +2377,18 @@ async function startServer() {
         });
       }
       const candidates = [];
+      const removedPhonesArr = dbData.config?.["removed_squad_members"]?.phones || [];
       squadList.forEach(({ phone, data }) => {
         if (!phone || !data || data.isBanned) return;
         const cleanPhone = String(phone).replace(/\D/g, "").trim();
+        if (cleanPhone !== "15509601222" && (removedPhonesArr.includes(cleanPhone) || isGenericDriverName(data.driverName || data.name, cleanPhone))) {
+          return;
+        }
         const cleanReporter = reporterPhone ? String(reporterPhone).replace(/\D/g, "").trim() : "";
+        const cleanExclude = excludePhone ? String(excludePhone).replace(/\D/g, "").trim() : "";
         const cleanMerchant = orderData.merchantPhone ? String(orderData.merchantPhone).replace(/\D/g, "").trim() : "";
         const cleanPassenger = orderData.passengerPhone ? String(orderData.passengerPhone).replace(/\D/g, "").trim() : "";
-        if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanMerchant || cleanPhone === cleanPassenger)) {
+        if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude || cleanPhone === cleanMerchant || cleanPhone === cleanPassenger)) {
           return;
         }
         const st = String(data.status || data.approvalStatus || "\u5DF2\u901A\u8FC7").trim();
@@ -2421,6 +2416,11 @@ async function startServer() {
         if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
           dLat = 38.487167;
           dLng = 106.23091;
+        }
+        if (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) {
+          if (Math.abs(dLat - pLat) > 0.035 || Math.abs(dLng - pLng) > 0.045) {
+            return;
+          }
         }
         const distKm = !isNaN(pLat) && !isNaN(pLng) && pLat !== 0 ? calculateHaversineKm(pLat, pLng, dLat, dLng) : 0.5;
         if (distKm <= radiusKm) {
@@ -2494,7 +2494,12 @@ async function startServer() {
           dispatchedDriverPhone: selected.phone,
           dispatchedDriverName: selected.name,
           distKm: selected.distKm,
-          distanceText: distText
+          distanceText: distText,
+          remainingSeconds: 60,
+          dispatchCountdown: 60,
+          serverTime: nowTs,
+          dispatchedAt: nowTs,
+          dispatchExpiresAt: nowTs + 6e4
         });
       } else {
         const nowTs = Date.now();
@@ -2526,6 +2531,7 @@ async function startServer() {
         return res.json({
           success: true,
           isHall: true,
+          serverTime: nowTs,
           message: "\u65B9\u57063\u516C\u91CC\u5185\u65E0\u5728\u7EBF\u7A7A\u95F2\u53F8\u673A\uFF0C\u5DF2\u5168\u5458\u5E7F\u64AD\u8F6C\u5165\u9009\u5355\u5927\u5385"
         });
       }
@@ -2544,6 +2550,22 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "Missing orderId or driverPhone" });
       }
       const dbData = readLocalJsonDb();
+      const removedPhonesArr = dbData.config?.["removed_squad_members"]?.phones || [];
+      const isRemovedDriver = removedPhonesArr.includes(cleanDriverPhone);
+      const isDevDriver = cleanDriverPhone === "15509601222";
+      let isSquadApproved = isDevDriver;
+      if (!isDevDriver && !isRemovedDriver) {
+        const squadDoc = dbData["squad_members"]?.[cleanDriverPhone];
+        if (squadDoc) {
+          const st = String(squadDoc.status || squadDoc.approvalStatus || "").trim();
+          if (st === "\u5DF2\u901A\u8FC7" || st === "approved" || st === "\u901A\u8FC7" || !st) {
+            isSquadApproved = true;
+          }
+        }
+      }
+      if (isRemovedDriver || !isSquadApproved) {
+        return res.status(403).json({ success: false, error: "\u274C \u6743\u9650\u4E0D\u8DB3\uFF1A\u53EA\u6709\u5C0F\u961F\u5185\u5BA1\u6279\u901A\u8FC7\u7684\u6B63\u5F0F\u53F8\u673A\u624D\u80FD\u63A5\u6536\u5546\u6237\u4EE3\u53EB\u5355\u4E0E\u62A5\u5355\u8F6C\u5355\uFF01\u975E\u5C0F\u961F\u6210\u5458\u65E0\u63A5\u5355\u6743\u9650\u3002" });
+      }
       if (!dbData["merchant_orders"]) dbData["merchant_orders"] = {};
       const targetOrder = dbData["merchant_orders"][cleanOrderId];
       if (targetOrder) {
@@ -2580,7 +2602,10 @@ async function startServer() {
       dbData["passenger_links"][cleanDriverPhone] = {
         ...claimUpdateData,
         status: "submitted",
-        isDirectClaim: true
+        isDirectClaim: true,
+        dispatchCountdown: 60,
+        dispatchedAt: now,
+        dispatchExpiresAt: now + 6e4
       };
       writeLocalJsonDb(dbData);
       if (isMySQLEnabled && mysqlPool) {
@@ -2596,7 +2621,7 @@ async function startServer() {
         } catch (_) {
         }
       }
-      return res.json({ success: true, order: claimUpdateData });
+      return res.json({ success: true, order: claimUpdateData, serverTime: now });
     } catch (err) {
       console.error("[Order Claim Exception]:", err);
       res.status(500).json({ success: false, error: err.message });
@@ -2634,6 +2659,18 @@ async function startServer() {
       if (cleanDriverPhone && dbData["passenger_links"] && dbData["passenger_links"][cleanDriverPhone]) {
         delete dbData["passenger_links"][cleanDriverPhone];
       }
+      if (cleanDriverPhone) {
+        ["driver_users", "driver_locations", "squad_members"].forEach((col) => {
+          if (dbData[col] && dbData[col][cleanDriverPhone]) {
+            dbData[col][cleanDriverPhone] = {
+              ...dbData[col][cleanDriverPhone],
+              isBusy: false,
+              status: "idle",
+              lastStatusUpdateTime: now
+            };
+          }
+        });
+      }
       writeLocalJsonDb(dbData);
       if (isMySQLEnabled && mysqlPool) {
         try {
@@ -2646,11 +2683,15 @@ async function startServer() {
               "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
               ["passenger_links", cleanDriverPhone]
             );
+            await mysqlPool.query(
+              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", false, "$.status", "idle") WHERE `collection` IN ("driver_users", "driver_locations", "squad_members") AND `doc_id` = ?',
+              [cleanDriverPhone]
+            );
           }
         } catch (_) {
         }
       }
-      return res.json({ success: true, order: updateData });
+      return res.json({ success: true, order: updateData, serverTime: now });
     } catch (err) {
       console.error("[Order Decline Exception]:", err);
       res.status(500).json({ success: false, error: err.message });
@@ -2983,17 +3024,34 @@ async function startServer() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>\u9690\u79C1\u6761\u6B3E\u4E0E\u4E2A\u4EBA\u4FE1\u606F\u4FDD\u62A4\u653F\u7B56</title>
-  <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+      background-color: #f8fafc;
+      color: #334155;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
     }
+    .container { max-width: 800px; margin: 24px auto; padding: 24px; }
+    .card { background: #ffffff; border-radius: 24px; padding: 32px; border: 1px solid #f1f5f9; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); }
+    .header { text-align: center; padding-bottom: 24px; border-bottom: 1px solid #f1f5f9; margin-bottom: 24px; }
+    .header-icon { width: 48px; height: 48px; border-radius: 16px; background: #fff7ed; color: #f97316; display: inline-flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+    .header-badge { font-size: 11px; letter-spacing: 0.1em; color: #94a3b8; font-weight: 800; display: block; margin-bottom: 4px; }
+    .header h1 { font-size: 22px; font-weight: 900; color: #0f172a; }
+    .header p { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+    .preamble { background: #fffbeb; border: 1px solid #fef3c7; border-radius: 16px; padding: 16px; margin-bottom: 28px; font-size: 13px; color: #78350f; }
+    .preamble-title { font-weight: 800; display: flex; align-items: center; gap: 6px; margin-bottom: 8px; color: #451a03; }
+    .section { margin-bottom: 24px; }
+    .section h2 { font-size: 15px; font-weight: 800; color: #1e293b; border-left: 4px solid #f97316; padding-left: 10px; margin-bottom: 12px; }
+    .section p { font-size: 13px; color: #64748b; margin-bottom: 8px; }
+    .section b { color: #334155; }
+    .footer { text-align: center; margin-top: 32px; padding-top: 20px; border-top: 1px solid #f1f5f9; font-size: 12px; color: #94a3b8; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-800 antialiased selection:bg-orange-100 flex flex-col min-h-screen">
-  <div class="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 md:p-8">
-    <div class="max-w-3xl w-full bg-white rounded-3xl p-6 md:p-10 shadow-xl shadow-slate-100 border border-slate-100 space-y-8">
+  <div class="container">
+    <div class="card space-y-8">
       
       <!-- Top header with lock icon -->
       <div class="flex flex-col items-center text-center gap-2 pb-6 border-b border-slate-100">
@@ -3534,15 +3592,15 @@ async function startServer() {
             id: cleanPhone,
             phone: cleanPhone,
             phoneNumber: cleanPhone,
-            driverName: cleanPhone === "15509601222" ? "\u5434\u5F66\u7956" : cleanPhone === "18695119126" ? "\u674E\u626C" : `\u53F8\u673A${cleanPhone.slice(-4)}`,
-            name: cleanPhone === "15509601222" ? "\u5434\u5F66\u7956" : cleanPhone === "18695119126" ? "\u674E\u626C" : `\u53F8\u673A${cleanPhone.slice(-4)}`,
+            driverName: cleanPhone === "15509601222" ? "\u5434\u5F66\u7956" : `\u53F8\u673A${cleanPhone.slice(-4)}`,
+            name: cleanPhone === "15509601222" ? "\u5434\u5F66\u7956" : `\u53F8\u673A${cleanPhone.slice(-4)}`,
             role: cleanPhone === "15509601222" ? "\u5F00\u53D1\u8005\u53F8\u673A" : "\u666E\u901A\u53F8\u673A",
             userRole: cleanPhone === "15509601222" ? "\u5F00\u53D1\u8005\u53F8\u673A" : "\u666E\u901A\u53F8\u673A",
             position: cleanPhone === "15509601222" ? "\u5F00\u53D1\u8005\u53F8\u673A" : "\u666E\u901A\u53F8\u673A",
             squad_position: cleanPhone === "15509601222" ? "developer" : "normal",
             is_squad_member: cleanPhone === "15509601222" ? 1 : 0,
             status: cleanPhone === "15509601222" ? "\u5DF2\u901A\u8FC7" : "\u672A\u52A0\u5165\u5C0F\u961F",
-            vipExpiry: cleanPhone === "15509601222" ? "\u6C38\u4E45\u6709\u6548" : "\u5F85\u5F00\u901A",
+            vipExpiry: existing?.vipExpiry || "\u5F85\u5F00\u901A",
             city: "\u94F6\u5DDD\u5E02",
             isOnline: false,
             onlineOrdersEnabled: false,
@@ -3646,7 +3704,7 @@ async function startServer() {
         name: "\u5434\u5F66\u7956",
         role: "\u5F00\u53D1\u8005",
         userRole: "\u5F00\u53D1\u8005",
-        vipExpiry: "\u6C38\u4E45\u6709\u6548",
+        vipExpiry: dbData.driver_users?.[devPhone]?.vipExpiry || "\u6C38\u4E45\u6709\u6548",
         city: "\u94F6\u5DDD\u5E02",
         isOnline: false,
         onlineOrdersEnabled: false,
@@ -4044,37 +4102,39 @@ async function startServer() {
     res.sendFile(import_path.default.join(process.cwd(), "aliyun_passenger_deploy.html"));
   });
   const servePackageFile = (req, res, requestedName = "daijia_deploy.zip") => {
-    let targetPath = import_path.default.join(process.cwd(), requestedName);
-    if (!import_fs.default.existsSync(targetPath)) {
-      targetPath = import_path.default.join(process.cwd(), "dist", requestedName);
-    }
-    if (!import_fs.default.existsSync(targetPath)) {
-      targetPath = import_path.default.join(process.cwd(), "daijia_deploy.zip");
-    }
-    if (!import_fs.default.existsSync(targetPath)) {
-      targetPath = import_path.default.join(process.cwd(), "dist", "daijia_deploy.zip");
-    }
-    if (!import_fs.default.existsSync(targetPath) || import_fs.default.statSync(targetPath).size < 1e3) {
+    const candidatePaths = [
+      import_path.default.join(process.cwd(), "public", requestedName),
+      import_path.default.join(process.cwd(), requestedName),
+      import_path.default.join(process.cwd(), "dist", requestedName),
+      import_path.default.join(process.cwd(), "public", "daijia_deploy.zip"),
+      import_path.default.join(process.cwd(), "daijia_deploy.zip"),
+      import_path.default.join(process.cwd(), "dist", "daijia_deploy.zip")
+    ];
+    let targetPath = candidatePaths.find((p) => import_fs.default.existsSync(p) && import_fs.default.statSync(p).size > 1e6);
+    if (!targetPath) {
       try {
         console.log(`[Package Service] File ${requestedName} missing or invalid, running create_deploy_zip.py...`);
         (0, import_child_process.execSync)("python3 create_deploy_zip.py", { cwd: process.cwd() });
-        targetPath = import_path.default.join(process.cwd(), requestedName);
-        if (!import_fs.default.existsSync(targetPath)) {
-          targetPath = import_path.default.join(process.cwd(), "daijia_deploy.zip");
-        }
+        targetPath = candidatePaths.find((p) => import_fs.default.existsSync(p) && import_fs.default.statSync(p).size > 1e6);
       } catch (e) {
         console.error("Build package failed:", e);
       }
     }
-    if (import_fs.default.existsSync(targetPath)) {
+    if (targetPath && import_fs.default.existsSync(targetPath)) {
+      const stat = import_fs.default.statSync(targetPath);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${requestedName}"`);
+      res.setHeader("Content-Length", stat.size);
       res.setHeader("Content-Transfer-Encoding", "binary");
       res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
       res.setHeader("Pragma", "no-cache");
       res.setHeader("Expires", "0");
-      return res.download(targetPath, requestedName, (err) => {
-        if (err && !res.headersSent) {
-          console.error("[Package Service] Download stream error:", err);
-          res.status(500).send("Download failed");
+      const fileStream = import_fs.default.createReadStream(targetPath);
+      fileStream.pipe(res);
+      fileStream.on("error", (err) => {
+        console.error("[Package Service] Stream pipe error:", err);
+        if (!res.headersSent) {
+          res.status(500).send("Download stream failed");
         }
       });
     } else {

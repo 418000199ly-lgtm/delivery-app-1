@@ -448,7 +448,7 @@ async function playMp3AudioStreams(text: string, onEnd?: () => void): Promise<bo
   }
 
   // Priority 3: Direct Mainland China Baota production server domain
-  mp3Urls.push(`https://admin.lyheiwandaijiamax.com/api/tts?text=${encodedText}`);
+  mp3Urls.push(`https://api.lyheiwandaijiamax.com/api/tts?text=${encodedText}`);
 
   // Priority 4: Direct Baidu TTS public fallbacks (Chinese spoken MP3 audio streams)
   mp3Urls.push(
