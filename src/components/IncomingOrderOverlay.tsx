@@ -78,41 +78,94 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   onAccept,
   onDecline,
 }) => {
-  // 60秒倒计时：实时同步服务器与宝塔面板计算的剩余时间
+  // 60秒倒计时：严格由中国大陆阿里云服务器权威倒计时决定 (服务器显示60就显示60，服务器显示31就显示31)
+  const targetOrderId = String((order as any)?.orderId || (order as any)?.id || (order as any)?.orderNo || '').trim();
+  const cleanDriverPhone = String(userPhone || (order as any)?.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+
   const [timeLeft, setTimeLeft] = useState<number>(() => {
+    if (typeof (order as any)?.serverCountdown === 'number') {
+      return Math.max(0, Math.min(60, (order as any).serverCountdown));
+    }
+    if (typeof (order as any)?.dispatchCountdown === 'number') {
+      return Math.max(0, Math.min(60, (order as any).dispatchCountdown));
+    }
     const now = Date.now();
-    const exp = Number((order as any)?.dispatchExpiresAt || ((order as any)?.dispatchedAt ? Number((order as any).dispatchedAt) + 60000 : (order.timestamp ? Number(order.timestamp) + 60000 : now + 60000)));
+    const exp = Number((order as any)?.dispatchExpiresAt || ((order as any)?.dispatchedAt ? Number((order as any).dispatchedAt) + 60000 : now + 60000));
     const remainingSecs = Math.max(0, Math.ceil((exp - now) / 1000));
-    return Math.max(1, Math.min(60, remainingSecs || 60));
+    return Math.max(0, Math.min(60, remainingSecs > 0 ? remainingSecs : 60));
   });
 
-  // 倒计时核心引擎：根据服务器派单到期时间戳每秒精准同步，杜绝前端漂移或后台休眠误差
+  // 监听 props 中实时下发的服务器秒数
   useEffect(() => {
-    const calculateServerRemaining = () => {
-      const now = Date.now();
-      const exp = Number((order as any)?.dispatchExpiresAt || ((order as any)?.dispatchedAt ? Number((order as any).dispatchedAt) + 60000 : (order.timestamp ? Number(order.timestamp) + 60000 : now + 60000)));
-      const remaining = Math.max(0, Math.ceil((exp - now) / 1000));
-      return Math.min(60, remaining);
-    };
-
-    const initialRemaining = calculateServerRemaining();
-    setTimeLeft(initialRemaining);
-    if (initialRemaining <= 0) {
-      onDecline();
-      return;
-    }
-
-    const timer = setInterval(() => {
-      const curRemaining = calculateServerRemaining();
-      setTimeLeft(curRemaining);
-      if (curRemaining <= 0) {
-        clearInterval(timer);
+    if (typeof (order as any)?.serverCountdown === 'number') {
+      const sSec = (order as any).serverCountdown;
+      setTimeLeft(Math.max(0, Math.min(60, sSec)));
+      if (sSec <= 0) {
         onDecline();
       }
+    }
+  }, [(order as any)?.serverCountdown, onDecline]);
+
+  // 倒计时核心引擎：每秒主动对齐中国大陆阿里云服务器 /api/dispatch/countdown 权威秒数
+  useEffect(() => {
+    let isMounted = true;
+    const baseUrl = getBaseApiUrl();
+
+    const syncWithServerCountdown = async () => {
+      try {
+        const queryParams = new URLSearchParams();
+        if (targetOrderId) queryParams.set('orderId', targetOrderId);
+        if (cleanDriverPhone) queryParams.set('driverPhone', cleanDriverPhone);
+        queryParams.set('_t', String(Date.now()));
+
+        const resp = await fetch(`${baseUrl}/api/dispatch/countdown?${queryParams.toString()}`, {
+          cache: 'no-store'
+        });
+
+        if (resp.ok && isMounted) {
+          const data = await resp.json();
+          if (data && data.success) {
+            // 服务器明确判定超时、倒计时<=0 或已转入选单大厅 (且非本司机直接抢单的订单)
+            if (
+              !order?.isDirectClaim &&
+              (data.isExpired || data.inHall || (typeof data.serverCountdown === 'number' && data.serverCountdown <= 0))
+            ) {
+              setTimeLeft(0);
+              onDecline();
+              return;
+            }
+
+            if (typeof data.serverCountdown === 'number') {
+              // 严格锁定显示服务器的秒数 (例如60秒、31秒等)
+              setTimeLeft(Math.max(0, Math.min(60, data.serverCountdown)));
+            }
+          }
+        }
+      } catch (_) {
+        // 网络微弱时客户端本地平滑递减兜底
+      }
+    };
+
+    // 立即执行首次服务器对齐
+    syncWithServerCountdown();
+
+    // 每秒与阿里云服务器心跳同步，确保秒数100%由服务器掌控
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        const next = Math.max(0, prev - 1);
+        if (next <= 0) {
+          onDecline();
+        }
+        return next;
+      });
+      syncWithServerCountdown();
     }, 1000);
 
-    return () => clearInterval(timer);
-  }, [order, onDecline]);
+    return () => {
+      isMounted = false;
+      clearInterval(timer);
+    };
+  }, [targetOrderId, cleanDriverPhone, onDecline]);
 
   // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
   useEffect(() => {
@@ -194,10 +247,6 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       ''
     ) : '';
 
-    if (order.distanceText) {
-      return order.distanceText;
-    }
-
     const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
     const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
     const currentCoords = (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng))
@@ -210,7 +259,15 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       order.passengerLng || (order as any).resolvedLng || (order as any).lng,
       currentCoords
     );
-    return displayDistText;
+
+    if (displayDistText) {
+      return displayDistText;
+    }
+
+    if (order.distanceText) {
+      return order.distanceText;
+    }
+    return '300米';
   }, [
     order.passengerLat,
     order.passengerLng,

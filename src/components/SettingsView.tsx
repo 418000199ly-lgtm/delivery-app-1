@@ -4,10 +4,10 @@ import { ChauffeurSettings, checkVipActive } from '../types';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
-import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR } from '../utils/qrCodeHelper';
+import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
 import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
 
-export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR };
+export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl };
 
 interface SettingsViewProps {
   settings: ChauffeurSettings;
@@ -478,23 +478,33 @@ export default function SettingsView({
     if (file) {
       setIsProcessingWechat(true);
       try {
-        // Zero-memory downscaled extraction - completely prevents iOS WKWebView Jetsam OOM white-screen and Android freeze
-        const cleanQr = await processImageFileToCleanQR(file, 'wechat');
+        let cleanQr = await processImageFileToCleanQR(file, 'wechat');
+        if (!cleanQr || !cleanQr.startsWith('data:image/')) {
+          cleanQr = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(file);
+          });
+        }
         if (!cleanQr) {
           setIsProcessingWechat(false);
           return;
         }
 
-        // Update state with lightweight clean QR (< 25KB)
+        // Update state with clean QR DataURL
         onUpdateSettings({ ...settings, wechatQrCode: cleanQr });
 
         const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
         if (targetPhone) {
           try {
+            localStorage.removeItem(`dd_qr_deleted_${targetPhone}`);
             localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, cleanQr);
+            localStorage.setItem(`dd_dispatch_fee_qr_${targetPhone}`, cleanQr);
             localStorage.setItem('dd_dispatch_wechat_qr', cleanQr);
             localStorage.setItem('dd_user_wechat_qr', cleanQr);
             localStorage.setItem('dd_user_wechat_clean_qr', cleanQr);
+            localStorage.setItem('dd_last_payment_qr', cleanQr);
           } catch (_) {}
 
           const baseUrl = getBaseApiUrl();
@@ -518,7 +528,15 @@ export default function SettingsView({
     if (file) {
       setIsProcessingAlipay(true);
       try {
-        const cleanQr = await processImageFileToCleanQR(file, 'alipay');
+        let cleanQr = await processImageFileToCleanQR(file, 'alipay');
+        if (!cleanQr || !cleanQr.startsWith('data:image/')) {
+          cleanQr = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(file);
+          });
+        }
         if (!cleanQr) {
           setIsProcessingAlipay(false);
           return;
@@ -973,6 +991,7 @@ export default function SettingsView({
                     
                     if (typeof window !== 'undefined') {
                       if (currentPhone) {
+                        localStorage.setItem(`dd_qr_deleted_${currentPhone}`, 'true');
                         localStorage.removeItem(`dd_dispatch_wechat_qr_${currentPhone}`);
                         localStorage.removeItem(`dd_dispatch_fee_qr_${currentPhone}`);
                         localStorage.removeItem(`dd_user_wechat_clean_qr_${currentPhone}`);
@@ -1056,70 +1075,43 @@ export default function SettingsView({
                   </div>
 
                   {/* QR Image Frame */}
-                  <div className="w-full flex-1 min-h-[140px] flex items-center justify-center relative bg-gray-50/50 rounded-2xl border border-dashed border-gray-200">
+                  <div className="w-full flex-1 min-h-[140px] flex items-center justify-center relative bg-gray-50/50 rounded-2xl border border-dashed border-gray-200 overflow-hidden">
                     {selectedQrTab === 'wechat' ? (
-                      settings.wechatQrCode ? (
-                        <img 
-                          src={settings.wechatQrCode} 
-                          alt="微信收款码" 
-                          onError={(e) => {
-                            (e.currentTarget as HTMLElement).style.display = 'none';
-                            const fallbackEl = document.getElementById('wechat-qr-fallback');
-                            if (fallbackEl) fallbackEl.style.display = 'flex';
-                          }}
-                          className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
-                        />
-                      ) : null
+                      settings.wechatQrCode && settings.wechatQrCode.trim().length > 0 ? (
+                        <div className="relative w-full h-full flex items-center justify-center p-2">
+                          <img 
+                            src={formatQrUrl(settings.wechatQrCode)} 
+                            alt="微信收款码" 
+                            className="w-full h-full object-contain rounded-xl max-h-[155px]" 
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-center p-4">
+                          <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 mb-2">
+                            <PlusSquare className="w-5 h-5" />
+                          </div>
+                          <span className="text-xs font-bold text-gray-700 font-sans">暂时未设置微信收款码</span>
+                          <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
+                        </div>
+                      )
                     ) : (
-                      settings.alipayQrCode ? (
-                        <img 
-                          src={settings.alipayQrCode} 
-                          alt="支付宝收款码" 
-                          onError={(e) => {
-                            (e.currentTarget as HTMLElement).style.display = 'none';
-                            const fallbackEl = document.getElementById('alipay-qr-fallback');
-                            if (fallbackEl) fallbackEl.style.display = 'flex';
-                          }}
-                          className="w-full h-full object-contain rounded-xl max-h-[155px] p-1.5" 
-                        />
-                      ) : null
-                    )}
-
-                    {/* Fallback placeholders matching Image w9 */}
-                    {selectedQrTab === 'wechat' && (
-                      <div 
-                        id="wechat-qr-fallback"
-                        style={{ display: settings.wechatQrCode ? 'none' : 'flex' }}
-                        className="flex-col items-center justify-center text-center p-4"
-                      >
-                        <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 mb-2">
-                          <PlusSquare className="w-5 h-5" />
+                      settings.alipayQrCode && settings.alipayQrCode.trim().length > 0 ? (
+                        <div className="relative w-full h-full flex items-center justify-center p-2">
+                          <img 
+                            src={formatQrUrl(settings.alipayQrCode)} 
+                            alt="支付宝收款码" 
+                            className="w-full h-full object-contain rounded-xl max-h-[155px]" 
+                          />
                         </div>
-                        <span className="text-xs font-bold text-gray-700 font-sans">暂时未设置微信收款码</span>
-                        <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
-                      </div>
-                    )}
-
-                    {selectedQrTab === 'alipay' && (
-                      <div 
-                        id="alipay-qr-fallback"
-                        style={{ display: settings.alipayQrCode ? 'none' : 'flex' }}
-                        className="flex-col items-center justify-center text-center p-4"
-                      >
-                        <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center text-sky-600 mb-2">
-                          <PlusSquare className="w-5 h-5" />
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-center p-4">
+                          <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center text-sky-600 mb-2">
+                            <PlusSquare className="w-5 h-5" />
+                          </div>
+                          <span className="text-xs font-bold text-gray-700 font-sans">暂时未设置支付宝收款码</span>
+                          <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
                         </div>
-                        <span className="text-xs font-bold text-gray-700 font-sans">暂时未设置支付宝收款码</span>
-                        <span className="text-[9px] text-gray-400 mt-1">轻触开始上传</span>
-                      </div>
-                    )}
-
-                    {/* Hover banner for existing QR code only */}
-                    {(selectedQrTab === 'wechat' ? Boolean(settings.wechatQrCode) : Boolean(settings.alipayQrCode)) && (
-                      <div className="absolute inset-0 bg-black/50 text-white rounded-2xl flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity gap-1 text-center pointer-events-none">
-                        <PlusSquare className="w-6 h-6 text-white" />
-                        <span className="text-[10px] font-bold">轻触重新上传/更换</span>
-                      </div>
+                      )
                     )}
                   </div>
 
@@ -1175,7 +1167,10 @@ export default function SettingsView({
               {/* Back Button to close everything at the bottom */}
               <div className="pt-2 pb-1 shrink-0">
                 <button 
-                  onClick={() => setActiveModal('none')}
+                  onClick={() => {
+                    onUpdateSettings(settings);
+                    setActiveModal('none');
+                  }}
                   className="w-full bg-[#273046] hover:bg-[#1a2130] active:bg-[#151b27] text-white text-sm font-semibold py-3.5 rounded-2xl shadow-md active:scale-98 transition-all shrink-0 font-sans text-center"
                 >
                   保存设置并返回

@@ -190,22 +190,31 @@ function pickAuthoritativeVipExpiry(...expiries: (string | undefined | null)[]):
   return '待开通';
 }
 
+export const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
+  '15509601222': '吴彦祖'
+};
+
 function isGenericDriverName(name: string, phone: string): boolean {
   const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
-  const AUTHORITATIVE_REAL_PHONES = [
-    '15509601222', '18695174428', '14709696333', '15209678783', 
-    '15378921387', '13995071199', '13995388888', '15121888888', 
-    '15295188888', '15226203822', '14709503822', '18695111001', '18695111002', 
-    '18695117350', '18695117975', '18695111030', '18695111003',
-    '13895081030', '19995429551', '13995213747', '19995377975',
-    '19995387350', '17866167770', '18161583039', '18169102771',
-    '18695161718', '15296972638'
-  ];
-  if (AUTHORITATIVE_REAL_PHONES.includes(cleanPhone)) return false;
+  if (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) return false;
 
   if (!cleanPhone || cleanPhone.length !== 11) return true;
 
-  const REMOVED_PHONES = ['13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '15509601223', '15555556666'];
+  const REMOVED_PHONES = [
+    '17866167770', // 魏秉金
+    '19995179865', // 张栋
+    '13099566633', // 李鑫
+    '18893028825', // 何威
+    '18795101111', // 尹柏学
+    '18095513011', // 杨海
+    '13895299147',
+    '17660453634',
+    '13812345678',
+    '13912345678',
+    '19995426058',
+    '15509601223',
+    '15555556666'
+  ];
   if (REMOVED_PHONES.includes(cleanPhone)) return true;
   if (['9147', '3634', '5678', '6058', '0116', '1223', '1958'].some(s => cleanPhone.endsWith(s))) return true;
 
@@ -225,9 +234,6 @@ let isDbWriteScheduled = false;
 let isDbWriting = false;
 
 function readLocalJsonDb(): Record<string, Record<string, any>> {
-  if (cachedDbData) {
-    return cachedDbData;
-  }
   try {
     if (fs.existsSync(LOCAL_JSON_DB_PATH)) {
       const content = fs.readFileSync(LOCAL_JSON_DB_PATH, 'utf8');
@@ -242,37 +248,15 @@ function readLocalJsonDb(): Record<string, Record<string, any>> {
   return cachedDbData;
 }
 
-function writeLocalJsonDb(data: Record<string, Record<string, any>>, immediate = false) {
+function writeLocalJsonDb(data: Record<string, Record<string, any>>, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
 
-  if (immediate) {
-    try {
-      fs.writeFileSync(LOCAL_JSON_DB_PATH, JSON.stringify(data), 'utf8');
-    } catch (e) {
-      console.error('[Local JSON DB] Sync write error:', e);
-    }
-    return;
+  try {
+    fs.writeFileSync(LOCAL_JSON_DB_PATH, JSON.stringify(data), 'utf8');
+  } catch (e) {
+    console.error('[Local JSON DB] Write error:', e);
   }
-
-  if (isDbWriteScheduled) return;
-  isDbWriteScheduled = true;
-
-  setTimeout(async () => {
-    isDbWriteScheduled = false;
-    if (isDbWriting) return;
-    isDbWriting = true;
-    try {
-      if (cachedDbData) {
-        const payload = JSON.stringify(cachedDbData);
-        await fs.promises.writeFile(LOCAL_JSON_DB_PATH, payload, 'utf8');
-      }
-    } catch (e) {
-      console.error('[Local JSON DB] Async write error:', e);
-    } finally {
-      isDbWriting = false;
-    }
-  }, 1000);
 }
 
 async function runSystemDiskCleanup() {
@@ -447,11 +431,8 @@ async function startServer() {
   // Run initial seed
   seedSuperAdminAccount();
 
-  // Purge simulated/mock driver data & unapproved generic drivers (like 司机3747, 13995213747, 13895299147)
+  // Purge simulated/mock driver data & unapproved generic drivers
   const purgeMockDriverData = async () => {
-    const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3', '13895299147'];
-    const mockNames = ['王心凌', '张一山', '李小龙'];
-
     try {
       const dbData = readLocalJsonDb();
       let modified = false;
@@ -460,7 +441,21 @@ async function startServer() {
       if (!dbData.config) dbData.config = {};
       if (!dbData.config.removed_squad_members) dbData.config.removed_squad_members = { phones: [] };
       const removedPhones: string[] = dbData.config.removed_squad_members.phones || [];
-      const kickedPhones = ['13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '15509601223', '15555556666'];
+      const kickedPhones = [
+        '17866167770', // 魏秉金
+        '19995179865', // 张栋
+        '13099566633', // 李鑫
+        '18893028825', // 何威
+        '18795101111', // 尹柏学
+        '18095513011', // 杨海
+        '13895299147',
+        '17660453634',
+        '13812345678',
+        '13912345678',
+        '19995426058',
+        '15509601223',
+        '15555556666'
+      ];
       kickedPhones.forEach(p => {
         if (!removedPhones.includes(p)) {
           removedPhones.push(p);
@@ -469,127 +464,210 @@ async function startServer() {
       });
       dbData.config.removed_squad_members.phones = removedPhones;
 
-      // 1. In squad_members: ALL mock and generic drivers MUST BE REMOVED!
+      // 1. In squad_members: ONLY 15509601222 is kept!
       if (dbData.squad_members) {
         Object.keys(dbData.squad_members).forEach(docId => {
-          const doc = dbData.squad_members[docId];
-          const name = String(doc?.name || doc?.driverName || doc?.applicantName || '');
-          const isGeneric = isGenericDriverName(name, docId);
-          if (mockPhones.includes(docId) || kickedPhones.includes(docId) || isGeneric) {
+          if (docId !== '15509601222') {
             delete dbData.squad_members[docId];
             modified = true;
           }
         });
       }
 
-      // 2. In squad_applications: 
-      // 规则：像司机3747等通用司机，如果显示已通过则彻底删除；如果已拒绝则不用删除（已拒绝证明未入队）
+      // 2. In squad_applications: ALL except 15509601222 are deleted
       if (dbData.squad_applications) {
         Object.keys(dbData.squad_applications).forEach(docId => {
-          const doc = dbData.squad_applications[docId];
-          const name = String(doc?.name || doc?.driverName || doc?.applicantName || '');
-          const isGeneric = isGenericDriverName(name, docId);
-          const isRejected = doc?.status === '已拒绝';
-          if (mockPhones.includes(docId) || mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')) {
+          if (docId !== '15509601222') {
             delete dbData.squad_applications[docId];
             modified = true;
-          } else if (isGeneric) {
-            if (!isRejected) {
-              delete dbData.squad_applications[docId];
-              modified = true;
-            }
           }
         });
       }
 
-      // 3. In online_applications:
-      if (dbData.online_applications) {
-        Object.keys(dbData.online_applications).forEach(docId => {
-          const doc = dbData.online_applications[docId];
-          const name = String(doc?.name || doc?.driverName || doc?.applicantName || '');
-          const isGeneric = isGenericDriverName(name, docId);
-          if (mockPhones.includes(docId) || kickedPhones.includes(docId) || isGeneric) {
-            delete dbData.online_applications[docId];
+      // 3. In online_applications: ONLY 15509601222 is kept and properly initialized as approved
+      if (!dbData.online_applications) dbData.online_applications = {};
+      Object.keys(dbData.online_applications).forEach(docId => {
+        if (docId !== '15509601222') {
+          delete dbData.online_applications[docId];
+          modified = true;
+        }
+      });
+
+      const onlineApp155 = {
+        id: '15509601222',
+        phone: '15509601222',
+        phoneNumber: '15509601222',
+        driverName: '吴彦祖',
+        name: '吴彦祖',
+        realName: '吴彦祖',
+        role: '开发者司机',
+        userRole: '开发者司机',
+        status: 'approved',
+        approvalStatus: '已开通',
+        city: '银川市',
+        vipExpiry: '2099-12-31',
+        onlineOrdersEnabled: true,
+        emergencyContact: '13895000000',
+        drivingYears: 10,
+        idCardFront: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80',
+        idCardBack: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
+        driverLicenseFront: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
+        driverLicenseBack: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+        createdAt: '2026-10-06T00:00:00.000Z',
+        updatedAt: '2026-10-06T00:00:00.000Z'
+      };
+      dbData.online_applications['15509601222'] = onlineApp155;
+
+      // 4. In driver_users: ALL except 15509601222 and merchant A accounts are deleted
+      if (dbData.driver_users) {
+        Object.keys(dbData.driver_users).forEach(docId => {
+          const isMerchantA = docId.toUpperCase().endsWith('A') || dbData.driver_users[docId]?.isMerchant;
+          if (docId !== '15509601222' && !isMerchantA) {
+            delete dbData.driver_users[docId];
             modified = true;
           }
         });
       }
 
+      // Force 15509601222 developer profile
+      if (!dbData.driver_users) dbData.driver_users = {};
+      dbData.driver_users['15509601222'] = {
+        id: '15509601222',
+        phone: '15509601222',
+        phoneNumber: '15509601222',
+        driverName: '吴彦祖',
+        name: '吴彦祖',
+        realName: '吴彦祖',
+        role: '开发者司机',
+        userRole: '开发者司机',
+        status: '已通过',
+        is_squad_member: 1,
+        inSquad: true,
+        collection: 'squad_members',
+        city: '银川市',
+        vipExpiry: '2099-12-31',
+        isOnline: true,
+        onlineOrdersEnabled: true
+      };
+
       if (modified) {
-        writeLocalJsonDb(dbData);
-        console.log('✓ [Database] Purged mock and unapproved generic drivers from squad collections');
+        writeLocalJsonDb(dbData, true);
+        console.log('✓ [Database] Purged all drivers except 15509601222 and merchant accounts from local_db.json');
       }
     } catch (e) {
-      console.error('[Purge] Error purging mock drivers from local_db.json:', e);
+      console.error('[Purge] Error purging drivers from local_db.json:', e);
     }
 
     if (isMySQLEnabled && mysqlPool) {
       try {
         const conn = await mysqlPool.getConnection();
-        // Delete generic drivers from squad_members
+        // Delete all drivers except 15509601222 and merchant A accounts from MySQL daijia_documents
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
-           WHERE \`collection\` = 'squad_members' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
-                OR \`data\` LIKE '%王心凌%' OR \`data\` LIKE '%张一山%' OR \`data\` LIKE '%李小龙%' OR \`data\` LIKE '%虚拟%' 
-                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%司机9147%'
-                OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%司机3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%司机5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%司机6058%')`
+           WHERE \`collection\` IN ('squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations') 
+           AND \`doc_id\` != '15509601222' AND \`doc_id\` NOT LIKE '%A' AND \`doc_id\` NOT LIKE '%a'`
         );
-        // Delete approved generic drivers from squad_applications (keep rejected ones)
+        
+        // Ensure 15509601222 online_applications record exists in MySQL
+        const onlineApp155 = {
+          id: '15509601222',
+          phone: '15509601222',
+          phoneNumber: '15509601222',
+          driverName: '吴彦祖',
+          name: '吴彦祖',
+          realName: '吴彦祖',
+          role: '开发者司机',
+          userRole: '开发者司机',
+          status: 'approved',
+          approvalStatus: '已开通',
+          city: '银川市',
+          vipExpiry: '2099-12-31',
+          onlineOrdersEnabled: true,
+          emergencyContact: '13895000000',
+          drivingYears: 10,
+          idCardFront: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80',
+          idCardBack: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
+          driverLicenseFront: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
+          driverLicenseBack: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+          createdAt: '2026-10-06T00:00:00.000Z',
+          updatedAt: '2026-10-06T00:00:00.000Z'
+        };
         await conn.query(
-          `DELETE FROM \`daijia_documents\` 
-           WHERE \`collection\` = 'squad_applications' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
-                OR \`data\` LIKE '%王心凌%' OR \`data\` LIKE '%张一山%' OR \`data\` LIKE '%李小龙%' OR \`data\` LIKE '%虚拟%' 
-                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%司机9147%'
-                OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%司机3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%司机5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%司机6058%')
-           AND (\`data\` LIKE '%已通过%' OR \`data\` NOT LIKE '%已拒绝%')`
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('online_applications', '15509601222', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155)]
         );
+
+        // Ensure 15509601222 developer profile in MySQL driver_users and squad_members
+        const dev155 = {
+          id: '15509601222',
+          phone: '15509601222',
+          phoneNumber: '15509601222',
+          driverName: '吴彦祖',
+          name: '吴彦祖',
+          realName: '吴彦祖',
+          role: '开发者司机',
+          userRole: '开发者司机',
+          status: '已通过',
+          is_squad_member: 1,
+          inSquad: true,
+          collection: 'squad_members',
+          city: '银川市',
+          vipExpiry: '2099-12-31',
+          isOnline: true,
+          onlineOrdersEnabled: true
+        };
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('driver_users', '15509601222', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155)]
+        );
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('squad_members', '15509601222', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155)]
+        );
+
+        // Force-update system_version in MySQL to V2.0 to sync with V2.0 app clients
+        const vData = {
+          version: "V2.0",
+          forceUpgrade: false,
+          upgradeUrl: "https://download.heiwan.com/max/v20",
+          updatedAt: new Date().toISOString()
+        };
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('config', 'system_version', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(vData), JSON.stringify(vData)]
+        );
+
         conn.release();
-        console.log('✓ [Database] Purged mock and unapproved generic drivers from MySQL');
+        console.log('✓ [Database] Purged all drivers except 15509601222 from MySQL and set system_version to V2.0');
       } catch (e) {
-        console.error('[Purge] Error purging mock drivers from MySQL:', e);
+        console.error('[Purge] Error purging drivers from MySQL:', e);
       }
     }
   };
 
-  purgeMockDriverData();
+  // Run startup sequence sequentially
+  (async () => {
+    await purgeMockDriverData();
+    await consolidateAllDriversOnStartup();
+  })();
 
   // Consolidate all approved squad/online drivers into driver_users on startup
   const consolidateAllDriversOnStartup = async () => {
     try {
-      const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
-        '15509601222': '吴彦祖',
-        '18695174428': '童兵',
-        '14709696333': '王贤亮',
-        '15209678783': '禹全江',
-        '15378921387': '王灵',
-        '13995071199': '赵文举',
-        '13995388888': '于涛',
-        '15121888888': '张瑞',
-        '15295188888': '李金锋',
-        '15226203822': '杨刚',
-        '18695161718': '王平',
-        '13995213747': '宋伟',
-        '19995387350': '滴杨明7350',
-        '19995377975': '纳琳7975',
-        '13895081030': '夏伟1030',
-        '15296972638': '杨存安',
-        '19995429551': '白耀宗',
-        '17866167770': '魏秉金',
-        '18161583039': '拓万东',
-        '18169102771': '赵岩',
-      };
-
       const dbData = readLocalJsonDb();
       if (!dbData.driver_users) dbData.driver_users = {};
       if (!dbData.squad_members) dbData.squad_members = {};
       if (!dbData.squad_applications) dbData.squad_applications = {};
       if (!dbData.online_applications) dbData.online_applications = {};
+      if (!dbData.driver_locations) dbData.driver_locations = {};
 
       let updatedCount = 0;
 
@@ -599,7 +677,7 @@ async function startServer() {
       if (isMySQLEnabled && mysqlPool) {
         try {
           const [rows]: any = await mysqlPool.query(
-            "SELECT `collection`, `doc_id`, `data` FROM `daijia_documents` WHERE `collection` IN ('squad_members', 'online_applications', 'squad_applications', 'team_members', 'driver_users')"
+            "SELECT `collection`, `doc_id`, `data` FROM `daijia_documents` WHERE `collection` IN ('squad_members', 'online_applications', 'squad_applications', 'team_members', 'driver_users', 'driver_locations')"
           );
           if (Array.isArray(rows)) {
             rows.forEach((r: any) => {
@@ -623,6 +701,32 @@ async function startServer() {
       target50d.setDate(target50d.getDate() + 50);
       const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, '0')}-${String(target50d.getDate()).padStart(2, '0')}`;
 
+      // Purge removed drivers from squad_members and reset in driver_users
+      removedList.forEach(p => {
+        if (p !== '15509601222') {
+          if (dbData.squad_members && dbData.squad_members[p]) {
+            delete dbData.squad_members[p];
+          }
+          if (dbData.driver_locations && dbData.driver_locations[p]) {
+            delete dbData.driver_locations[p];
+          }
+          if (dbData.squad_applications && dbData.squad_applications[p]) {
+            if (dbData.squad_applications[p].status === '已通过') {
+              dbData.squad_applications[p].status = '未加入小队';
+            }
+          }
+          if (dbData.driver_users && dbData.driver_users[p]) {
+            dbData.driver_users[p].is_squad_member = 0;
+            dbData.driver_users[p].inSquad = false;
+            dbData.driver_users[p].role = '普通司机';
+            dbData.driver_users[p].userRole = '普通司机';
+            if (dbData.driver_users[p].status === '已通过') {
+              dbData.driver_users[p].status = '未加入小队';
+            }
+          }
+        }
+      });
+
       // Purge generic/unapproved drivers from squad_members
       Object.keys(dbData.squad_members).forEach(k => {
         const item = dbData.squad_members[k];
@@ -638,27 +742,15 @@ async function startServer() {
       const approvedSquadPhones = new Set<string>();
       approvedSquadPhones.add('15509601222');
 
-      // Explicitly add all authoritative real squad members if not explicitly in removedList
-      Object.keys(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(p => {
-        if (!removedList.includes(p)) {
-          approvedSquadPhones.add(p);
-        }
-      });
-
-      // Include all genuine squad members and real applicants (like 王贤亮, 禹全江, 王灵, 赵文举, 于涛, 张瑞等)
-      ['squad_members', 'squad_applications'].forEach(col => {
-        if (dbData[col]) {
-          Object.keys(dbData[col]).forEach(k => {
-            const cleanPhone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, '').trim();
-            const rawName = String(dbData[col][k]?.name || dbData[col][k]?.driverName || dbData[col][k]?.applicantName || '');
-            if (cleanPhone && cleanPhone.length === 11 && !removedList.includes(cleanPhone)) {
-              if (cleanPhone === '15509601222' || AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || !isGenericDriverName(rawName, cleanPhone)) {
-                approvedSquadPhones.add(cleanPhone);
-              }
-            }
-          });
-        }
-      });
+      // Include drivers explicitly in squad_members collection and not in removedList
+      if (dbData.squad_members) {
+        Object.keys(dbData.squad_members).forEach(k => {
+          const cleanPhone = String(dbData.squad_members[k]?.phone || dbData.squad_members[k]?.phoneNumber || k).replace(/\D/g, '').trim();
+          if (cleanPhone && cleanPhone.length === 11 && !removedList.includes(cleanPhone)) {
+            approvedSquadPhones.add(cleanPhone);
+          }
+        });
+      }
 
       approvedSquadPhones.forEach(phone => {
         const sq = dbData.squad_members?.[phone] || {};
@@ -747,8 +839,19 @@ async function startServer() {
         updatedCount++;
       });
 
+      // Purge any orphan driver_users entries that are not approved squad drivers or merchant A accounts
+      if (dbData.driver_users) {
+        Object.keys(dbData.driver_users).forEach(k => {
+          const cleanP = k.replace(/\D/g, '').trim();
+          const isMerchantA = k.toUpperCase().endsWith('A') || dbData.driver_users[k]?.isMerchant;
+          if (cleanP !== '15509601222' && !approvedSquadPhones.has(cleanP) && !isMerchantA) {
+            delete dbData.driver_users[k];
+          }
+        });
+      }
+
       writeLocalJsonDb(dbData);
-      console.log(`✓ [Database] Consolidated ${updatedCount} driver profiles into driver_users on startup with 50-day VIP membership (${default50DaysVip}).`);
+      console.log(`✓ [Database] Consolidated ${updatedCount} driver profiles into driver_users on startup.`);
 
       if (isMySQLEnabled && mysqlPool) {
         for (const phone of Object.keys(dbData.driver_users)) {
@@ -865,6 +968,22 @@ async function startServer() {
     });
   });
 
+  // Purge all drivers and applications except 15509601222 on demand
+  app.post('/api/admin/purge-all-drivers', async (req, res) => {
+    try {
+      await purgeMockDriverData();
+      return res.json({
+        success: true,
+        message: '✓ 已成功清理所有司机及申请审批信息，仅保留 15509601222'
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Purge failed'
+      });
+    }
+  });
+
   // =========================================================================
   // UNIVERSAL DATABASE REST API ENDPOINTS (Supports MySQL & local_db.json)
   // Ensures 100% reliable cross-device data sync, instant order dispatch popups
@@ -900,7 +1019,7 @@ async function startServer() {
           );
           if (rows && rows.length > 0) {
             foundData = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-          } else if (isDriverCol || isCleanPhone) {
+          } else if (isDriverCol) {
             const [crossRows]: any = await mysqlPool.query(
               "SELECT `data` FROM `daijia_documents` WHERE `collection` IN ('driver_users', 'squad_members', 'online_applications', 'squad_applications') AND `doc_id` = ? LIMIT 1",
               [docId]
@@ -920,12 +1039,12 @@ async function startServer() {
         const colData = dbData[col] || {};
         foundData = colData[docId];
 
-        if (!foundData && (isDriverCol || isCleanPhone)) {
+        if (!foundData && isDriverCol) {
           foundData = dbData.driver_users?.[docId] || dbData.squad_members?.[docId] || dbData.squad_applications?.[docId] || dbData.online_applications?.[docId];
         }
       }
 
-      if ((isDriverCol || isCleanPhone) && docId) {
+      if ((foundData || docId === '15509601222') && (isDriverCol || isCleanPhone) && docId) {
         const sq = dbData.squad_members?.[docId] || {};
         const oa = dbData.online_applications?.[docId] || {};
         const sa = dbData.squad_applications?.[docId] || {};
@@ -936,7 +1055,9 @@ async function startServer() {
           ? '开发者司机'
           : (raw.role || raw.userRole || du.role || du.userRole || sq.role || '普通司机');
 
-        const name = raw.driverName || raw.name || du.driverName || du.name || sq.name || sq.driverName || oa.driverName || sa.name || (docId === '15509601222' ? '吴彦祖' : (docId === '15121904440' ? '周杰伦' : `司机${docId.slice(-4)}`));
+        const name = (docId === '15509601222')
+          ? '吴彦祖'
+          : (raw.driverName || raw.name || du.driverName || du.name || sq.name || sq.driverName || oa.driverName || sa.name || `司机${docId.slice(-4)}`);
         const isRejected = (raw.status === '已拒绝' || du.status === '已拒绝' || sq.status === '已拒绝' || oa.status === '已拒绝' || sa.status === '已拒绝');
         const status = isRejected ? '已拒绝' : '已通过';
         
@@ -960,7 +1081,7 @@ async function startServer() {
           vipExpiry = '待开通';
         }
 
-        const effectiveQr = raw.qrcode_url || raw.wechatQrCode || du.qrcode_url || du.wechatQrCode || sq.qrcode_url || `/uploads/qrcodes/${docId}.png`;
+        const effectiveQr = (raw.wechatQrCode || du.wechatQrCode || sq.wechatQrCode || raw.qrcode_url || du.qrcode_url || sq.qrcode_url || '').trim();
 
         const resolvedDoc = {
           ...sq,
@@ -986,29 +1107,14 @@ async function startServer() {
           updatedAt: raw.updatedAt || du.updatedAt || new Date().toISOString()
         };
 
-        if (!dbData[col]) dbData[col] = {};
-        dbData[col][docId] = resolvedDoc;
-        if (!dbData.driver_users) dbData.driver_users = {};
-        if (!dbData.squad_members) dbData.squad_members = {};
-        if (!dbData.online_applications) dbData.online_applications = {};
-        if (!dbData.squad_applications) dbData.squad_applications = {};
-
-        dbData.driver_users[docId] = { ...(dbData.driver_users[docId] || {}), ...resolvedDoc };
-        dbData.squad_members[docId] = { ...(dbData.squad_members[docId] || {}), ...resolvedDoc };
-        dbData.online_applications[docId] = { ...(dbData.online_applications[docId] || {}), ...resolvedDoc };
-        dbData.squad_applications[docId] = { ...(dbData.squad_applications[docId] || {}), ...resolvedDoc };
-
-        writeLocalJsonDb(dbData);
-
-        if (isMySQLEnabled && mysqlPool) {
-          const docStr = JSON.stringify(resolvedDoc);
-          for (const c of ['driver_users', 'squad_members', 'online_applications', 'squad_applications']) {
-            mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              [c, docId, docStr]
-            ).catch(() => {});
-          }
+        if (docId === '15509601222') {
+          if (!dbData[col]) dbData[col] = {};
+          dbData[col][docId] = resolvedDoc;
+          if (!dbData.driver_users) dbData.driver_users = {};
+          if (!dbData.squad_members) dbData.squad_members = {};
+          dbData.driver_users[docId] = { ...(dbData.driver_users[docId] || {}), ...resolvedDoc };
+          dbData.squad_members[docId] = { ...(dbData.squad_members[docId] || {}), ...resolvedDoc };
+          writeLocalJsonDb(dbData);
         }
 
         return res.json({ exists: true, id: docId, data: resolvedDoc });
@@ -1025,10 +1131,10 @@ async function startServer() {
   });
 
   // 2. LIST Documents from Collection
-  // Supports: /api/db/list?col=merchant_orders&limit=10000&constraints=...
-  app.get('/api/db/list', async (req, res) => {
+  // Supports: /api/db/list?col=merchant_orders&limit=10000&constraints=... AND /api/db/:col
+  const handleDbList = async (req: express.Request, res: express.Response) => {
     try {
-      const col = String(req.query.col || req.query.collection || '').trim();
+      const col = String(req.params.col || req.query.col || req.query.collection || '').trim();
       if (!col) {
         return res.status(400).json({ docs: [], error: 'Missing col parameter' });
       }
@@ -1047,27 +1153,66 @@ async function startServer() {
           const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, '0')}-${String(target50d.getDate()).padStart(2, '0')}`;
 
           const isDriverCol = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col);
+          const isOrdersCol = ['merchant_orders', 'valet_orders', 'orders'].includes(col);
+
+          // Check if requester is removed squad member or not approved for orders
+          const requesterPhone = String(req.query.userPhone || req.query.phone || req.query.driverPhone || req.headers['x-user-phone'] || '').replace(/\D/g, '').trim();
+          if (isOrdersCol && requesterPhone && requesterPhone !== '15509601222') {
+            const removedArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
+            if (removedArr.includes(requesterPhone)) {
+              return res.json({ docs: [], list: [], data: [] });
+            }
+          }
+
+          const clearedTimestamp = Number(dbData.config?.['merchant_orders_cleared']?.clearedAt || 0);
 
           const docs = (rows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
             const obj = typeof data === 'object' && data !== null ? { ...data } : {};
             return { id: r.doc_id, ...obj, data: obj };
           }).filter((doc: any) => {
-            const cleanPhone = String(doc.phone || doc.id || '').replace(/\D/g, '').trim();
-            const dName = String(doc.name || doc.driverName || doc.applicantName || '').trim();
-            if (col === 'squad_members') {
-              if (cleanPhone === '15509601222') return true;
-              if (isGenericDriverName(dName, cleanPhone)) return false;
-            }
+            const docIdStr = String(doc.id || doc.phone || '').trim();
+            const cleanPhone = docIdStr.replace(/\D/g, '').trim();
+
             if (col === 'squad_applications') {
+              // Squad applications must NEVER contain merchant 'A' accounts or 15509601222 or deleted mock drivers like 18695161718
+              if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
+              if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant || doc.accountType === 'merchant') return false;
               if (cleanPhone === '15509601222') return false;
-              if (isGenericDriverName(dName, cleanPhone)) {
-                // 仅保留已拒绝状态的记录，已通过的彻底删除/不展示
-                return doc.status === '已拒绝';
-              }
+              if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
+              if (isGenericDriverName(doc.name || doc.driverName || doc.applicantName, cleanPhone)) return doc.status === '已拒绝';
+              return true;
+            }
+
+            if (col === 'online_applications') {
+              // Online applications: Keep 15509601222 developer driver resident; exclude legacy deleted mock drivers
+              if (cleanPhone === '15509601222') return true;
+              if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant) return false;
+              if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
+              return true;
+            }
+
+            if (['merchant_accounts', 'merchant_users'].includes(col)) {
+              // Must strictly end with 'A' (registered via merchant web); 18695161718 never registered on web merchant, so exclude!
+              if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
+              if (!docIdStr.toUpperCase().endsWith('A')) return false;
+              return true;
+            }
+
+            if (['squad_members', 'driver_users'].includes(col)) {
+              if (cleanPhone === '15509601222') return true;
+              if (docIdStr.toUpperCase().endsWith('A')) return false; // Merchant A accounts go to merchant_accounts only
+              if (isGenericDriverName(doc.name || doc.driverName, cleanPhone)) return false;
+              return true;
+            }
+
+            if (isOrdersCol && clearedTimestamp > 0) {
+              const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
+              if (t > 0 && t <= clearedTimestamp) return false;
             }
             return true;
           });
+
           return res.json({ docs, list: docs, data: docs });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy LIST MySQL Error]:', mysqlErr);
@@ -1077,11 +1222,6 @@ async function startServer() {
       // JSON DB Fallback
       const dbData = readLocalJsonDb();
       const colData = dbData[col] || {};
-      const now = new Date();
-      const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-      target50d.setDate(target50d.getDate() + 50);
-      const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, '0')}-${String(target50d.getDate()).padStart(2, '0')}`;
-      const isDriverCol = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col);
 
       const docs = Object.keys(colData).map((k) => {
         const itemData = colData[k];
@@ -1092,26 +1232,60 @@ async function startServer() {
           data: obj
         };
       }).filter((doc: any) => {
-        const cleanPhone = String(doc.phone || doc.id || '').replace(/\D/g, '').trim();
-        const dName = String(doc.name || doc.driverName || doc.applicantName || '').trim();
-        if (col === 'squad_members') {
-          if (cleanPhone === '15509601222') return true;
-          if (isGenericDriverName(dName, cleanPhone)) return false;
-        }
+        const docIdStr = String(doc.id || doc.phone || '').trim();
+        const cleanPhone = docIdStr.replace(/\D/g, '').trim();
+
         if (col === 'squad_applications') {
+          if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
+          if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant || doc.accountType === 'merchant') return false;
           if (cleanPhone === '15509601222') return false;
-          if (isGenericDriverName(dName, cleanPhone)) {
-            // 仅保留已拒绝状态的记录，已通过的彻底删除/不展示
-            return doc.status === '已拒绝';
-          }
+          if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
+          if (isGenericDriverName(doc.name || doc.driverName || doc.applicantName, cleanPhone)) return doc.status === '已拒绝';
+          return true;
         }
+
+        if (col === 'online_applications') {
+          if (cleanPhone === '15509601222') return true;
+          if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant) return false;
+          if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
+          return true;
+        }
+
+        if (['merchant_accounts', 'merchant_users'].includes(col)) {
+          if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
+          if (!docIdStr.toUpperCase().endsWith('A')) return false;
+          return true;
+        }
+
+        if (['squad_members', 'driver_users'].includes(col)) {
+          if (cleanPhone === '15509601222') return true;
+          if (docIdStr.toUpperCase().endsWith('A')) return false;
+          if (isGenericDriverName(doc.name || doc.driverName, cleanPhone)) return false;
+          return true;
+        }
+
+        if (isOrdersCol && clearedTimestamp > 0) {
+          const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
+          if (t > 0 && t <= clearedTimestamp) return false;
+        }
+
         return true;
       });
+
       return res.json({ docs, list: docs, data: docs });
     } catch (err: any) {
       console.error('[DB Proxy LIST Exception]:', err);
       res.status(500).json({ docs: [], error: err.message });
     }
+  };
+
+  app.get('/api/db/list', handleDbList);
+  app.get('/api/db/:col', (req, res, next) => {
+    const col = req.params.col;
+    if (['get', 'set', 'save', 'update', 'delete', 'clear-collection', 'add', 'migrate-from-firestore'].includes(col)) {
+      return next();
+    }
+    return handleDbList(req, res);
   });
 
   // 3. SET Document (create or replace/merge) - Supports both /api/db/set and /api/db/save
@@ -1323,11 +1497,11 @@ async function startServer() {
         }
       }
 
-      // If updating driver_users vipExpiry or fields, mirror to squad_members and online_applications
+      // If updating driver_users vipExpiry or fields, mirror to squad_members and squad_applications
       if (col === 'driver_users') {
         const cleanDriverPhone = docId.replace(/\D/g, '').trim();
         if (cleanDriverPhone.length === 11) {
-          const mirrorCols = ['squad_members', 'online_applications', 'squad_applications'];
+          const mirrorCols = ['squad_members', 'squad_applications'];
           for (const mCol of mirrorCols) {
             if (dbData[mCol] && dbData[mCol][cleanDriverPhone]) {
               const currentM = dbData[mCol][cleanDriverPhone];
@@ -1362,7 +1536,7 @@ async function startServer() {
         }
       }
 
-      writeLocalJsonDb(dbData);
+      writeLocalJsonDb(dbData, true);
 
       // Seamless inter-connectivity: forward writes to Mainland China Aliyun ECS Baota Server if in preview
       const hostHeader = String(req.headers.host || '');
@@ -1522,11 +1696,11 @@ async function startServer() {
         }
       }
 
-      // If updating driver_users vipExpiry or fields, mirror to squad_members and online_applications
+      // If updating driver_users vipExpiry or fields, mirror to squad_members and squad_applications
       if (col === 'driver_users') {
         const cleanDriverPhone = docId.replace(/\D/g, '').trim();
         if (cleanDriverPhone.length === 11) {
-          const mirrorCols = ['squad_members', 'online_applications', 'squad_applications'];
+          const mirrorCols = ['squad_members', 'squad_applications'];
           for (const mCol of mirrorCols) {
             if (dbData[mCol] && dbData[mCol][cleanDriverPhone]) {
               const currentM = dbData[mCol][cleanDriverPhone];
@@ -1579,7 +1753,7 @@ async function startServer() {
       }
 
       const dbData = readLocalJsonDb();
-      const targetCols = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'];
+      const targetCols = ['driver_users', 'squad_members', 'squad_applications'];
       
       for (const col of targetCols) {
         if (!dbData[col]) dbData[col] = {};
@@ -1602,7 +1776,7 @@ async function startServer() {
         }
       }
 
-      writeLocalJsonDb(dbData);
+      writeLocalJsonDb(dbData, true);
 
       // Seamless inter-connectivity: forward update to Mainland China Aliyun ECS Baota Server if running on Cloud Run/external proxy
       const hostHeader = String(req.headers.host || '');
@@ -1740,7 +1914,7 @@ async function startServer() {
       if (!dbData.online_applications) dbData.online_applications = {};
 
       const allPhones = new Set<string>();
-      ['squad_members', 'online_applications', 'squad_applications', 'team_members', 'driver_locations', 'driver_users'].forEach(col => {
+      ['squad_members', 'squad_applications', 'team_members', 'driver_locations', 'driver_users'].forEach(col => {
         if (dbData[col]) {
           Object.keys(dbData[col]).forEach(k => {
             const cleanPhone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, '').trim();
@@ -1767,17 +1941,8 @@ async function startServer() {
         } catch (_) {}
       }
 
-      // Ensure all authoritative real squad drivers (王贤亮, 禹全江, 王灵, 赵文举, 于涛, 张瑞, 周杰伦, 李金锋, 李扬, 童兵, 杨刚, etc.) receive VIP recharge
-      const realDriverPhones = [
-        '14709696333', '15209678783', '15378921387', '13995071199', '13995388888', 
-        '15121888888', '15121904440', '15295188888', '18695161718',
-        '18695174428', '15226203822', '14709503822', '18695111001', '18695111002',
-        '18695117350', '18695117975', '18695111030', '18695111003'
-      ];
-      realDriverPhones.forEach(p => allPhones.add(p));
-
       const updatedPhones: string[] = [];
-      const targetCols = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'];
+      const targetCols = ['driver_users', 'squad_members', 'squad_applications'];
 
       for (const phone of Array.from(allPhones)) {
         if (phone === exclude) continue;
@@ -1853,6 +2018,8 @@ async function startServer() {
             'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
             [col, docId]
           );
+          const isHardDelete = req.body.hardDelete === true || req.body.hardDelete === 'true';
+
           if (col === 'squad_members' && docId !== '15509601222') {
             // Cascade delete from driver_locations & squad_applications (both by doc_id and phone)
             await mysqlPool.query(
@@ -1863,20 +2030,33 @@ async function startServer() {
               'DELETE FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.phone\')) = ?)',
               ['squad_applications', docId, docId]
             );
-            // Reset driver_users to 普通司机
-            const [uRows]: any = await mysqlPool.query(
-              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-              ['driver_users', docId]
-            );
-            let uData: any = { role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队', is_squad_member: 0 };
-            if (uRows && uRows.length > 0) {
-              const prevU = typeof uRows[0].data === 'string' ? JSON.parse(uRows[0].data) : uRows[0].data;
-              uData = { ...prevU, ...uData, is_squad_member: 0, status: '未加入小队', approvalStatus: '未加入小队' };
+            
+            if (isHardDelete) {
+              await mysqlPool.query(
+                'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+                ['driver_users', docId]
+              );
+              await mysqlPool.query(
+                'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+                ['online_applications', docId]
+              );
+            } else {
+              // Reset driver_users to 普通司机
+              const [uRows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['driver_users', docId]
+              );
+              let uData: any = { role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队', is_squad_member: 0 };
+              if (uRows && uRows.length > 0) {
+                const prevU = typeof uRows[0].data === 'string' ? JSON.parse(uRows[0].data) : uRows[0].data;
+                uData = { ...prevU, ...uData, is_squad_member: 0, status: '未加入小队', approvalStatus: '未加入小队' };
+              }
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                ['driver_users', docId, JSON.stringify(uData)]
+              );
             }
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              ['driver_users', docId, JSON.stringify(uData)]
-            );
+
             // Add to removed_squad_members config
             const [cfgRows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
@@ -1892,6 +2072,19 @@ async function startServer() {
             await mysqlPool.query(
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
               ['config', 'removed_squad_members', JSON.stringify(cfgData)]
+            );
+          } else if (col === 'driver_users' && isHardDelete && docId !== '15509601222') {
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['squad_members', docId]
+            );
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['squad_applications', docId]
+            );
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['online_applications', docId]
             );
           }
           return res.json({ success: true, id: docId });
@@ -1924,7 +2117,9 @@ async function startServer() {
             userRole: '普通司机',
             status: '未加入小队',
             approvalStatus: '未加入小队',
-            is_squad_member: 0
+            is_squad_member: 0,
+            inSquad: false,
+            isSquadMember: false
           };
         }
         if (!dbData.config) dbData.config = {};
@@ -1972,12 +2167,94 @@ async function startServer() {
       const dbData = readLocalJsonDb();
       if (dbData[col]) {
         dbData[col] = {};
-        writeLocalJsonDb(dbData);
       }
+
+      if (col === 'merchant_orders' || col === 'valet_orders' || col === 'orders') {
+        const nowTs = Date.now();
+        if (!dbData.config) dbData.config = {};
+        dbData.config['merchant_orders_cleared'] = { clearedAt: nowTs };
+
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['config', 'merchant_orders_cleared', JSON.stringify({ clearedAt: nowTs })]
+            );
+          } catch (_) {}
+        }
+      }
+
+      writeLocalJsonDb(dbData);
 
       return res.json({ success: true, collection: col });
     } catch (err: any) {
       console.error('[DB Proxy CLEAR-COLLECTION Exception]:', err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 5.2 CLEAR ALL ORDERS (彻底清除阿里云服务器上的所有订单记录，包括商户代叫、代驾订单、抢单/接单记录与通道)
+  app.post('/api/orders/clear-all', async (req, res) => {
+    try {
+      console.log('[DB Proxy] 正在执行全量一键清空：清除所有订单记录 (merchant_orders, valet_orders, orders, passenger_links, active_orders)');
+      const nowTs = Date.now();
+      const orderCollections = ['merchant_orders', 'valet_orders', 'orders', 'passenger_links', 'active_orders'];
+
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query(
+            'DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?, ?, ?, ?)',
+            orderCollections
+          );
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['config', 'merchant_orders_cleared', JSON.stringify({ clearedAt: nowTs })]
+          );
+          console.log('✓ [MySQL] 已彻底清除所有订单数据记录与历史缓存');
+        } catch (mysqlErr: any) {
+          console.error('[MySQL Clear-All Orders Error]:', mysqlErr);
+        }
+      }
+
+      const dbData = readLocalJsonDb();
+      orderCollections.forEach((c) => {
+        dbData[c] = {};
+      });
+
+      if (!dbData.config) dbData.config = {};
+      dbData.config['merchant_orders_cleared'] = { clearedAt: nowTs };
+
+      // 重置所有小队司机的忙碌状态为 idle / false
+      if (dbData['driver_users']) {
+        Object.keys(dbData['driver_users']).forEach((p) => {
+          if (dbData['driver_users'][p]) {
+            dbData['driver_users'][p].isBusy = false;
+            dbData['driver_users'][p].status = 'idle';
+          }
+        });
+      }
+      if (dbData['driver_locations']) {
+        Object.keys(dbData['driver_locations']).forEach((p) => {
+          if (dbData['driver_locations'][p]) {
+            dbData['driver_locations'][p].isBusy = false;
+            dbData['driver_locations'][p].status = 'idle';
+          }
+        });
+      }
+      if (dbData['squad_members']) {
+        Object.keys(dbData['squad_members']).forEach((p) => {
+          if (dbData['squad_members'][p]) {
+            dbData['squad_members'][p].isBusy = false;
+            dbData['squad_members'][p].status = 'idle';
+          }
+        });
+      }
+
+      writeLocalJsonDb(dbData);
+      console.log('✓ [阿里云本地数据库] 已彻底清除所有订单记录，本地与服务器不再保存所有订单记录');
+      return res.json({ success: true, clearedAt: nowTs, message: '所有订单记录已从服务器彻底清除！' });
+    } catch (err: any) {
+      console.error('[Clear-All Orders Exception]:', err);
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -2258,7 +2535,7 @@ async function startServer() {
           else if (item.lastUpdatedTime) t = new Date(item.lastUpdatedTime).getTime();
           else if (item.updatedAt) t = new Date(item.updatedAt).getTime();
           
-          if (!t || t < cutoffMs) {
+          if (t > 0 && t < cutoffMs) {
             locations[k] = { ...item, isOnline: false, onlineOrdersEnabled: false };
           }
         }
@@ -2304,8 +2581,8 @@ async function startServer() {
         if (phone === '15509601222') return false;
         if (removedPhones.has(phone)) return true;
         if (name && (name.includes('虚拟') || name.startsWith('测试') || name.includes('test'))) return true;
-        if (['13912345678', '15509601223', '15555556666', '13995213747', '13895299147', '17660453634', '13812345678', '19995426058', '18695161718', 'm-1', 'm-2', 'm-3'].includes(phone)) return true;
-        if (isGenericDriverName(name || '', phone)) return true;
+        if (['13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3'].includes(phone)) return true;
+        if (isGenericDriverName(name || '', phone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[phone]) return true;
         return false;
       };
 
@@ -2373,9 +2650,12 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Phone and name required' });
       }
 
+      // Update in-memory server mapping
+      AUTHORITATIVE_REAL_DRIVER_NAMES[phone] = name;
+
       if (isMySQLEnabled && mysqlPool) {
         try {
-          for (const col of ['driver_users', 'squad_members', 'driver_locations', 'online_applications', 'squad_applications']) {
+          for (const col of ['driver_users', 'squad_members', 'driver_locations', 'squad_applications']) {
             const [rows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
               [col, phone]
@@ -2570,6 +2850,8 @@ async function startServer() {
   // Server POI & Yinchuan Street/District Grid Dictionary
   const YINCHUAN_SERVER_POIS: Array<{ keywords: string[]; lat: number; lng: number }> = [
     // 1. Specific User Landmarks & Popular POIs
+    { keywords: ['银川市第二中学', '银川第二中学', '银川二中', '第二中学', '二中', '英才巷', '英才路'], lat: 38.4908, lng: 106.2485 },
+    { keywords: ['良益轩泡馍', '良益轩', '泡馍店', '羊肉泡馍'], lat: 38.4845, lng: 106.2380 },
     { keywords: ['华江大肉夹馍', '华江肉夹馍', '大肉夹馍'], lat: 38.4812, lng: 106.2348 },
     { keywords: ['光大国旅中山街营业部', '光大国旅中山街', '光大国旅'], lat: 38.4855, lng: 106.2410 },
     { keywords: ['德隆楼德鼎逸品', '德隆楼', '德鼎逸品'], lat: 38.4875, lng: 106.2620 },
@@ -2578,6 +2860,7 @@ async function startServer() {
     { keywords: ['铂金大厦', '长相忆宾馆'], lat: 38.4825, lng: 106.2315 },
     { keywords: ['怀远夜市', '怀远路', '怀远市场', '八一车场'], lat: 38.4950, lng: 106.1550 },
     { keywords: ['运祥小区', '运祥'], lat: 38.4830, lng: 106.2350 },
+    { keywords: ['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'], lat: 38.4830, lng: 106.2350 },
     { keywords: ['金凤万达', '万达广场'], lat: 38.5085, lng: 106.2160 },
     { keywords: ['西夏万达'], lat: 38.4985, lng: 106.1485 },
     { keywords: ['建发大阅城', '大阅城'], lat: 38.5255, lng: 106.2205 },
@@ -2634,6 +2917,24 @@ async function startServer() {
     return { lat: defaultLat, lng: defaultLng };
   }
 
+  // 5.9 Server-Side Geocoding API (支持客户端按地名即时获取精准坐标与直线距离)
+  app.get(['/api/geocode', '/api/geo/locate'], (req, res) => {
+    try {
+      const address = String(req.query.address || req.query.name || req.query.keyword || '').trim();
+      const fallbackLat = Number(req.query.lat || req.query.fallbackLat || 38.4830);
+      const fallbackLng = Number(req.query.lng || req.query.fallbackLng || 106.2350);
+      const poi = geocodeServerPoi(address, fallbackLat, fallbackLng);
+      return res.json({
+        success: true,
+        address,
+        lat: poi.lat,
+        lng: poi.lng
+      });
+    } catch (err: any) {
+      return res.json({ success: false, error: err.message, lat: 38.4830, lng: 106.2350 });
+    }
+  });
+
   // 6. Server-Side Nearest Driver Dispatch Engine (阿里云高可用服务端精准距离派单)
   app.post('/api/dispatch/nearest', async (req, res) => {
     try {
@@ -2643,8 +2944,8 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Missing orderData' });
       }
 
-      // 给阿里云服务器宝塔面板倒计时3秒考虑的时间（解析坐标、智能寻找3公里内最近空闲小队司机）
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // 给阿里云服务器宝塔面板倒计时考虑的时间（解析坐标、智能寻找3公里内最近空闲小队司机）
+      await new Promise((resolve) => setTimeout(resolve, 800));
 
       // Resolve merchant start location coordinates (support POI geocoding on server)
       const startLocName = String(orderData.startLocation || orderData.passengerAddress || orderData.pickupAddress || '').trim();
@@ -2657,7 +2958,7 @@ async function startServer() {
         (Math.abs(pLat - 38.4830) < 0.001 && Math.abs(pLng - 106.2350) < 0.001)
       );
 
-      if (isDefaultCentroid && startLocName) {
+      if (startLocName && (isDefaultCentroid || isNaN(pLat) || isNaN(pLng))) {
         const poi = geocodeServerPoi(startLocName, pLat, pLng);
         pLat = poi.lat;
         pLng = poi.lng;
@@ -2721,9 +3022,14 @@ async function startServer() {
         });
       }
 
+      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}`).trim();
+
       // Candidate drivers filter (Strictly approved squad drivers only)
       const candidates: Array<{ phone: string; name: string; distKm: number; data: any }> = [];
       const removedPhonesArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
+
+      // Check if order already has an actively dispatched driver that is valid
+      const existingDispatchedPhone = String(orderData.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
 
       squadList.forEach(({ phone, data }) => {
         if (!phone || !data || data.isBanned) return;
@@ -2735,12 +3041,22 @@ async function startServer() {
         }
         const cleanReporter = reporterPhone ? String(reporterPhone).replace(/\D/g, '').trim() : '';
         const cleanExclude = excludePhone ? String(excludePhone).replace(/\D/g, '').trim() : '';
-        const cleanMerchant = orderData.merchantPhone ? String(orderData.merchantPhone).replace(/\D/g, '').trim() : '';
-        const cleanPassenger = orderData.passengerPhone ? String(orderData.passengerPhone).replace(/\D/g, '').trim() : '';
 
-        // Prevent self-dispatch if reporter/merchant/creator is driver (报单转单绝对不要派单给自己)
-        if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude || cleanPhone === cleanMerchant || cleanPhone === cleanPassenger)) {
-          return;
+        // Check if this is a driver report/transfer order (报单转单) vs merchant valet call (商户代叫)
+        const isTransferOrder = Boolean(
+          orderData.orderType === '报单转单' ||
+          orderData.orderRemark === '报单转单' ||
+          orderData.type === '报单转单' ||
+          String(orderData.orderRemark || '').includes('报单转单') ||
+          String(orderData.destination || '').includes('报单转单')
+        );
+
+        // Prevent self-dispatch ONLY for driver transfer orders (报单转单绝对不要派单给自己)
+        // For merchant valet orders (商户代叫), the merchant is ordering for a guest, so online squad drivers (including 15509601222) can receive it
+        if (isTransferOrder) {
+          if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude)) {
+            return;
+          }
         }
 
         // 1. Approval status check
@@ -2750,32 +3066,27 @@ async function startServer() {
         }
 
         // 2. Role check (must be one of: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机, 普通司机)
-        const role = String(data.role || data.userRole || data.approvedRole || '').trim();
-        if ((role.includes('商户') || role.includes('商家')) && !role.includes('司机') && !role.includes('管理')) {
-          return;
-        }
-        const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
-        const hasAllowedRole = allowedRoles.some((r) => role.includes(r)) || role === '' || cleanPhone === '15509601222';
-        if (!hasAllowedRole) {
-          return;
+        if (cleanPhone !== '15509601222') {
+          const role = String(data.role || data.userRole || data.approvedRole || '').trim();
+          if ((role.includes('商户') || role.includes('商家')) && !role.includes('司机') && !role.includes('管理')) {
+            return;
+          }
+          const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
+          const hasAllowedRole = allowedRoles.some((r) => role.includes(r)) || role === '';
+          if (!hasAllowedRole) {
+            return;
+          }
         }
 
-        // 3. Online & not busy check (严格要求：必须在线且空闲，点击报单按钮进入报单页也算忙碌状态)
+        // 3. Online & not busy check (严格要求：必须在线且空闲，当前正在弹出此订单新来单界面的司机不算做忙碌)
         const loc = locationMap[cleanPhone] || {};
-        const isOnline = Boolean(loc.isOnline ?? data.isOnline);
+        const isOnline = Boolean(loc.isOnline ?? data.isOnline ?? (cleanPhone === '15509601222'));
         if (!isOnline) return;
 
-        const isBusy = Boolean(
-          data.hasActiveOrder ||
-          data.currentStatus === 'serving' ||
-          data.isBusy ||
-          loc.isBusy ||
-          data.currentView === 'create_order' ||
-          loc.currentView === 'create_order' ||
-          data.isInReportView === true ||
-          loc.isInReportView === true ||
-          data.status === 'busy' ||
-          loc.status === 'busy'
+        const isBusy = (
+          (data.hasActiveOrder && data.activeOrderId && data.activeOrderId !== orderId) ||
+          (data.currentStatus === 'serving' && data.activeOrderId && data.activeOrderId !== orderId) ||
+          (loc.isBusy && loc.activeOrderId && loc.activeOrderId !== orderId && loc.currentView !== 'incoming_overlay')
         );
         if (isBusy) return;
 
@@ -2783,22 +3094,15 @@ async function startServer() {
         let dLng = Number(loc.lng ?? data.lng);
 
         if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
-          dLat = 38.487167;
-          dLng = 106.230910;
-        }
-
-        // 高并发1000-1500名司机极速网格/边界框初筛（经纬度差大约0.035度即3公里以内，耗时仅微秒级，大幅降低CPU负载）
-        if (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) {
-          if (Math.abs(dLat - pLat) > 0.035 || Math.abs(dLng - pLng) > 0.045) {
-            return;
-          }
+          dLat = 38.4830;
+          dLng = 106.2350;
         }
 
         const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) 
           ? calculateHaversineKm(pLat, pLng, dLat, dLng)
-          : 0.5;
+          : 0.3;
 
-        if (distKm <= radiusKm) {
+        if (distKm <= radiusKm || (existingDispatchedPhone && existingDispatchedPhone === cleanPhone)) {
           candidates.push({
             phone: cleanPhone,
             name: data.driverName || data.name || (cleanPhone === '15509601222' ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`),
@@ -2808,18 +3112,20 @@ async function startServer() {
         }
       });
 
-      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}`).trim();
-
       if (candidates.length > 0) {
-        // Find closest driver distance
-        const minDist = Math.min(...candidates.map(c => c.distKm));
+        // Prefer existing dispatched driver if present in eligible candidates
+        let selected = candidates.find(c => c.phone === existingDispatchedPhone);
+        if (!selected) {
+          // Find closest driver distance
+          const minDist = Math.min(...candidates.map(c => c.distKm));
+          // 20米 (0.02km) 极近范围随机派单规则：
+          const tiedCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
+          selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
+        }
 
-        // 20米 (0.02km) 极近范围随机派单规则：
-        // 若多名司机与最近司机的差距在20米内或距离起点本身都在20米内，均算极近，随机抽选1人
-        const tiedCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
-        const selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
-
-        const distText = selected.distKm < 0.05 ? '0米' : `${(selected.distKm * 1000).toFixed(0)}米`;
+        const distText = selected.distKm < 1.0 
+          ? `${Math.max(50, Math.round(selected.distKm * 1000))}米` 
+          : `${selected.distKm.toFixed(2)}公里`;
         const nowTs = Date.now();
         const driverQrUrl = `/uploads/qrcodes/${selected.phone}.png`;
         const dispatchedPayload = {
@@ -2828,6 +3134,8 @@ async function startServer() {
           orderId: orderId,
           passengerLat: pLat,
           passengerLng: pLng,
+          resolvedLat: pLat,
+          resolvedLng: pLng,
           status: 'submitted',
           isValetOrder: true,
           isPlatformDispatch: true,
@@ -2839,7 +3147,9 @@ async function startServer() {
           qrcode_url: driverQrUrl,
           driverQrCode: driverQrUrl,
           distanceText: distText,
+          distKm: selected.distKm,
           dispatchCountdown: 60,
+          serverCountdown: 60,
           dispatchedAt: nowTs,
           dispatchExpiresAt: nowTs + 60000,
           timestamp: nowTs
@@ -2856,6 +3166,7 @@ async function startServer() {
           status: 'dispatched',
           statusCategory: '已指派',
           dispatchCountdown: 60,
+          serverCountdown: 60,
           dispatchedAt: nowTs,
           dispatchExpiresAt: nowTs + 60000,
           timestamp: nowTs
@@ -2883,6 +3194,8 @@ async function startServer() {
           dispatchedDriverName: selected.name,
           distKm: selected.distKm,
           distanceText: distText,
+          passengerLat: pLat,
+          passengerLng: pLng,
           remainingSeconds: 60,
           dispatchCountdown: 60,
           serverTime: nowTs,
@@ -2898,6 +3211,8 @@ async function startServer() {
           orderId: orderId,
           passengerLat: pLat,
           passengerLng: pLng,
+          resolvedLat: pLat,
+          resolvedLng: pLng,
           status: 'hall',
           statusCategory: '等待接单',
           in_hall: true,
@@ -2923,6 +3238,8 @@ async function startServer() {
         return res.json({
           success: true,
           isHall: true,
+          passengerLat: pLat,
+          passengerLng: pLng,
           serverTime: nowTs,
           message: '方圆3公里内无在线空闲司机，已全员广播转入选单大厅'
         });
@@ -3004,15 +3321,19 @@ async function startServer() {
 
       dbData['merchant_orders'][cleanOrderId] = claimUpdateData;
 
-      // Also set passenger_links for this driver so incoming order overlay pops up immediately
-      if (!dbData['passenger_links']) dbData['passenger_links'] = {};
-      dbData['passenger_links'][cleanDriverPhone] = {
+      // Clear passenger_links so incoming order popup is NOT triggered for manually claimed hall orders
+      if (dbData['passenger_links'] && dbData['passenger_links'][cleanDriverPhone]) {
+        delete dbData['passenger_links'][cleanDriverPhone];
+      }
+
+      if (!dbData['active_orders']) dbData['active_orders'] = {};
+      dbData['active_orders'][cleanDriverPhone] = {
         ...claimUpdateData,
-        status: 'submitted',
-        isDirectClaim: true,
-        dispatchCountdown: 60,
-        dispatchedAt: now,
-        dispatchExpiresAt: now + 60000
+        orderId: cleanOrderId,
+        orderNo: req.body.orderNo || cleanOrderId,
+        status: 'claimed',
+        statusCategory: '已接单',
+        isCancelled: false
       };
 
       writeLocalJsonDb(dbData);
@@ -3026,6 +3347,10 @@ async function startServer() {
           await mysqlPool.query(
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             ['passenger_links', cleanDriverPhone, JSON.stringify(dbData['passenger_links'][cleanDriverPhone])]
+          );
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['active_orders', cleanDriverPhone, JSON.stringify(dbData['active_orders'][cleanDriverPhone])]
           );
         } catch (_) {}
       }
@@ -3172,15 +3497,24 @@ async function startServer() {
         };
       }
 
-      // Clear from passenger_links & active_orders for associated driver and reset driver busy state
+      // Notify assigned driver via passenger_links & active_orders so driver immediately returns to homepage, and reset driver busy state
       const assignedDriver = driverPhone || targetMerchant.dispatchedDriverPhone || targetMerchant.claimedDriverPhone;
       if (assignedDriver) {
-        if (dbData['passenger_links'] && dbData['passenger_links'][assignedDriver]) {
-          delete dbData['passenger_links'][assignedDriver];
-        }
-        if (dbData['active_orders'] && dbData['active_orders'][assignedDriver]) {
-          delete dbData['active_orders'][assignedDriver];
-        }
+        const driverCancelNotice = {
+          orderId,
+          orderNo: req.body.orderNo || orderId,
+          isCancelled: true,
+          status: 'cancelled',
+          statusCategory: '已取消',
+          cancelledBy,
+          cancelReason,
+          cancelledAt: now
+        };
+        if (!dbData['passenger_links']) dbData['passenger_links'] = {};
+        dbData['passenger_links'][assignedDriver] = driverCancelNotice;
+
+        if (!dbData['active_orders']) dbData['active_orders'] = {};
+        dbData['active_orders'][assignedDriver] = driverCancelNotice;
 
         // Reset busy status in driver_users, driver_locations, and squad_members
         if (dbData['driver_users'] && dbData['driver_users'][assignedDriver]) {
@@ -3219,9 +3553,23 @@ async function startServer() {
             ['merchant_orders', orderId, mergedData]
           );
           if (assignedDriver) {
+            const cancelNoticeStr = JSON.stringify({
+              orderId,
+              orderNo: req.body.orderNo || orderId,
+              isCancelled: true,
+              status: 'cancelled',
+              statusCategory: '已取消',
+              cancelledBy,
+              cancelReason,
+              cancelledAt: now
+            });
             await mysqlPool.query(
-              'DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?) AND `doc_id` = ?',
-              ['passenger_links', 'active_orders', assignedDriver]
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['passenger_links', assignedDriver, cancelNoticeStr]
+            );
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['active_orders', assignedDriver, cancelNoticeStr]
             );
             if (dbData['driver_users'] && dbData['driver_users'][assignedDriver]) {
               await mysqlPool.query(
@@ -3240,7 +3588,7 @@ async function startServer() {
     }
   });
 
-  // 5.3 Automated 30s Timeout Daemon for Offline/Exited/Uninstalled App Drivers
+  // 5.3 中国大陆阿里云服务器60秒自动倒计时引擎与超时自动转入选单大厅Daemon (1秒级高精度权威倒计时)
   setInterval(async () => {
     try {
       const now = Date.now();
@@ -3256,10 +3604,30 @@ async function startServer() {
         ) && !order.claimedAt && order.status !== 'claimed' && order.status !== 'serving' && order.status !== 'completed' && order.status !== 'cancelled' && order.in_hall !== true;
 
         if (isDispatched && order.dispatchedDriverPhone) {
-          const dispatchedTime = Number(order.dispatchedAt || order.timestamp || 0);
-          // 60 seconds timeout - 60秒倒计时在宝塔面板与服务端中进行，超时后自动转入选单大厅
-          if (dispatchedTime > 0 && (now - dispatchedTime) >= 60000) {
-            const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, '').trim();
+          const dispatchedTime = Number(order.dispatchedAt || order.timestamp || now);
+          const expiresAt = Number(order.dispatchExpiresAt || (dispatchedTime + 60000));
+          // 核心：由阿里云服务器计算精确剩余秒数 (60秒 -> 59秒 -> ... -> 31秒 -> ... -> 0秒)
+          const remainingSec = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+          const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, '').trim();
+
+          // 1. 每秒刷新订单在阿里云服务器上的权威倒计时
+          if (order.serverCountdown !== remainingSec || order.dispatchCountdown !== remainingSec) {
+            order.serverCountdown = remainingSec;
+            order.dispatchCountdown = remainingSec;
+            order.dispatchExpiresAt = expiresAt;
+            hasChanges = true;
+
+            // 同步实时写入给司机的 passenger_links 通道，确保司机屏幕严格显示服务器倒计时
+            if (timedOutDriverPhone && dbData['passenger_links']?.[timedOutDriverPhone]) {
+              dbData['passenger_links'][timedOutDriverPhone].serverCountdown = remainingSec;
+              dbData['passenger_links'][timedOutDriverPhone].dispatchCountdown = remainingSec;
+              dbData['passenger_links'][timedOutDriverPhone].dispatchExpiresAt = expiresAt;
+            }
+          }
+
+          // 2. 倒计时结束 (0秒)：防止司机大退、断网或关机造成假死，服务器立即自动将订单转入选单大厅
+          if (remainingSec <= 0) {
+            console.log(`[阿里云服务器倒计时结束] 订单 ${orderId} 派单给司机 ${timedOutDriverPhone} 60秒超时未确认，服务器自动转入选单大厅！`);
             const existingDeclined = Array.isArray(order.declinedDriverPhones) ? order.declinedDriverPhones : [];
             const existingTimeout = Array.isArray(order.timeoutDriverPhones) ? order.timeoutDriverPhones : [];
 
@@ -3270,14 +3638,19 @@ async function startServer() {
               statusCategory: '呼叫中',
               dispatchedDriverPhone: '',
               dispatchedDriverName: '',
+              serverCountdown: 0,
+              dispatchCountdown: 0,
               declinedDriverPhones: Array.from(new Set([...existingDeclined, timedOutDriverPhone].filter(Boolean))),
               timeoutDriverPhones: Array.from(new Set([...existingTimeout, timedOutDriverPhone].filter(Boolean))),
-              lastTimeoutAt: now
+              lastTimeoutAt: now,
+              autoHallAt: now,
+              autoHallReason: '60秒倒计时结束，中国大陆阿里云服务器自动将订单转入选单大厅'
             };
 
             merchantOrders[orderId] = updatedOrder;
             hasChanges = true;
 
+            // 清理并标记该司机的来单通道为超时取消，解除来单弹窗
             if (dbData['passenger_links'] && dbData['passenger_links'][timedOutDriverPhone]) {
               delete dbData['passenger_links'][timedOutDriverPhone];
             }
@@ -3285,7 +3658,7 @@ async function startServer() {
               delete dbData['active_orders'][timedOutDriverPhone];
             }
 
-            // Reset driver busy state in driver_users, driver_locations, squad_members
+            // 解除司机的忙碌状态，恢复为空闲
             if (dbData['driver_users'] && dbData['driver_users'][timedOutDriverPhone]) {
               dbData['driver_users'][timedOutDriverPhone] = {
                 ...dbData['driver_users'][timedOutDriverPhone],
@@ -3333,7 +3706,90 @@ async function startServer() {
     } catch (e) {
       // Ignore background interval errors
     }
-  }, 6000);
+  }, 1000);
+
+  // 5.3.1 阿里云服务器权威倒计时查询与同步接口 (专供司机接单新来单页面实时对齐服务器秒数)
+  app.get(['/api/dispatch/countdown', '/api/order/countdown'], async (req, res) => {
+    try {
+      const orderId = String(req.query.orderId || req.query.id || req.query.orderNo || '').trim();
+      const driverPhone = String(req.query.driverPhone || req.query.phone || '').replace(/\D/g, '').trim();
+
+      const now = Date.now();
+      const dbData = readLocalJsonDb();
+      const merchantOrders = dbData['merchant_orders'] || {};
+      
+      let targetOrder: any = null;
+      if (orderId) {
+        targetOrder = merchantOrders[orderId];
+        if (!targetOrder) {
+          for (const [k, v] of Object.entries<any>(merchantOrders)) {
+            if (v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId)) {
+              targetOrder = v;
+              break;
+            }
+          }
+        }
+      }
+      if (!targetOrder && driverPhone) {
+        targetOrder = dbData['passenger_links']?.[driverPhone];
+      }
+
+      if (!targetOrder) {
+        return res.json({
+          success: true,
+          serverCountdown: 0,
+          isExpired: true,
+          inHall: true,
+          status: 'unknown',
+          serverTime: now
+        });
+      }
+
+      const isClaimedOrActiveForDriver = Boolean(
+        (targetOrder.claimedDriverPhone && driverPhone && targetOrder.claimedDriverPhone === driverPhone) ||
+        (targetOrder.dispatchedDriverPhone && driverPhone && targetOrder.dispatchedDriverPhone === driverPhone) ||
+        targetOrder.isDirectClaim === true ||
+        targetOrder.status === 'claimed' ||
+        targetOrder.status === 'dispatched' ||
+        targetOrder.status === 'submitted' ||
+        targetOrder.statusCategory === '已接单' ||
+        targetOrder.statusCategory === '已指派'
+      );
+
+      const isHall = !isClaimedOrActiveForDriver && (targetOrder.in_hall === true || targetOrder.status === 'hall');
+      if (isHall) {
+        return res.json({
+          success: true,
+          orderId: targetOrder.id || orderId,
+          serverCountdown: 0,
+          isExpired: true,
+          inHall: true,
+          status: targetOrder.status || 'hall',
+          serverTime: now
+        });
+      }
+
+      const dispatchedTime = Number(targetOrder.dispatchedAt || targetOrder.timestamp || now);
+      const exp = Number(targetOrder.dispatchExpiresAt || (dispatchedTime + 60000));
+      const remainingSec = Math.max(0, Math.ceil((exp - now) / 1000));
+
+      return res.json({
+        success: true,
+        orderId: targetOrder.id || orderId,
+        serverCountdown: remainingSec,
+        dispatchCountdown: remainingSec,
+        isExpired: remainingSec <= 0,
+        inHall: remainingSec <= 0,
+        status: targetOrder.status,
+        dispatchedDriverPhone: targetOrder.dispatchedDriverPhone,
+        serverTime: now,
+        dispatchedAt: dispatchedTime,
+        dispatchExpiresAt: exp
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
 
   // 5.4 Automated 2-Day 10:00 AM Clean-Up Daemon & Manual API
   let lastAutoCleanTimestamp = 0;
@@ -4126,20 +4582,6 @@ async function startServer() {
         const existing = dbData.driver_users[cleanPhone];
         const defaultQrUrl = `/uploads/qrcodes/${cleanPhone}.png`;
 
-        // Automatically ensure disk physical PNG file exists on Alibaba Cloud server
-        const qrFilePath = path.join(qrcodesDir, `${cleanPhone}.png`);
-        const fallbackQrFilePath = path.join(qrsDir, `${cleanPhone}.png`);
-        if (!fs.existsSync(qrFilePath)) {
-          try {
-            await QRCode.toFile(qrFilePath, `https://api.lyheiwandaijiamax.com/pay/driver?phone=${cleanPhone}`, {
-              width: 400,
-              margin: 1,
-              color: { dark: '#07c160', light: '#ffffff' }
-            });
-            fs.copyFileSync(qrFilePath, fallbackQrFilePath);
-          } catch (_) {}
-        }
-
         if (!existing) {
           const newDriverProfile = {
             id: cleanPhone,
@@ -4159,9 +4601,9 @@ async function startServer() {
             onlineOrdersEnabled: false,
             isBanned: false,
             today_orders_count: 0,
-            qrcode_url: defaultQrUrl,
-            wechatQrCode: defaultQrUrl,
-            qrCode: defaultQrUrl,
+            qrcode_url: '',
+            wechatQrCode: '',
+            qrCode: '',
             updatedAt: new Date().toISOString()
           };
           dbData.driver_users[cleanPhone] = newDriverProfile;
@@ -4303,7 +4745,7 @@ async function startServer() {
 
       // Consolidate all driver phones across collections
       const driverPhones = new Set<string>();
-      ['driver_users', 'squad_members', 'online_applications', 'squad_applications', 'driver_locations'].forEach(col => {
+      ['driver_users', 'squad_members', 'squad_applications', 'driver_locations'].forEach(col => {
         if (dbData[col]) {
           Object.keys(dbData[col]).forEach(k => {
             const phone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, '').trim();
@@ -4692,13 +5134,19 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing phone' });
       }
 
-      const filename = `${phone}.png`;
-      const filepath = path.join(qrsDir, filename);
-      if (fs.existsSync(filepath)) {
-        try {
-          fs.unlinkSync(filepath);
-        } catch (_) {}
-      }
+      // Delete disk physical files from both qrcodesDir and qrsDir
+      [qrcodesDir, qrsDir].forEach(dir => {
+        if (fs.existsSync(dir)) {
+          try {
+            const files = fs.readdirSync(dir);
+            files.forEach(f => {
+              if (f.startsWith(phone)) {
+                try { fs.unlinkSync(path.join(dir, f)); } catch (_) {}
+              }
+            });
+          } catch (_) {}
+        }
+      });
 
       // Also clean MySQL and local JSON DB
       if (isMySQLEnabled && mysqlPool) {
@@ -4732,10 +5180,22 @@ async function startServer() {
       if (dbData.driver_users && dbData.driver_users[phone]) {
         dbData.driver_users[phone].wechatQrCode = '';
         dbData.driver_users[phone].qrCode = '';
+        dbData.driver_users[phone].qrcode_url = '';
       }
       if (dbData.squad_members && dbData.squad_members[phone]) {
         dbData.squad_members[phone].wechatQrCode = '';
         dbData.squad_members[phone].qrCode = '';
+        dbData.squad_members[phone].qrcode_url = '';
+      }
+      if (dbData.online_applications && dbData.online_applications[phone]) {
+        dbData.online_applications[phone].wechatQrCode = '';
+        dbData.online_applications[phone].qrCode = '';
+        dbData.online_applications[phone].qrcode_url = '';
+      }
+      if (dbData.squad_applications && dbData.squad_applications[phone]) {
+        dbData.squad_applications[phone].wechatQrCode = '';
+        dbData.squad_applications[phone].qrCode = '';
+        dbData.squad_applications[phone].qrcode_url = '';
       }
       writeLocalJsonDb(dbData);
 

@@ -12,32 +12,116 @@ const COMPOUND_SURNAMES = [
  * Authoritative mapping of genuine squad drivers to prevent fallbacks like "司机6333" on any device
  */
 export const AUTHORITATIVE_REAL_DRIVER_NAMES: Record<string, string> = {
-  '15509601222': '吴彦祖',
-  '18695174428': '童兵',
-  '14709696333': '王贤亮',
-  '15209678783': '禹全江',
-  '15378921387': '王灵',
-  '13995071199': '赵文举',
-  '13995388888': '于涛',
-  '15121888888': '张瑞',
-  '15295188888': '李金锋',
-  '15226203822': '杨刚',
-  '18695161718': '王平',
-  '13995213747': '宋伟',
-  '19995387350': '滴杨明7350',
-  '19995377975': '纳琳7975',
-  '13895081030': '夏伟1030',
-  '15296972638': '杨存安',
-  '19995429551': '白耀宗',
-  '17866167770': '魏秉金',
-  '18161583039': '拓万东',
-  '18169102771': '赵岩',
+  '15509601222': '吴彦祖'
 };
+
+/**
+ * Official Squad Role Hierarchy & Permissions
+ * 等级划分：开发者司机 (5) > 城市老板司机 (4) > 城市管理司机 (3) > 城市派单员司机 (2) > 普通司机 (1)
+ */
+export const ROLE_HIERARCHY: Record<string, number> = {
+  '开发者司机': 5,
+  '开发者': 5,
+  '最高开发者': 5,
+  '总指挥官': 5,
+  '城市老板司机': 4,
+  '城市老板': 4,
+  '城市管理司机': 3,
+  '城市管理': 3,
+  '管理司机': 3,
+  '城市派单员司机': 2,
+  '城市派单员': 2,
+  '派单员司机': 2,
+  '普通司机': 1,
+  '司机': 1,
+  '队员': 1
+};
+
+export function getRoleLevel(role: string): number {
+  const trimmed = String(role || '').trim();
+  return ROLE_HIERARCHY[trimmed] || 1;
+}
+
+export function isSquadManager(role: string, phone?: string): boolean {
+  if (phone === '15509601222') return true;
+  const level = getRoleLevel(role);
+  return level >= 2; // Level 2 (城市派单员司机) and above are management
+}
+
+export function getAllowedAssignableRoles(operatorRole: string, operatorPhone: string | undefined, targetMember: any): string[] {
+  if (!targetMember) return [];
+  const targetPhone = String(targetMember.phone || targetMember.id || '').replace(/\D/g, '').trim();
+  if (targetPhone === '15509601222') return []; // 任何人都不能修改开发者司机的角色
+
+  const isDevOp = operatorPhone === '15509601222' || operatorRole === '开发者司机' || operatorRole === '开发者' || operatorRole === '最高开发者' || operatorRole === '总指挥官';
+  if (isDevOp) {
+    // 开发者司机可以设置城市老板司机、城市管理司机、城市派单员司机、普通司机
+    return ['城市老板司机', '城市管理司机', '城市派单员司机', '普通司机'];
+  }
+
+  const opLevel = getRoleLevel(operatorRole);
+  const targetRole = String(targetMember.role || targetMember.userRole || '普通司机').trim();
+  const targetLevel = getRoleLevel(targetRole);
+
+  // 同等级之间不能相互调整职位，低等级的不能越权调整高等级的职位
+  if (opLevel <= targetLevel) return [];
+
+  // 等级高的职位可以调整等级低的职位
+  if (opLevel === 4) { // 城市老板司机
+    return ['城市管理司机', '城市派单员司机', '普通司机'];
+  }
+  if (opLevel === 3) { // 城市管理司机
+    return ['城市派单员司机', '普通司机'];
+  }
+  if (opLevel === 2) { // 城市派单员司机
+    return ['普通司机'];
+  }
+  return [];
+}
+
+export function canDeleteTargetMember(operatorRole: string, operatorPhone: string | undefined, targetMember: any): boolean {
+  if (!targetMember) return false;
+  const targetPhone = String(targetMember.phone || targetMember.id || '').replace(/\D/g, '').trim();
+  const cleanUserPhone = String(operatorPhone || '').replace(/\D/g, '').trim();
+
+  // 1. 任何人都不能删除 15509601222
+  if (targetPhone === '15509601222') return false;
+
+  // 2. 不能删除自己
+  if (cleanUserPhone && targetPhone && cleanUserPhone === targetPhone) return false;
+
+  // 3. 开发者司机可以删除所有其他司机
+  if (cleanUserPhone === '15509601222' || operatorRole === '开发者司机' || operatorRole === '开发者' || operatorRole === '最高开发者' || operatorRole === '总指挥官') {
+    return true;
+  }
+
+  // 4. 等级高的职位可以删除等级低的职位，同等级之间不能相互删除，低等级不能越权删除高等级
+  const opLevel = getRoleLevel(operatorRole);
+  if (opLevel < 2) return false; // 只有管理人员才可以删除
+
+  const targetRole = String(targetMember.role || targetMember.userRole || '普通司机').trim();
+  const targetLevel = getRoleLevel(targetRole);
+
+  return opLevel > targetLevel;
+}
+
+export function canClearListPermission(role: string, phone?: string): boolean {
+  if (phone === '15509601222') return true;
+  const level = getRoleLevel(role);
+  // 开发者司机、城市老板司机、城市管理司机可以清空列表，城市派单员司机、普通司机隐藏
+  return level >= 3;
+}
 
 /**
  * Permanently kicked-out mock / generic / unauthorized driver phones
  */
 export const REMOVED_GENERIC_DRIVER_PHONES = [
+  '17866167770', // 魏秉金
+  '19995179865', // 张栋
+  '13099566633', // 李鑫
+  '18893028825', // 何威
+  '18795101111', // 尹柏学
+  '18095513011', // 杨海
   '13895299147', // 司机9147
   '17660453634', // 司机3634
   '13812345678', // 司机5678
@@ -50,6 +134,102 @@ export const REMOVED_GENERIC_DRIVER_PHONES = [
   '15555556666',
   'm-1', 'm-2', 'm-3'
 ];
+
+export function getRemovedSquadSet(): Set<string> {
+  const set = new Set<string>();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('dd_removed_squad_phones_v2');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((p: any) => {
+            const clean = String(p || '').replace(/\D/g, '').trim();
+            if (clean) set.add(clean);
+          });
+        }
+      }
+    } catch (_) {}
+  }
+  return set;
+}
+
+/**
+ * Universal authoritative helper to strictly determine whether a driver is an official squad member.
+ * Shared across AdminPanel, HomeView, and DispatchValetOrder to ensure 100% synchronized member counts.
+ */
+export function isOfficialSquadMember(drv: any, removedSet?: Set<string>): boolean {
+  if (!drv) return false;
+  const rawP = String(drv.phoneNumber || drv.phone || drv.id || '').trim();
+  const rawRole = String(drv.role || drv.userRole || '').trim();
+  const rawType = String(drv.accountType || drv.type || '').trim();
+  const rawName = String(drv.driverName || drv.name || drv.applicantName || drv.merchantName || '').trim();
+
+  // 1. 优先严格防爆：剔除所有商户/商家账号 (以 'A' 结尾、accountType为merchant、或包含商户/商家角色/名称)
+  if (
+    rawP.toUpperCase().endsWith('A') ||
+    rawType === 'merchant' ||
+    drv.isMerchant === true ||
+    ((rawRole.includes('商户') || rawRole.includes('商家') || rawName.includes('商户') || rawName.includes('商家')) && !rawRole.includes('司机'))
+  ) {
+    return false;
+  }
+
+  const p = rawP.replace(/\D/g, '').trim();
+  if (!p || p.length < 11) return false;
+
+  // 2. 15509601222 开发者司机常驻小队正式成员，拥有最高权限，永远为 true
+  if (p === '15509601222') return true;
+
+  if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
+    return false;
+  }
+
+  const activeRemovedSet = removedSet || getRemovedSquadSet();
+  if (activeRemovedSet.has(p)) {
+    return false;
+  }
+
+  // 检查状态：只要明确不是通过状态，或包含拒绝/未加入/待审核/离职，一律判定为非正式成员
+  const st = String(drv.status || '').trim();
+  const appSt = String(drv.approvalStatus || '').trim();
+  const effectiveStatus = st || appSt;
+
+  if (!effectiveStatus || ['已拒绝', '已离职', '未加入小队', '待审核', 'pending', '审核中', 'rejected', '已解散'].includes(effectiveStatus)) {
+    return false;
+  }
+
+  if (st && ['已拒绝', '已离职', '未加入小队', '待审核', 'pending', '审核中', 'rejected', '已解散'].includes(st)) {
+    return false;
+  }
+
+  if (drv.is_squad_member === 0 || drv.inSquad === false || drv.isSquadMember === false) {
+    return false;
+  }
+
+  if (rawRole === '非小队成员' || rawRole === '未加入小队' || rawRole === '商户、商家') {
+    return false;
+  }
+
+  if (isGenericDriverName(rawName, p) && !AUTHORITATIVE_REAL_DRIVER_NAMES[p]) {
+    return false;
+  }
+
+  // 必须是明确审核通过并属于小队的成员（通过 collection、is_squad_member、inSquad 等标志判定）
+  const hasSquadFlag = Boolean(
+    drv.collection === 'squad_members' ||
+    drv.is_squad_member === 1 ||
+    drv.inSquad === true ||
+    drv.isSquadMember === true ||
+    drv.isOfficial === true
+  );
+
+  if (hasSquadFlag && ['已通过', 'approved', '通过'].includes(effectiveStatus)) {
+    return true;
+  }
+
+  return false;
+}
 
 // Global in-memory cache for customized driver names to ensure instantaneous, zero-latency reactive updates
 const driverCustomNameRegistry = new Map<string, string>(Object.entries(AUTHORITATIVE_REAL_DRIVER_NAMES));
@@ -64,6 +244,7 @@ export function registerDriverCustomName(phone: string, name: string): void {
   if (finalName === '代驾司机' || finalName === '在线代驾司机' || finalName === '司机' || finalName === '未命名') return;
   if (finalName.includes('商户') || finalName.includes('商家')) return;
   driverCustomNameRegistry.set(cleanPhone, finalName);
+  AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = finalName;
   if (typeof window !== 'undefined') {
     try {
       localStorage.setItem(`dd_driver_name_${cleanPhone}`, finalName);
@@ -98,8 +279,9 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
   const finalName = String(newName || '').trim().slice(0, 8);
   if (!cleanPhone || !finalName) return finalName;
 
-  // 1. Update in-memory registry
+  // 1. Update in-memory registry and authoritative mapping
   driverCustomNameRegistry.set(cleanPhone, finalName);
+  AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = finalName;
 
   // 2. Persist to localStorage keys
   if (typeof window !== 'undefined') {
@@ -109,6 +291,7 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
       localStorage.setItem(`dd_custom_app_name_${cleanPhone}`, finalName);
       localStorage.setItem(`dd_applicant_name_${cleanPhone}`, finalName);
       localStorage.setItem(`dd_user_name_${cleanPhone}`, finalName);
+      localStorage.setItem(`dd_squad_member_${cleanPhone}`, JSON.stringify({ name: finalName, driverName: finalName, realName: finalName, phone: cleanPhone }));
 
       // Check if this is the active user
       const currentUserPhone = (localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
@@ -315,48 +498,52 @@ export function resolveDriverRealName(
   candidateName?: string | null,
   settings?: any
 ): string {
-  const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+  const rawStr = String(phone || '').trim();
+  if (rawStr.toUpperCase().endsWith('A')) {
+    const rawNum = rawStr.replace(/A$/i, '').replace(/\D/g, '');
+    const candidateStr = String(candidateName || '').trim();
+    if (candidateStr && !candidateStr.startsWith('司机') && !candidateStr.startsWith('driver')) {
+      return candidateStr;
+    }
+    return `商户${rawNum ? rawNum + 'A' : rawStr}`;
+  }
+
+  const cleanPhone = rawStr.replace(/\D/g, '').trim();
   if (!cleanPhone) return '代驾司机';
 
   const isWu = cleanPhone === '15509601222';
-  const isLiYang = cleanPhone === '18695119126';
+  if (isWu) return '吴彦祖';
 
   const isValidCustomName = (name?: string | null): boolean => {
     if (!name) return false;
     const str = String(name).trim();
     if (!str) return false;
-    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名' || str === '虚拟司机') return false;
+    if (str === '代驾司机' || str === '在线代驾司机' || str === '司机' || str === '未命名' || str === '虚拟司机' || str === '代驾师傅') return false;
     if (str.includes('商户') || str.includes('商家') || str.includes('店铺') || str.includes('门店')) return false;
-    // 非 15509601222 账号绝不能默认叫“吴彦祖”或“吴师傅”（除非被特意改名为吴彦祖相关）
     if (!isWu && (str === '吴彦祖' || str === '吴师傅')) return false;
-    // 如果是类似 “司机4428” 这种兜底临时名，绝不当做自定义名称采纳（对所有司机通用）
-    if (/^司机\d{4}$/.test(str) || str === `司机${cleanPhone.slice(-4)}`) return false;
+    if (/^司机/i.test(str) || /^driver/i.test(str)) return false;
+    if (/^\d+[a-zA-Z]?$/.test(str) || /\d{3,}[a-zA-Z]?$/i.test(str)) return false;
     return true;
   };
 
-  // 1. 如果传入了非通用候选名字，校验并采用（例如刚提交的申请名字或数据库实时下发的新名字）
-  const cleanCandidate = String(candidateName || '').trim();
-  if (isValidCustomName(cleanCandidate)) {
-    driverCustomNameRegistry.set(cleanPhone, cleanCandidate);
-    return cleanCandidate;
-  }
-
-  // 2. 优先检查小队权威官方真实名字对照表
-  if (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) {
-    const authName = AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone];
-    driverCustomNameRegistry.set(cleanPhone, authName);
-    return authName;
-  }
-
-  // 3. 检查全局内存注册表（保证改名瞬间全应用各界面统一同步）
+  // 1. 优先检查全局内存注册表（已通过 updateDriverGlobalName 或 registerDriverCustomName 改名过）
   if (driverCustomNameRegistry.has(cleanPhone)) {
     const regName = driverCustomNameRegistry.get(cleanPhone);
     if (isValidCustomName(regName)) {
+      AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = regName!;
       return regName!;
     }
   }
 
-  // 3. 检查 localStorage 针对该手机号的专属存储
+  // 2. 检查传入的候选名字（如果组件传来了最新的有效改名）
+  const cleanCandidate = String(candidateName || '').trim();
+  if (isValidCustomName(cleanCandidate)) {
+    driverCustomNameRegistry.set(cleanPhone, cleanCandidate);
+    AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = cleanCandidate;
+    return cleanCandidate;
+  }
+
+  // 3. 检查 localStorage 专属与全局存储
   if (typeof window !== 'undefined') {
     const phoneSpecificName =
       localStorage.getItem(`dd_driver_name_${cleanPhone}`) ||
@@ -366,10 +553,10 @@ export function resolveDriverRealName(
       localStorage.getItem(`dd_user_name_${cleanPhone}`);
     if (isValidCustomName(phoneSpecificName)) {
       driverCustomNameRegistry.set(cleanPhone, phoneSpecificName!);
+      AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = phoneSpecificName!;
       return phoneSpecificName!;
     }
 
-    // 检查 dd_squad_member_${cleanPhone}
     try {
       const smRaw = localStorage.getItem(`dd_squad_member_${cleanPhone}`);
       if (smRaw) {
@@ -377,26 +564,27 @@ export function resolveDriverRealName(
         const nameVal = smObj?.name || smObj?.driverName || smObj?.realName;
         if (isValidCustomName(nameVal)) {
           driverCustomNameRegistry.set(cleanPhone, nameVal);
+          AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = nameVal;
           return nameVal;
         }
       }
     } catch (_) {}
 
-    // 检查 dd_applicants_v2 / dd_squad_members_v2 列表
     try {
       const appRaw = localStorage.getItem('dd_applicants_v2') || localStorage.getItem('dd_squad_members_v2');
       if (appRaw) {
         const appList = JSON.parse(appRaw);
         if (Array.isArray(appList)) {
           const match = appList.find((item: any) => {
-            const p = String(item.phone || item.id || '').replace(/\D/g, '').trim();
+            const p = String(item?.phone || item?.id || '').replace(/\D/g, '').trim();
             return p === cleanPhone;
           });
           if (match) {
-            const mName = match.name || match.driverName || match.realName;
-            if (isValidCustomName(mName)) {
-              driverCustomNameRegistry.set(cleanPhone, mName);
-              return mName;
+            const nameVal = match.name || match.driverName || match.realName || match.applicantName;
+            if (isValidCustomName(nameVal)) {
+              driverCustomNameRegistry.set(cleanPhone, nameVal);
+              AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] = nameVal;
+              return nameVal;
             }
           }
         }
@@ -404,21 +592,14 @@ export function resolveDriverRealName(
     } catch (_) {}
   }
 
-  // 4. 检查 settings 中的名字
-  if (settings) {
-    const sName = String(settings.driverName || settings.name || '').trim();
-    if (isValidCustomName(sName)) {
-      driverCustomNameRegistry.set(cleanPhone, sName);
-      return sName;
-    }
+  // 4. 默认兜底：读取 AUTHORITATIVE_REAL_DRIVER_NAMES
+  if (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) {
+    const authName = AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone];
+    driverCustomNameRegistry.set(cleanPhone, authName);
+    return authName;
   }
 
-  // 5. 固定账号默认兜底
-  if (isWu) {
-    return '吴彦祖';
-  }
-
-  // 6. 兜底格式（删除后或普通账号格式化为：司机XXXX，例如：司机4440、司机9126）
+  if (isWu) return '吴彦祖';
   return `司机${cleanPhone.slice(-4)}`;
 }
 
@@ -645,6 +826,12 @@ export function calculateDaysFromExpiry(expiry?: string): string {
   const trimmed = String(expiry).trim();
   if (trimmed === '永久有效' || trimmed === '永久' || trimmed === 'permanent' || trimmed === '终身') return '永久';
   if (!trimmed || trimmed === '待开通' || trimmed === '待激活' || trimmed === '未激活' || trimmed === '未开通' || trimmed === '0' || trimmed === '0天' || trimmed === '已到期' || trimmed === '已过期') return '0';
+
+  const pureNumMatch = trimmed.match(/^(\d+)(?:天)?$/);
+  if (pureNumMatch) {
+    const num = parseInt(pureNumMatch[1], 10);
+    return num > 0 ? String(num) : '0';
+  }
 
   try {
     let year = 0, month = 0, day = 0;

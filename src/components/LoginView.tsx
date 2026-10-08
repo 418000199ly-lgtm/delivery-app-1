@@ -37,16 +37,22 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
   }, [timer]);
 
   // Candidate URLs helper for multi-environment robustness (Web / Capacitor Android APK / iOS / Cloud)
+  // Candidate URLs helper for multi-environment robustness (Web / Capacitor Android APK / iOS / Cloud)
   const getCandidateApiUrls = (endpoint: string) => {
     const base = getBaseApiUrl();
     const urls: string[] = [];
-    urls.push(`https://api.lyheiwandaijiamax.com${endpoint}`);
+    
+    // Always prioritize current host / relative endpoint first for zero-latency local execution
+    if (typeof window !== 'undefined' && window.location.origin && !window.location.origin.includes('capacitor://') && !window.location.origin.includes('localhost:8080')) {
+      urls.push(`${window.location.origin}${endpoint}`);
+    }
+    urls.push(endpoint);
+    
     if (base && !urls.includes(`${base}${endpoint}`)) {
       urls.push(`${base}${endpoint}`);
     }
-    if (typeof window !== 'undefined' && !window.location.hostname.includes('daijia')) {
-      urls.push(endpoint);
-    }
+    urls.push(`https://api.lyheiwandaijiamax.com${endpoint}`);
+    
     return urls.filter((v, i, a) => Boolean(v) && a.indexOf(v) === i);
   };
 
@@ -91,7 +97,7 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
             signal: controller.signal
           });
           clearTimeout(timeoutId);
-          if (res.ok || res.status === 400 || res.status === 403 || res.status === 500) {
+          if (res.ok || res.status === 400 || res.status === 403 || res.status === 429 || res.status === 500) {
             return await res.json();
           }
         } catch (err) {

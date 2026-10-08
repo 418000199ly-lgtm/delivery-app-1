@@ -1,5 +1,29 @@
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
+import { getBaseApiUrl } from '../lib/dbProxy';
+
+/**
+ * Normalizes QR image URLs so that relative disk paths (/uploads/qrcodes/...)
+ * are automatically prepended with the backend server base URL, while base64
+ * data URLs and absolute HTTP(S) links are preserved intact.
+ */
+export function formatQrUrl(url: string | undefined | null): string {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+  if (trimmed.startsWith('/uploads/')) {
+    const baseUrl = getBaseApiUrl();
+    return `${baseUrl.replace(/\/$/, '')}${trimmed}`;
+  }
+  if (trimmed.startsWith('uploads/')) {
+    const baseUrl = getBaseApiUrl();
+    return `${baseUrl.replace(/\/$/, '')}/${trimmed}`;
+  }
+  return trimmed;
+}
 
 /**
  * Memory-safe helper to downscale high-resolution mobile photos (12MP~48MP)

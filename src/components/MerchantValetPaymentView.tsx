@@ -337,7 +337,7 @@ export default function MerchantValetPaymentView({
               <div className="relative w-52 h-52 sm:w-60 sm:h-60 p-2.5 bg-white rounded-2xl border border-gray-200 shadow-inner flex items-center justify-center">
                 {qrImage && qrImage.trim() !== '' ? (
                   <img 
-                    src={qrImage} 
+                    src={getFullQrUrl(qrImage)} 
                     alt="微信代叫费收款码" 
                     className="w-full h-full object-contain rounded-xl"
                     referrerPolicy="no-referrer"

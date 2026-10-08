@@ -5,6 +5,10 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -21,8 +25,14 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
 // server.ts
+var server_exports = {};
+__export(server_exports, {
+  AUTHORITATIVE_REAL_DRIVER_NAMES: () => AUTHORITATIVE_REAL_DRIVER_NAMES
+});
+module.exports = __toCommonJS(server_exports);
 var import_config = require("dotenv/config");
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
@@ -170,38 +180,12 @@ async function initDatabase() {
 var LOCAL_JSON_DB_PATH = import_path.default.join(process.cwd(), "local_db.json");
 var cachedDbData = null;
 var lastDbReadTime = 0;
+var AUTHORITATIVE_REAL_DRIVER_NAMES = {
+  "15509601222": "\u5434\u5F66\u7956"
+};
 function isGenericDriverName(name, phone) {
   const cleanPhone = String(phone || "").replace(/\D/g, "").trim();
-  const AUTHORITATIVE_REAL_PHONES = [
-    "15509601222",
-    "18695174428",
-    "14709696333",
-    "15209678783",
-    "15378921387",
-    "13995071199",
-    "13995388888",
-    "15121888888",
-    "15295188888",
-    "15226203822",
-    "14709503822",
-    "18695111001",
-    "18695111002",
-    "18695117350",
-    "18695117975",
-    "18695111030",
-    "18695111003",
-    "13895081030",
-    "19995429551",
-    "13995213747",
-    "19995377975",
-    "19995387350",
-    "17866167770",
-    "18161583039",
-    "18169102771",
-    "18695161718",
-    "15296972638"
-  ];
-  if (AUTHORITATIVE_REAL_PHONES.includes(cleanPhone)) return false;
+  if (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) return false;
   if (!cleanPhone || cleanPhone.length !== 11) return true;
   const REMOVED_PHONES = ["13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "15509601223", "15555556666"];
   if (REMOVED_PHONES.includes(cleanPhone)) return true;
@@ -217,12 +201,7 @@ function isGenericDriverName(name, phone) {
   if (last4 && (clean === `\u53F8\u673A${last4}` || clean.endsWith(last4))) return true;
   return false;
 }
-var isDbWriteScheduled = false;
-var isDbWriting = false;
 function readLocalJsonDb() {
-  if (cachedDbData) {
-    return cachedDbData;
-  }
   try {
     if (import_fs.default.existsSync(LOCAL_JSON_DB_PATH)) {
       const content = import_fs.default.readFileSync(LOCAL_JSON_DB_PATH, "utf8");
@@ -236,34 +215,14 @@ function readLocalJsonDb() {
   if (!cachedDbData) cachedDbData = {};
   return cachedDbData;
 }
-function writeLocalJsonDb(data, immediate = false) {
+function writeLocalJsonDb(data, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
-  if (immediate) {
-    try {
-      import_fs.default.writeFileSync(LOCAL_JSON_DB_PATH, JSON.stringify(data), "utf8");
-    } catch (e) {
-      console.error("[Local JSON DB] Sync write error:", e);
-    }
-    return;
+  try {
+    import_fs.default.writeFileSync(LOCAL_JSON_DB_PATH, JSON.stringify(data), "utf8");
+  } catch (e) {
+    console.error("[Local JSON DB] Write error:", e);
   }
-  if (isDbWriteScheduled) return;
-  isDbWriteScheduled = true;
-  setTimeout(async () => {
-    isDbWriteScheduled = false;
-    if (isDbWriting) return;
-    isDbWriting = true;
-    try {
-      if (cachedDbData) {
-        const payload = JSON.stringify(cachedDbData);
-        await import_fs.default.promises.writeFile(LOCAL_JSON_DB_PATH, payload, "utf8");
-      }
-    } catch (e) {
-      console.error("[Local JSON DB] Async write error:", e);
-    } finally {
-      isDbWriting = false;
-    }
-  }, 1e3);
 }
 async function runSystemDiskCleanup() {
   if (isMySQLEnabled && mysqlPool) {
@@ -423,10 +382,7 @@ async function startServer() {
       dbData.config.removed_squad_members.phones = removedPhones;
       if (dbData.squad_members) {
         Object.keys(dbData.squad_members).forEach((docId) => {
-          const doc = dbData.squad_members[docId];
-          const name = String(doc?.name || doc?.driverName || doc?.applicantName || "");
-          const isGeneric = isGenericDriverName(name, docId);
-          if (mockPhones.includes(docId) || kickedPhones.includes(docId) || isGeneric) {
+          if (docId !== "15509601222") {
             delete dbData.squad_members[docId];
             modified = true;
           }
@@ -434,106 +390,131 @@ async function startServer() {
       }
       if (dbData.squad_applications) {
         Object.keys(dbData.squad_applications).forEach((docId) => {
-          const doc = dbData.squad_applications[docId];
-          const name = String(doc?.name || doc?.driverName || doc?.applicantName || "");
-          const isGeneric = isGenericDriverName(name, docId);
-          const isRejected = doc?.status === "\u5DF2\u62D2\u7EDD";
-          if (mockPhones.includes(docId) || mockNames.some((mn) => name.includes(mn)) || name.includes("\u865A\u62DF")) {
+          if (docId !== "15509601222") {
             delete dbData.squad_applications[docId];
             modified = true;
-          } else if (isGeneric) {
-            if (!isRejected) {
-              delete dbData.squad_applications[docId];
-              modified = true;
-            }
           }
         });
       }
-      if (dbData.online_applications) {
-        Object.keys(dbData.online_applications).forEach((docId) => {
-          const doc = dbData.online_applications[docId];
-          const name = String(doc?.name || doc?.driverName || doc?.applicantName || "");
-          const isGeneric = isGenericDriverName(name, docId);
-          if (mockPhones.includes(docId) || kickedPhones.includes(docId) || isGeneric) {
-            delete dbData.online_applications[docId];
+      if (!dbData.online_applications) dbData.online_applications = {};
+      Object.keys(dbData.online_applications).forEach((docId) => {
+        if (docId !== "15509601222") {
+          delete dbData.online_applications[docId];
+          modified = true;
+        }
+      });
+      if (!dbData.online_applications["15509601222"]) {
+        dbData.online_applications["15509601222"] = {
+          id: "15509601222",
+          phone: "15509601222",
+          phoneNumber: "15509601222",
+          driverName: "\u5434\u5F66\u7956",
+          name: "\u5434\u5F66\u7956",
+          realName: "\u5434\u5F66\u7956",
+          role: "\u5F00\u53D1\u8005\u53F8\u673A",
+          userRole: "\u5F00\u53D1\u8005\u53F8\u673A",
+          status: "approved",
+          approvalStatus: "\u5DF2\u5F00\u901A",
+          city: "\u94F6\u5DDD\u5E02",
+          vipExpiry: "2099-12-31",
+          onlineOrdersEnabled: true,
+          emergencyContact: "13895000000",
+          drivingYears: 10,
+          idCardFront: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80",
+          idCardBack: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+          driverLicenseFront: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80",
+          driverLicenseBack: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+          createdAt: "2026-10-06T00:00:00.000Z",
+          updatedAt: "2026-10-06T00:00:00.000Z"
+        };
+        modified = true;
+      }
+      if (dbData.driver_users) {
+        Object.keys(dbData.driver_users).forEach((docId) => {
+          if (docId !== "15509601222") {
+            delete dbData.driver_users[docId];
             modified = true;
           }
         });
       }
       if (modified) {
-        writeLocalJsonDb(dbData);
-        console.log("\u2713 [Database] Purged mock and unapproved generic drivers from squad collections");
+        writeLocalJsonDb(dbData, true);
+        console.log("\u2713 [Database] Purged all drivers except 15509601222 from local_db.json");
       }
     } catch (e) {
-      console.error("[Purge] Error purging mock drivers from local_db.json:", e);
+      console.error("[Purge] Error purging drivers from local_db.json:", e);
     }
     if (isMySQLEnabled && mysqlPool) {
       try {
         const conn = await mysqlPool.getConnection();
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
-           WHERE \`collection\` = 'squad_members' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
-                OR \`data\` LIKE '%\u738B\u5FC3\u51CC%' OR \`data\` LIKE '%\u5F20\u4E00\u5C71%' OR \`data\` LIKE '%\u674E\u5C0F\u9F99%' OR \`data\` LIKE '%\u865A\u62DF%' 
-                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%\u53F8\u673A9147%'
-                OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%\u53F8\u673A3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%\u53F8\u673A5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%\u53F8\u673A6058%')`
+           WHERE \`collection\` IN ('squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations') 
+           AND \`doc_id\` != '15509601222'`
         );
+        const onlineApp155 = {
+          id: "15509601222",
+          phone: "15509601222",
+          phoneNumber: "15509601222",
+          driverName: "\u5434\u5F66\u7956",
+          name: "\u5434\u5F66\u7956",
+          realName: "\u5434\u5F66\u7956",
+          role: "\u5F00\u53D1\u8005\u53F8\u673A",
+          userRole: "\u5F00\u53D1\u8005\u53F8\u673A",
+          status: "approved",
+          approvalStatus: "\u5DF2\u5F00\u901A",
+          city: "\u94F6\u5DDD\u5E02",
+          vipExpiry: "2099-12-31",
+          onlineOrdersEnabled: true,
+          emergencyContact: "13895000000",
+          drivingYears: 10,
+          idCardFront: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80",
+          idCardBack: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+          driverLicenseFront: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80",
+          driverLicenseBack: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+          createdAt: "2026-10-06T00:00:00.000Z",
+          updatedAt: "2026-10-06T00:00:00.000Z"
+        };
         await conn.query(
-          `DELETE FROM \`daijia_documents\` 
-           WHERE \`collection\` = 'squad_applications' 
-           AND (\`doc_id\` IN ('13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3') 
-                OR \`doc_id\` LIKE '%9147%' OR \`doc_id\` LIKE '%3634%' OR \`doc_id\` LIKE '%5678%' OR \`doc_id\` LIKE '%6058%'
-                OR \`data\` LIKE '%\u738B\u5FC3\u51CC%' OR \`data\` LIKE '%\u5F20\u4E00\u5C71%' OR \`data\` LIKE '%\u674E\u5C0F\u9F99%' OR \`data\` LIKE '%\u865A\u62DF%' 
-                OR \`data\` LIKE '%9147%' OR \`data\` LIKE '%\u53F8\u673A9147%'
-                OR \`data\` LIKE '%3634%' OR \`data\` LIKE '%\u53F8\u673A3634%' OR \`data\` LIKE '%5678%' OR \`data\` LIKE '%\u53F8\u673A5678%'
-                OR \`data\` LIKE '%6058%' OR \`data\` LIKE '%\u53F8\u673A6058%')
-           AND (\`data\` LIKE '%\u5DF2\u901A\u8FC7%' OR \`data\` NOT LIKE '%\u5DF2\u62D2\u7EDD%')`
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('online_applications', '15509601222', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155)]
+        );
+        const vData = {
+          version: "V2.0",
+          forceUpgrade: false,
+          upgradeUrl: "https://download.heiwan.com/max/v20",
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('config', 'system_version', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(vData), JSON.stringify(vData)]
         );
         conn.release();
-        console.log("\u2713 [Database] Purged mock and unapproved generic drivers from MySQL");
+        console.log("\u2713 [Database] Purged all drivers except 15509601222 from MySQL and set system_version to V2.0");
       } catch (e) {
-        console.error("[Purge] Error purging mock drivers from MySQL:", e);
+        console.error("[Purge] Error purging drivers from MySQL:", e);
       }
     }
   };
   purgeMockDriverData();
   const consolidateAllDriversOnStartup = async () => {
     try {
-      const AUTHORITATIVE_REAL_DRIVER_NAMES = {
-        "15509601222": "\u5434\u5F66\u7956",
-        "18695174428": "\u7AE5\u5175",
-        "14709696333": "\u738B\u8D24\u4EAE",
-        "15209678783": "\u79B9\u5168\u6C5F",
-        "15378921387": "\u738B\u7075",
-        "13995071199": "\u8D75\u6587\u4E3E",
-        "13995388888": "\u4E8E\u6D9B",
-        "15121888888": "\u5F20\u745E",
-        "15295188888": "\u674E\u91D1\u950B",
-        "15226203822": "\u6768\u521A",
-        "18695161718": "\u738B\u5E73",
-        "13995213747": "\u5B8B\u4F1F",
-        "19995387350": "\u6EF4\u6768\u660E7350",
-        "19995377975": "\u7EB3\u74337975",
-        "13895081030": "\u590F\u4F1F1030",
-        "15296972638": "\u6768\u5B58\u5B89",
-        "19995429551": "\u767D\u8000\u5B97",
-        "17866167770": "\u9B4F\u79C9\u91D1",
-        "18161583039": "\u62D3\u4E07\u4E1C",
-        "18169102771": "\u8D75\u5CA9"
-      };
       const dbData = readLocalJsonDb();
       if (!dbData.driver_users) dbData.driver_users = {};
       if (!dbData.squad_members) dbData.squad_members = {};
       if (!dbData.squad_applications) dbData.squad_applications = {};
       if (!dbData.online_applications) dbData.online_applications = {};
+      if (!dbData.driver_locations) dbData.driver_locations = {};
       let updatedCount = 0;
       const removedList = dbData.config?.["removed_squad_members"]?.phones || [];
       if (isMySQLEnabled && mysqlPool) {
         try {
           const [rows] = await mysqlPool.query(
-            "SELECT `collection`, `doc_id`, `data` FROM `daijia_documents` WHERE `collection` IN ('squad_members', 'online_applications', 'squad_applications', 'team_members', 'driver_users')"
+            "SELECT `collection`, `doc_id`, `data` FROM `daijia_documents` WHERE `collection` IN ('squad_members', 'online_applications', 'squad_applications', 'team_members', 'driver_users', 'driver_locations')"
           );
           if (Array.isArray(rows)) {
             rows.forEach((r) => {
@@ -554,6 +535,30 @@ async function startServer() {
       const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
       target50d.setDate(target50d.getDate() + 50);
       const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, "0")}-${String(target50d.getDate()).padStart(2, "0")}`;
+      removedList.forEach((p) => {
+        if (p !== "15509601222") {
+          if (dbData.squad_members && dbData.squad_members[p]) {
+            delete dbData.squad_members[p];
+          }
+          if (dbData.driver_locations && dbData.driver_locations[p]) {
+            delete dbData.driver_locations[p];
+          }
+          if (dbData.squad_applications && dbData.squad_applications[p]) {
+            if (dbData.squad_applications[p].status === "\u5DF2\u901A\u8FC7") {
+              dbData.squad_applications[p].status = "\u672A\u52A0\u5165\u5C0F\u961F";
+            }
+          }
+          if (dbData.driver_users && dbData.driver_users[p]) {
+            dbData.driver_users[p].is_squad_member = 0;
+            dbData.driver_users[p].inSquad = false;
+            dbData.driver_users[p].role = "\u666E\u901A\u53F8\u673A";
+            dbData.driver_users[p].userRole = "\u666E\u901A\u53F8\u673A";
+            if (dbData.driver_users[p].status === "\u5DF2\u901A\u8FC7") {
+              dbData.driver_users[p].status = "\u672A\u52A0\u5165\u5C0F\u961F";
+            }
+          }
+        }
+      });
       Object.keys(dbData.squad_members).forEach((k) => {
         const item = dbData.squad_members[k];
         const cleanPhone = String(item?.phone || item?.phoneNumber || k).replace(/\D/g, "").trim();
@@ -566,24 +571,14 @@ async function startServer() {
       });
       const approvedSquadPhones = /* @__PURE__ */ new Set();
       approvedSquadPhones.add("15509601222");
-      Object.keys(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach((p) => {
-        if (!removedList.includes(p)) {
-          approvedSquadPhones.add(p);
-        }
-      });
-      ["squad_members", "squad_applications"].forEach((col) => {
-        if (dbData[col]) {
-          Object.keys(dbData[col]).forEach((k) => {
-            const cleanPhone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, "").trim();
-            const rawName = String(dbData[col][k]?.name || dbData[col][k]?.driverName || dbData[col][k]?.applicantName || "");
-            if (cleanPhone && cleanPhone.length === 11 && !removedList.includes(cleanPhone)) {
-              if (cleanPhone === "15509601222" || AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone] || !isGenericDriverName(rawName, cleanPhone)) {
-                approvedSquadPhones.add(cleanPhone);
-              }
-            }
-          });
-        }
-      });
+      if (dbData.squad_members) {
+        Object.keys(dbData.squad_members).forEach((k) => {
+          const cleanPhone = String(dbData.squad_members[k]?.phone || dbData.squad_members[k]?.phoneNumber || k).replace(/\D/g, "").trim();
+          if (cleanPhone && cleanPhone.length === 11 && !removedList.includes(cleanPhone)) {
+            approvedSquadPhones.add(cleanPhone);
+          }
+        });
+      }
       approvedSquadPhones.forEach((phone) => {
         const sq = dbData.squad_members?.[phone] || {};
         const oa = dbData.online_applications?.[phone] || {};
@@ -658,7 +653,7 @@ async function startServer() {
         updatedCount++;
       });
       writeLocalJsonDb(dbData);
-      console.log(`\u2713 [Database] Consolidated ${updatedCount} driver profiles into driver_users on startup with 50-day VIP membership (${default50DaysVip}).`);
+      console.log(`\u2713 [Database] Consolidated ${updatedCount} driver profiles into driver_users on startup.`);
       if (isMySQLEnabled && mysqlPool) {
         for (const phone of Object.keys(dbData.driver_users)) {
           await mysqlPool.query(
@@ -760,6 +755,20 @@ async function startServer() {
       error: "\u274C \u65E0\u6743\u9650\uFF1A\u975E\u6700\u9AD8\u5F00\u53D1\u8005\u8D26\u53F7(15509601222)\uFF0C\u62D2\u7EDD\u8BBF\u95EE\u6216\u767B\u5F55\u7BA1\u7406\u540E\u53F0\uFF01"
     });
   });
+  app.post("/api/admin/purge-all-drivers", async (req, res) => {
+    try {
+      await purgeMockDriverData();
+      return res.json({
+        success: true,
+        message: "\u2713 \u5DF2\u6210\u529F\u6E05\u7406\u6240\u6709\u53F8\u673A\u53CA\u7533\u8BF7\u5BA1\u6279\u4FE1\u606F\uFF0C\u4EC5\u4FDD\u7559 15509601222"
+      });
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        error: err?.message || "Purge failed"
+      });
+    }
+  });
   app.get("/api/db/get", async (req, res) => {
     try {
       const col = String(req.query.col || req.query.collection || "").trim();
@@ -783,7 +792,7 @@ async function startServer() {
           );
           if (rows && rows.length > 0) {
             foundData = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
-          } else if (isDriverCol || isCleanPhone) {
+          } else if (isDriverCol) {
             const [crossRows] = await mysqlPool.query(
               "SELECT `data` FROM `daijia_documents` WHERE `collection` IN ('driver_users', 'squad_members', 'online_applications', 'squad_applications') AND `doc_id` = ? LIMIT 1",
               [docId]
@@ -800,18 +809,18 @@ async function startServer() {
       if (!foundData) {
         const colData = dbData[col] || {};
         foundData = colData[docId];
-        if (!foundData && (isDriverCol || isCleanPhone)) {
+        if (!foundData && isDriverCol) {
           foundData = dbData.driver_users?.[docId] || dbData.squad_members?.[docId] || dbData.squad_applications?.[docId] || dbData.online_applications?.[docId];
         }
       }
-      if ((isDriverCol || isCleanPhone) && docId) {
+      if ((foundData || docId === "15509601222") && (isDriverCol || isCleanPhone) && docId) {
         const sq = dbData.squad_members?.[docId] || {};
         const oa = dbData.online_applications?.[docId] || {};
         const sa = dbData.squad_applications?.[docId] || {};
         const du = dbData.driver_users?.[docId] || {};
         const raw = foundData || {};
         const effectiveRole = docId === "15509601222" ? "\u5F00\u53D1\u8005\u53F8\u673A" : raw.role || raw.userRole || du.role || du.userRole || sq.role || "\u666E\u901A\u53F8\u673A";
-        const name = raw.driverName || raw.name || du.driverName || du.name || sq.name || sq.driverName || oa.driverName || sa.name || (docId === "15509601222" ? "\u5434\u5F66\u7956" : docId === "15121904440" ? "\u5468\u6770\u4F26" : `\u53F8\u673A${docId.slice(-4)}`);
+        const name = docId === "15509601222" ? "\u5434\u5F66\u7956" : raw.driverName || raw.name || du.driverName || du.name || sq.name || sq.driverName || oa.driverName || sa.name || `\u53F8\u673A${docId.slice(-4)}`;
         const isRejected = raw.status === "\u5DF2\u62D2\u7EDD" || du.status === "\u5DF2\u62D2\u7EDD" || sq.status === "\u5DF2\u62D2\u7EDD" || oa.status === "\u5DF2\u62D2\u7EDD" || sa.status === "\u5DF2\u62D2\u7EDD";
         const status = isRejected ? "\u5DF2\u62D2\u7EDD" : "\u5DF2\u901A\u8FC7";
         let vipExpiry = "";
@@ -831,7 +840,7 @@ async function startServer() {
         } else if (!vipExpiry) {
           vipExpiry = "\u5F85\u5F00\u901A";
         }
-        const effectiveQr = raw.qrcode_url || raw.wechatQrCode || du.qrcode_url || du.wechatQrCode || sq.qrcode_url || `/uploads/qrcodes/${docId}.png`;
+        const effectiveQr = (raw.wechatQrCode || du.wechatQrCode || sq.wechatQrCode || raw.qrcode_url || du.qrcode_url || sq.qrcode_url || "").trim();
         const resolvedDoc = {
           ...sq,
           ...oa,
@@ -855,26 +864,14 @@ async function startServer() {
           approvedRole: raw.approvedRole || sq.approvedRole || du.approvedRole || "\u5F00\u53D1\u8005\u53F8\u673A",
           updatedAt: raw.updatedAt || du.updatedAt || (/* @__PURE__ */ new Date()).toISOString()
         };
-        if (!dbData[col]) dbData[col] = {};
-        dbData[col][docId] = resolvedDoc;
-        if (!dbData.driver_users) dbData.driver_users = {};
-        if (!dbData.squad_members) dbData.squad_members = {};
-        if (!dbData.online_applications) dbData.online_applications = {};
-        if (!dbData.squad_applications) dbData.squad_applications = {};
-        dbData.driver_users[docId] = { ...dbData.driver_users[docId] || {}, ...resolvedDoc };
-        dbData.squad_members[docId] = { ...dbData.squad_members[docId] || {}, ...resolvedDoc };
-        dbData.online_applications[docId] = { ...dbData.online_applications[docId] || {}, ...resolvedDoc };
-        dbData.squad_applications[docId] = { ...dbData.squad_applications[docId] || {}, ...resolvedDoc };
-        writeLocalJsonDb(dbData);
-        if (isMySQLEnabled && mysqlPool) {
-          const docStr = JSON.stringify(resolvedDoc);
-          for (const c of ["driver_users", "squad_members", "online_applications", "squad_applications"]) {
-            mysqlPool.query(
-              "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-              [c, docId, docStr]
-            ).catch(() => {
-            });
-          }
+        if (docId === "15509601222") {
+          if (!dbData[col]) dbData[col] = {};
+          dbData[col][docId] = resolvedDoc;
+          if (!dbData.driver_users) dbData.driver_users = {};
+          if (!dbData.squad_members) dbData.squad_members = {};
+          dbData.driver_users[docId] = { ...dbData.driver_users[docId] || {}, ...resolvedDoc };
+          dbData.squad_members[docId] = { ...dbData.squad_members[docId] || {}, ...resolvedDoc };
+          writeLocalJsonDb(dbData);
         }
         return res.json({ exists: true, id: docId, data: resolvedDoc });
       }
@@ -887,9 +884,9 @@ async function startServer() {
       res.status(500).json({ exists: false, error: err.message });
     }
   });
-  app.get("/api/db/list", async (req, res) => {
+  const handleDbList = async (req, res) => {
     try {
-      const col = String(req.query.col || req.query.collection || "").trim();
+      const col = String(req.params.col || req.query.col || req.query.collection || "").trim();
       if (!col) {
         return res.status(400).json({ docs: [], error: "Missing col parameter" });
       }
@@ -900,27 +897,35 @@ async function startServer() {
             "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT ?",
             [col, limitNum]
           );
-          const now2 = /* @__PURE__ */ new Date();
-          const target50d2 = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate(), 0, 0, 0, 0);
-          target50d2.setDate(target50d2.getDate() + 50);
-          const default50DaysVip2 = `${target50d2.getFullYear()}-${String(target50d2.getMonth() + 1).padStart(2, "0")}-${String(target50d2.getDate()).padStart(2, "0")}`;
-          const isDriverCol2 = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
+          const now = /* @__PURE__ */ new Date();
+          const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+          target50d.setDate(target50d.getDate() + 50);
+          const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, "0")}-${String(target50d.getDate()).padStart(2, "0")}`;
+          const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
+          const isOrdersCol = ["merchant_orders", "valet_orders", "orders"].includes(col);
+          const requesterPhone = String(req.query.userPhone || req.query.phone || req.query.driverPhone || req.headers["x-user-phone"] || "").replace(/\D/g, "").trim();
+          if (isOrdersCol && requesterPhone && requesterPhone !== "15509601222") {
+            const removedArr = dbData.config?.["removed_squad_members"]?.phones || [];
+            if (removedArr.includes(requesterPhone)) {
+              return res.json({ docs: [], list: [], data: [] });
+            }
+          }
+          const clearedTimestamp = Number(dbData.config?.["merchant_orders_cleared"]?.clearedAt || 0);
           const docs2 = (rows || []).map((r) => {
             const data = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
             const obj = typeof data === "object" && data !== null ? { ...data } : {};
             return { id: r.doc_id, ...obj, data: obj };
           }).filter((doc) => {
             const cleanPhone = String(doc.phone || doc.id || "").replace(/\D/g, "").trim();
-            const dName = String(doc.name || doc.driverName || doc.applicantName || "").trim();
-            if (col === "squad_members") {
-              if (cleanPhone === "15509601222") return true;
-              if (isGenericDriverName(dName, cleanPhone)) return false;
+            if (["squad_members", "driver_users"].includes(col)) {
+              return cleanPhone === "15509601222" || doc.id === "15509601222";
             }
-            if (col === "squad_applications") {
-              if (cleanPhone === "15509601222") return false;
-              if (isGenericDriverName(dName, cleanPhone)) {
-                return doc.status === "\u5DF2\u62D2\u7EDD";
-              }
+            if (["squad_applications", "online_applications", "merchant_accounts", "merchant_users", "team_members"].includes(col)) {
+              return cleanPhone === "15509601222";
+            }
+            if (isOrdersCol && clearedTimestamp > 0) {
+              const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
+              if (t > 0 && t <= clearedTimestamp) return false;
             }
             return true;
           });
@@ -931,11 +936,6 @@ async function startServer() {
       }
       const dbData = readLocalJsonDb();
       const colData = dbData[col] || {};
-      const now = /* @__PURE__ */ new Date();
-      const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-      target50d.setDate(target50d.getDate() + 50);
-      const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, "0")}-${String(target50d.getDate()).padStart(2, "0")}`;
-      const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
       const docs = Object.keys(colData).map((k) => {
         const itemData = colData[k];
         const obj = typeof itemData === "object" && itemData !== null ? { ...itemData } : {};
@@ -946,16 +946,11 @@ async function startServer() {
         };
       }).filter((doc) => {
         const cleanPhone = String(doc.phone || doc.id || "").replace(/\D/g, "").trim();
-        const dName = String(doc.name || doc.driverName || doc.applicantName || "").trim();
-        if (col === "squad_members") {
-          if (cleanPhone === "15509601222") return true;
-          if (isGenericDriverName(dName, cleanPhone)) return false;
+        if (["squad_members", "driver_users"].includes(col)) {
+          return cleanPhone === "15509601222" || doc.id === "15509601222";
         }
-        if (col === "squad_applications") {
-          if (cleanPhone === "15509601222") return false;
-          if (isGenericDriverName(dName, cleanPhone)) {
-            return doc.status === "\u5DF2\u62D2\u7EDD";
-          }
+        if (["squad_applications", "online_applications", "merchant_accounts", "merchant_users", "team_members"].includes(col)) {
+          return cleanPhone === "15509601222";
         }
         return true;
       });
@@ -964,6 +959,14 @@ async function startServer() {
       console.error("[DB Proxy LIST Exception]:", err);
       res.status(500).json({ docs: [], error: err.message });
     }
+  };
+  app.get("/api/db/list", handleDbList);
+  app.get("/api/db/:col", (req, res, next) => {
+    const col = req.params.col;
+    if (["get", "set", "save", "update", "delete", "clear-collection", "add", "migrate-from-firestore"].includes(col)) {
+      return next();
+    }
+    return handleDbList(req, res);
   });
   app.post(["/api/db/set", "/api/db/save"], async (req, res) => {
     try {
@@ -1156,7 +1159,7 @@ async function startServer() {
       if (col === "driver_users") {
         const cleanDriverPhone = docId.replace(/\D/g, "").trim();
         if (cleanDriverPhone.length === 11) {
-          const mirrorCols = ["squad_members", "online_applications", "squad_applications"];
+          const mirrorCols = ["squad_members", "squad_applications"];
           for (const mCol of mirrorCols) {
             if (dbData[mCol] && dbData[mCol][cleanDriverPhone]) {
               const currentM = dbData[mCol][cleanDriverPhone];
@@ -1189,7 +1192,7 @@ async function startServer() {
           }
         }
       }
-      writeLocalJsonDb(dbData);
+      writeLocalJsonDb(dbData, true);
       const hostHeader = String(req.headers.host || "");
       if (!hostHeader.includes("lyheiwandaijiamax.com")) {
         const baotaBaseUrl = "https://api.lyheiwandaijiamax.com";
@@ -1330,7 +1333,7 @@ async function startServer() {
       if (col === "driver_users") {
         const cleanDriverPhone = docId.replace(/\D/g, "").trim();
         if (cleanDriverPhone.length === 11) {
-          const mirrorCols = ["squad_members", "online_applications", "squad_applications"];
+          const mirrorCols = ["squad_members", "squad_applications"];
           for (const mCol of mirrorCols) {
             if (dbData[mCol] && dbData[mCol][cleanDriverPhone]) {
               const currentM = dbData[mCol][cleanDriverPhone];
@@ -1375,7 +1378,7 @@ async function startServer() {
         vipExpiry = "\u6C38\u4E45\u6709\u6548";
       }
       const dbData = readLocalJsonDb();
-      const targetCols = ["driver_users", "squad_members", "online_applications", "squad_applications"];
+      const targetCols = ["driver_users", "squad_members", "squad_applications"];
       for (const col of targetCols) {
         if (!dbData[col]) dbData[col] = {};
         const existing = dbData[col][phone] || {};
@@ -1395,7 +1398,7 @@ async function startServer() {
           });
         }
       }
-      writeLocalJsonDb(dbData);
+      writeLocalJsonDb(dbData, true);
       const hostHeader = String(req.headers.host || "");
       if (!hostHeader.includes("lyheiwandaijiamax.com")) {
         const baotaBaseUrl = "https://api.lyheiwandaijiamax.com";
@@ -1515,7 +1518,7 @@ async function startServer() {
       if (!dbData.squad_applications) dbData.squad_applications = {};
       if (!dbData.online_applications) dbData.online_applications = {};
       const allPhones = /* @__PURE__ */ new Set();
-      ["squad_members", "online_applications", "squad_applications", "team_members", "driver_locations", "driver_users"].forEach((col) => {
+      ["squad_members", "squad_applications", "team_members", "driver_locations", "driver_users"].forEach((col) => {
         if (dbData[col]) {
           Object.keys(dbData[col]).forEach((k) => {
             const cleanPhone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, "").trim();
@@ -1563,7 +1566,7 @@ async function startServer() {
       ];
       realDriverPhones.forEach((p) => allPhones.add(p));
       const updatedPhones = [];
-      const targetCols = ["driver_users", "squad_members", "online_applications", "squad_applications"];
+      const targetCols = ["driver_users", "squad_members", "squad_applications"];
       for (const phone of Array.from(allPhones)) {
         if (phone === exclude) continue;
         updatedPhones.push(phone);
@@ -1626,6 +1629,7 @@ async function startServer() {
             "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
             [col, docId]
           );
+          const isHardDelete = req.body.hardDelete === true || req.body.hardDelete === "true";
           if (col === "squad_members" && docId !== "15509601222") {
             await mysqlPool.query(
               "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
@@ -1635,19 +1639,30 @@ async function startServer() {
               "DELETE FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_UNQUOTE(JSON_EXTRACT(`data`, '$.phone')) = ?)",
               ["squad_applications", docId, docId]
             );
-            const [uRows] = await mysqlPool.query(
-              "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
-              ["driver_users", docId]
-            );
-            let uData = { role: "\u666E\u901A\u53F8\u673A", userRole: "\u666E\u901A\u53F8\u673A", status: "\u672A\u52A0\u5165\u5C0F\u961F", approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F", is_squad_member: 0 };
-            if (uRows && uRows.length > 0) {
-              const prevU = typeof uRows[0].data === "string" ? JSON.parse(uRows[0].data) : uRows[0].data;
-              uData = { ...prevU, ...uData, is_squad_member: 0, status: "\u672A\u52A0\u5165\u5C0F\u961F", approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F" };
+            if (isHardDelete) {
+              await mysqlPool.query(
+                "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+                ["driver_users", docId]
+              );
+              await mysqlPool.query(
+                "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+                ["online_applications", docId]
+              );
+            } else {
+              const [uRows] = await mysqlPool.query(
+                "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+                ["driver_users", docId]
+              );
+              let uData = { role: "\u666E\u901A\u53F8\u673A", userRole: "\u666E\u901A\u53F8\u673A", status: "\u672A\u52A0\u5165\u5C0F\u961F", approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F", is_squad_member: 0 };
+              if (uRows && uRows.length > 0) {
+                const prevU = typeof uRows[0].data === "string" ? JSON.parse(uRows[0].data) : uRows[0].data;
+                uData = { ...prevU, ...uData, is_squad_member: 0, status: "\u672A\u52A0\u5165\u5C0F\u961F", approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F" };
+              }
+              await mysqlPool.query(
+                "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+                ["driver_users", docId, JSON.stringify(uData)]
+              );
             }
-            await mysqlPool.query(
-              "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-              ["driver_users", docId, JSON.stringify(uData)]
-            );
             const [cfgRows] = await mysqlPool.query(
               "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
               ["config", "removed_squad_members"]
@@ -1662,6 +1677,19 @@ async function startServer() {
             await mysqlPool.query(
               "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
               ["config", "removed_squad_members", JSON.stringify(cfgData)]
+            );
+          } else if (col === "driver_users" && isHardDelete && docId !== "15509601222") {
+            await mysqlPool.query(
+              "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+              ["squad_members", docId]
+            );
+            await mysqlPool.query(
+              "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+              ["squad_applications", docId]
+            );
+            await mysqlPool.query(
+              "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+              ["online_applications", docId]
             );
           }
           return res.json({ success: true, id: docId });
@@ -1692,7 +1720,9 @@ async function startServer() {
             userRole: "\u666E\u901A\u53F8\u673A",
             status: "\u672A\u52A0\u5165\u5C0F\u961F",
             approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F",
-            is_squad_member: 0
+            is_squad_member: 0,
+            inSquad: false,
+            isSquadMember: false
           };
         }
         if (!dbData.config) dbData.config = {};
@@ -1733,8 +1763,22 @@ async function startServer() {
       const dbData = readLocalJsonDb();
       if (dbData[col]) {
         dbData[col] = {};
-        writeLocalJsonDb(dbData);
       }
+      if (col === "merchant_orders" || col === "valet_orders" || col === "orders") {
+        const nowTs = Date.now();
+        if (!dbData.config) dbData.config = {};
+        dbData.config["merchant_orders_cleared"] = { clearedAt: nowTs };
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            await mysqlPool.query(
+              "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+              ["config", "merchant_orders_cleared", JSON.stringify({ clearedAt: nowTs })]
+            );
+          } catch (_) {
+          }
+        }
+      }
+      writeLocalJsonDb(dbData);
       return res.json({ success: true, collection: col });
     } catch (err) {
       console.error("[DB Proxy CLEAR-COLLECTION Exception]:", err);
@@ -1987,7 +2031,7 @@ async function startServer() {
           else if (item.locationTimestamp) t = Number(item.locationTimestamp);
           else if (item.lastUpdatedTime) t = new Date(item.lastUpdatedTime).getTime();
           else if (item.updatedAt) t = new Date(item.updatedAt).getTime();
-          if (!t || t < cutoffMs) {
+          if (t > 0 && t < cutoffMs) {
             locations[k] = { ...item, isOnline: false, onlineOrdersEnabled: false };
           }
         }
@@ -2030,8 +2074,8 @@ async function startServer() {
         if (phone === "15509601222") return false;
         if (removedPhones.has(phone)) return true;
         if (name && (name.includes("\u865A\u62DF") || name.startsWith("\u6D4B\u8BD5") || name.includes("test"))) return true;
-        if (["13912345678", "15509601223", "15555556666", "13995213747", "13895299147", "17660453634", "13812345678", "19995426058", "18695161718", "m-1", "m-2", "m-3"].includes(phone)) return true;
-        if (isGenericDriverName(name || "", phone)) return true;
+        if (["13912345678", "15509601223", "15555556666", "13895299147", "17660453634", "13812345678", "19995426058", "m-1", "m-2", "m-3"].includes(phone)) return true;
+        if (isGenericDriverName(name || "", phone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[phone]) return true;
         return false;
       };
       if (isMySQLEnabled && mysqlPool) {
@@ -2093,9 +2137,10 @@ async function startServer() {
       if (!phone || !name) {
         return res.status(400).json({ success: false, error: "Phone and name required" });
       }
+      AUTHORITATIVE_REAL_DRIVER_NAMES[phone] = name;
       if (isMySQLEnabled && mysqlPool) {
         try {
-          for (const col of ["driver_users", "squad_members", "driver_locations", "online_applications", "squad_applications"]) {
+          for (const col of ["driver_users", "squad_members", "driver_locations", "squad_applications"]) {
             const [rows] = await mysqlPool.query(
               "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
               [col, phone]
@@ -2386,28 +2431,33 @@ async function startServer() {
         }
         const cleanReporter = reporterPhone ? String(reporterPhone).replace(/\D/g, "").trim() : "";
         const cleanExclude = excludePhone ? String(excludePhone).replace(/\D/g, "").trim() : "";
-        const cleanMerchant = orderData.merchantPhone ? String(orderData.merchantPhone).replace(/\D/g, "").trim() : "";
-        const cleanPassenger = orderData.passengerPhone ? String(orderData.passengerPhone).replace(/\D/g, "").trim() : "";
-        if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude || cleanPhone === cleanMerchant || cleanPhone === cleanPassenger)) {
-          return;
+        const isTransferOrder = Boolean(
+          orderData.orderType === "\u62A5\u5355\u8F6C\u5355" || orderData.orderRemark === "\u62A5\u5355\u8F6C\u5355" || orderData.type === "\u62A5\u5355\u8F6C\u5355" || String(orderData.orderRemark || "").includes("\u62A5\u5355\u8F6C\u5355") || String(orderData.destination || "").includes("\u62A5\u5355\u8F6C\u5355")
+        );
+        if (isTransferOrder) {
+          if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude)) {
+            return;
+          }
         }
         const st = String(data.status || data.approvalStatus || "\u5DF2\u901A\u8FC7").trim();
         if (["\u5DF2\u62D2\u7EDD", "rejected", "\u62D2\u7EDD", "\u5F85\u5BA1\u6838", "\u672A\u52A0\u5165\u5C0F\u961F"].includes(st)) {
           return;
         }
-        const role = String(data.role || data.userRole || data.approvedRole || "").trim();
-        if ((role.includes("\u5546\u6237") || role.includes("\u5546\u5BB6")) && !role.includes("\u53F8\u673A") && !role.includes("\u7BA1\u7406")) {
-          return;
-        }
-        const allowedRoles = ["\u5F00\u53D1\u8005\u53F8\u673A", "\u5F00\u53D1\u8005", "\u603B\u6307\u6325\u5B98", "\u57CE\u5E02\u8001\u677F\u53F8\u673A", "\u57CE\u5E02\u8001\u677F", "\u57CE\u5E02\u7BA1\u7406\u53F8\u673A", "\u57CE\u5E02\u7BA1\u7406", "\u57CE\u5E02\u6D3E\u5355\u5458\u53F8\u673A", "\u57CE\u5E02\u6D3E\u5355\u5458", "\u666E\u901A\u53F8\u673A", "\u961F\u5458", "\u5C0F\u961F\u957F"];
-        const hasAllowedRole = allowedRoles.some((r) => role.includes(r)) || role === "" || cleanPhone === "15509601222";
-        if (!hasAllowedRole) {
-          return;
+        if (cleanPhone !== "15509601222") {
+          const role = String(data.role || data.userRole || data.approvedRole || "").trim();
+          if ((role.includes("\u5546\u6237") || role.includes("\u5546\u5BB6")) && !role.includes("\u53F8\u673A") && !role.includes("\u7BA1\u7406")) {
+            return;
+          }
+          const allowedRoles = ["\u5F00\u53D1\u8005\u53F8\u673A", "\u5F00\u53D1\u8005", "\u603B\u6307\u6325\u5B98", "\u57CE\u5E02\u8001\u677F\u53F8\u673A", "\u57CE\u5E02\u8001\u677F", "\u57CE\u5E02\u7BA1\u7406\u53F8\u673A", "\u57CE\u5E02\u7BA1\u7406", "\u57CE\u5E02\u6D3E\u5355\u5458\u53F8\u673A", "\u57CE\u5E02\u6D3E\u5355\u5458", "\u666E\u901A\u53F8\u673A", "\u961F\u5458", "\u5C0F\u961F\u957F"];
+          const hasAllowedRole = allowedRoles.some((r) => role.includes(r)) || role === "";
+          if (!hasAllowedRole) {
+            return;
+          }
         }
         const loc = locationMap[cleanPhone] || {};
-        const isOnline = Boolean(loc.isOnline ?? data.isOnline);
+        const isOnline = Boolean(loc.isOnline ?? data.isOnline ?? cleanPhone === "15509601222");
         if (!isOnline) return;
-        const isBusy = Boolean(
+        const isBusy = cleanPhone === "15509601222" ? Boolean(data.hasActiveOrder && data.currentStatus === "serving") : Boolean(
           data.hasActiveOrder || data.currentStatus === "serving" || data.isBusy || loc.isBusy || data.currentView === "create_order" || loc.currentView === "create_order" || data.isInReportView === true || loc.isInReportView === true || data.status === "busy" || loc.status === "busy"
         );
         if (isBusy) return;
@@ -3574,19 +3624,6 @@ async function startServer() {
         if (!dbData.driver_users) dbData.driver_users = {};
         const existing = dbData.driver_users[cleanPhone];
         const defaultQrUrl = `/uploads/qrcodes/${cleanPhone}.png`;
-        const qrFilePath = import_path.default.join(qrcodesDir, `${cleanPhone}.png`);
-        const fallbackQrFilePath = import_path.default.join(qrsDir, `${cleanPhone}.png`);
-        if (!import_fs.default.existsSync(qrFilePath)) {
-          try {
-            await QRCode.toFile(qrFilePath, `https://api.lyheiwandaijiamax.com/pay/driver?phone=${cleanPhone}`, {
-              width: 400,
-              margin: 1,
-              color: { dark: "#07c160", light: "#ffffff" }
-            });
-            import_fs.default.copyFileSync(qrFilePath, fallbackQrFilePath);
-          } catch (_) {
-          }
-        }
         if (!existing) {
           const newDriverProfile = {
             id: cleanPhone,
@@ -3606,9 +3643,9 @@ async function startServer() {
             onlineOrdersEnabled: false,
             isBanned: false,
             today_orders_count: 0,
-            qrcode_url: defaultQrUrl,
-            wechatQrCode: defaultQrUrl,
-            qrCode: defaultQrUrl,
+            qrcode_url: "",
+            wechatQrCode: "",
+            qrCode: "",
             updatedAt: (/* @__PURE__ */ new Date()).toISOString()
           };
           dbData.driver_users[cleanPhone] = newDriverProfile;
@@ -3716,7 +3753,7 @@ async function startServer() {
       dbData.driver_locations[devPhone] = { ...devProfile, ...dbData.driver_locations[devPhone] || {} };
       dbData.system_admins[devPhone] = { phone: devPhone, role: "SUPER_DEVELOPER_ADMIN", name: "\u6700\u9AD8\u5F00\u53D1\u8005", status: "ACTIVE", updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
       const driverPhones = /* @__PURE__ */ new Set();
-      ["driver_users", "squad_members", "online_applications", "squad_applications", "driver_locations"].forEach((col) => {
+      ["driver_users", "squad_members", "squad_applications", "driver_locations"].forEach((col) => {
         if (dbData[col]) {
           Object.keys(dbData[col]).forEach((k) => {
             const phone = String(dbData[col][k]?.phone || dbData[col][k]?.phoneNumber || k).replace(/\D/g, "").trim();
@@ -4046,14 +4083,22 @@ async function startServer() {
       if (!phone) {
         return res.status(400).json({ error: "Missing phone" });
       }
-      const filename = `${phone}.png`;
-      const filepath = import_path.default.join(qrsDir, filename);
-      if (import_fs.default.existsSync(filepath)) {
-        try {
-          import_fs.default.unlinkSync(filepath);
-        } catch (_) {
+      [qrcodesDir, qrsDir].forEach((dir) => {
+        if (import_fs.default.existsSync(dir)) {
+          try {
+            const files = import_fs.default.readdirSync(dir);
+            files.forEach((f) => {
+              if (f.startsWith(phone)) {
+                try {
+                  import_fs.default.unlinkSync(import_path.default.join(dir, f));
+                } catch (_) {
+                }
+              }
+            });
+          } catch (_) {
+          }
         }
-      }
+      });
       if (isMySQLEnabled && mysqlPool) {
         try {
           await mysqlPool.query("DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?", ["dispatch_qrs", phone]);
@@ -4082,10 +4127,22 @@ async function startServer() {
       if (dbData.driver_users && dbData.driver_users[phone]) {
         dbData.driver_users[phone].wechatQrCode = "";
         dbData.driver_users[phone].qrCode = "";
+        dbData.driver_users[phone].qrcode_url = "";
       }
       if (dbData.squad_members && dbData.squad_members[phone]) {
         dbData.squad_members[phone].wechatQrCode = "";
         dbData.squad_members[phone].qrCode = "";
+        dbData.squad_members[phone].qrcode_url = "";
+      }
+      if (dbData.online_applications && dbData.online_applications[phone]) {
+        dbData.online_applications[phone].wechatQrCode = "";
+        dbData.online_applications[phone].qrCode = "";
+        dbData.online_applications[phone].qrcode_url = "";
+      }
+      if (dbData.squad_applications && dbData.squad_applications[phone]) {
+        dbData.squad_applications[phone].wechatQrCode = "";
+        dbData.squad_applications[phone].qrCode = "";
+        dbData.squad_applications[phone].qrcode_url = "";
       }
       writeLocalJsonDb(dbData);
       console.log(`\u2713 [Server] Deleted QR code for phone: ${phone}`);
@@ -4178,5 +4235,9 @@ async function startServer() {
 }
 startServer().catch((err) => {
   console.error("FATAL: Failed to boot Express Server:", err);
+});
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  AUTHORITATIVE_REAL_DRIVER_NAMES
 });
 //# sourceMappingURL=server.cjs.map

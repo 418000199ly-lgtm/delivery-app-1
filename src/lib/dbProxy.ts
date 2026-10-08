@@ -164,6 +164,10 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     return new ProxyDocumentSnapshot(cleanId, result.data, result.exists);
   } catch (err: any) {
     // Secondary simulation fallback to guarantee absolute offline stability
+    const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
+    if (DRIVER_COLLECTIONS.includes(docRef.collectionName) && cleanId !== '15509601222') {
+      return new ProxyDocumentSnapshot(cleanId, null, false);
+    }
     const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
     const cached = localStorage.getItem(cacheKey);
     let parsed = cached ? JSON.parse(cached) : null;
@@ -383,11 +387,15 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
     console.warn("Proxy DB Query falling back to local simulation:", err);
     // Sweep localStorage to retrieve matching cached documents
     const docList: ProxyDocumentSnapshot[] = [];
+    const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && key.startsWith(`mock_db_${colName}_`)) {
           const docId = key.substring(`mock_db_${colName}_`.length);
+          if (DRIVER_COLLECTIONS.includes(colName) && docId !== '15509601222') {
+            continue;
+          }
           const cached = localStorage.getItem(key);
           if (cached) {
             docList.push(new ProxyDocumentSnapshot(docId, JSON.parse(cached), true));
@@ -466,13 +474,47 @@ export function onSnapshot(
     } catch (_) {}
   }
 
-  // High-frequency 800ms polling for true sub-second synchronization
-  intervalId = setInterval(checkUpdate, 800);
+  // Adaptive polling: 1500ms when tab is visible, 8000ms when hidden/background to minimize server CPU
+  const getPollInterval = () => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      return 8000;
+    }
+    return 1500;
+  };
+
+  let pollTimer: any = null;
+  const scheduleNextPoll = () => {
+    if (isUnsubscribed) return;
+    pollTimer = setTimeout(async () => {
+      if (!isUnsubscribed) {
+        await checkUpdate();
+        scheduleNextPoll();
+      }
+    }, getPollInterval());
+  };
+
+  scheduleNextPoll();
+
+  const handleVisibilityChange = () => {
+    if (isUnsubscribed) return;
+    if (typeof document !== 'undefined' && !document.hidden) {
+      // Tab became active: trigger immediate sync
+      checkUpdate();
+    }
+  };
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+  }
 
   return () => {
     isUnsubscribed = true;
-    if (intervalId) {
-      clearInterval(intervalId);
+    if (pollTimer) {
+      clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('db_doc_updated', handleLocalUpdate);

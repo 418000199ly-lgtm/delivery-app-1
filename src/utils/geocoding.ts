@@ -17,6 +17,14 @@ export const DEFAULT_YINCHUAN_COORDS: Coords = {
 // Known POI dictionary for Yinchuan and major regional landmarks
 const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
   {
+    keywords: ['银川市第二中学', '银川第二中学', '银川二中', '第二中学', '二中', '英才巷', '英才路'],
+    coords: { lat: 38.4908, lng: 106.2485 } // 兴庆区英才巷/民族北街 银川二中
+  },
+  {
+    keywords: ['良益轩泡馍', '良益轩', '泡馍店', '羊肉泡馍'],
+    coords: { lat: 38.4845, lng: 106.2380 } // 兴庆区新华东街/中山街 良益轩泡馍
+  },
+  {
     keywords: ['华江大肉夹馍', '华江肉夹馍', '大肉夹馍'],
     coords: { lat: 38.4812, lng: 106.2348 }
   },

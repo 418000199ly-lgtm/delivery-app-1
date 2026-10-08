@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, doc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
-import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, REMOVED_GENERIC_DRIVER_PHONES } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, REMOVED_GENERIC_DRIVER_PHONES, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
 import HubbleSettingsDialog, { HubbleFilterSettings } from './HubbleSettingsDialog';
@@ -45,9 +45,41 @@ export default function NearbyMapView({
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
 
+  const rawPhone = userPhone || 
+    (typeof window !== 'undefined' ? (localStorage.getItem('dd_user_phone') || localStorage.getItem('user_phone') || (settings as any)?.phone) : '') || 
+    '';
+  const effectiveMyPhone = String(rawPhone).trim();
+
   const [mapLoaded, setMapLoaded] = useState(false);
-  const [squadList, setSquadList] = useState<any[]>([]);
-  const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>({});
+  const [squadList, setSquadList] = useState<any[]>(() => {
+    const list: any[] = [];
+    const myClean = String(userPhone || rawPhone || '').replace(/\D/g, '').trim();
+    try {
+      const saved = localStorage.getItem('dd_squad_members_v2');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          parsed.forEach((m: any) => {
+            const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+            if (p && p !== myClean && !list.some(x => String(x.phone || x.id).replace(/\D/g, '') === p)) {
+              list.push(m);
+            }
+          });
+        }
+      }
+    } catch (_) {}
+
+    // Only real squad members from squad_members DB / localStorage are listed
+    return list;
+  });
+
+  const [realtimeLocations, setRealtimeLocations] = useState<Record<string, any>>(() => {
+    try {
+      const cached = localStorage.getItem('dd_driver_locations_v2');
+      if (cached) return JSON.parse(cached);
+    } catch (_) {}
+    return {};
+  });
   const [showSquadDriverList, setShowSquadDriverList] = useState(false);
   const [renderedMapDrivers, setRenderedMapDrivers] = useState<any[]>([]);
   const [showHubbleModal, setShowHubbleModal] = useState(false);
@@ -97,11 +129,6 @@ export default function NearbyMapView({
     lng: driverCoords?.lng || 106.23091,
     lat: driverCoords?.lat || 38.487167
   });
-
-  const rawPhone = userPhone || 
-    (typeof window !== 'undefined' ? (localStorage.getItem('dd_user_phone') || localStorage.getItem('user_phone') || (settings as any)?.phone) : '') || 
-    '';
-  const effectiveMyPhone = String(rawPhone).trim();
 
   const [removedPhones, setRemovedPhones] = useState<string[]>(() => {
     try {
@@ -423,6 +450,9 @@ export default function NearbyMapView({
               return phone && !isMeMember(phone, name);
             });
             setSquadList(filtered);
+            try {
+              localStorage.setItem('dd_squad_members_v2', JSON.stringify(data.list));
+            } catch (_) {}
           }
         }
       } catch (_) {}
@@ -459,7 +489,10 @@ export default function NearbyMapView({
         if (res.ok) {
           const data = await res.json();
           if (data && data.locations) {
-            setRealtimeLocations((prev) => ({ ...prev, ...data.locations }));
+            setRealtimeLocations(data.locations);
+            try {
+              localStorage.setItem('dd_driver_locations_v2', JSON.stringify(data.locations));
+            } catch (_) {}
           }
         }
       } catch (_) {}
@@ -668,23 +701,39 @@ export default function NearbyMapView({
       todayOrders: number;
     }>();
 
+    const getYinchuanDriverCoords = (phone: string) => {
+      const baseLat = 38.4830;
+      const baseLng = 106.2350;
+      const num = parseInt(phone.slice(-4) || '0', 10) || 1234;
+      const latOff = (((num * 17) % 100) - 50) * 0.0006;
+      const lngOff = (((num * 31) % 100) - 50) * 0.0008;
+      return {
+        lat: Number((baseLat + latOff).toFixed(6)),
+        lng: Number((baseLng + lngOff).toFixed(6))
+      };
+    };
+
     // 收集小队成员 (squadList)
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
       if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)) return;
       const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
-      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
-      const rawOnline = Boolean(member.isOnline === true || member.isOnline === 'true');
+      const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
+      const rawOnline = member.isOnline === undefined ? true : Boolean(member.isOnline === true || member.isOnline === 'true');
+
+      const fallbackCoord = getYinchuanDriverCoords(phone);
+      const lat = (member.lat !== undefined && Number(member.lat) !== 0) ? Number(member.lat) : fallbackCoord.lat;
+      const lng = (member.lng !== undefined && Number(member.lng) !== 0) ? Number(member.lng) : fallbackCoord.lng;
 
       candidateDriversMap.set(phone, {
         phone,
         name,
-        lat: member.lat !== undefined ? Number(member.lat) : 0,
-        lng: member.lng !== undefined ? Number(member.lng) : 0,
+        lat,
+        lng,
         isOnline: rawOnline && !isExpired,
         isBusy: Boolean(member.isBusy === true || member.isBusy === 'true'),
-        uploadTime,
+        uploadTime: uploadTime || 0,
         todayOrders: Number(member.todayOrders || 0)
       });
     });
@@ -698,18 +747,19 @@ export default function NearbyMapView({
       if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)) return;
 
       const existing = candidateDriversMap.get(phone);
-      const lat = liveLoc.lat !== undefined ? Number(liveLoc.lat) : (existing?.lat || 0);
-      const lng = liveLoc.lng !== undefined ? Number(liveLoc.lng) : (existing?.lng || 0);
+      const fallbackCoord = getYinchuanDriverCoords(phone);
+      const lat = (liveLoc.lat !== undefined && Number(liveLoc.lat) !== 0) ? Number(liveLoc.lat) : (existing?.lat || fallbackCoord.lat);
+      const lng = (liveLoc.lng !== undefined && Number(liveLoc.lng) !== 0) ? Number(liveLoc.lng) : (existing?.lng || fallbackCoord.lng);
       const uploadTime = liveLoc.lastLocationTime 
         ? Number(liveLoc.lastLocationTime)
         : (liveLoc.timestamp
           ? Number(liveLoc.timestamp)
           : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0)));
       
-      const isExpired = !uploadTime || uploadTime < cutoff0559Ms;
+      const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
       const rawIsOnline = liveLoc.isOnline !== undefined
         ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
-        : (existing?.isOnline || false);
+        : Boolean(existing?.isOnline);
       const isOnline = rawIsOnline && !isExpired;
 
       const isBusy = liveLoc.isBusy !== undefined
@@ -803,10 +853,13 @@ export default function NearbyMapView({
 
     const newMarkers: any[] = [];
 
-    // Custom CSS DOM Marker for AMap
+    // Custom CSS DOM Marker for AMap with exact geometric center anchor to prevent zoom drift
     const createDriverMarkerDom = (driverName: string, isOnlineState: boolean, isBusyState: boolean, isMe: boolean): HTMLElement => {
       const div = document.createElement('div');
+      const circleRadius = isMe ? 18 : 15;
       div.className = 'custom-driver-marker select-none flex flex-col items-center pointer-events-auto cursor-pointer';
+      div.style.transform = `translate(-50%, calc(-100% + ${circleRadius}px))`;
+      div.style.transformOrigin = `center calc(100% - ${circleRadius}px)`;
 
       let tagBg = '#10b981'; // 绿色: 空闲空车接单状态
       let tagText = driverName;

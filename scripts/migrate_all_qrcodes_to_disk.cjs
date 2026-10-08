@@ -56,27 +56,24 @@ async function migrateQrcodes() {
       fs.writeFileSync(targetPath, buffer);
       fs.writeFileSync(fallbackPath, buffer);
       migratedCount++;
-    } else {
-      // Generate clean QR code if not exists on disk
-      if (!fs.existsSync(targetPath)) {
-        await QRCode.toFile(targetPath, `https://api.lyheiwandaijiamax.com/pay/driver?phone=${phone}`, {
-          width: 400,
-          margin: 1,
-          color: { dark: '#07c160', light: '#ffffff' }
-        });
-        fs.copyFileSync(targetPath, fallbackPath);
-        generatedCount++;
-      }
-    }
 
-    // Update all collections to store the clean relative disk URL
-    collections.forEach(col => {
-      if (dbData[col] && dbData[col][phone]) {
-        dbData[col][phone].qrcode_url = qrUrl;
-        dbData[col][phone].wechatQrCode = qrUrl;
-        dbData[col][phone].qrCode = qrUrl;
-      }
-    });
+      collections.forEach(col => {
+        if (dbData[col] && dbData[col][phone]) {
+          dbData[col][phone].qrcode_url = qrUrl;
+          dbData[col][phone].wechatQrCode = qrUrl;
+          dbData[col][phone].qrCode = qrUrl;
+        }
+      });
+    } else {
+      // Do not auto-generate green QR codes! Drivers must upload their own real QR or leave empty.
+      collections.forEach(col => {
+        if (dbData[col] && dbData[col][phone]) {
+          dbData[col][phone].qrcode_url = '';
+          dbData[col][phone].wechatQrCode = '';
+          dbData[col][phone].qrCode = '';
+        }
+      });
+    }
   }
 
   fs.writeFileSync(dbPath, JSON.stringify(dbData, null, 2), 'utf8');

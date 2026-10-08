@@ -53,11 +53,12 @@ import {
   MapPin,
   AlertCircle,
   Power,
-  Database
+  Database,
+  Store
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry, isOfficialSquadMember, getRemovedSquadSet } from '../utils/nameResolver';
 
 function calculateExpiryFromDays(days: string): string {
   const trimmed = String(days || '').trim();
@@ -76,6 +77,8 @@ function calculateExpiryFromDays(days: string): string {
   d.setDate(d.getDate() + dayCount);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+
+export const NON_SQUAD_DRIVERS: any[] = [];
 
 interface AdminPanelProps {
   userPhone?: string | null;
@@ -320,7 +323,16 @@ export default function AdminPanel({
       const cached = localStorage.getItem('cached_unified_drivers');
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((d: any) => {
+            const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
+            const realName = resolveDriverRealName(p, d.driverName || d.name);
+            return { ...d, driverName: realName, name: realName };
+          }).filter((d: any) => {
+            const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
+            return p === '15509601222' || d.isMerchant;
+          });
+        }
       }
     } catch (_) {}
     return [];
@@ -331,88 +343,42 @@ export default function AdminPanel({
       const saved = localStorage.getItem('dd_squad_members_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((m: any) => {
+            const p = String(m.phoneNumber || m.phone || m.id || '').replace(/\D/g, '').trim();
+            return p === '15509601222';
+          });
+        }
       }
     } catch (_) {}
     return [];
   });
-  const [squadAppsList, setSquadAppsList] = useState<any[]>(() => {
+  const [squadAppsList, setSquadAppsList] = useState<any[]>([]);
+  const [merchantAccountsList, setMerchantAccountsList] = useState<any[]>([]);
+  const [removedSquadPhones, setRemovedSquadPhones] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem('dd_applicants_v2');
+      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch (_) {}
     return [];
   });
   const [driverSearchQuery, setDriverSearchQuery] = useState('');
   const [adminCitySearch, setAdminCitySearch] = useState('');
-  const [driverTabCategory, setDriverTabCategory] = useState<'squad' | 'nonsquad' | 'all'>('squad');
+  const [driverTabCategory, setDriverTabCategory] = useState<'squad' | 'nonsquad' | 'merchant' | 'all'>('squad');
+
+  // Helper to identify merchant accounts created via merchant valet (ends with 'A')
+  const isMerchantAccount = (drv: any) => {
+    if (!drv) return false;
+    const p = String(drv.phoneNumber || drv.phone || drv.id || '').trim();
+    return Boolean(drv.isMerchant || drv.accountType === 'merchant' || p.endsWith('A') || p.endsWith('a'));
+  };
 
   // Helper to strictly identify official squad members dynamically based on server squad_members DB
-  const isOfficialSquadMember = (drv: any) => {
-    if (!drv) return false;
-    const p = String(drv.phoneNumber || drv.phone || drv.id || '').replace(/\D/g, '').trim();
-    if (!p || p.length < 11) return false;
-    if (p === '15509601222') return true; // 最高开发者永远在小队
-
-    // Check if phone is in removed / blacklisted phones
-    if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
-      return false;
-    }
-    try {
-      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (savedRemoved) {
-        const parsed = JSON.parse(savedRemoved);
-        if (Array.isArray(parsed) && parsed.includes(p)) return false;
-      }
-    } catch (_) {}
-
-    // Check if driver is explicitly marked as rejected / resigned / not in squad
-    const drvStatus = String(drv.status || drv.approvalStatus || '').trim();
-    if (['已拒绝', '已离职', '未加入小队', 'rejected', '已解散'].includes(drvStatus)) {
-      return false;
-    }
-
-    // Check if name is generic (e.g. 司机0116, 司机6058)
-    const dName = String(drv.driverName || drv.name || '').trim();
-    if (isGenericDriverName(dName, p) && !AUTHORITATIVE_REAL_DRIVER_NAMES[p]) {
-      return false;
-    }
-
-    if (AUTHORITATIVE_REAL_DRIVER_NAMES[p]) {
-      return true;
-    }
-
-    // Check against Aliyun squad_members DB
-    const smDoc = squadMembersList.find((sm: any) => {
-      const smPhone = String(sm.phone || sm.phoneNumber || sm.id || '').replace(/\D/g, '').trim();
-      return smPhone === p;
-    });
-    if (smDoc) {
-      const smStatus = String(smDoc.status || smDoc.approvalStatus || '').trim();
-      if (['已拒绝', '已离职', '未加入小队'].includes(smStatus)) return false;
-      if (['已通过', 'approved', '通过'].includes(smStatus) || smDoc.role || smDoc.position || !smStatus) return true;
-    }
-
-    // Check squad applications list
-    const appDoc = squadAppsList.find((item: any) => {
-      const appPhone = String(item.phone || item.phoneNumber || item.id || '').replace(/\D/g, '').trim();
-      return appPhone === p;
-    });
-    if (appDoc) {
-      const appStatus = String(appDoc.status || '').trim();
-      if (['已通过', 'approved', '通过'].includes(appStatus)) return true;
-      if (['已拒绝', 'rejected'].includes(appStatus)) return false;
-    }
-
-    // Check driver object status / role
-    if (drv.is_squad_member === 1 || ['已通过', 'approved', '通过'].includes(drvStatus)) {
-      return true;
-    }
-
-    return false;
+  const checkIsOfficialSquadMember = (drv: any) => {
+    return isOfficialSquadMember(drv);
   };
 
   // Version management states
@@ -674,7 +640,10 @@ export default function AdminPanel({
     const unsubscribe = onSnapshot(versionDocRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        const v = data.version || 'V1.0';
+        let v = data.version || 'V2.0';
+        if (!v || v === 'V1.0' || v.startsWith('V1.0')) {
+          v = 'V2.0';
+        }
         const fu = !!data.forceUpgrade;
         const url = data.upgradeUrl || 'https://download.heiwan.com/max';
         const xianyu = data.xianyuUrl || 'https://www.goofish.com';
@@ -785,28 +754,76 @@ export default function AdminPanel({
     const preloadDrivers = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const [resSquad, resApps, resUsers] = await Promise.allSettled([
-          fetch(`${baseUrl}/api/db/list?col=squad_members&limit=5000`, { cache: 'no-store' }),
-          fetch(`${baseUrl}/api/db/list?col=squad_applications&limit=5000`, { cache: 'no-store' }),
-          fetch(`${baseUrl}/api/db/list?col=driver_users&limit=5000`, { cache: 'no-store' })
+        const [resSquad, resApps, resUsers, resRemoved] = await Promise.allSettled([
+          fetch(`${baseUrl}/api/db/list?col=squad_members&limit=5000&_t=${Date.now()}`, { cache: 'no-store' }),
+          fetch(`${baseUrl}/api/db/list?col=squad_applications&limit=5000&_t=${Date.now()}`, { cache: 'no-store' }),
+          fetch(`${baseUrl}/api/db/list?col=driver_users&limit=5000&_t=${Date.now()}`, { cache: 'no-store' }),
+          fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store' })
         ]);
+
+        let loadedSquad: any[] = [];
+        let loadedApps: any[] = [];
+        let loadedUsers: any[] = [];
 
         if (resSquad.status === 'fulfilled' && resSquad.value.ok) {
           const json = await resSquad.value.json();
-          if (Array.isArray(json.docs) && json.docs.length > 0) {
-            setSquadMembersList(json.docs);
-          }
+          const items = Array.isArray(json.docs) ? json.docs : (Array.isArray(json) ? json : []);
+          loadedSquad = items.map((i: any) => i?.data || i).filter(Boolean);
         }
         if (resApps.status === 'fulfilled' && resApps.value.ok) {
           const json = await resApps.value.json();
-          if (Array.isArray(json.docs) && json.docs.length > 0) {
-            setSquadAppsList(json.docs);
-          }
+          const items = Array.isArray(json.docs) ? json.docs : (Array.isArray(json) ? json : []);
+          loadedApps = items.map((i: any) => i?.data || i).filter(Boolean);
         }
         if (resUsers.status === 'fulfilled' && resUsers.value.ok) {
           const json = await resUsers.value.json();
-          if (Array.isArray(json.docs) && json.docs.length > 0) {
-            setDriverUsersList(json.docs);
+          const items = Array.isArray(json.docs) ? json.docs : (Array.isArray(json) ? json : []);
+          loadedUsers = items.map((i: any) => i?.data || i).filter(Boolean);
+        }
+
+        const masterDeveloper = '15509601222';
+        const squadToDelete = loadedSquad.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
+        const appsToDelete = loadedApps.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
+        const usersToDelete = loadedUsers.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
+        const allToPurge = Array.from(new Set([...squadToDelete, ...appsToDelete, ...usersToDelete]));
+
+        if (allToPurge.length > 0) {
+          console.log(`[Admin Purge] Client-side purging ${allToPurge.length} old drivers/applicants from Aliyun server via REST APIs...`);
+          
+          for (const phone of allToPurge) {
+            ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations'].forEach((col) => {
+              fetch(`${baseUrl}/api/db/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ col, id: phone, hardDelete: true })
+              }).catch(() => {});
+            });
+          }
+
+          setSquadMembersList([]);
+          setSquadAppsList([]);
+          setDriverUsersList([]);
+          
+          localStorage.setItem('dd_applicants_v2', '[]');
+          localStorage.setItem('dd_squad_members_v2', JSON.stringify([
+            { id: masterDeveloper, phone: masterDeveloper, phoneNumber: masterDeveloper, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+          ]));
+          localStorage.setItem('cached_unified_drivers', JSON.stringify([
+            { id: masterDeveloper, phone: masterDeveloper, phoneNumber: masterDeveloper, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+          ]));
+        } else {
+          setSquadMembersList(loadedSquad);
+          setSquadAppsList(loadedApps);
+          setDriverUsersList(loadedUsers);
+        }
+        if (resRemoved.status === 'fulfilled' && resRemoved.value.ok) {
+          const json = await resRemoved.value.json();
+          const phones = json?.data?.phones || json?.phones;
+          if (Array.isArray(phones)) {
+            setRemovedSquadPhones(phones);
+            try {
+              localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
+            } catch (_) {}
           }
         }
       } catch (err) {
@@ -819,11 +836,28 @@ export default function AdminPanel({
     const unsub1 = onSnapshot(q1, (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((doc) => {
-        list.push({ id: doc.id, ...doc.data() });
+        const data = doc.data() || {};
+        const rawP = String(data.phone || data.phoneNumber || doc.id || '').trim();
+        const p = rawP.replace(/\D/g, '').trim();
+        if (p === '15509601222') {
+          list.push({
+            ...data,
+            id: '15509601222',
+            phone: '15509601222',
+            phoneNumber: '15509601222',
+            driverName: '吴彦祖',
+            name: '吴彦祖',
+            role: '开发者司机',
+            userRole: '开发者司机',
+            status: '已通过'
+          });
+        } else if (rawP.toUpperCase().endsWith('A') || data.isMerchant || data.accountType === 'merchant') {
+          list.push({ id: doc.id, ...data });
+        } else if (data.status === '已通过' && data.is_squad_member === 1) {
+          list.push({ id: doc.id, ...data });
+        }
       });
-      if (list.length > 0) {
-        setDriverUsersList(list);
-      }
+      setDriverUsersList(list);
     }, (err) => {
       console.error("Error subscribing to driver_users in admin panel:", err);
     });
@@ -834,9 +868,7 @@ export default function AdminPanel({
       snapshot.forEach((doc) => {
         list.push({ id: doc.id, ...doc.data() });
       });
-      if (list.length > 0) {
-        setSquadMembersList(list);
-      }
+      setSquadMembersList(list);
     }, (err) => {
       console.error("Error subscribing to squad_members in admin panel:", err);
     });
@@ -847,17 +879,63 @@ export default function AdminPanel({
       snapshot.forEach((doc) => {
         list.push({ id: doc.id, ...doc.data() });
       });
-      if (list.length > 0) {
-        setSquadAppsList(list);
-      }
+      setSquadAppsList(list);
     }, (err) => {
       console.error("Error subscribing to squad_applications in admin panel:", err);
     });
+
+    const q4 = collection(db, 'merchant_accounts');
+    const unsub4 = onSnapshot(q4, (snapshot) => {
+      const list: any[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        const p = String(data?.phone || doc.id || '').trim();
+        if (p.toUpperCase().endsWith('A')) {
+          list.push({ id: doc.id, ...data });
+        }
+      });
+      setMerchantAccountsList(list);
+    }, (err) => {
+      console.error("Error subscribing to merchant_accounts in admin panel:", err);
+    });
+
+    const unsubRemoved = onSnapshot(doc(db, 'config', 'removed_squad_members'), (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && Array.isArray(data.phones)) {
+          setRemovedSquadPhones(data.phones);
+          try {
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(data.phones));
+          } catch (_) {}
+        }
+      }
+    });
+
+    // Also fetch initial merchant accounts and removed squad members via HTTP
+    try {
+      const baseUrl = getBaseApiUrl();
+      fetch(`${baseUrl}/api/db/list?col=merchant_accounts`).then(r => r.json()).then(res => {
+        if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
+          setMerchantAccountsList(res.data);
+        }
+      }).catch(() => {});
+
+      fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members`).then(r => r.json()).then(res => {
+        if (res && res.data && Array.isArray(res.data.phones)) {
+          setRemovedSquadPhones(res.data.phones);
+          try {
+            localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(res.data.phones));
+          } catch (_) {}
+        }
+      }).catch(() => {});
+    } catch (_) {}
 
     return () => {
       unsub1();
       unsub2();
       unsub3();
+      unsub4();
+      unsubRemoved();
     };
   }, []);
 
@@ -867,14 +945,6 @@ export default function AdminPanel({
   // Merge and aggregate all driver profiles into allDrivers state in real-time
   useEffect(() => {
     const driverMap = new Map<string, any>();
-
-    // Pre-populate with previous driver list to prevent count flickering (e.g. 2 -> 105)
-    allDriversRef.current.forEach(d => {
-      const p = String(d.phone || d.phoneNumber || d.id || '').replace(/\D/g, '').trim();
-      if (p && p.length === 11) {
-        driverMap.set(p, d);
-      }
-    });
 
     const now = new Date();
     const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
@@ -891,46 +961,67 @@ export default function AdminPanel({
           }
         }
       }
-      if (phone === '15509601222') {
-        return '永久有效';
-      }
       return '待开通';
     };
+
+    const activeRemoved = new Set([
+      ...Array.from(getRemovedSquadSet()),
+      ...(removedSquadPhones || []).map((p: any) => String(p || '').replace(/\D/g, '').trim()),
+      ...REMOVED_GENERIC_DRIVER_PHONES.map((p: any) => String(p || '').replace(/\D/g, '').trim())
+    ].filter(Boolean));
+    activeRemoved.delete('15509601222');
+
+    const squadPhoneSet = new Set<string>();
+    squadPhoneSet.add('15509601222');
 
     // 1. Process squad_members
     squadMembersList.forEach((m: any) => {
       const rawPhone = String(m.phone || m.phoneNumber || m.id || '').trim();
       const phone = rawPhone.replace(/\D/g, '');
       if (!phone || phone.length < 11) return;
+      if (activeRemoved.has(phone)) return;
+      squadPhoneSet.add(phone);
       const name = resolveDriverRealName(phone, m.name || m.driverName || m.applicantName || `司机${phone.slice(-4)}`);
       const vExpiry = resolveVip50(phone, m.vipExpiry);
       driverMap.set(phone, {
+        ...m,
         id: phone,
         phone,
         phoneNumber: phone,
         driverName: name,
         name: name,
-        role: m.role || m.userRole || '普通司机',
-        userRole: m.role || m.userRole || '普通司机',
-        status: m.status || '已通过',
+        role: m.role || m.userRole || (phone === '15509601222' ? '开发者司机' : '普通司机'),
+        userRole: m.role || m.userRole || (phone === '15509601222' ? '开发者司机' : '普通司机'),
+        status: '已通过',
+        approvalStatus: '已通过',
+        is_squad_member: 1,
+        inSquad: true,
+        isSquadMember: true,
+        collection: 'squad_members',
         city: m.city || '银川市',
         vipExpiry: vExpiry,
         isOnline: Boolean(m.isOnline),
         onlineOrdersEnabled: Boolean(m.onlineOrdersEnabled !== false),
         isBanned: Boolean(m.isBanned),
-        updatedAt: m.updatedAt || m.lastUpdatedTime || new Date().toISOString(),
-        ...m
+        updatedAt: m.updatedAt || m.lastUpdatedTime || new Date().toISOString()
       });
     });
 
-    // 2. Process squad_applications
+    // 2. Process squad_applications (Only genuine user applications)
     squadAppsList.forEach((a: any) => {
       const rawPhone = String(a.phone || a.phoneNumber || a.id || '').trim();
       const phone = rawPhone.replace(/\D/g, '');
       if (!phone || phone.length < 11) return;
+      if (activeRemoved.has(phone)) return;
       const existing = driverMap.get(phone) || {};
       const name = resolveDriverRealName(phone, a.name || a.applicantName || a.driverName || existing.name || `司机${phone.slice(-4)}`);
       const vExpiry = resolveVip50(phone, a.vipExpiry, existing.vipExpiry);
+      const isApprovedInSquad = (squadPhoneSet.has(phone) || phone === '15509601222') && !activeRemoved.has(phone);
+      const rawSt = String(a.status || a.approvalStatus || '').trim();
+      const resolvedStatus = isApprovedInSquad 
+        ? '已通过' 
+        : (['待审核', 'pending', '审核中'].includes(rawSt) ? '待审核' : (rawSt === '已拒绝' ? '已拒绝' : '未加入小队'));
+
       driverMap.set(phone, {
         ...existing,
         ...a,
@@ -939,84 +1030,46 @@ export default function AdminPanel({
         phoneNumber: phone,
         driverName: name,
         name: name,
-        role: a.role || a.userRole || existing.role || '普通司机',
-        userRole: a.role || a.userRole || existing.userRole || '普通司机',
-        status: a.status || existing.status || '已通过',
+        role: existing.role || a.role || a.userRole || '普通司机',
+        userRole: existing.userRole || a.role || a.userRole || '普通司机',
+        status: resolvedStatus,
+        approvalStatus: resolvedStatus,
+        is_squad_member: isApprovedInSquad ? 1 : 0,
+        inSquad: isApprovedInSquad,
+        isSquadMember: isApprovedInSquad,
+        collection: isApprovedInSquad ? 'squad_members' : 'squad_applications',
         city: a.city || existing.city || '银川市',
         vipExpiry: vExpiry,
         isOnline: Boolean(existing.isOnline),
         onlineOrdersEnabled: Boolean(existing.onlineOrdersEnabled !== false),
         isBanned: Boolean(existing.isBanned),
         updatedAt: a.updatedAt || existing.updatedAt || new Date().toISOString()
-      });
-    });
-
-    // 3. Process online_applications
-    applications.forEach((a: any) => {
-      const rawPhone = String(a.phone || a.phoneNumber || a.id || '').trim();
-      const phone = rawPhone.replace(/\D/g, '');
-      if (!phone || phone.length < 11) return;
-      const existing = driverMap.get(phone) || {};
-      const name = resolveDriverRealName(phone, a.driverName || a.name || a.applicantName || existing.name || `司机${phone.slice(-4)}`);
-      const vExpiry = resolveVip50(phone, a.vipExpiry, existing.vipExpiry);
-      driverMap.set(phone, {
-        ...existing,
-        ...a,
-        id: phone,
-        phone,
-        phoneNumber: phone,
-        driverName: name,
-        name: name,
-        role: a.role || a.userRole || existing.role || '普通司机',
-        userRole: a.role || a.userRole || existing.userRole || '普通司机',
-        status: a.status === 'approved' ? '已通过' : (a.status || existing.status || '已通过'),
-        city: a.city || existing.city || '银川市',
-        vipExpiry: vExpiry,
-        isOnline: Boolean(existing.isOnline),
-        onlineOrdersEnabled: Boolean(existing.onlineOrdersEnabled !== false),
-        isBanned: Boolean(existing.isBanned),
-        updatedAt: a.updatedAt || existing.updatedAt || new Date().toISOString()
-      });
-    });
-
-    // 4. Process team_members
-    teamMembers.forEach((tm: any) => {
-      const rawPhone = String(tm.phone || tm.phoneNumber || tm.id || '').trim();
-      const phone = rawPhone.replace(/\D/g, '');
-      if (!phone || phone.length < 11) return;
-      const existing = driverMap.get(phone) || {};
-      const name = resolveDriverRealName(phone, tm.name || tm.driverName || existing.name || `司机${phone.slice(-4)}`);
-      const vExpiry = resolveVip50(phone, tm.vipExpiry, existing.vipExpiry);
-      driverMap.set(phone, {
-        ...existing,
-        ...tm,
-        id: phone,
-        phone,
-        phoneNumber: phone,
-        driverName: name,
-        name: name,
-        role: tm.role || tm.userRole || existing.role || '普通司机',
-        userRole: tm.role || tm.userRole || existing.userRole || '普通司机',
-        status: tm.status || existing.status || '已通过',
-        city: tm.city || existing.city || '银川市',
-        vipExpiry: vExpiry,
-        isOnline: Boolean(existing.isOnline),
-        onlineOrdersEnabled: Boolean(existing.onlineOrdersEnabled !== false),
-        isBanned: Boolean(existing.isBanned),
-        updatedAt: tm.updatedAt || existing.updatedAt || new Date().toISOString()
       });
     });
 
     // 5. Process driver_users (overrides authoritative settings)
     driverUsersList.forEach((du: any) => {
       const rawPhone = String(du.phone || du.phoneNumber || du.id || '').trim();
+      if (rawPhone.toUpperCase().endsWith('A') || du.isMerchant || du.accountType === 'merchant') return;
       const phone = rawPhone.replace(/\D/g, '');
       if (!phone || phone.length < 11) return;
+      const rawName = String(du.driverName || du.name || '').trim();
+      if (isGenericDriverName(rawName, phone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[phone]) return;
       const existing = driverMap.get(phone) || {};
-      const name = resolveDriverRealName(phone, du.driverName || du.name || existing.driverName || `司机${phone.slice(-4)}`);
+      const name = resolveDriverRealName(phone, rawName || existing.driverName || `司机${phone.slice(-4)}`);
       const vExpiry = (du.vipExpiry !== undefined && du.vipExpiry !== '')
         ? du.vipExpiry
         : resolveVip50(phone, existing.vipExpiry);
+
+      const isRemoved = activeRemoved.has(phone);
+      const isActuallyInSquad = (squadPhoneSet.has(phone) || phone === '15509601222') && !isRemoved;
+
+      const finalStatus = isRemoved 
+        ? '未加入小队' 
+        : (isActuallyInSquad ? '已通过' : (du.status === '已通过' ? '未加入小队' : (du.status || '未加入小队')));
+
+      const finalIsSquad = isActuallyInSquad ? 1 : 0;
+
       driverMap.set(phone, {
         ...existing,
         ...du,
@@ -1027,9 +1080,14 @@ export default function AdminPanel({
         name: name,
         city: du.city || existing.city || '银川市',
         vipExpiry: vExpiry,
-        role: du.role || du.userRole || existing.role || '普通司机',
-        userRole: du.role || du.userRole || existing.userRole || '普通司机',
-        status: du.status || existing.status || '已通过',
+        role: du.role || du.userRole || existing.role || (phone === '15509601222' ? '开发者司机' : '普通司机'),
+        userRole: du.role || du.userRole || existing.userRole || (phone === '15509601222' ? '开发者司机' : '普通司机'),
+        status: finalStatus,
+        approvalStatus: finalStatus,
+        is_squad_member: finalIsSquad,
+        inSquad: isActuallyInSquad,
+        isSquadMember: isActuallyInSquad,
+        collection: isActuallyInSquad ? 'squad_members' : 'driver_users',
         isOnline: Boolean(du.isOnline),
         onlineOrdersEnabled: Boolean(du.onlineOrdersEnabled !== false),
         isBanned: Boolean(du.isBanned),
@@ -1037,7 +1095,81 @@ export default function AdminPanel({
       });
     });
 
-    // 6. Ensure master developer 15509601222 always exists
+    // 开发者 15509601222 始终常驻
+    if (!driverMap.has('15509601222')) {
+      driverMap.set('15509601222', {
+        id: '15509601222',
+        phone: '15509601222',
+        phoneNumber: '15509601222',
+        driverName: '吴彦祖',
+        name: '吴彦祖',
+        role: '开发者司机',
+        userRole: '开发者司机',
+        status: '已通过',
+        is_squad_member: 1,
+        collection: 'squad_members',
+        city: '银川市',
+        vipExpiry: '2026-11-24',
+        isOnline: true,
+        onlineOrdersEnabled: true
+      });
+    }
+
+    // 6. Process NON_SQUAD_DRIVERS (Guaranteed all 30 non-squad drivers permanently in isolation area)
+    NON_SQUAD_DRIVERS.forEach(ns => {
+      const existing = driverMap.get(ns.phone) || {};
+      driverMap.set(ns.phone, {
+        ...existing,
+        id: ns.phone,
+        phone: ns.phone,
+        phoneNumber: ns.phone,
+        driverName: ns.name,
+        name: ns.name,
+        role: '非小队成员',
+        userRole: '非小队成员',
+        status: existing.status && existing.status !== '已通过' ? existing.status : (ns.status || '未加入小队'),
+        is_squad_member: 0,
+        isSquadMember: false,
+        city: existing.city || '银川市',
+        vipExpiry: existing.vipExpiry || '待开通',
+        isOnline: Boolean(existing.isOnline),
+        onlineOrdersEnabled: false,
+        isBanned: Boolean(existing.isBanned),
+        rejectReason: ns.reason || '',
+        updatedAt: existing.updatedAt || new Date().toISOString()
+      });
+    });
+
+    // 7. Process merchant_accounts (Phone ending strictly with 'A', e.g. 15509601222A -> 商户15509601222A)
+    merchantAccountsList.forEach((ma: any) => {
+      const fullPhone = String(ma.phone || ma.phoneNumber || ma.id || '').trim();
+      if (!fullPhone || !fullPhone.toUpperCase().endsWith('A') || fullPhone.includes('18695161718')) return; // 彻底取消 18695161718 商户显示
+      const rawNum = fullPhone.replace(/\D/g, '');
+      const merchantDisplayName = ma.name && ma.name !== '商户、商家' ? ma.name : `商户${fullPhone}`;
+      driverMap.set(fullPhone, {
+        id: fullPhone,
+        phone: fullPhone,
+        phoneNumber: fullPhone,
+        rawPhone: rawNum,
+        driverName: merchantDisplayName,
+        name: merchantDisplayName,
+        accountType: 'merchant',
+        isMerchant: true,
+        is_squad_member: 0,
+        status: '商户、商家',
+        role: '商户、商家',
+        userRole: '商户、商家',
+        city: ma.city || '银川市',
+        vipExpiry: ma.vipExpiry || '永久商户',
+        isOnline: false,
+        onlineOrdersEnabled: false,
+        isBanned: Boolean(ma.isBanned),
+        updatedAt: ma.updatedAt || ma.registeredAt || new Date().toISOString(),
+        ...ma
+      });
+    });
+
+    // 7. Ensure master developer 15509601222 always exists as official squad developer
     const devPhone = '15509601222';
     const existingDev = driverMap.get(devPhone) || {};
     driverMap.set(devPhone, {
@@ -1047,13 +1179,17 @@ export default function AdminPanel({
       phoneNumber: devPhone,
       driverName: '吴彦祖',
       name: '吴彦祖',
-      role: '开发者',
-      userRole: '开发者',
+      role: '开发者司机',
+      userRole: '开发者司机',
       status: '已通过',
+      is_squad_member: 1,
+      inSquad: true,
+      isSquadMember: true,
+      collection: 'squad_members',
       city: existingDev.city || '银川市',
       vipExpiry: (existingDev.vipExpiry !== undefined && existingDev.vipExpiry !== null && existingDev.vipExpiry !== '')
         ? existingDev.vipExpiry
-        : '永久有效',
+        : '2099-12-31',
       isOnline: Boolean(existingDev.isOnline),
       onlineOrdersEnabled: Boolean(existingDev.onlineOrdersEnabled !== false),
       isBanned: false
@@ -1071,7 +1207,7 @@ export default function AdminPanel({
     } catch (_) {}
 
     setAllDrivers(unifiedList);
-  }, [driverUsersList, squadMembersList, squadAppsList, applications, teamMembers]);
+  }, [driverUsersList, squadMembersList, squadAppsList, merchantAccountsList, applications, teamMembers, removedSquadPhones]);
 
   // Subscribe to system messages
   useEffect(() => {
@@ -1254,8 +1390,60 @@ export default function AdminPanel({
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const list: any[] = [];
       snapshot.forEach((docSnap) => {
-        list.push({ id: docSnap.id, ...docSnap.data() });
+        const itemData = docSnap.data() || {};
+        const rawPhone = String(itemData.phone || itemData.phoneNumber || docSnap.id || '').trim();
+        const p = rawPhone.replace(/\D/g, '');
+        if (rawPhone.toUpperCase().endsWith('A') || itemData.isMerchant || itemData.accountType === 'merchant') return;
+        const isLegacyDeleted = ['13895336277', '13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '15509601223', '15555556666', '18695161718', '14709696333', '15209678783', '15378921387', '13995071199', '13995388888', '15121888888', '15121904440', '15295188888'].includes(p);
+        if (p === '15509601222') {
+          list.push({
+            ...itemData,
+            id: '15509601222',
+            phone: '15509601222',
+            phoneNumber: '15509601222',
+            driverName: '吴彦祖',
+            name: '吴彦祖',
+            realName: '吴彦祖',
+            role: '开发者司机',
+            userRole: '开发者司机',
+            status: 'approved',
+            approvalStatus: '已开通',
+            city: '银川市',
+            vipExpiry: '2099-12-31',
+            onlineOrdersEnabled: true
+          });
+        } else if (p && p.length === 11 && !isLegacyDeleted && !rawPhone.startsWith('司机') && itemData.status === 'pending') {
+          list.push({ id: docSnap.id, ...itemData });
+        }
       });
+
+      // Ensure master developer 15509601222 always exists as approved developer in online_applications
+      if (!list.some(a => String(a.phone || a.id).replace(/\D/g, '').trim() === '15509601222')) {
+        list.push({
+          id: '15509601222',
+          phone: '15509601222',
+          phoneNumber: '15509601222',
+          driverName: '吴彦祖',
+          name: '吴彦祖',
+          realName: '吴彦祖',
+          role: '开发者司机',
+          userRole: '开发者司机',
+          status: 'approved',
+          approvalStatus: '已开通',
+          city: '银川市',
+          vipExpiry: '2099-12-31',
+          onlineOrdersEnabled: true,
+          emergencyContact: '13895000000',
+          drivingYears: 10,
+          idCardFront: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80',
+          idCardBack: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
+          driverLicenseFront: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
+          driverLicenseBack: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+          createdAt: '2026-10-06T00:00:00.000Z',
+          updatedAt: '2026-10-06T00:00:00.000Z'
+        });
+      }
+
       list.sort((a, b) => {
         if (a.status === 'pending' && b.status !== 'pending') return -1;
         if (a.status !== 'pending' && b.status === 'pending') return 1;
@@ -1555,6 +1743,9 @@ export default function AdminPanel({
         localStorage.setItem(settingsKey, JSON.stringify({ vipExpiry: finalExpiry }));
       }
 
+      localStorage.setItem(`dd_vip_expiry_${cleanPhone}`, finalExpiry);
+      localStorage.setItem(`dd_vip_expiry_time_${cleanPhone}`, Date.now().toString());
+
       const curUserPhone = localStorage.getItem('dd_user_phone');
       if (curUserPhone && curUserPhone.replace(/\D/g, '').trim() === cleanPhone) {
         const curSettings = localStorage.getItem('dd_settings');
@@ -1583,14 +1774,6 @@ export default function AdminPanel({
         const parsed = JSON.parse(cachedSq);
         parsed.vipExpiry = finalExpiry;
         localStorage.setItem(mockSqKey, JSON.stringify(parsed));
-      }
-
-      const mockAppKey = `mock_db_online_applications_${cleanPhone}`;
-      const cachedApp = localStorage.getItem(mockAppKey);
-      if (cachedApp) {
-        const parsed = JSON.parse(cachedApp);
-        parsed.vipExpiry = finalExpiry;
-        localStorage.setItem(mockAppKey, JSON.stringify(parsed));
       }
 
       const savedSquad = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
@@ -1628,7 +1811,7 @@ export default function AdminPanel({
     triggerToast('🎉 司机账号会员有效期已成功实时同步更新！');
 
     try {
-      // 4. Direct server proxy call to ensure atomic persistence across all 4 collections on server
+      // 4. Direct server proxy call to ensure atomic persistence across all 3 collections on server
       const baseUrl = getBaseApiUrl();
 
       const serverPromise = fetch(`${baseUrl}/api/admin/update-driver-expiry`, {
@@ -1637,9 +1820,9 @@ export default function AdminPanel({
         body: JSON.stringify({ phone: cleanPhone, vipExpiry: finalExpiry })
       }).catch(e => console.warn('server update-driver-expiry error:', e));
 
-      // ALWAYS execute direct REST setDoc calls for ALL 4 COLLECTIONS on active server
+      // ALWAYS execute direct REST setDoc calls for ALL 3 COLLECTIONS on active server
       const baotaSetPromises = Promise.allSettled([
-        'driver_users', 'squad_members', 'online_applications', 'squad_applications'
+        'driver_users', 'squad_members', 'squad_applications'
       ].map(col =>
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
@@ -1662,10 +1845,6 @@ export default function AdminPanel({
           updatedAt: new Date().toISOString()
         }, { merge: true }),
         setDoc(doc(db, 'squad_members', cleanPhone), {
-          vipExpiry: finalExpiry,
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-        setDoc(doc(db, 'online_applications', cleanPhone), {
           vipExpiry: finalExpiry,
           updatedAt: new Date().toISOString()
         }, { merge: true }),
@@ -1891,6 +2070,10 @@ export default function AdminPanel({
         return d;
       }));
 
+      try {
+        window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { removedPhone: cleanPhone, removedList: savedRemoved } }));
+      } catch (_) {}
+
       triggerToast(`✓ 已成功将 ${cleanPhone} 转为【非小队内成员】（会员有效期 ${existingVip} 已保留）`);
     } catch (err: any) {
       alert('转换非小队成员失败：' + err.message);
@@ -1982,6 +2165,10 @@ export default function AdminPanel({
         }
         return d;
       }));
+
+      try {
+        window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { addedPhone: cleanPhone, removedList: savedRemoved } }));
+      } catch (_) {}
 
       triggerToast(`✓ 已成功将 ${cleanPhone} 转为【小队内正式成员】（名字：${realName}，会员有效期：${existingVip}）`);
     } catch (err: any) {
@@ -2456,7 +2643,7 @@ export default function AdminPanel({
         for (const url of candidateUrls) {
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 6000);
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
             const res = await fetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -2522,7 +2709,7 @@ export default function AdminPanel({
         for (const url of candidateUrls) {
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 6000);
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
             const res = await fetch(url, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -4412,7 +4599,25 @@ export default function AdminPanel({
                         <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
                           driverTabCategory === 'nonsquad' ? 'bg-slate-950/25 text-slate-950 font-black' : 'bg-slate-800 text-amber-400'
                         }`}>
-                          {allDrivers.filter(drv => !isOfficialSquadMember(drv)).length}人
+                          {allDrivers.filter(drv => !isOfficialSquadMember(drv) && !isMerchantAccount(drv)).length}人
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDriverTabCategory('merchant')}
+                        className={`px-3 py-1.5 rounded-lg font-black text-[11px] transition-all flex items-center gap-1.5 cursor-pointer ${
+                          driverTabCategory === 'merchant'
+                            ? 'bg-gradient-to-r from-purple-500 to-indigo-500 text-white shadow-xs'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <Store className="w-3.5 h-3.5" />
+                        <span>🏬 商户、商家</span>
+                        <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                          driverTabCategory === 'merchant' ? 'bg-slate-950/25 text-white font-black' : 'bg-slate-800 text-purple-300'
+                        }`}>
+                          {allDrivers.filter(drv => isMerchantAccount(drv)).length}人
                         </span>
                       </button>
 
@@ -4448,8 +4653,9 @@ export default function AdminPanel({
                   {/* Context Subtitle & Internal Search */}
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pt-1">
                     <p className="text-[10px] text-slate-500 leading-normal font-sans">
-                      {driverTabCategory === 'squad' && '✨ 严格依据阿里云 squad_members 数据库筛选，仅展示拥有真实姓名且已审核通过的小队正式成员（如：吴彦祖、李扬、王贤亮、禹全江、王灵、赵文举、于涛、张瑞、周杰伦、李金锋等）。'}
-                      {driverTabCategory === 'nonsquad' && '🔒 未设置真实名字、未加入小队的注册账号隔离区（如：司机0116、司机6058、司机1223、司机1958等），已物理隔离不与小队混杂。'}
+                      {driverTabCategory === 'squad' && '✨ 严格依据阿里云 squad_members 数据库筛选，仅展示拥有真实姓名且已审核通过的小队正式成员（常驻：开发者司机 15509601222）。'}
+                      {driverTabCategory === 'nonsquad' && '🔒 未加入小队的注册账号隔离区，已物理隔离不与小队混杂。'}
+                      {driverTabCategory === 'merchant' && '🏬 包含通过商户代叫（手机网页版）注册登录的商户与商家专属账号，独立标识不作为小队成员。'}
                       {driverTabCategory === 'all' && '👥 包含云端已索引的全体注册账号一览，点击任意行可载入左侧进行编辑。'}
                     </p>
 
@@ -4480,7 +4686,7 @@ export default function AdminPanel({
                     <table className="w-full text-left text-[11px] font-sans">
                       <thead>
                         <tr className="border-b border-slate-900 text-slate-500 text-[9px] uppercase font-bold tracking-wider">
-                          <th className="py-2 px-2">司机账号</th>
+                          <th className="py-2 px-2">司机/商户账号</th>
                           <th className="py-2 px-2">账号类型</th>
                           <th className="py-2 px-2">听单城市</th>
                           <th className="py-2 px-2">会员有效期</th>
@@ -4493,8 +4699,10 @@ export default function AdminPanel({
                         {allDrivers
                           .filter(drv => {
                             const isSquad = isOfficialSquadMember(drv);
+                            const isMerchant = isMerchantAccount(drv);
                             if (driverTabCategory === 'squad' && !isSquad) return false;
-                            if (driverTabCategory === 'nonsquad' && isSquad) return false;
+                            if (driverTabCategory === 'nonsquad' && (isSquad || isMerchant)) return false;
+                            if (driverTabCategory === 'merchant' && !isMerchant) return false;
 
                             const phoneStr = drv && drv.phoneNumber ? String(drv.phoneNumber) : '';
                             const nameStr = drv && drv.driverName ? String(drv.driverName) : '';
@@ -4506,6 +4714,7 @@ export default function AdminPanel({
                             const drvPhone = drv.phoneNumber || '';
                             const isSelected = targetPhone.trim() === drvPhone;
                             const isSquadMember = isOfficialSquadMember(drv);
+                            const isMerchant = isMerchantAccount(drv);
                             return (
                               <tr
                                 key={drv.id}
@@ -4526,7 +4735,12 @@ export default function AdminPanel({
                                   </div>
                                 </td>
                                 <td className="py-2.5 px-2">
-                                  {isSquadMember ? (
+                                  {isMerchant ? (
+                                    <span className="text-purple-400 bg-purple-500/10 border border-purple-500/30 font-black px-1.5 py-0.5 rounded text-[9px] inline-flex items-center gap-1 leading-none">
+                                      <Store className="w-2.5 h-2.5 text-purple-400" />
+                                      商户、商家
+                                    </span>
+                                  ) : isSquadMember ? (
                                     <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 font-black px-1.5 py-0.5 rounded text-[9px] inline-flex items-center gap-1 leading-none">
                                       <ShieldCheck className="w-2.5 h-2.5 text-emerald-400" />
                                       小队正式成员

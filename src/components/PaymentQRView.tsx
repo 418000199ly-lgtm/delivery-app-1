@@ -6,7 +6,7 @@ import OrderDetailModal from './OrderDetailModal';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
 import { getBaseApiUrl } from '../lib/dbProxy';
-import { regenerateQRCode } from '../utils/qrCodeHelper';
+import { regenerateQRCode, formatQrUrl } from '../utils/qrCodeHelper';
 
 function cleanAndRegenerate(dataUrl: string, type: 'wechat' | 'alipay'): Promise<string> {
   return regenerateQRCode(dataUrl, type);
@@ -177,11 +177,8 @@ export default function PaymentQRView({
                       const parsed = JSON.parse(cachedSet);
                       if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return parsed.wechatQrCode.trim();
                     }
-                    const localQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) || localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr'))?.trim();
+                    const localQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) || localStorage.getItem('dd_user_wechat_qr'))?.trim();
                     if (localQr) return localQr;
-                    if (userP && userP.length === 11) {
-                      return `/uploads/qrcodes/${userP}.png`;
-                    }
                   } catch (_) {}
                   return '';
                 })();
@@ -202,7 +199,7 @@ export default function PaymentQRView({
                 if (isWechat) {
                   return driverOwnWechat ? (
                     <img 
-                      src={driverOwnWechat} 
+                      src={formatQrUrl(driverOwnWechat)} 
                       alt="微信收款码" 
                       className="w-full h-full object-contain rounded-xl p-0.5" 
                     />
@@ -220,7 +217,7 @@ export default function PaymentQRView({
                 } else {
                   return driverOwnAlipay ? (
                     <img 
-                      src={driverOwnAlipay} 
+                      src={formatQrUrl(driverOwnAlipay)} 
                       alt="支付宝收款码" 
                       className="w-full h-full object-contain rounded-xl p-0.5" 
                     />

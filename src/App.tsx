@@ -388,7 +388,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   // Version management states at the root level of the app
   const [sysVersion, setSysVersion] = useState<string>(() => {
     try {
-      return localStorage.getItem('app_version') || 'V2.0';
+      const v = localStorage.getItem('app_version');
+      if (!v || v === 'V1.0' || v.startsWith('V1.0')) {
+        localStorage.setItem('app_version', 'V2.0');
+        return 'V2.0';
+      }
+      return v;
     } catch (_) {
       return 'V2.0';
     }
@@ -403,13 +408,32 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     initAudioUnlock();
   }, []);
 
+  // Current software app version
+  const CURRENT_CLIENT_APP_VERSION = 'V2.0';
+
+  const isClientNeedsUpgrade = (clientVer: string, targetVer: string, force: boolean) => {
+    if (!force) return false;
+    // If the client is V2.0 or higher and target is V2.0, no upgrade required
+    if (clientVer === 'V2.0' && (!targetVer || targetVer === 'V2.0' || targetVer === 'V1.0')) {
+      return false;
+    }
+    // If client is V1.0 and target is V2.0+, upgrade is required
+    if (clientVer === 'V1.0' && targetVer && targetVer !== 'V1.0') {
+      return true;
+    }
+    return false;
+  };
+
   // Real-time listen for system version information
   useEffect(() => {
     const versionDocRef = doc(db, 'config', 'system_version');
     const unsubscribe = onSnapshot(versionDocRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        const v = data.version || 'V2.0';
+        let v = data.version || 'V2.0';
+        if (!v || v === 'V1.0' || v.startsWith('V1.0')) {
+          v = 'V2.0';
+        }
         setSysVersion(v);
         try { localStorage.setItem('app_version', v); } catch (_) {}
         setSysForceUpgrade(!!data.forceUpgrade);
@@ -424,16 +448,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   // Sync upgrade modal & online status when cloud version settings change in real-time
   useEffect(() => {
-    if (sysForceUpgrade) {
+    const requiresUpgrade = isClientNeedsUpgrade(CURRENT_CLIENT_APP_VERSION, sysVersion, sysForceUpgrade);
+    if (requiresUpgrade) {
       if (isOnline) {
         setIsOnline(false);
         setShowUpgradeModal(true);
       }
     } else {
-      // If force upgrade is canceled/downgraded, dismiss the upgrade modal in real-time.
+      // If client is already V2.0 or force upgrade is off, dismiss the upgrade modal in real-time.
       setShowUpgradeModal(false);
     }
-  }, [sysForceUpgrade, isOnline]);
+  }, [sysForceUpgrade, sysVersion, isOnline]);
 
   useEffect(() => {
     const q = collection(db, 'team_members');
@@ -447,6 +472,56 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       console.error("Error subscribing to team members in App:", error);
     });
     return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const clearStaleLocalCaches = () => {
+      try {
+        console.log("Wiping stale local storage caches of non-developer drivers.");
+        
+        // Wipe mock_db_ keys
+        const prefixes = [
+          'mock_db_squad_members_',
+          'mock_db_squad_applications_',
+          'mock_db_driver_users_',
+          'mock_db_online_applications_',
+          'mock_db_driver_locations_',
+          'mock_db_merchant_users_',
+          'mock_db_team_members_'
+        ];
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key) {
+            for (const prefix of prefixes) {
+              if (key.startsWith(prefix)) {
+                const docId = key.substring(prefix.length);
+                if (docId !== '15509601222') {
+                  localStorage.removeItem(key);
+                }
+                break;
+              }
+            }
+          }
+        }
+
+        // Reset dd_ keys
+        localStorage.setItem('dd_applicants_v2', '[]');
+        localStorage.setItem('dd_squad_applications_v2', '[]');
+        localStorage.setItem('dd_squad_members_v2', JSON.stringify([
+          { id: '15509601222', phone: '15509601222', phoneNumber: '15509601222', driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+        ]));
+        localStorage.setItem('cached_unified_drivers', JSON.stringify([
+          { id: '15509601222', phone: '15509601222', phoneNumber: '15509601222', driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+        ]));
+        localStorage.setItem('dd_merchant_users_v2', '[]');
+        localStorage.setItem('dd_team_members', '[]');
+        
+        // Dispatch update events so active components reload state
+        window.dispatchEvent(new CustomEvent('squad_members_updated'));
+        window.dispatchEvent(new CustomEvent('squad_applicants_updated'));
+      } catch (_) {}
+    };
+    clearStaleLocalCaches();
   }, []);
 
   const [isInSquad, setIsInSquad] = useState(false);
@@ -535,19 +610,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             localStorage.setItem('dd_user_role', r);
           } catch (_) {}
         }
-        if (d?.vipExpiry !== undefined) {
-          setSettings(prev => {
-            if (prev.vipExpiry !== d.vipExpiry) {
-              const updated = { ...prev, vipExpiry: d.vipExpiry };
-              try {
-                safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
-                safeSetItem('dd_settings', JSON.stringify(updated));
-              } catch (_) {}
-              return updated;
-            }
-            return prev;
-          });
-        }
       }
     }, () => {});
 
@@ -560,12 +622,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
       if ((isBatch || cleanDetailPhone === cleanUserPhone) && detail.vipExpiry !== undefined) {
         if (cleanUserPhone !== '15509601222' || !isBatch) {
+          const freshVip = String(detail.vipExpiry).trim();
           setSettings(prev => {
-            if (prev.vipExpiry !== detail.vipExpiry) {
-              const updated = { ...prev, vipExpiry: detail.vipExpiry };
+            if (prev.vipExpiry !== freshVip) {
+              const updated = { ...prev, vipExpiry: freshVip };
               try {
                 if (cleanUserPhone) {
                   safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+                  safeSetItem(`dd_vip_expiry_${cleanUserPhone}`, freshVip);
+                  safeSetItem(`dd_vip_expiry_time_${cleanUserPhone}`, Date.now().toString());
                 }
                 safeSetItem('dd_settings', JSON.stringify(updated));
               } catch (_) {}
@@ -585,11 +650,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const cleanDocId = String(detail.id || '').replace(/\D/g, '').trim();
       const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
       if (detail.col === 'driver_users' && cleanDocId === cleanUserPhone && detail.data?.vipExpiry !== undefined) {
+        const freshVip = String(detail.data.vipExpiry).trim();
         setSettings(prev => {
-          if (prev.vipExpiry !== detail.data.vipExpiry) {
-            const updated = { ...prev, vipExpiry: detail.data.vipExpiry };
+          if (prev.vipExpiry !== freshVip) {
+            const updated = { ...prev, vipExpiry: freshVip };
             try {
               safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+              safeSetItem(`dd_vip_expiry_${cleanUserPhone}`, freshVip);
+              safeSetItem(`dd_vip_expiry_time_${cleanUserPhone}`, Date.now().toString());
               safeSetItem('dd_settings', JSON.stringify(updated));
             } catch (_) {}
             return updated;
@@ -900,17 +968,25 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const uData = uJson.data;
                 if (uData?.vipExpiry !== undefined && uData?.vipExpiry !== null) {
                   const freshVip = String(uData.vipExpiry).trim();
-                  setSettings(prev => {
-                    if (prev.vipExpiry !== freshVip) {
-                      const updated = { ...prev, vipExpiry: freshVip };
-                      try {
-                        localStorage.setItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
-                        localStorage.setItem('dd_settings', JSON.stringify(updated));
-                      } catch (_) {}
-                      return updated;
-                    }
-                    return prev;
-                  });
+                  const lastLocalTime = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_time_${userPhone}`) : null;
+                  const isRecentLocalUpdate = lastLocalTime && (Date.now() - Number(lastLocalTime)) < 600000; // 10 min
+                  const localSavedVip = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_${userPhone}`) : null;
+
+                  if (isRecentLocalUpdate && localSavedVip && localSavedVip !== freshVip) {
+                    // Preserve recent local authoritative update
+                  } else {
+                    setSettings(prev => {
+                      if (prev.vipExpiry !== freshVip) {
+                        const updated = { ...prev, vipExpiry: freshVip };
+                        try {
+                          safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                          safeSetItem('dd_settings', JSON.stringify(updated));
+                        } catch (_) {}
+                        return updated;
+                      }
+                      return prev;
+                    });
+                  }
                 }
 
                 // Realtime role synchronization from driver_users
@@ -1567,9 +1643,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             let changed = false;
 
             const incomingVip = data.vipExpiry;
-            if (incomingVip !== undefined && incomingVip !== null && prev.vipExpiry !== String(incomingVip).trim()) {
-              nextSettings.vipExpiry = String(incomingVip).trim();
-              changed = true;
+            if (incomingVip !== undefined && incomingVip !== null) {
+              const freshVip = String(incomingVip).trim();
+              const lastLocalTime = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_time_${userPhone}`) : null;
+              const isRecentLocalUpdate = lastLocalTime && (Date.now() - Number(lastLocalTime)) < 600000; // 10 min window
+              const localSavedVip = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_${userPhone}`) : null;
+
+              if (isRecentLocalUpdate && localSavedVip && localSavedVip !== freshVip) {
+                // Ignore stale background snapshot when local authoritative update exists
+              } else if (prev.vipExpiry !== freshVip) {
+                nextSettings.vipExpiry = freshVip;
+                changed = true;
+              }
             }
 
             const incomingAppName = data.customAppName;
@@ -1626,11 +1711,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               nextSettings.homepageColorway = data.homepageColorway;
               changed = true;
             }
-            const incomingWechatQr = data.wechatQrCode || data.qrCode || data.qrcode_url;
-            if (incomingWechatQr && typeof incomingWechatQr === 'string' && incomingWechatQr.trim() && prev.wechatQrCode !== incomingWechatQr) {
+            const isQrDeleted = typeof window !== 'undefined' && userPhone ? localStorage.getItem(`dd_qr_deleted_${userPhone}`) === 'true' : false;
+            const incomingWechatQr = data.wechatQrCode !== undefined ? (data.wechatQrCode || data.qrCode || data.qrcode_url || '') : (data.qrCode || data.qrcode_url);
+            
+            if (isQrDeleted || incomingWechatQr === '') {
+              if (prev.wechatQrCode !== '') {
+                nextSettings.wechatQrCode = '';
+                changed = true;
+                try {
+                  localStorage.removeItem(`dd_dispatch_wechat_qr_${userPhone}`);
+                  localStorage.removeItem(`dd_dispatch_fee_qr_${userPhone}`);
+                  localStorage.removeItem('dd_dispatch_wechat_qr');
+                  localStorage.removeItem('dd_user_wechat_qr');
+                  localStorage.removeItem('dd_user_wechat_clean_qr');
+                } catch (_) {}
+              }
+            } else if (incomingWechatQr && typeof incomingWechatQr === 'string' && incomingWechatQr.trim() && prev.wechatQrCode !== incomingWechatQr) {
               nextSettings.wechatQrCode = incomingWechatQr.trim();
               changed = true;
               try {
+                localStorage.removeItem(`dd_qr_deleted_${userPhone}`);
                 localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, incomingWechatQr.trim());
                 localStorage.setItem('dd_dispatch_wechat_qr', incomingWechatQr.trim());
                 localStorage.setItem('dd_user_wechat_qr', incomingWechatQr.trim());
@@ -1867,6 +1967,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   const dismissedIncomingOrderKeysRef = useRef<Set<string>>(new Set());
   const lastAlertedOrderKeyRef = useRef<string>('');
   const lastAlertedOrderTimeRef = useRef<number>(0);
+  const handledCancelledOrderKeysRef = useRef<Set<string>>(new Set());
 
   // Initialize native background notification system and register app resume listeners
   useEffect(() => {
@@ -2026,15 +2127,45 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
           setIncomingOrder(null);
           clearPendingOrderCache();
-          const { toastMsg, voiceMsg } = getCancelNotification(data);
-          if (activeOnlineOrder) {
-            const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
-            const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
-            const isMatch = (data.orderId && (data.orderId === activeId || data.orderId === activeNo)) ||
-                            (data.orderNo && (data.orderNo === activeNo || data.orderNo === activeId));
-            if (isMatch) {
-              setActiveOnlineOrder(null);
-              setCurrentTrip(null);
+
+          const cancelId = String(data.orderId || data.orderNo || data.id || '').trim();
+          const cancelKey = cancelId || `cancel_${cleanPhone}_${data.cancelTime || data.timestamp || ''}`;
+
+          // Only process and notify once per cancellation to prevent infinite loop
+          const alreadyHandled = handledCancelledOrderKeysRef.current.has(cancelKey);
+          handledCancelledOrderKeysRef.current.add(cancelKey);
+
+          // Clean up passenger_links doc immediately
+          try {
+            deleteDoc(docRef).catch(() => {});
+          } catch (_) {}
+          try {
+            const baseUrl = getBaseApiUrl();
+            fetch(`${baseUrl}/api/db/delete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: 'passenger_links', docId: cleanPhone })
+            }).catch(() => {});
+          } catch (_) {}
+
+          if (!alreadyHandled) {
+            const { toastMsg, voiceMsg } = getCancelNotification(data);
+            if (activeOnlineOrder) {
+              const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
+              const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
+              const isMatch = !cancelId || (cancelId === activeId || cancelId === activeNo);
+              if (isMatch) {
+                setActiveOnlineOrder(null);
+                setCurrentTrip(null);
+                setCurrentView('home');
+                setMobileActiveTab('app');
+                reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+                triggerToast(toastMsg);
+                try {
+                  speakText(voiceMsg);
+                } catch (_) {}
+              }
+            } else if (currentView !== 'home') {
               setCurrentView('home');
               setMobileActiveTab('app');
               reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
@@ -2043,14 +2174,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 speakText(voiceMsg);
               } catch (_) {}
             }
-          } else {
-            reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-            triggerToast(toastMsg);
           }
-          // Clean up passenger_links doc after cancellation handled
-          try {
-            deleteDoc(docRef).catch(() => {});
-          } catch (_) {}
           return;
         }
         processIncomingData(data);
@@ -2069,22 +2193,42 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
           setIncomingOrder(null);
           clearPendingOrderCache();
-          const { toastMsg, voiceMsg } = getCancelNotification(data);
-          if (activeOnlineOrder) {
-            const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
-            const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
-            const isMatch = (data.orderId && (data.orderId === activeId || data.orderId === activeNo)) ||
-                            (data.orderNo && (data.orderNo === activeNo || data.orderNo === activeId));
-            if (isMatch) {
-              setActiveOnlineOrder(null);
-              setCurrentTrip(null);
-              setCurrentView('home');
-              setMobileActiveTab('app');
-              reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-              triggerToast(toastMsg);
-              try {
-                speakText(voiceMsg);
-              } catch (_) {}
+
+          const cancelId = String(data.orderId || data.orderNo || data.id || '').trim();
+          const cancelKey = cancelId || `cancel_act_${cleanPhone}_${data.cancelTime || data.timestamp || ''}`;
+
+          const alreadyHandled = handledCancelledOrderKeysRef.current.has(cancelKey);
+          handledCancelledOrderKeysRef.current.add(cancelKey);
+
+          try {
+            deleteDoc(activeDocRef).catch(() => {});
+          } catch (_) {}
+          try {
+            const baseUrl = getBaseApiUrl();
+            fetch(`${baseUrl}/api/db/delete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ collection: 'active_orders', docId: cleanPhone })
+            }).catch(() => {});
+          } catch (_) {}
+
+          if (!alreadyHandled) {
+            const { toastMsg, voiceMsg } = getCancelNotification(data);
+            if (activeOnlineOrder) {
+              const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
+              const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
+              const isMatch = !cancelId || (cancelId === activeId || cancelId === activeNo);
+              if (isMatch) {
+                setActiveOnlineOrder(null);
+                setCurrentTrip(null);
+                setCurrentView('home');
+                setMobileActiveTab('app');
+                reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+                triggerToast(toastMsg);
+                try {
+                  speakText(voiceMsg);
+                } catch (_) {}
+              }
             }
           }
         }
@@ -2097,41 +2241,50 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
   }, [userPhone, currentView, isOnline, activeOnlineOrder]);
 
-  // Listen for real-time cancellation of driver's active online order
+  // Listen for real-time cancellation of driver's active online order or active trip
   useEffect(() => {
-    if (!activeOnlineOrder) return;
-    const activeOrderId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
-    const activeOrderNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
+    const currentOrder = activeOnlineOrder || currentTrip;
+    const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
+    if (!currentOrder && !cleanUserPhone) return;
+
     const candidateIds = Array.from(new Set([
-      activeOrderId,
-      activeOrderNo,
-      activeOnlineOrder.id,
-      activeOnlineOrder.orderId,
-      activeOnlineOrder.rawOrder?.id,
-      activeOnlineOrder.rawOrder?.orderId,
-      activeOnlineOrder.rawOrder?.orderNo
+      currentOrder?.id,
+      currentOrder?.orderId,
+      (currentOrder as any)?.orderNumber,
+      currentOrder?.orderNo,
+      currentOrder?.rawOrder?.id,
+      currentOrder?.rawOrder?.orderId,
+      currentOrder?.rawOrder?.orderNo
     ].filter(Boolean).map(x => String(x).trim())));
 
-    if (candidateIds.length === 0) return;
+    if (!currentOrder && candidateIds.length === 0) return;
 
     let isTriggered = false;
     const handleOrderCancelled = (cancelledData?: any) => {
       if (isTriggered) return;
       isTriggered = true;
+      try {
+        localStorage.removeItem('dd_latest_cancelled_order');
+        localStorage.removeItem('dd_active_incoming_order');
+        localStorage.removeItem('dd_current_trip');
+      } catch (_) {}
       setActiveOnlineOrder(null);
       setCurrentTrip(null);
+      setIncomingOrder(null);
       setCurrentView('home');
       setMobileActiveTab('app');
-      reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+      if (cleanUserPhone) {
+        reportDriverBusyStatus(cleanUserPhone, false, { currentView: 'home', isBusy: false });
+      }
       
       const reason = String(cancelledData?.cancelReason || cancelledData?.reason || '').trim();
       const by = String(cancelledData?.cancelledBy || cancelledData?.cancelledByRole || '').toLowerCase();
       let toastMsg = '⚠️ 该代叫订单已被商户取消，已为您返回首页';
       let voiceMsg = '该代叫订单已被商户取消';
       
-      if (by === 'admin' || by.includes('admin') || reason.includes('管理员') || reason.includes('后台')) {
-        toastMsg = '⚠️ 管理员取消订单，已为您返回首页';
-        voiceMsg = '管理员取消订单';
+      if (by === 'admin' || by.includes('admin') || reason.includes('管理员') || reason.includes('后台') || reason.includes('取消派单')) {
+        toastMsg = '⚠️ 管理员取消派单，已为您返回首页';
+        voiceMsg = '管理员取消派单';
       } else if (by === 'driver' || reason.includes('司机')) {
         toastMsg = '⚠️ 司机已取消订单，已为您返回首页';
         voiceMsg = '司机已取消订单';
@@ -2165,14 +2318,51 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (_) {}
     });
 
-    // 2. Event & Local storage check for local sync
+    // Also listen to driver's active_orders and passenger_links (ONLY if orderId/orderNo matches the current candidateIds!)
+    if (cleanUserPhone) {
+      try {
+        const unsubActive = onSnapshot(doc(db, 'active_orders', cleanUserPhone), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            const noticeOrderId = String(data?.orderId || data?.id || '').trim();
+            const noticeOrderNo = String(data?.orderNo || data?.orderNumber || '').trim();
+            const isMatchCurrent = candidateIds.some(cid => cid && (cid === noticeOrderId || cid === noticeOrderNo));
+            if (isMatchCurrent && (data?.isCancelled || data?.status === 'cancelled' || data?.statusCategory === '已取消')) {
+              handleOrderCancelled(data);
+            }
+          }
+        });
+        unsubs.push(unsubActive);
+      } catch (_) {}
+      try {
+        const unsubPass = onSnapshot(doc(db, 'passenger_links', cleanUserPhone), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            const noticeOrderId = String(data?.orderId || data?.id || '').trim();
+            const noticeOrderNo = String(data?.orderNo || data?.orderNumber || '').trim();
+            const isMatchCurrent = candidateIds.some(cid => cid && (cid === noticeOrderId || cid === noticeOrderNo));
+            if (isMatchCurrent && (data?.isCancelled || data?.status === 'cancelled' || data?.statusCategory === '已取消')) {
+              handleOrderCancelled(data);
+            }
+          }
+        });
+        unsubs.push(unsubPass);
+      } catch (_) {}
+    }
+
+    // 2. Event & Local storage check for local sync (strictly check orderId/orderNo)
     const checkCancellationLocal = async () => {
       try {
         const latestRaw = localStorage.getItem('dd_latest_cancelled_order');
         if (latestRaw) {
           const parsed = JSON.parse(latestRaw);
-          const isMatch = candidateIds.some(cid => cid === parsed.orderId || cid === parsed.orderNo);
+          const pId = String(parsed?.orderId || parsed?.id || '').trim();
+          const pNo = String(parsed?.orderNo || parsed?.orderNumber || '').trim();
+          const isMatch = candidateIds.some(cid => cid && (cid === pId || cid === pNo));
           if (isMatch) {
+            try {
+              localStorage.removeItem('dd_latest_cancelled_order');
+            } catch (_) {}
             handleOrderCancelled(parsed);
             return;
           }
@@ -2210,9 +2400,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const handleCustomCancelled = (e: any) => {
       if (e?.detail) {
         const d = e.detail;
-        const isMatch = candidateIds.some(cid => cid === d.orderId || cid === d.orderNo);
+        const dId = String(d?.orderId || d?.id || '').trim();
+        const dNo = String(d?.orderNo || d?.orderNumber || '').trim();
+        const isMatch = candidateIds.some(cid => cid && (cid === dId || cid === dNo));
         if (isMatch) {
-          handleOrderCancelled();
+          handleOrderCancelled(d);
         }
       }
     };
@@ -2227,7 +2419,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       window.removeEventListener('merchant_order_cancelled', handleCustomCancelled);
       window.removeEventListener('merchant_orders_updated', checkCancellationLocal);
     };
-  }, [activeOnlineOrder]);
+  }, [activeOnlineOrder, currentTrip, userPhone]);
 
   const handleAcceptIncomingOrder = async (trip: TripState) => {
     if (!userPhone) return;
@@ -2255,7 +2447,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (_) {}
     }
 
-    const currentDriverName = (settings as any)?.driverName || (settings as any)?.name || '小队司机';
+    const currentDriverName = resolveDriverRealName(cleanUserPhone, (settings as any)?.driverName || (settings as any)?.name, settings) || '小队司机';
 
     const claimUpdateData = {
       status: 'claimed',
@@ -2971,7 +3163,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const handleToggleOnline = (online: boolean) => {
     if (online) {
-      if (sysForceUpgrade) {
+      if (isClientNeedsUpgrade(CURRENT_CLIENT_APP_VERSION, sysVersion, sysForceUpgrade)) {
         setShowUpgradeModal(true);
         return;
       }
@@ -3326,6 +3518,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           userPhone={userPhone}
           userRole={userRole}
           userTeamCity={userTeamCity}
+          isOnline={isOnline}
+          driverCoords={driverCoords}
           onClose={() => setMobileActiveTab('app')}
         />
       );
@@ -3644,9 +3838,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const rawTime = Number(orderPayload.timestamp || Date.now());
                 const orderKey = orderPayload.orderId || orderPayload.id || `${orderPayload.passengerPhone || 'p'}_${rawTime}`;
                 dismissedIncomingOrderKeysRef.current.delete(orderKey);
-                // When driver explicitly claims an order from the hall in foreground,
-                // mount the overlay directly without firing background system alert or duplicate voice
-                setIncomingOrder(orderPayload);
+                // When driver explicitly claims an order from the hall, immediately accept and jump to trip planning
+                handleAcceptIncomingOrder(orderPayload);
               }}
               onOpenMerchantValetPayment={(trip) => {
                 setMerchantValetPaymentTrip(trip);
@@ -3722,6 +3915,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             userPhone={userPhone}
             userRole={userRole}
             userTeamCity={userTeamCity}
+            isOnline={isOnline}
+            driverCoords={driverCoords}
             onClose={() => {}}
           />
           {showToast && (
