@@ -557,15 +557,15 @@ export default function ReportTransferOrderModal({
           <div className="w-full h-[180px] sm:h-[200px] rounded-2xl overflow-hidden mb-3 flex items-center justify-center bg-gradient-to-b from-[#f3f3f3] to-[#f9f9f9] border border-[#e2e2e2] shadow-sm relative">
             <img 
               className="w-full h-full object-cover object-top" 
-              src={READY_DRIVER_BASE64 || readyDriverImg || VALET_CAR_BANNER_BASE64 || valetCarBannerImg || '/ready_driver.jpg'} 
+              src={VALET_CAR_BANNER_BASE64 || valetCarBannerImg || READY_DRIVER_BASE64 || readyDriverImg || '/valet_car_banner.jpg'} 
               alt="报单转单代叫司机"
               loading="eager"
               onError={(e) => {
                 const target = e.currentTarget;
                 if (valetCarBannerImg && target.src !== valetCarBannerImg) {
                   target.src = valetCarBannerImg;
-                } else if (!target.src.endsWith('ready_driver.jpg')) {
-                  target.src = '/ready_driver.jpg';
+                } else if (!target.src.endsWith('valet_car_banner.jpg')) {
+                  target.src = '/valet_car_banner.jpg';
                 }
               }}
             />

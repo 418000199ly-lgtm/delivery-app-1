@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { geocodeAddress, isValidCoords, calculateOrderDriverDistance, isDefaultYinchuanCoords } from '../utils/geocoding';
+import { geocodeAddress, geocodeAddressViaServer, isValidCoords, calculateOrderDriverDistance, calculateHaversineDistanceKm, formatDistance, isDefaultYinchuanCoords } from '../utils/geocoding';
 import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
@@ -3623,24 +3623,14 @@ export default function MobileDispatchValetOrder({
         return true;
       };
 
-      const geocodedStart = geocodeAddress(passengerAddress, passengerCoords);
-      const isCustomTypedAddress = Boolean(passengerAddress && !passengerAddress.includes('代驾商家起点') && !passengerAddress.includes('商家代叫'));
-      const isDefaultCoords = (
-        !passengerCoords ||
-        (Math.abs(passengerCoords.lat - 38.487167) < 0.0001 && Math.abs(passengerCoords.lng - 106.23091) < 0.0001) ||
-        (Math.abs(passengerCoords.lat - 38.487193) < 0.0001 && Math.abs(passengerCoords.lng - 106.230912) < 0.0001) ||
-        (Math.abs(passengerCoords.lat - 38.4830) < 0.0001 && Math.abs(passengerCoords.lng - 106.2350) < 0.0001)
-      );
-      const finalLat = (isCustomTypedAddress || isDefaultCoords || !isValidCoords(passengerCoords?.lat, passengerCoords?.lng))
-        ? geocodedStart.lat
-        : passengerCoords.lat;
-      const finalLng = (isCustomTypedAddress || isDefaultCoords || !isValidCoords(passengerCoords?.lat, passengerCoords?.lng))
-        ? geocodedStart.lng
-        : passengerCoords.lng;
+      // 1. 通过阿里云服务器解析代驾商家起点名字的真实坐标
+      const geocodedStart = await geocodeAddressViaServer(passengerAddress, passengerCoords);
+      const finalLat = geocodedStart.lat;
+      const finalLng = geocodedStart.lng;
 
       const isTransferOrder = Boolean(orderRemark && orderRemark.includes('报单转单'));
 
-      // Recalculate distance for all candidate drivers using exact finalLat & finalLng
+      // 实时计算代驾商家起点和所有候选司机的精准直线距离 (Haversine 真实直线物理距离)
       const allCandidateDrivers = getCombinedDrivers().map(d => {
         let dLat = d.lat;
         let dLng = d.lng;
@@ -3660,13 +3650,8 @@ export default function MobileDispatchValetOrder({
         }
         const hasValidCoords = isValidCoords(dLat, dLng);
         const dist = hasValidCoords
-          ? calculateOrderDriverDistance(
-              passengerAddress,
-              finalLat,
-              finalLng,
-              { lat: dLat, lng: dLng }
-            ).distKm
-          : 999; // Coords pending or invalid, excluded from 3km direct dispatch
+          ? calculateHaversineDistanceKm(finalLat, finalLng, dLat, dLng)
+          : 999; // 坐标待定或无效的司机，排除出3公里直派范围
         return { ...d, lat: dLat, lng: dLng, distance: dist };
       });
 
@@ -3802,51 +3787,78 @@ export default function MobileDispatchValetOrder({
         dispatchedAt: ts,
         isValetOrder: true,
         isPlatformDispatch: true,
-        status: chosenDriver ? 'dispatched' : 'hall',
-        in_hall: chosenDriver ? false : true,
-        statusCategory: chosenDriver ? '已指派' : '呼叫中',
-        dispatchedDriverPhone: chosenDriver ? chosenDriver.phone : '',
-        driver: chosenDriver || null
+      };
+
+      const chosenPhone = String(chosenDriver?.phone || '').replace(/\D/g, '').trim();
+      const currentDriverClean = String(activePhone || userPhone || '').replace(/\D/g, '').trim();
+
+      // 严格要求：只有3公里以内且确实选定当前司机时，才定向派单给当前司机；若超过3公里 (或无就近司机)，绝对不直派，转入选单大厅
+      const isTargetingCurrentDriver = Boolean(
+        chosenDriver && chosenPhone && (
+          chosenPhone === currentDriverClean ||
+          chosenPhone === String(activePhone || '').replace(/\D/g, '').trim() ||
+          chosenPhone === String(userPhone || '').replace(/\D/g, '').trim()
+        )
+      );
+
+      const effectiveDispatchedPhone = isTargetingCurrentDriver ? currentDriverClean : chosenPhone;
+      const effectiveDispatchedName = (chosenDriver?.name || chosenDriver?.driverName) || (isTargetingCurrentDriver ? (adminProfile?.name || '吴彦祖') : '');
+      const isDispatchedToDriver = Boolean(chosenDriver && effectiveDispatchedPhone);
+
+      const realDistKm = chosenDriver ? chosenDriver.distance : null;
+      const realDistText = typeof realDistKm === 'number' ? formatDistance(realDistKm) : '';
+
+      const completeOrderData = {
+        ...newOrderData,
+        status: isDispatchedToDriver ? 'dispatched' : 'hall',
+        in_hall: isDispatchedToDriver ? false : true,
+        statusCategory: isDispatchedToDriver ? '已指派' : '等待接单',
+        dispatchedDriverPhone: isDispatchedToDriver ? effectiveDispatchedPhone : '',
+        dispatchedDriverName: isDispatchedToDriver ? effectiveDispatchedName : '',
+        distanceText: realDistText,
+        distKm: realDistKm,
+        driver: chosenDriver || (isTargetingCurrentDriver ? { name: effectiveDispatchedName, phone: currentDriverClean } : null)
       };
 
       // Save active order ID
       setActiveOrderId(orderId);
 
-      // 1. Instant local persistence & UI update (Skip local hall insertion for transfer order creator)
+      // Clean any stale cancellation flags for this driver and order
+      try {
+        localStorage.removeItem('dd_latest_cancelled_order');
+      } catch (_) {}
+
+      // 1. 本地订单数据持久化与更新 (进入大厅或直派的订单均正确保存)
       if (!isTransferOrder || chosenDriver) {
         try {
           const savedLocal = JSON.parse(safeGetItem('dd_merchant_orders_v2') || '[]');
-          savedLocal.unshift(newOrderData);
+          savedLocal.unshift(completeOrderData);
           safeSetItem('dd_merchant_orders_v2', JSON.stringify(savedLocal.slice(0, 50)));
         } catch (_) {}
       }
 
       window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 
-      const chosenPhone = String(chosenDriver?.phone || '').replace(/\D/g, '').trim();
-      const isTargetingCurrentDriver = Boolean(
-        chosenDriver && chosenPhone && (
-          chosenPhone === String(activePhone || '').replace(/\D/g, '').trim() ||
-          chosenPhone === String(userPhone || '').replace(/\D/g, '').trim()
-        )
-      );
-
       const passengerLinkPayload = {
-        ...newOrderData,
+        ...completeOrderData,
         status: 'submitted',
         orderId,
         dispatchCountdown: 60,
         dispatchedAt: ts,
         dispatchExpiresAt: ts + 60000,
-        dispatchedDriverPhone: chosenPhone,
-        dispatchedDriverName: chosenDriver?.name || chosenDriver?.driverName || ''
+        dispatchedDriverPhone: effectiveDispatchedPhone,
+        dispatchedDriverName: effectiveDispatchedName,
+        distanceText: realDistText,
+        distKm: realDistKm
       };
 
-      // 实时向目标小队司机的 passenger_links 写入派单数据，驱动对方手机瞬时弹窗与语音播报
-      if (chosenDriver && chosenPhone) {
+      // 实时向目标小队司机的 passenger_links 写入派单数据
+      const targetPhoneToWrite = isDispatchedToDriver ? effectiveDispatchedPhone : '';
+      if (targetPhoneToWrite) {
         try {
           if (db) {
-            setDoc(doc(db, 'passenger_links', chosenPhone), passengerLinkPayload).catch(() => {});
+            deleteDoc(doc(db, 'active_orders', targetPhoneToWrite)).catch(() => {});
+            setDoc(doc(db, 'passenger_links', targetPhoneToWrite), passengerLinkPayload).catch(() => {});
           }
         } catch (_) {}
       }
@@ -3855,7 +3867,7 @@ export default function MobileDispatchValetOrder({
       try {
         if (db) {
           setDoc(doc(db, 'merchant_orders', orderId), {
-            ...newOrderData,
+            ...completeOrderData,
             dispatchCountdown: 60,
             dispatchedAt: ts,
             dispatchExpiresAt: ts + 60000
@@ -3867,10 +3879,22 @@ export default function MobileDispatchValetOrder({
         try {
           safeSetItem('dd_active_incoming_order', JSON.stringify(passengerLinkPayload));
         } catch (_) {}
+        // 仅触发一次新来单弹窗，绝不重复触发避免闪退和重新弹窗
+        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
         if (typeof onClose === 'function') {
           onClose();
         }
-        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
+      } else if (!isDispatchedToDriver) {
+        // 超过3公里或无就近空闲小队司机，订单全员广播转入选单大厅
+        onShowToast('3公里内无在线空闲小队司机，订单已全员广播转入选单大厅');
+        if (typeof onClose === 'function') {
+          onClose();
+        }
+      } else {
+        onShowToast(`已派单给3公里内最近小队司机【${effectiveDispatchedName}】（距离${realDistText}）！对方APP已弹出新来单确认页面（60秒倒计时）`);
+        if (typeof onClose === 'function') {
+          onClose();
+        }
       }
 
       // 2. Delegate dispatch calculation and sync to Aliyun Baota Server /api/dispatch/nearest
@@ -3883,7 +3907,7 @@ export default function MobileDispatchValetOrder({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               orderData: {
-                ...newOrderData,
+                ...completeOrderData,
                 dispatchCountdown: 60,
                 dispatchedAt: ts,
                 dispatchExpiresAt: ts + 60000
@@ -3900,13 +3924,12 @@ export default function MobileDispatchValetOrder({
             if (resData.success) {
               if (resData.isHall) {
                 finalAssignedDriver = null;
-                onShowToast('3公里内无在线空闲小队司机，订单已全员广播转入选单大厅');
-                if (chosenPhone && db) {
+                if (chosenPhone && db && !isTargetingCurrentDriver) {
                   deleteDoc(doc(db, 'passenger_links', chosenPhone)).catch(() => {});
                 }
                 if (db) {
                   setDoc(doc(db, 'merchant_orders', orderId), {
-                    ...newOrderData,
+                    ...completeOrderData,
                     status: 'hall',
                     in_hall: true,
                     statusCategory: '等待接单',
@@ -3918,21 +3941,29 @@ export default function MobileDispatchValetOrder({
                 const srvPhone = String(resData.dispatchedDriverPhone).replace(/\D/g, '').trim();
                 const srvName = resData.dispatchedDriverName || '小队司机';
                 finalAssignedDriver = { name: srvName, phone: srvPhone, distance: resData.distKm };
+                const payloadWithServerDriver = {
+                  ...passengerLinkPayload,
+                  dispatchedDriverPhone: srvPhone,
+                  dispatchedDriverName: srvName,
+                  distKm: resData.distKm,
+                  distanceText: resData.distanceText || realDistText
+                };
                 if (db && srvPhone) {
-                  setDoc(doc(db, 'passenger_links', srvPhone), {
-                    ...passengerLinkPayload,
-                    dispatchedDriverPhone: srvPhone,
-                    dispatchedDriverName: srvName
-                  }).catch(() => {});
+                  setDoc(doc(db, 'passenger_links', srvPhone), payloadWithServerDriver).catch(() => {});
                 }
-                onShowToast(`已派单给3公里内最近小队司机【${srvName}】！对方APP已弹出新来单确认页面（60秒倒计时）`);
+                // 注意：如果当前司机已在本地弹出新来单界面，只静默存储更新，绝不二次派发 trigger_incoming_order！
+                if (srvPhone === currentDriverClean && !isTargetingCurrentDriver) {
+                  try {
+                    safeSetItem('dd_active_incoming_order', JSON.stringify(payloadWithServerDriver));
+                  } catch (_) {}
+                  window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: payloadWithServerDriver }));
+                }
               }
             }
           }
         } catch (_) {
-          // Fallback Firestore setDoc
           if (db) {
-            setDoc(doc(db, 'merchant_orders', orderId), newOrderData).catch(() => {});
+            setDoc(doc(db, 'merchant_orders', orderId), completeOrderData).catch(() => {});
           }
         }
       };

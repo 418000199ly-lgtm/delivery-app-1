@@ -22,6 +22,11 @@
       "lastOfflineReason": "daily_0559_expired_cutoff",
       "lastOfflineTime": "2026-10-08T08:01:26.439Z",
       "lastUpdatedTime": "2026-10-08T08:01:26.439Z",
+      "qrcode_url": "",
+      "wechatQrCode": "",
+      "qrCode": "",
+      "isBusy": false,
+      "lastStatusUpdateTime": 1791547176522,
       "realName": "吴彦祖",
       "emergencyContact": "13895000000",
       "drivingYears": 10,
@@ -30,10 +35,8 @@
       "driverLicenseFront": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80",
       "driverLicenseBack": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
       "createdAt": "2026-10-06T00:00:00.000Z",
-      "collection": "squad_members",
-      "qrcode_url": "",
-      "wechatQrCode": "",
-      "qrCode": ""
+      "customAppName": "滴滴代驾",
+      "collection": "squad_members"
     }
   },
   "squad_members": {
@@ -61,7 +64,9 @@
       "lastUpdatedTime": "2026-10-08T08:01:26.439Z",
       "qrcode_url": "",
       "wechatQrCode": "",
-      "qrCode": ""
+      "qrCode": "",
+      "isBusy": false,
+      "lastStatusUpdateTime": 1791547176522
     }
   },
   "squad_applications": {},
@@ -100,14 +105,17 @@
     "15509601222": {
       "lat": 38.4872,
       "lng": 106.2309,
-      "isOnline": false,
+      "isOnline": true,
       "driverName": "吴彦祖",
       "name": "吴彦祖",
       "onlineOrdersEnabled": false,
       "pending0559Offline": false,
       "lastOfflineReason": "daily_0559_expired_cutoff",
       "lastOfflineTime": "2026-10-08T08:01:26.439Z",
-      "lastUpdatedTime": "2026-10-08T08:01:26.439Z"
+      "lastUpdatedTime": "2026-10-08T08:01:26.439Z",
+      "isBusy": false,
+      "status": "idle",
+      "lastStatusUpdateTime": 1791547176522
     }
   },
   "config": {
@@ -142,7 +150,39 @@
       "role": "SUPER_DEVELOPER_ADMIN",
       "name": "最高开发者",
       "status": "ACTIVE",
-      "updatedAt": "2026-10-08T08:00:26.433Z"
+      "updatedAt": "2026-10-09T12:18:51.303Z"
     }
-  }
+  },
+  "merchant_orders": {
+    "MO_1791547157110": {
+      "status": "cancelled",
+      "statusCategory": "已取消",
+      "in_hall": false,
+      "cancelledAt": 1791547175255,
+      "cancelledBy": "driver",
+      "cancelledByRole": "driver",
+      "cancelReason": "司机已取消订单"
+    },
+    "YC20261009195900003": {
+      "status": "cancelled",
+      "statusCategory": "已取消",
+      "in_hall": false,
+      "cancelledAt": 1791547175656,
+      "cancelledBy": "driver",
+      "cancelledByRole": "driver",
+      "cancelReason": "司机已取消订单"
+    },
+    "18795195554": {
+      "status": "cancelled",
+      "statusCategory": "已取消",
+      "in_hall": false,
+      "cancelledAt": 1791547176522,
+      "cancelledBy": "driver",
+      "cancelledByRole": "driver",
+      "cancelReason": "司机已取消订单"
+    }
+  },
+  "orders": {},
+  "passenger_links": {},
+  "active_orders": {}
 }

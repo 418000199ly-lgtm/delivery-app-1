@@ -269,7 +269,11 @@ export function detectQRBoundingBox(
  */
 export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {
-    if (!dataUrl || !dataUrl.startsWith('data:image')) {
+    if (!dataUrl || typeof dataUrl !== 'string') {
+      resolve('');
+      return;
+    }
+    if (!dataUrl.startsWith('data:image') && !dataUrl.startsWith('http://') && !dataUrl.startsWith('https://') && !dataUrl.startsWith('/')) {
       resolve(dataUrl);
       return;
     }
@@ -280,8 +284,6 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
       try {
         // Step 1: Immediately downscale image to max 800px to avoid memory spikes
         const downscaledCanvas = downscaleImage(img, 800);
-        const dw = downscaledCanvas.width;
-        const dh = downscaledCanvas.height;
 
         // Step 2: Try scanning the downscaled canvas with jsQR
         const fullScanPayload = tryScanCanvas(downscaledCanvas);
@@ -295,99 +297,11 @@ export function cropQRCodeFromImage(dataUrl: string): Promise<string> {
           return;
         }
 
-        // Step 3: If direct scan didn't find payload, detect bounding box on downscaled canvas
-        const dctx = downscaledCanvas.getContext('2d', { willReadFrequently: true });
-        if (!dctx) {
-          resolve(downscaledCanvas.toDataURL('image/png'));
-          return;
-        }
-
-        const bbox = detectQRBoundingBox(dctx, dw, dh);
-        const cropX = bbox ? bbox.x : Math.round((dw - Math.min(dw, dh)) / 2);
-        const cropY = bbox ? bbox.y : Math.round((dh - Math.min(dw, dh)) / 2);
-        const cropW = bbox ? bbox.width : Math.min(dw, dh);
-        const cropH = bbox ? bbox.height : Math.min(dw, dh);
-
-        // Step 4: Render cropped canvas at 400x400
-        const croppedCanvas = document.createElement('canvas');
-        croppedCanvas.width = 400;
-        croppedCanvas.height = 400;
-        const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true });
-        if (!croppedCtx) {
-          resolve(downscaledCanvas.toDataURL('image/png'));
-          return;
-        }
-
-        croppedCtx.imageSmoothingEnabled = true;
-        croppedCtx.imageSmoothingQuality = 'high';
-        croppedCtx.drawImage(downscaledCanvas, cropX, cropY, cropW, cropH, 0, 0, 400, 400);
-
-        // Step 5: Try scanning the cropped 400x400 canvas
-        const croppedScanPayload = tryScanCanvas(croppedCanvas);
-        if (croppedScanPayload) {
-          QRCode.toDataURL(croppedScanPayload, {
-            errorCorrectionLevel: 'H',
-            margin: 2,
-            width: 450,
-            color: { dark: '#000000', light: '#ffffff' }
-          }).then(resolve).catch(() => resolve(croppedCanvas.toDataURL('image/png')));
-          return;
-        }
-
-        // Step 6: Fallback: Clean up margins & binarize
-        const imgData = croppedCtx.getImageData(0, 0, 400, 400);
-        const pixels = imgData.data;
-
-        let sumL = 0;
-        for (let i = 0; i < pixels.length; i += 4) {
-          sumL += 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
-        }
-        const avgL = sumL / (pixels.length / 4);
-        const threshold = avgL > 210 ? 180 : (avgL < 100 ? 100 : 140);
-
-        for (let y = 0; y < 400; y++) {
-          for (let x = 0; x < 400; x++) {
-            const idx = (y * 400 + x) * 4;
-
-            // Clear margin borders
-            if (x < 20 || x > 380 || y < 20 || y > 380) {
-              pixels[idx] = 255;
-              pixels[idx + 1] = 255;
-              pixels[idx + 2] = 255;
-              continue;
-            }
-
-            const r = pixels[idx];
-            const g = pixels[idx + 1];
-            const b = pixels[idx + 2];
-            const sat = Math.max(r, g, b) - Math.min(r, g, b);
-            const l = 0.299 * r + 0.587 * g + 0.114 * b;
-
-            // Remove colored background (green or blue)
-            if (sat > 25) {
-              pixels[idx] = 255;
-              pixels[idx + 1] = 255;
-              pixels[idx + 2] = 255;
-              continue;
-            }
-
-            // High contrast monochrome binarization
-            if (l > threshold) {
-              pixels[idx] = 255;
-              pixels[idx + 1] = 255;
-              pixels[idx + 2] = 255;
-            } else {
-              pixels[idx] = 0;
-              pixels[idx + 1] = 0;
-              pixels[idx + 2] = 0;
-            }
-          }
-        }
-
-        croppedCtx.putImageData(imgData, 0, 0);
-        resolve(croppedCanvas.toDataURL('image/png'));
+        // Step 3: Direct scan didn't find vector QR payload, return clean downscaled original image
+        // (Avoid destructive binarization/black thresholding that corrupts user photos)
+        resolve(downscaledCanvas.toDataURL('image/png'));
       } catch (err) {
-        console.error('QR Crop process error:', err);
+        console.error('QR process error:', err);
         resolve(dataUrl);
       }
     };
@@ -407,7 +321,6 @@ export async function regenerateQRCode(dataUrl: string, _type?: 'wechat' | 'alip
 /**
  * Safely processes a mobile photo file (File object) directly into a lightweight,
  * cropped, clean QR code DataURL without storing multi-megabyte base64 strings in memory.
- * Completely eliminates iOS WKWebView Jetsam OOM crashes (white screen flash) and Android WebView freezes.
  */
 export function processImageFileToCleanQR(file: File, type: 'wechat' | 'alipay' = 'wechat'): Promise<string> {
   return new Promise((resolve) => {
@@ -416,124 +329,21 @@ export function processImageFileToCleanQR(file: File, type: 'wechat' | 'alipay' 
       return;
     }
 
-    // Use URL.createObjectURL for 0-memory footprint loading
-    let objectUrl = '';
-    try {
-      if (typeof window !== 'undefined' && window.URL && window.URL.createObjectURL) {
-        objectUrl = window.URL.createObjectURL(file);
-      }
-    } catch (_) {}
-
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-
-    const cleanup = () => {
-      if (objectUrl) {
-        try { window.URL.revokeObjectURL(objectUrl); } catch (_) {}
-      }
-    };
-
-    img.onload = async () => {
-      try {
-        // Step 1: Immediately downscale on a memory-capped Canvas (max 800px)
-        const downscaledCanvas = downscaleImage(img, 800);
-        cleanup();
-
-        // Step 2: Try scanning and regenerating high-fidelity QR Code
-        const fullScanPayload = tryScanCanvas(downscaledCanvas);
-        if (fullScanPayload) {
-          try {
-            const reconstructed = await QRCode.toDataURL(fullScanPayload, {
-              errorCorrectionLevel: 'H',
-              margin: 2,
-              width: 450,
-              color: { dark: '#000000', light: '#ffffff' }
-            });
-            resolve(reconstructed);
-            return;
-          } catch (_) {}
-        }
-
-        // Step 3: Crop bounding box on downscaled canvas
-        const dw = downscaledCanvas.width;
-        const dh = downscaledCanvas.height;
-        const dctx = downscaledCanvas.getContext('2d', { willReadFrequently: true });
-        if (dctx) {
-          const bbox = detectQRBoundingBox(dctx, dw, dh);
-          const cropX = bbox ? bbox.x : Math.round((dw - Math.min(dw, dh)) / 2);
-          const cropY = bbox ? bbox.y : Math.round((dh - Math.min(dw, dh)) / 2);
-          const cropW = bbox ? bbox.width : Math.min(dw, dh);
-          const cropH = bbox ? bbox.height : Math.min(dw, dh);
-
-          const croppedCanvas = document.createElement('canvas');
-          croppedCanvas.width = 400;
-          croppedCanvas.height = 400;
-          const croppedCtx = croppedCanvas.getContext('2d', { willReadFrequently: true });
-          if (croppedCtx) {
-            croppedCtx.imageSmoothingEnabled = true;
-            croppedCtx.imageSmoothingQuality = 'high';
-            croppedCtx.drawImage(downscaledCanvas, cropX, cropY, cropW, cropH, 0, 0, 400, 400);
-
-            const croppedScan = tryScanCanvas(croppedCanvas);
-            if (croppedScan) {
-              try {
-                const reconstructed = await QRCode.toDataURL(croppedScan, {
-                  errorCorrectionLevel: 'H',
-                  margin: 2,
-                  width: 450,
-                  color: { dark: '#000000', light: '#ffffff' }
-                });
-                resolve(reconstructed);
-                return;
-              } catch (_) {}
-            }
-
-            resolve(croppedCanvas.toDataURL('image/png'));
-            return;
-          }
-        }
-
-        resolve(downscaledCanvas.toDataURL('image/png'));
-      } catch (err) {
-        cleanup();
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const rawDataUrl = e.target?.result as string;
+      if (!rawDataUrl) {
         resolve('');
+        return;
       }
-    };
-
-    img.onerror = () => {
-      cleanup();
-      // Fallback: Try FileReader if createObjectURL failed
       try {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const raw = e.target?.result as string;
-          if (raw) {
-            const cleaned = await regenerateQRCode(raw, type);
-            resolve(cleaned || raw);
-          } else {
-            resolve('');
-          }
-        };
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
+        const cleaned = await cropQRCodeFromImage(rawDataUrl);
+        resolve(cleaned || rawDataUrl);
       } catch (_) {
-        resolve('');
+        resolve(rawDataUrl);
       }
     };
-
-    if (objectUrl) {
-      img.src = objectUrl;
-    } else {
-      try {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          img.src = e.target?.result as string;
-        };
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(file);
-      } catch (_) {
-        resolve('');
-      }
-    }
+    reader.onerror = () => resolve('');
+    reader.readAsDataURL(file);
   });
 }

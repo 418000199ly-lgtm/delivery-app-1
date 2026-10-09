@@ -104,18 +104,68 @@ function base64DataUrlToArrayBuffer(dataUrl: string): ArrayBuffer | null {
   }
 }
 
+// In-memory cache for decoded AudioBuffer instances (eliminates repeated decode latency & stutter)
+const DECODED_AUDIO_BUFFER_CACHE = new Map<string, AudioBuffer>();
+
+/**
+ * Play an existing decoded AudioBuffer instance directly via Web Audio API
+ */
+async function playDecodedBufferInstance(buffer: AudioBuffer, onEnd?: () => void): Promise<boolean> {
+  const ctx = getAudioContext();
+  if (!ctx) return false;
+
+  try {
+    if (ctx.state === 'suspended') {
+      await ctx.resume().catch(() => {});
+    }
+
+    stopSpeaking();
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+
+    currentBufferSource = source;
+
+    return new Promise((resolve) => {
+      let ended = false;
+      const finish = (success: boolean) => {
+        if (ended) return;
+        ended = true;
+        if (currentBufferSource === source) currentBufferSource = null;
+        if (onEnd) onEnd();
+        resolve(success);
+      };
+
+      source.onended = () => finish(true);
+      source.start(0);
+    });
+  } catch (e) {
+    console.warn('[AudioEngine] playDecodedBufferInstance failed:', e);
+    return false;
+  }
+}
+
 /**
  * Play local bundled MP3 audio file via Web Audio API or HTML5 Audio
  */
 async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<boolean> {
+  const fileName = audioPath.split('/').pop() || audioPath;
+
+  // 1. Check if we already have this audio buffer decoded in memory
+  if (DECODED_AUDIO_BUFFER_CACHE.has(fileName)) {
+    const cachedBuffer = DECODED_AUDIO_BUFFER_CACHE.get(fileName)!;
+    const played = await playDecodedBufferInstance(cachedBuffer, onEnd);
+    if (played) return true;
+  }
+
   stopSpeaking();
 
-  const fileName = audioPath.split('/').pop() || audioPath;
   const bundledBase64 = BUNDLED_AUDIO_BASE64[fileName] || BUNDLED_AUDIO_BASE64[audioPath];
 
   // LEVEL 0: High-Speed Memory Base64 Playback (Only if valid non-empty audio > 2000 bytes)
   if (bundledBase64 && bundledBase64.length > 2000) {
-    // 1. Try Web Audio API decode from ArrayBuffer first
+    // Try Web Audio API decode from ArrayBuffer first
     try {
       const ctx = getAudioContext();
       if (ctx) {
@@ -124,6 +174,15 @@ async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<
         }
         const arrayBuffer = base64DataUrlToArrayBuffer(bundledBase64);
         if (arrayBuffer && arrayBuffer.byteLength > 1000) {
+          try {
+            const decodedBuf = await ctx.decodeAudioData(arrayBuffer);
+            if (decodedBuf) {
+              DECODED_AUDIO_BUFFER_CACHE.set(fileName, decodedBuf);
+              return await playDecodedBufferInstance(decodedBuf, onEnd);
+            }
+          } catch (decodeErr) {
+            console.warn('[AudioEngine] Decode base64 error, falling back to playAudioBuffer:', decodeErr);
+          }
           const success = await playAudioBuffer(arrayBuffer, onEnd);
           if (success) return true;
         }
@@ -132,7 +191,7 @@ async function playLocalMp3File(audioPath: string, onEnd?: () => void): Promise<
       console.warn('[AudioEngine] Memory Base64 Web Audio play failed, falling back to HTML5 Audio:', e);
     }
 
-    // 2. Fallback to HTML5 Audio element with direct Base64 Data URL
+    // Fallback to HTML5 Audio element with direct Base64 Data URL
     return new Promise((resolve) => {
       playSingleMp3Element(
         bundledBase64,

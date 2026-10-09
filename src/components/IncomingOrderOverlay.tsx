@@ -64,7 +64,7 @@ export function getTTSBroadcastText(
   if (order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单') {
     return `您有新的报单转单系统派单，请及时处理！`;
   }
-  if (order?.isPlatformDispatch) {
+  if (order?.isValetOrder || order?.isPlatformDispatch || order?.orderRemark === '商户代叫' || order?.orderType === '商户代叫') {
     return `您有新的系统派单，请及时处理！`;
   }
   return `注意！收到新的代驾派单，请及时查看并确认接单！`;
@@ -81,6 +81,13 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 60秒倒计时：严格由中国大陆阿里云服务器权威倒计时决定 (服务器显示60就显示60，服务器显示31就显示31)
   const targetOrderId = String((order as any)?.orderId || (order as any)?.id || (order as any)?.orderNo || '').trim();
   const cleanDriverPhone = String(userPhone || (order as any)?.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+
+  const isMerchantValet = Boolean(
+    order.isValetOrder ||
+    order.orderRemark === '商户代叫' ||
+    order.orderType === '商户代叫' ||
+    order.isPlatformDispatch
+  );
 
   const [timeLeft, setTimeLeft] = useState<number>(() => {
     if (typeof (order as any)?.serverCountdown === 'number') {
@@ -101,10 +108,13 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       const sSec = (order as any).serverCountdown;
       setTimeLeft(Math.max(0, Math.min(60, sSec)));
       if (sSec <= 0) {
-        onDecline();
+        const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+        if (orderAgeMs > 25000) {
+          onDecline();
+        }
       }
     }
-  }, [(order as any)?.serverCountdown, onDecline]);
+  }, [(order as any)?.serverCountdown, onDecline, order]);
 
   // 倒计时核心引擎：每秒主动对齐中国大陆阿里云服务器 /api/dispatch/countdown 权威秒数
   useEffect(() => {
@@ -125,14 +135,18 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         if (resp.ok && isMounted) {
           const data = await resp.json();
           if (data && data.success) {
-            // 服务器明确判定超时、倒计时<=0 或已转入选单大厅 (且非本司机直接抢单的订单)
+            // 服务器判定超时、倒计时<=0 或已转入选单大厅 (且非本司机直接抢单的订单)
             if (
               !order?.isDirectClaim &&
               (data.isExpired || data.inHall || (typeof data.serverCountdown === 'number' && data.serverCountdown <= 0))
             ) {
-              setTimeLeft(0);
-              onDecline();
-              return;
+              const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+              // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
+              if (orderAgeMs > 25000) {
+                setTimeLeft(0);
+                onDecline();
+                return;
+              }
             }
 
             if (typeof data.serverCountdown === 'number') {
@@ -154,7 +168,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       setTimeLeft(prev => {
         const next = Math.max(0, prev - 1);
         if (next <= 0) {
-          onDecline();
+          const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+          if (orderAgeMs > 25000) {
+            onDecline();
+          }
         }
         return next;
       });
@@ -165,7 +182,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       isMounted = false;
       clearInterval(timer);
     };
-  }, [targetOrderId, cleanDriverPhone, onDecline]);
+  }, [targetOrderId, cleanDriverPhone, onDecline, order]);
 
   // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
   useEffect(() => {
@@ -177,13 +194,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
   // Parse details with fallbacks
   const startLocation = order.startLocation || '运祥小区(北寺巷)';
-  const isDestinationEmpty = !order.destination || order.destination.trim() === '';
-  const destination = isDestinationEmpty ? '未知' : order.destination;
+  // 所有商户代叫订单，新来单页面里的目的地，由司机根据现场口头协商规划行程，取消显示，目的地为空
+  const isDestinationEmpty = isMerchantValet || !order.destination || order.destination.trim() === '';
+  const destination = isMerchantValet ? '' : (isDestinationEmpty ? '未知' : order.destination);
   const passengerPhone = order.passengerPhone || '系统分配乘客';
   
   // Dynamic random price if not specified
   const [approxPrice] = useState<any>(() => {
-    if (isDestinationEmpty) return '未知';
+    if (isDestinationEmpty) return '40';
     if (order.approxPrice !== undefined) return order.approxPrice;
     
     if (onlineBillingRules && onlineBillingRules.slots && onlineBillingRules.slots.length > 0) {
@@ -358,7 +376,12 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     };
   }, [order, onDecline]);
 
-  // Keep latest broadcast speech text in ref so async prop updates never restart/interrupt speech
+  // Keep latest order and broadcast speech text in ref so async prop updates never restart/interrupt speech
+  const orderRef = React.useRef<any>(order);
+  useEffect(() => {
+    orderRef.current = order;
+  }, [order]);
+
   const speechTextRef = React.useRef<string>('');
   useEffect(() => {
     const effectivePrice = (order.isValetOrder || order.isPlatformDispatch) ? '未知' : approxPrice;
@@ -366,7 +389,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   }, [order, approxPrice, startLocation, destination, distanceText]);
 
   // Handle TTS and Vibrate with continuous stable loop until accepted, declined or expired
-  // Controlled strictly on mount/unmount to eliminate stutter/cutoffs on Android phones
+  // Keyed strictly on targetOrderId to guarantee zero stutter/cutoffs/intermittent playback
   useEffect(() => {
     let isActive = true;
     let timerId: any = null;
@@ -382,14 +405,15 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           } catch (e) {}
         }
 
-        const textToSpeak = speechTextRef.current || getTTSBroadcastText(order, '未知', startLocation, destination, distanceText);
+        const currentOrderObj = orderRef.current || order;
+        const textToSpeak = speechTextRef.current || getTTSBroadcastText(currentOrderObj, '未知', startLocation, destination, distanceText);
         
         speakText(textToSpeak, () => {
           if (isActive) {
-            // Pause 1.2 second between repeat loops
+            // Pause 1.5 second between repeat loops for smooth, coherent audio
             timerId = setTimeout(() => {
               playSpeech();
-            }, 1200);
+            }, 1500);
           }
         });
       } catch (e) {
@@ -400,7 +424,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     // Initial audio trigger with slight delay to ensure mobile AudioContext readiness
     const initialTimer = setTimeout(() => {
       playSpeech();
-    }, 100);
+    }, 120);
 
     return () => {
       isActive = false;
@@ -408,7 +432,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       if (timerId) clearTimeout(timerId);
       stopSpeaking();
     };
-  }, [order]);
+  }, [targetOrderId]);
 
   const [isAccepting, setIsAccepting] = useState(false);
 
@@ -446,7 +470,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         passengerName: order.isValetOrder ? '商户代叫乘客' : '线上自助预约乘客',
         passengerPhone: passengerPhone,
         startLocation: startLocation,
-        endLocation: destination,
+        endLocation: isMerchantValet ? '' : destination,
         startTimestamp: orderTimeMs,
         currentDistance: 0.0,
         currentWaitingTime: 0,
@@ -488,7 +512,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         passengerName: order.isValetOrder ? '商户代叫乘客' : '线上自助预约乘客',
         passengerPhone: passengerPhone,
         startLocation: startLocation,
-        endLocation: destination,
+        endLocation: isMerchantValet ? '' : destination,
         startTimestamp: orderTimeMs,
         currentDistance: 0.0,
         currentWaitingTime: 0,
@@ -509,56 +533,104 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     }
   };
 
+  const displayEstimatedPrice = (() => {
+    let raw: any = null;
+    if (order.calculatedTotalFee !== undefined && order.calculatedTotalFee !== null) {
+      raw = order.calculatedTotalFee;
+    } else if (order.estimatedPrice !== undefined && order.estimatedPrice !== null) {
+      raw = order.estimatedPrice;
+    } else if (order.price !== undefined && order.price !== null) {
+      raw = order.price;
+    } else if (typeof approxPrice === 'number' && approxPrice > 0) {
+      raw = approxPrice;
+    }
+    if (raw !== null) {
+      const num = Number(String(raw).replace(/[^\d.]/g, ''));
+      if (!isNaN(num) && num > 0) {
+        return Math.round(num) === num ? String(num) : String(num.toFixed(1));
+      }
+    }
+    return '40';
+  })();
+
+  const modeBadgeText = (() => {
+    if (order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单') {
+      return '报单转单订单';
+    }
+    if (isMerchantValet) {
+      return '商户代叫订单';
+    }
+    return '二维码开单';
+  })();
+
+  const topCategoryText = (() => {
+    if (order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单') {
+      return '报单转单';
+    }
+    if (isMerchantValet) {
+      return '商户代叫';
+    }
+    return '二维码开单';
+  })();
+
+  const destinationDisplay = (() => {
+    if (order.destination && order.destination.trim() && order.destination !== '未知' && order.destination !== '自行协商') {
+      return order.destination;
+    }
+    return '由司机根据现场口头协商规划行程';
+  })();
+
   return (
     <div className="absolute inset-0 z-[999] bg-gray-50 flex flex-col justify-between overflow-hidden select-none w-full h-full">
       
-      {/* HEADER SECTION */}
-      <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-14 sm:pb-16 shrink-0 shadow-sm">
+      {/* HEADER SECTION (Matching Image q3) */}
+      <header className="bg-[#e61a1a] text-white px-4 flex flex-col items-center relative pt-[calc(env(safe-area-inset-top,0px)+12px)] pb-12 sm:pb-14 shrink-0 shadow-sm">
         <div className="w-full flex justify-between items-center mb-2 sm:mb-3">
-          <span className="text-white/80 font-semibold text-xs tracking-wider">
-            {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'
-              ? '⚠️ 报单转单'
-              : (order.isValetOrder || order.isPlatformDispatch ? '⚠️ 商户代叫' : '⚡ 二维码开单')}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <svg className="w-4 h-4 text-amber-300 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 2L1 21h22L12 2zm0 3.99L19.53 19H4.47L12 5.99zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z" />
+            </svg>
+            <span className="text-white font-black text-sm tracking-wide">
+              {topCategoryText}
+            </span>
+          </div>
           <button 
             onClick={onDecline}
-            className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/10 px-2.5 py-1 rounded-full transition-all cursor-pointer"
+            className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/20 hover:bg-black/30 border border-white/20 px-3.5 py-1 rounded-full transition-all cursor-pointer"
           >
             取消订单
           </button>
         </div>
 
-        {/* Income Display */}
-        <div className="flex flex-col items-center my-1 sm:my-2">
-          {order.isPlatformDispatch || order.isValetOrder || approxPrice === '未知' || approxPrice === '自行协商' ? (
-            <div className="flex items-baseline justify-center">
-              <span className="text-3xl sm:text-4xl font-black tracking-tight animate-pulse" style={{ fontFamily: 'sans-serif' }}>
+        {/* Income Display (Image q3: 自行协商) */}
+        <div className="flex flex-col items-center my-1.5 sm:my-2.5">
+          <div className="flex items-baseline justify-center">
+            {order.isPlatformDispatch || order.isValetOrder || isMerchantValet || approxPrice === '未知' || approxPrice === '自行协商' ? (
+              <span className="text-4xl sm:text-5xl font-black tracking-tight" style={{ fontFamily: 'sans-serif' }}>
                 自行协商
               </span>
-            </div>
-          ) : (
-            <div className="flex items-baseline justify-center">
-              <span className="text-lg sm:text-xl font-bold mr-1 opacity-90">约</span>
-              <span className="text-5xl sm:text-6xl font-black tracking-tight" style={{ fontFamily: 'sans-serif' }}>
-                {approxPrice}
-              </span>
-              <span className="text-lg sm:text-xl font-bold ml-1 opacity-90">元</span>
-            </div>
-          )}
+            ) : (
+              <div className="flex items-baseline justify-center">
+                <span className="text-lg sm:text-xl font-bold mr-1 opacity-90">约</span>
+                <span className="text-4xl sm:text-5xl font-black tracking-tight" style={{ fontFamily: 'sans-serif' }}>
+                  {displayEstimatedPrice}
+                </span>
+                <span className="text-lg sm:text-xl font-bold ml-1 opacity-90">元</span>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Service Badge */}
-        <div className="border border-white/40 rounded-full py-1 px-4 sm:py-1.5 sm:px-6 font-medium text-xs sm:text-sm mt-2 sm:mt-3 bg-white/5 backdrop-blur-xs tracking-wide">
-          {order?.orderType === '报单转单' || order?.orderRemark === '报单转单' || order?.type === '报单转单'
-            ? "报单转单订单"
-            : ((order.isPlatformDispatch || order.isValetOrder) ? "商户代叫订单" : (onlineBillingRules?.templateName?.trim() ? onlineBillingRules.templateName : "某D代驾计费模版"))}
+        {/* Order Type Badge (Image q3: 商户代叫订单) */}
+        <div className="border border-white/40 rounded-full py-1 px-4 sm:py-1.5 sm:px-6 font-medium text-xs sm:text-sm mt-1 sm:mt-1.5 bg-white/10 backdrop-blur-xs tracking-wide flex items-center justify-center">
+          <span className="font-bold text-white">{modeBadgeText}</span>
         </div>
       </header>
 
-      {/* TRIP DETAILS SECTION */}
-      <main className="flex-1 flex flex-col -mt-9 sm:-mt-10 mx-3 sm:mx-4 z-40 bg-white rounded-2xl sm:rounded-3xl shadow-xl overflow-hidden mb-3 sm:mb-4 border border-gray-150/50">
+      {/* TRIP DETAILS SECTION (Matching Image q3) */}
+      <main className="flex-1 flex flex-col -mt-8 sm:-mt-9 mx-3 sm:mx-4 z-40 bg-white rounded-2xl sm:rounded-3xl shadow-xl overflow-hidden mb-3 sm:mb-4 border border-gray-150/50">
         
-        {/* Distance summary */}
+        {/* Distance summary: 客人直线距离 (Image q3) */}
         <section className="bg-[#fcfdfe] px-4 sm:px-5 border-b border-gray-100 flex justify-between items-center py-3 sm:py-3.5 shrink-0">
           <div className="flex items-center gap-1.5">
             <svg className="w-4 h-4 sm:w-5 sm:h-5 text-[#64748b]" fill="currentColor" viewBox="0 0 24 24">
@@ -571,8 +643,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           </div>
         </section>
 
-        {/* Scheduled Time & Scooter Requirement Info */}
-        <section className="bg-orange-50/90 px-4 sm:px-5 py-2.5 border-b border-orange-100 flex items-center justify-between gap-2 shrink-0">
+        {/* Scheduled Time & Scooter Requirement Info (Matching Image q3) */}
+        <section className="bg-orange-50/80 px-4 sm:px-5 py-2.5 border-b border-orange-100/70 flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-1.5 text-xs">
             <Clock className="w-3.5 h-3.5 text-[#ff7d00] shrink-0" />
             <span className="text-gray-600 font-medium">预约时间：</span>
@@ -593,7 +665,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           </div>
         </section>
 
-        {/* Address Timeline */}
+        {/* Address Timeline (Matching Image q3) */}
         <section className="px-4 sm:px-6 py-4 flex-1 flex flex-col justify-center relative min-h-[140px] overflow-y-auto">
           <div className="relative pl-7 sm:pl-8 flex flex-col justify-between h-full py-1">
             
@@ -605,9 +677,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               }}
             />
 
-            {/* Pickup Node */}
-            <div className="relative mb-4 sm:mb-5 flex items-start">
-              {/* Point Indicator */}
+            {/* Pickup Node (Image q3: 乘客出发地) */}
+            <div className="relative flex items-start mb-4 sm:mb-5">
               <div className="absolute -left-[27px] sm:-left-[31px] w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-cyan-500 text-white flex items-center justify-center text-[10px] font-bold">
                 起
               </div>
@@ -620,9 +691,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               </div>
             </div>
 
-            {/* Dropoff Node */}
+            {/* Dropoff Node (Image q3: 目的地 - 由司机根据现场口头协商规划行程) */}
             <div className="relative flex items-start">
-              {/* Point Indicator */}
               <div className="absolute -left-[27px] sm:-left-[31px] w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-orange-600 text-white flex items-center justify-center text-[10px] font-bold">
                 终
               </div>
@@ -630,7 +700,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
                 <span className="text-[11px] sm:text-xs text-gray-400 font-bold mb-1">目的地</span>
                 <div className="bg-white px-3 py-1.5 rounded-lg shadow-sm border border-gray-150 flex items-center gap-1.5 text-xs font-black text-gray-800 self-start max-w-full">
                   <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0" style={{ display: 'inline-block', width: '7px', height: '7px', borderRadius: '9999px' }}></span>
-                  <span className="break-all">{destination}</span>
+                  <span className="break-all">{destinationDisplay}</span>
                 </div>
               </div>
             </div>
@@ -639,25 +709,27 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         </section>
       </main>
 
-      {/* STICKY FOOTER ACTIONS */}
-      <footer className="shrink-0 w-full pt-2 px-4 pb-2 bg-white border-t border-gray-100 flex flex-col items-center z-[1000] relative shadow-[0_-4px_16px_rgba(0,0,0,0.06)] android-nav-safe-pb">
-        {/* Countdown message */}
-        <div className="w-full flex justify-center items-center py-1.5 text-center">
+      {/* STICKY FOOTER ACTIONS (Matching Image q3: 确认接单 button) */}
+      <footer className="shrink-0 w-full pt-2 px-4 pb-3 bg-white border-t border-gray-100 flex flex-col items-center z-[1000] relative shadow-[0_-4px_16px_rgba(0,0,0,0.06)] android-nav-safe-pb">
+        {/* Countdown message (Image q3) */}
+        <div className="w-full flex justify-center items-center py-1 text-center">
           <span className="text-xs sm:text-sm font-bold text-[#e61a1a] animate-pulse">
             (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{timeLeft}</span> 秒内确认接单)
           </span>
         </div>
         
-        {/* Accept Main Action Button */}
-        <button 
-          onClick={handleConfirmOrder}
-          onTouchEnd={handleConfirmOrder}
-          disabled={isAccepting}
-          className="w-full bg-[#e61a1a] active:bg-[#c81414] text-white py-3 sm:py-3.5 rounded-xl sm:rounded-2xl text-base sm:text-lg font-black text-center transition-all shadow-lg hover:shadow-[#e61a1a]/20 shadow-[#e61a1a]/10 hover:translate-y-[-1px] active:translate-y-[1px] disabled:opacity-50 cursor-pointer touch-manipulation"
-          data-purpose="confirm-order-btn"
-        >
-          {isAccepting ? '正在确认接单...' : '确认接单'}
-        </button>
+        {/* Single Action Button (Image q3: Full width Red 确认接单) */}
+        <div className="w-full mt-1.5">
+          <button 
+            onClick={handleConfirmOrder}
+            onTouchEnd={handleConfirmOrder}
+            disabled={isAccepting}
+            className="w-full bg-[#e61a1a] active:bg-[#c81414] hover:bg-[#d01515] text-white py-3.5 sm:py-4 rounded-xl sm:rounded-2xl text-base sm:text-lg font-black text-center transition-all shadow-lg shadow-rose-600/25 active:scale-95 disabled:opacity-50 cursor-pointer touch-manipulation flex items-center justify-center gap-1.5"
+            data-purpose="confirm-order-btn"
+          >
+            <span>{isAccepting ? '正在确认接单...' : '确认接单'}</span>
+          </button>
+        </div>
       </footer>
 
     </div>

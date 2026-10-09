@@ -1,3 +1,5 @@
+import { getBaseApiUrl } from '../lib/dbProxy';
+
 /**
  * Utility for geocoding and distance calculation across the application.
  * Guarantees valid Yinchuan / city coordinates and accurate distance sync.
@@ -43,10 +45,6 @@ const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
   {
     keywords: ['西桥巷粉条大盘鸡', '粉条大盘鸡', '西桥巷'],
     coords: { lat: 38.4873, lng: 106.2625 }
-  },
-  {
-    keywords: ['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'],
-    coords: { lat: 38.47513, lng: 106.28665 }
   },
   {
     keywords: ['运祥小区', '运祥', '运祥小区南门', '运祥小区北门'],
@@ -252,19 +250,31 @@ export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): C
     return baseCenter;
   }
 
-  const cleanAddr = addressName.trim();
+  // Clean out common prefixes like "代驾商家起点为", "代驾商家起点：", "代驾商家起点", "商家起点：", "起点为", "起点："
+  let cleanAddr = addressName.trim()
+    .replace(/^代驾商家起点[为：:\s]*/g, '')
+    .replace(/^商家代叫起点[为：:\s]*/g, '')
+    .replace(/^商家起点[为：:\s]*/g, '')
+    .replace(/^代叫商家起点[为：:\s]*/g, '')
+    .replace(/^代驾起点[为：:\s]*/g, '')
+    .replace(/^起点[为：:\s]*/g, '')
+    .trim();
 
-  // If address explicitly contains merchant start terms, prefer fallbackCenter (merchant/driver location) if valid
-  if (['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'].some(kw => cleanAddr.includes(kw))) {
-    if (fallbackCenter && isValidCoords(fallbackCenter.lat, fallbackCenter.lng)) {
-      return fallbackCenter;
-    }
+  if (!cleanAddr) {
+    cleanAddr = addressName.trim();
   }
 
   // 1. Keyword search against known POI dictionary
   for (const poi of YINCHUAN_POI_MAP) {
-    if (poi.keywords.some(kw => cleanAddr.includes(kw))) {
+    if (poi.keywords.some(kw => cleanAddr.includes(kw) || kw.includes(cleanAddr))) {
       return poi.coords;
+    }
+  }
+
+  // If address only consisted of generic merchant start terms with no landmark, fallback to merchant/driver location
+  if (['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'].some(kw => addressName.includes(kw))) {
+    if (fallbackCenter && isValidCoords(fallbackCenter.lat, fallbackCenter.lng)) {
+      return fallbackCenter;
     }
   }
 
@@ -360,4 +370,40 @@ export function calculateOrderDriverDistance(
     resolvedLat: oLat,
     resolvedLng: oLng
   };
+}
+
+/**
+ * Asynchronously geocode merchant start location using Aliyun server /api/geocode,
+ * with fallback to local POI map and device coordinates.
+ */
+export async function geocodeAddressViaServer(
+  addressName?: string,
+  fallbackCoords?: Coords | null
+): Promise<Coords> {
+  const fallback = (fallbackCoords && isValidCoords(fallbackCoords.lat, fallbackCoords.lng))
+    ? fallbackCoords
+    : DEFAULT_YINCHUAN_COORDS;
+
+  if (!addressName || typeof addressName !== 'string' || !addressName.trim()) {
+    return fallback;
+  }
+
+  try {
+    const baseUrl = getBaseApiUrl();
+    const cleanAddr = addressName.trim();
+    const params = new URLSearchParams();
+    params.set('address', cleanAddr);
+    params.set('lat', String(fallback.lat));
+    params.set('lng', String(fallback.lng));
+
+    const res = await fetch(`${baseUrl}/api/geocode?${params.toString()}`);
+    if (res.ok) {
+      const json = await res.json();
+      if (json && json.success && isValidCoords(json.lat, json.lng)) {
+        return { lat: Number(json.lat), lng: Number(json.lng) };
+      }
+    }
+  } catch (_) {}
+
+  return geocodeAddress(addressName, fallback);
 }

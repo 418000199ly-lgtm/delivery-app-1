@@ -1523,46 +1523,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     } catch (_) {}
   }, [settings, userPhone]);
 
-  // One-time automatic clean-up of legacy QR codes from user session/database to eliminate old center logos/text
+  // Mark QR clean migration flag without modifying user's custom images
   useEffect(() => {
-    const isCleaned = localStorage.getItem('dd_qr_clean_v4') === 'true';
-    if (!isCleaned) {
-      localStorage.setItem('dd_qr_clean_v4', 'true');
-      const cleanLegacyQrs = async () => {
-        let updated = false;
-        const newSettings = { ...settings };
-        
-        if (settings.wechatQrCode) {
-          try {
-            const cleaned = await regenerateQRCode(settings.wechatQrCode, 'wechat');
-            if (cleaned && cleaned !== settings.wechatQrCode) {
-              newSettings.wechatQrCode = cleaned;
-              updated = true;
-            }
-          } catch (e) {
-            console.error("Auto-heal WeChat QR failed: ", e);
-          }
-        }
-        
-        if (settings.alipayQrCode) {
-          try {
-            const cleaned = await regenerateQRCode(settings.alipayQrCode, 'alipay');
-            if (cleaned && cleaned !== settings.alipayQrCode) {
-              newSettings.alipayQrCode = cleaned;
-              updated = true;
-            }
-          } catch (e) {
-            console.error("Auto-heal Alipay QR failed: ", e);
-          }
-        }
-        
-        if (updated) {
-          setSettings(newSettings);
-        }
-      };
-      
-      cleanLegacyQrs();
-    }
+    localStorage.setItem('dd_qr_clean_v4', 'true');
   }, []);
 
   // Load settings and stats instantly on userPhone changes, and clear calibrations
@@ -1995,18 +1958,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const rawTime = Number(data.timestamp || data.updatedAt || Date.now());
         const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
 
-        // Validate if order is already completed / cancelled / ended
-        const ended = data.isDirectClaim ? false : await isOrderAlreadyEnded(data, userPhone);
-        if (ended) {
-          clearPendingOrderCache();
-          setIncomingOrder(null);
-          triggerToast('⚠️ 该订单已完结，无需重复接单');
-          return;
-        }
-
         dismissedIncomingOrderKeysRef.current.delete(orderKey);
-        triggerBackgroundOrderAlert(data);
+        // Instant synchronous render of incoming order overlay with zero delay & zero homepage flashing
         setIncomingOrder(data);
+        triggerBackgroundOrderAlert(data);
+
+        // Async non-blocking verification for non-valet orders
+        if (!data.isDirectClaim && !data.isValetOrder) {
+          isOrderAlreadyEnded(data, userPhone).then(ended => {
+            if (ended) {
+              clearPendingOrderCache();
+              setIncomingOrder(null);
+              triggerToast('⚠️ 该订单已完结，无需重复接单');
+            }
+          }).catch(() => {});
+        }
       }
     };
     window.addEventListener('trigger_incoming_order', handleCustomTrigger);
@@ -2074,7 +2040,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               lastAlertedOrderTimeRef.current = now;
               triggerBackgroundOrderAlert(data);
             }
-            setIncomingOrder(data);
+            setIncomingOrder(prev => {
+              if (prev) {
+                const prevId = String(prev.orderId || prev.id || prev.orderNo || '').trim();
+                const nextId = String(data.orderId || data.id || data.orderNo || '').trim();
+                if (prevId && nextId && prevId === nextId) {
+                  // Keep existing object if it is the same order to prevent unnecessary unmounts & speech resets
+                  return { ...prev, ...data };
+                }
+              }
+              return data;
+            });
           } else {
             dismissedIncomingOrderKeysRef.current.add(orderKey);
             setIncomingOrder(null);
@@ -2125,10 +2101,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
-          setIncomingOrder(null);
-          clearPendingOrderCache();
-
           const cancelId = String(data.orderId || data.orderNo || data.id || '').trim();
+          setIncomingOrder(prev => {
+            if (!prev) return null;
+            const curId = String(prev.orderId || prev.id || prev.orderNo || '').trim();
+            // 严格要求：只有取消ID与当前订单ID完全一致时才取消，绝不误伤新下单的订单
+            if (cancelId && curId && cancelId === curId) {
+              clearPendingOrderCache();
+              return null;
+            }
+            return prev;
+          });
+
           const cancelKey = cancelId || `cancel_${cleanPhone}_${data.cancelTime || data.timestamp || ''}`;
 
           // Only process and notify once per cancellation to prevent infinite loop
@@ -2153,7 +2137,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             if (activeOnlineOrder) {
               const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
               const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
-              const isMatch = !cancelId || (cancelId === activeId || cancelId === activeNo);
+              const isMatch = Boolean(cancelId && (cancelId === activeId || cancelId === activeNo));
               if (isMatch) {
                 setActiveOnlineOrder(null);
                 setCurrentTrip(null);
@@ -2165,21 +2149,33 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                   speakText(voiceMsg);
                 } catch (_) {}
               }
-            } else if (currentView !== 'home') {
-              setCurrentView('home');
-              setMobileActiveTab('app');
-              reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-              triggerToast(toastMsg);
-              try {
-                speakText(voiceMsg);
-              } catch (_) {}
+            } else if (incomingOrder) {
+              const incId = String(incomingOrder.id || incomingOrder.orderId || '').trim();
+              const incNo = String(incomingOrder.orderNo || '').trim();
+              const isMatchInc = Boolean(cancelId && (cancelId === incId || cancelId === incNo));
+              if (isMatchInc) {
+                setIncomingOrder(null);
+                setCurrentView('home');
+                setMobileActiveTab('app');
+                reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+                triggerToast(toastMsg);
+                try {
+                  speakText(voiceMsg);
+                } catch (_) {}
+              }
             }
           }
           return;
         }
         processIncomingData(data);
       } else {
-        setIncomingOrder(null);
+        setIncomingOrder(prev => {
+          // Do NOT clear if driver is actively viewing an incoming order with countdown in progress!
+          if (prev && !prev.isCancelled && prev.status !== 'cancelled') {
+            return prev;
+          }
+          return null;
+        });
       }
     }, (err) => {
       console.warn('[Baota DB] passenger_links snapshot error:', err);
@@ -2191,10 +2187,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data?.status === 'cancelled' || data?.isCancelled || data?.statusCategory === '已取消') {
-          setIncomingOrder(null);
-          clearPendingOrderCache();
-
           const cancelId = String(data.orderId || data.orderNo || data.id || '').trim();
+          setIncomingOrder(prev => {
+            if (!prev) return null;
+            const curId = String(prev.orderId || prev.id || prev.orderNo || '').trim();
+            // 严格要求：只有取消ID与当前订单ID完全一致时才取消，绝不误伤新下单的订单
+            if (cancelId && curId && cancelId === curId) {
+              clearPendingOrderCache();
+              return null;
+            }
+            return prev;
+          });
+
           const cancelKey = cancelId || `cancel_act_${cleanPhone}_${data.cancelTime || data.timestamp || ''}`;
 
           const alreadyHandled = handledCancelledOrderKeysRef.current.has(cancelKey);
@@ -2217,10 +2221,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             if (activeOnlineOrder) {
               const activeId = String(activeOnlineOrder.id || activeOnlineOrder.orderId || '').trim();
               const activeNo = String(activeOnlineOrder.orderNo || activeOnlineOrder.rawOrder?.orderNo || '').trim();
-              const isMatch = !cancelId || (cancelId === activeId || cancelId === activeNo);
+              const isMatch = Boolean(cancelId && (cancelId === activeId || cancelId === activeNo));
               if (isMatch) {
                 setActiveOnlineOrder(null);
                 setCurrentTrip(null);
+                setCurrentView('home');
+                setMobileActiveTab('app');
+                reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
+                triggerToast(toastMsg);
+                try {
+                  speakText(voiceMsg);
+                } catch (_) {}
+              }
+            } else if (incomingOrder) {
+              const incId = String(incomingOrder.id || incomingOrder.orderId || '').trim();
+              const incNo = String(incomingOrder.orderNo || '').trim();
+              const isMatchInc = Boolean(cancelId && (cancelId === incId || cancelId === incNo));
+              if (isMatchInc) {
+                setIncomingOrder(null);
                 setCurrentView('home');
                 setMobileActiveTab('app');
                 reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
@@ -2593,10 +2611,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
         const updated = saved.map((o: any) => {
-          if (
-            (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) ||
-            (incomingOrder.passengerPhone && o.passengerPhone === incomingOrder.passengerPhone)
-          ) {
+          if (orderId && (o.id === orderId || o.orderId === orderId || o.orderNo === orderId)) {
             return {
               ...o,
               ...updateData

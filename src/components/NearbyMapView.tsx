@@ -675,20 +675,21 @@ export default function NearbyMapView({
     const currentRenderedDrivers: any[] = [];
 
     // 1. 当前司机本人 "我" (15509601222 或 登录司机)
-    if (isCurrentDriverOnline) {
-      currentRenderedDrivers.push({
-        phone: effectiveMyPhone,
-        name: currentDriverName,
-        rawRealName: currentDriverName,
-        isMe: true,
-        isOnline: true,
-        isBusy: isCurrentDriverBusy,
-        todayOrders: todayOrdersCount,
-        lat: gpsLocation.lat,
-        lng: gpsLocation.lng,
-        randomSortKey: -1
-      });
-    }
+    // 规则：地图上始终显示自己；上线显示绿色(或忙碌红色)，下线显示灰色的下线状态自己
+    const myLat = (gpsLocation && gpsLocation.lat) ? gpsLocation.lat : (driverCoords?.lat || 38.487167);
+    const myLng = (gpsLocation && gpsLocation.lng) ? gpsLocation.lng : (driverCoords?.lng || 106.23091);
+    currentRenderedDrivers.push({
+      phone: effectiveMyPhone,
+      name: currentDriverName,
+      rawRealName: currentDriverName,
+      isMe: true,
+      isOnline: Boolean(isCurrentDriverOnline),
+      isBusy: Boolean(isCurrentDriverBusy),
+      todayOrders: todayOrdersCount,
+      lat: myLat,
+      lng: myLng,
+      randomSortKey: -1
+    });
 
     const candidateDriversMap = new Map<string, {
       phone: string;
@@ -866,7 +867,7 @@ export default function NearbyMapView({
 
       if (!isOnlineState) {
         tagBg = '#64748b'; // 灰色: 下线
-        tagText = `${driverName}(下线)`;
+        tagText = isMe ? `${driverName} (我)` : `${driverName}(下线)`;
       } else if (isBusyState) {
         tagBg = '#ef4444'; // 红色: 报单中/接单做单中 (仅通过红色背景与红帽标识，不附带文字)
         tagText = isMe ? `${driverName} (我)` : driverName;

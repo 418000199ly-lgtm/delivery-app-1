@@ -78,6 +78,20 @@ export default function SquadDriverList({
     return false;
   });
 
+  // Show offline drivers preference from Hubble settings
+  const [showOfflineDrivers, setShowOfflineDrivers] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const savedSettings = localStorage.getItem('dd_hubble_filter_settings');
+        if (savedSettings) {
+          const parsed = JSON.parse(savedSettings);
+          if (typeof parsed?.showOffline === 'boolean') return parsed.showOffline;
+        }
+      } catch (_) {}
+    }
+    return false;
+  });
+
   useEffect(() => {
     if (typeof propShowFullName === 'boolean') {
       setShowFullName(propShowFullName);
@@ -87,11 +101,22 @@ export default function SquadDriverList({
   // Listen to Hubble filter settings changes
   useEffect(() => {
     const handleHubbleSettings = (e: any) => {
-      if (e?.detail && typeof e.detail.showFullName === 'boolean') {
-        setShowFullName(e.detail.showFullName);
+      if (e?.detail) {
+        if (typeof e.detail.showFullName === 'boolean') {
+          setShowFullName(e.detail.showFullName);
+        }
+        if (typeof e.detail.showOffline === 'boolean') {
+          setShowOfflineDrivers(e.detail.showOffline);
+        }
       } else if (typeof window !== 'undefined') {
         const flag = localStorage.getItem('dd_hubble_show_full_name') === 'true';
         setShowFullName(flag);
+        try {
+          const saved = JSON.parse(localStorage.getItem('dd_hubble_filter_settings') || '{}');
+          if (typeof saved.showOffline === 'boolean') {
+            setShowOfflineDrivers(saved.showOffline);
+          }
+        } catch (_) {}
       }
     };
     window.addEventListener('hubble_settings_changed', handleHubbleSettings);
@@ -446,11 +471,15 @@ export default function SquadDriverList({
       const resultList: DriverItem[] = [];
       mapDrivers.forEach((d: any) => {
         if (!d) return;
-        // 严格遵循小队在线司机显示：仅展示在线司机（与w1地图保持完全一致）
-        if (d.isOnline === false) return;
-
         const cleanP = String(d.phone || '').replace(/\D/g, '').trim();
         const isMe = d.isMe || isMeMember(cleanP);
+
+        // 规则：下线状态的自己永远显示；小队内其他下线司机只有在哈勃里开启了showOffline才显示
+        const isDriverOnline = isMe ? Boolean(isCurrentDriverOnline) : Boolean(d.isOnline);
+        if (!isMe && !isDriverOnline && !showOfflineDrivers) {
+          return;
+        }
+
         if (!isMe && (REMOVED_GENERIC_DRIVER_PHONES.includes(cleanP) || isGenericDriverName(d.rawRealName || d.name, cleanP))) return;
         const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
         const displayName = isMe
@@ -467,7 +496,7 @@ export default function SquadDriverList({
           name: displayName,
           rawRealName,
           isMe,
-          isOnline: true,
+          isOnline: isDriverOnline,
           isBusy: isMe ? isCurrentDriverBusy : Boolean(d.isBusy),
           todayOrders: isMe ? myComputedTodayOrders : (d.todayOrders || 0),
           lat: d.lat,
@@ -476,6 +505,20 @@ export default function SquadDriverList({
           randomSortKey: sortKey
         });
       });
+
+      // 确保无论上线还是下线，自己永远位于第一名 (rank 1)
+      if (!resultList.some(d => d.isMe)) {
+        resultList.unshift({
+          phone: effectiveMyPhone,
+          name: currentDriverFullName,
+          rawRealName: currentDriverFullName,
+          isMe: true,
+          isOnline: Boolean(isCurrentDriverOnline),
+          isBusy: Boolean(isCurrentDriverBusy),
+          todayOrders: myComputedTodayOrders,
+          randomSortKey: -1
+        });
+      }
 
       resultList.sort((a, b) => {
         if (a.isMe) return -1;
@@ -488,19 +531,17 @@ export default function SquadDriverList({
     const list: DriverItem[] = [];
     const cutoff0559Ms = getBeijing0559CutoffMs();
 
-    // 1. Self (always first if online)
-    if (isCurrentDriverOnline) {
-      list.push({
-        phone: effectiveMyPhone,
-        name: currentDriverFullName,
-        rawRealName: currentDriverFullName,
-        isMe: true,
-        isOnline: true,
-        isBusy: isCurrentDriverBusy,
-        todayOrders: myComputedTodayOrders,
-        randomSortKey: -1 // Highest priority
-      });
-    }
+    // 1. Self: ALWAYS first at rank 1 (whether online or offline)
+    list.push({
+      phone: effectiveMyPhone,
+      name: currentDriverFullName,
+      rawRealName: currentDriverFullName,
+      isMe: true,
+      isOnline: Boolean(isCurrentDriverOnline),
+      isBusy: Boolean(isCurrentDriverBusy),
+      todayOrders: myComputedTodayOrders,
+      randomSortKey: -1 // Highest priority
+    });
 
     // 2. Candidate map ONLY from squadList (strictly approved members of this squad)
     const candidateMap = new Map<string, {
@@ -615,20 +656,22 @@ export default function SquadDriverList({
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
       if (REMOVED_GENERIC_DRIVER_PHONES.includes(driver.phone) || isGenericDriverName(driver.name, driver.phone) || isGenericDriverName(driver.rawRealName, driver.phone)) return;
-      if (!driver.isOnline) return;
+      
+      // 状态判断：只有在线司机显示；如果下线，必须在哈勃开启了showOffline才显示
+      if (!driver.isOnline && !showOfflineDrivers) return;
 
       // 必须有真实有效GPS坐标（与地图w1保持严格一致）
       if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) {
         return;
       }
 
-      // If location timestamp is before today's 05:59 AM cutoff, strictly treat as offline
-      if (driver.uploadTime > 0 && driver.uploadTime < cutoff0559Ms) {
+      // If location timestamp is before today's 05:59 AM cutoff and offline not enabled, strictly treat as offline
+      if (driver.uploadTime > 0 && driver.uploadTime < cutoff0559Ms && !showOfflineDrivers) {
         return;
       }
 
       // Heartbeat validation: if uploadTime is set and is older than 10 minutes, driver has disconnected
-      if (driver.uploadTime > 0 && (now - driver.uploadTime > MAX_INACTIVITY_MS)) {
+      if (driver.uploadTime > 0 && (now - driver.uploadTime > MAX_INACTIVITY_MS) && !showOfflineDrivers) {
         return;
       }
 
@@ -647,7 +690,7 @@ export default function SquadDriverList({
         name: displayName,
         rawRealName,
         isMe: false,
-        isOnline: true,
+        isOnline: Boolean(driver.isOnline),
         isBusy: driver.isBusy,
         todayOrders: driver.todayOrders,
         lat: driver.lat,
@@ -706,10 +749,12 @@ export default function SquadDriverList({
             <div className="flex items-center space-x-1.5">
               <h1 className="text-base font-extrabold text-slate-900 tracking-tight">小队司机列表</h1>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-600 border border-emerald-200/60">
-                {sortedOnlineDrivers.length}人在线
+                {sortedOnlineDrivers.filter(d => d.isOnline).length}人在线
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 font-medium">仅展示小队内所有在线司机</p>
+            <p className="text-[11px] text-slate-400 font-medium">
+              {!isCurrentDriverOnline ? '您当前处于下线状态，其他离线队员需在哈勃开启显示' : '仅展示小队内所有在线司机'}
+            </p>
           </div>
         </div>
 
@@ -737,13 +782,16 @@ export default function SquadDriverList({
           sortedOnlineDrivers.map((driver, index) => {
             const rank = index + 1;
             const isMe = driver.isMe;
+            const isOnlineDriver = driver.isOnline;
             const isBusy = driver.isBusy; // true: 红色(做单、报单中); false: 绿色(空闲)
 
             return (
               <div
                 key={driver.phone || `driver-${index}`}
                 className={`w-full rounded-2xl p-3.5 transition-all duration-150 border ${
-                  isBusy
+                  !isOnlineDriver
+                    ? 'bg-gradient-to-r from-slate-100/90 via-white to-white border-slate-300 shadow-xs ring-1 ring-slate-400/20'
+                    : isBusy
                     ? 'bg-gradient-to-r from-red-50/70 via-white to-white border-red-300 shadow-xs ring-1 ring-red-500/15'
                     : 'bg-gradient-to-r from-emerald-50/70 via-white to-white border-emerald-300 shadow-xs ring-1 ring-emerald-500/15'
                 }`}
@@ -754,7 +802,9 @@ export default function SquadDriverList({
                     {/* Rank Badge */}
                     <div className="flex items-center justify-center shrink-0">
                       {rank === 1 ? (
-                        <div className="w-6 h-6 rounded-full bg-amber-400 text-amber-950 font-black text-xs flex items-center justify-center shadow-xs">
+                        <div className={`w-6 h-6 rounded-full font-black text-xs flex items-center justify-center shadow-xs ${
+                          !isOnlineDriver ? 'bg-slate-300 text-slate-700' : 'bg-amber-400 text-amber-950'
+                        }`}>
                           1
                         </div>
                       ) : rank === 2 ? (
@@ -772,21 +822,25 @@ export default function SquadDriverList({
                       )}
                     </div>
 
-                    {/* Driver Avatar with Status Indicator Dot (Green = 空闲, Red = 做单/报单中) */}
+                    {/* Driver Avatar with Status Indicator Dot (Green = 空闲, Red = 做单/报单中, Gray = 下线) */}
                     <div className="relative shrink-0">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-black shadow-2xs ${
-                        isBusy 
+                        !isOnlineDriver
+                          ? 'bg-slate-400 text-white'
+                          : isBusy 
                           ? 'bg-red-500 text-white' 
                           : 'bg-emerald-600 text-white'
                       }`}>
                         {driver.name.slice(0, 1)}
                       </div>
-                      {/* Realtime Status Dot: Green (Idle) or Red (Busy/Reporting) */}
+                      {/* Realtime Status Dot: Green (Idle) or Red (Busy/Reporting) or Gray (Offline) */}
                       <span 
                         className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white ${
-                          isBusy ? 'bg-red-500' : 'bg-emerald-500'
+                          !isOnlineDriver
+                            ? 'bg-slate-400'
+                            : isBusy ? 'bg-red-500' : 'bg-emerald-500'
                         }`} 
-                        title={isBusy ? '做单/报单中' : '空闲接单'}
+                        title={!isOnlineDriver ? '已下线' : (isBusy ? '做单/报单中' : '空闲接单')}
                       />
                     </div>
 
@@ -794,7 +848,9 @@ export default function SquadDriverList({
                     <div className="min-w-0 flex flex-col">
                       <div className="flex items-center space-x-1.5">
                         <span className={`text-sm font-black truncate ${
-                          isBusy ? 'text-red-500' : 'text-slate-900'
+                          !isOnlineDriver
+                            ? 'text-slate-600'
+                            : isBusy ? 'text-red-500' : 'text-slate-900'
                         }`}>
                           {String(driver.name || '')
                             .replace(/\(做单中\)/g, '')
@@ -805,16 +861,23 @@ export default function SquadDriverList({
                         </span>
                         {isMe && (
                           <span className={`px-1.5 py-0.2 rounded text-[10px] font-black text-white ${
-                            isBusy ? 'bg-red-500' : 'bg-emerald-600'
+                            !isOnlineDriver
+                              ? 'bg-slate-500'
+                              : isBusy ? 'bg-red-500' : 'bg-emerald-600'
                           }`}>
                             我
                           </span>
                         )}
                       </div>
                       
-                      {/* Driver Status Subtitle Line (Matches w10 style) */}
+                      {/* Driver Status Subtitle Line */}
                       <div className="flex items-center space-x-1.5 mt-0.5">
-                        {isBusy ? (
+                        {!isOnlineDriver ? (
+                          <span className="inline-flex items-center text-[10px] font-bold text-slate-500">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 mr-1 inline-block" />
+                            下线
+                          </span>
+                        ) : isBusy ? (
                           <span className="inline-flex items-center text-[10px] font-bold text-red-600">
                             <Clock className="w-2.5 h-2.5 mr-0.5" />
                             忙碌
@@ -826,7 +889,7 @@ export default function SquadDriverList({
                           </span>
                         )}
                         <span className="text-[10px] text-slate-400">
-                          {isMe ? '实时在线' : '小队队员'}
+                          {isMe ? (isOnlineDriver ? '实时在线' : '下线状态') : (isOnlineDriver ? '小队队员' : '队员下线')}
                         </span>
                       </div>
                     </div>

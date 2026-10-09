@@ -900,15 +900,15 @@ export default function HomeView({
       if (isCancelled || isCompleted || isClaimed) return false;
       if (data.in_hall === false) return false;
 
-      // 2. 司机A超时未接单或主动点击取消订单后，该订单绝不进入司机A的选单大厅！
+      // 2. 司机A超时未接单或主动点击取消订单后，该订单绝不进入司机A的选单大厅 (开发者 15509601222 在单机预览测试时允许查看与抢单)
       const declinedList = Array.isArray(data.declinedDriverPhones) ? data.declinedDriverPhones.map((p: any) => String(p).replace(/\D/g, '').trim()) : [];
       const timeoutList = Array.isArray(data.timeoutDriverPhones) ? data.timeoutDriverPhones.map((p: any) => String(p).replace(/\D/g, '').trim()) : [];
-      if (myPhone && (declinedList.includes(myPhone) || timeoutList.includes(myPhone))) {
+      if (myPhone && myPhone !== '15509601222' && (declinedList.includes(myPhone) || timeoutList.includes(myPhone))) {
         return false;
       }
 
       const oKey = String(data.id || data.orderId || data.orderNo || '').trim();
-      if (myPhone && oKey) {
+      if (myPhone && myPhone !== '15509601222' && oKey) {
         try {
           const localDeclined = JSON.parse(localStorage.getItem(`dd_declined_orders_${myPhone}`) || '[]');
           if (Array.isArray(localDeclined) && localDeclined.includes(oKey)) {
@@ -1918,11 +1918,26 @@ export default function HomeView({
             <img 
               alt="Driver Ready"
               className="absolute inset-0 w-full h-full object-cover" 
-              src={READY_DRIVER_PATH}
+              src={(() => {
+                const currentPhone = getCurrentPhone();
+                if (currentPhone) {
+                  const savedPhoto = localStorage.getItem(`dd_driver_photo_${currentPhone}`);
+                  if (savedPhoto && savedPhoto.length > 50) return savedPhoto;
+                }
+                const generalPhoto = localStorage.getItem('dd_driver_photo') || localStorage.getItem('dd_driver_avatar');
+                if (generalPhoto && generalPhoto.length > 50) return generalPhoto;
+                if ((settings as any)?.albumPhotos?.[0]?.dataUrl) {
+                  return (settings as any).albumPhotos[0].dataUrl;
+                }
+                if ((settings as any)?.driverAvatar) {
+                  return (settings as any).driverAvatar;
+                }
+                return VALET_CAR_BANNER_BASE64 || VALET_CAR_BANNER_PATH;
+              })()}
               onError={(e) => {
                 const target = e.currentTarget;
-                if (target.src !== READY_DRIVER_BASE64) {
-                  target.src = READY_DRIVER_BASE64;
+                if (target.src !== VALET_CAR_BANNER_BASE64) {
+                  target.src = VALET_CAR_BANNER_BASE64;
                 }
               }}
               referrerPolicy="no-referrer"

@@ -2087,7 +2087,6 @@ async function startServer() {
               ['online_applications', docId]
             );
           }
-          return res.json({ success: true, id: docId });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy DELETE MySQL Error]:', mysqlErr);
         }
@@ -2860,7 +2859,6 @@ async function startServer() {
     { keywords: ['铂金大厦', '长相忆宾馆'], lat: 38.4825, lng: 106.2315 },
     { keywords: ['怀远夜市', '怀远路', '怀远市场', '八一车场'], lat: 38.4950, lng: 106.1550 },
     { keywords: ['运祥小区', '运祥'], lat: 38.4830, lng: 106.2350 },
-    { keywords: ['代驾商家起点', '代驾商家', '商家代叫', '代叫商家', '商家起点', '代驾起点'], lat: 38.4830, lng: 106.2350 },
     { keywords: ['金凤万达', '万达广场'], lat: 38.5085, lng: 106.2160 },
     { keywords: ['西夏万达'], lat: 38.4985, lng: 106.1485 },
     { keywords: ['建发大阅城', '大阅城'], lat: 38.5255, lng: 106.2205 },
@@ -2908,9 +2906,17 @@ async function startServer() {
       return { lat: defaultLat, lng: defaultLng };
     }
 
-    const clean = startLoc.trim();
+    const clean = startLoc.trim()
+      .replace(/^代驾商家起点[为：:\s]*/g, '')
+      .replace(/^商家代叫起点[为：:\s]*/g, '')
+      .replace(/^商家起点[为：:\s]*/g, '')
+      .replace(/^代叫商家起点[为：:\s]*/g, '')
+      .replace(/^代驾起点[为：:\s]*/g, '')
+      .replace(/^起点[为：:\s]*/g, '')
+      .trim() || startLoc.trim();
+
     for (const poi of YINCHUAN_SERVER_POIS) {
-      if (poi.keywords.some(kw => clean.includes(kw))) {
+      if (poi.keywords.some(kw => clean.includes(kw) || kw.includes(clean))) {
         return { lat: poi.lat, lng: poi.lng };
       }
     }
@@ -2943,9 +2949,6 @@ async function startServer() {
       if (!orderData || (!orderData.id && !orderData.orderNo)) {
         return res.status(400).json({ success: false, error: 'Missing orderData' });
       }
-
-      // 给阿里云服务器宝塔面板倒计时考虑的时间（解析坐标、智能寻找3公里内最近空闲小队司机）
-      await new Promise((resolve) => setTimeout(resolve, 800));
 
       // Resolve merchant start location coordinates (support POI geocoding on server)
       const startLocName = String(orderData.startLocation || orderData.passengerAddress || orderData.pickupAddress || '').trim();
@@ -3102,7 +3105,8 @@ async function startServer() {
           ? calculateHaversineKm(pLat, pLng, dLat, dLng)
           : 0.3;
 
-        if (distKm <= radiusKm || (existingDispatchedPhone && existingDispatchedPhone === cleanPhone)) {
+        // 严格遵循3公里派单半径限制：超过3公里 (distKm > radiusKm) 绝不直接派单，必须转入选单大厅
+        if (distKm <= radiusKm) {
           candidates.push({
             phone: cleanPhone,
             name: data.driverName || data.name || (cleanPhone === '15509601222' ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`),
@@ -3731,16 +3735,22 @@ async function startServer() {
         }
       }
       if (!targetOrder && driverPhone) {
-        targetOrder = dbData['passenger_links']?.[driverPhone];
+        const linkOrder = dbData['passenger_links']?.[driverPhone];
+        if (linkOrder) {
+          const lId = String(linkOrder.id || linkOrder.orderId || linkOrder.orderNo || '').trim();
+          if (!orderId || (lId && lId === orderId)) {
+            targetOrder = linkOrder;
+          }
+        }
       }
 
       if (!targetOrder) {
         return res.json({
           success: true,
-          serverCountdown: 0,
-          isExpired: true,
-          inHall: true,
-          status: 'unknown',
+          serverCountdown: 60,
+          isExpired: false,
+          inHall: false,
+          status: 'submitted',
           serverTime: now
         });
       }

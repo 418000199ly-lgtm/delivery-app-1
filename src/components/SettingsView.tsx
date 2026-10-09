@@ -1250,20 +1250,31 @@ export default function SettingsView({
                       onClick={async () => {
                         // User selects the photo
                         try {
-                          const cleanedQr = await regenerateQRCode(photo.dataUrl, selectedQrTab);
+                          const selectedImgUrl = photo.dataUrl;
+                          const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+                          
                           if (selectedQrTab === 'wechat') {
-                            onUpdateSettings({ ...settings, wechatQrCode: cleanedQr });
-                            const targetPhone = settings.phoneNumber || localStorage.getItem('dd_user_phone') || '';
+                            onUpdateSettings({ ...settings, wechatQrCode: selectedImgUrl });
                             if (targetPhone) {
+                              try {
+                                localStorage.removeItem(`dd_qr_deleted_${targetPhone}`);
+                                localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, selectedImgUrl);
+                                localStorage.setItem(`dd_dispatch_fee_qr_${targetPhone}`, selectedImgUrl);
+                                localStorage.setItem('dd_dispatch_wechat_qr', selectedImgUrl);
+                                localStorage.setItem('dd_user_wechat_qr', selectedImgUrl);
+                                localStorage.setItem('dd_user_wechat_clean_qr', selectedImgUrl);
+                                localStorage.setItem('dd_last_payment_qr', selectedImgUrl);
+                              } catch (_) {}
+
                               const baseUrl = getBaseApiUrl();
                               fetch(`${baseUrl}/api/upload-wechat-qr`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ phone: targetPhone, imageBase64: cleanedQr })
+                                body: JSON.stringify({ phone: targetPhone, imageBase64: selectedImgUrl })
                               }).catch(() => {});
                             }
                           } else {
-                            onUpdateSettings({ ...settings, alipayQrCode: cleanedQr });
+                            onUpdateSettings({ ...settings, alipayQrCode: selectedImgUrl });
                           }
                           
                           // Small customized log feedback

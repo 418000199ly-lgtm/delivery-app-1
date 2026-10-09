@@ -19,6 +19,19 @@ function isPlaceholderPhone(phone: string): boolean {
 export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promise<boolean> {
   if (!order) return true;
 
+  // 0. Fast-path: Newly created active dispatch orders within 60 seconds are strictly active
+  const now = Date.now();
+  const orderTs = Number(order.timestamp || order.dispatchedAt || 0);
+  if (
+    orderTs > 0 &&
+    (now - orderTs) < 60000 &&
+    (order.status === 'submitted' || order.status === 'dispatched' || order.isValetOrder || order.isPlatformDispatch) &&
+    order.status !== 'cancelled' &&
+    order.status !== 'completed'
+  ) {
+    return false;
+  }
+
   const orderId = (order.id || order.orderId || order.orderNo || order.orderNumber || '').toString().trim();
   const pPhone = (order.passengerPhone || order.phone || '').toString().trim();
   const startLoc = (order.startLocation || order.pickupName || '').toString().trim();

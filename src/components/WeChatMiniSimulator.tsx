@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import TencentMap from './TencentMap';
 import { db, doc, setDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import driverAvatar from '../assets/images/driver_cycling_helmet_avatar_1784017817358.jpg';
-import { DRIVER_AVATAR_BASE64, READY_DRIVER_BASE64, READY_DRIVER_PATH, WECHAT_CARD_BANNER_BASE64, WECHAT_CARD_BANNER_PATH } from '../assets/images/driverImageConstants';
+import { DRIVER_AVATAR_BASE64, READY_DRIVER_BASE64, READY_DRIVER_PATH, VALET_CAR_BANNER_BASE64, VALET_CAR_BANNER_PATH, WECHAT_CARD_BANNER_BASE64, WECHAT_CARD_BANNER_PATH } from '../assets/images/driverImageConstants';
 import { getHighPrecisionLocationName } from '../utils/locationResolver';
 import { 
   Phone, 
@@ -2530,12 +2530,29 @@ Page({
                           <div className="w-full relative rounded-lg overflow-hidden h-24 mb-2.5 shadow-xs border border-[#e2e2e2] shrink-0">
                             <img 
                               className="absolute inset-0 w-full h-full object-cover" 
-                              src={READY_DRIVER_PATH}
+                              src={(() => {
+                                const currentPhone = localStorage.getItem('dd_user_phone') || '';
+                                if (currentPhone) {
+                                  const savedPhoto = localStorage.getItem(`dd_driver_photo_${currentPhone}`);
+                                  if (savedPhoto && savedPhoto.length > 50) return savedPhoto;
+                                }
+                                const generalPhoto = localStorage.getItem('dd_driver_photo') || localStorage.getItem('dd_driver_avatar');
+                                if (generalPhoto && generalPhoto.length > 50) return generalPhoto;
+                                try {
+                                  const savedSettingsRaw = (currentPhone ? localStorage.getItem(`dd_settings_${currentPhone}`) : null) || localStorage.getItem('dd_settings_v1') || localStorage.getItem('dd_settings');
+                                  if (savedSettingsRaw) {
+                                    const parsedSettings = JSON.parse(savedSettingsRaw);
+                                    if (parsedSettings?.albumPhotos?.[0]?.dataUrl) return parsedSettings.albumPhotos[0].dataUrl;
+                                    if (parsedSettings?.driverAvatar) return parsedSettings.driverAvatar;
+                                  }
+                                } catch (_) {}
+                                return VALET_CAR_BANNER_BASE64 || VALET_CAR_BANNER_PATH;
+                              })()}
                               alt="Ready Driver"
                               onError={(e) => {
                                 const target = e.currentTarget;
-                                if (target.src !== READY_DRIVER_BASE64) {
-                                  target.src = READY_DRIVER_BASE64;
+                                if (target.src !== VALET_CAR_BANNER_BASE64) {
+                                  target.src = VALET_CAR_BANNER_BASE64;
                                 }
                               }}
                               referrerPolicy="no-referrer"

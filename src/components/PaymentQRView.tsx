@@ -139,13 +139,13 @@ export default function PaymentQRView({
 
       {/* MAIN CONTENT */}
       <div className="flex-1 flex flex-col overflow-y-auto py-1">
-        {/* Top Banner: fuwu.png */}
+        {/* Top Banner: fuwu.svg */}
         <section className="px-3 sm:px-4 pt-1.5 pb-1 shrink-0" data-purpose="service-status-banner">
           <div className="w-full rounded-2xl overflow-hidden shadow-2xs border border-[#00A591]/15 bg-[#E8F8F5]">
             <img 
-              src="/fuwu.png" 
+              src="/fuwu.svg" 
               onError={(e) => {
-                (e.target as HTMLImageElement).src = '/fuwu.svg';
+                (e.target as HTMLImageElement).src = '/fuwu.png';
               }}
               alt="服务完成 期待下次再见" 
               className="w-full h-auto object-cover max-h-[135px] sm:max-h-[155px] block select-none"
