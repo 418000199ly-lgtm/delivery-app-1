@@ -74,9 +74,22 @@ export function getBaseApiUrl(): string {
       return 'https://api.lyheiwandaijiamax.com';
     }
 
-    // For preview environments (e.g. run.app, localhost), use same-origin which proxies to Baota
+    // For external static previews (e.g. GitHub Pages) with no Baota proxy,
+    // MUST use the direct Aliyun API endpoint, otherwise /api/db/* 404s and
+    // the app falls back to stale localStorage cache (data never syncs).
+    // 中国大陆项目：所有数据直连阿里云，禁用任何被墙服务。
+    if (hostname.includes('github.io') || hostname.includes('netlify.app') || hostname.includes('vercel.app')) {
+      return 'https://api.lyheiwandaijiamax.com';
+    }
+
+    // For local preview environments with a Baota proxy (e.g. localhost), use same-origin
     if (window.location.origin && !window.location.origin.includes('null')) {
-      return window.location.origin;
+      const isLocal = hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.');
+      if (isLocal) {
+        return window.location.origin;
+      }
+      // Unknown external host: default to direct Aliyun API (never a dead static origin)
+      return 'https://api.lyheiwandaijiamax.com';
     }
   }
   
@@ -208,8 +221,9 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
       body: JSON.stringify({
         col: docRef.collectionName,
         id: cleanId,
-        data,
-        merge: isMerge
+        data: { ...data, _appVersion: 'V2.0', _writeTime: new Date().toISOString() },
+        merge: isMerge,
+        appVersion: 'V2.0'
       })
     });
     if (!res.ok) {

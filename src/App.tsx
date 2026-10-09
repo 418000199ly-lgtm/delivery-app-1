@@ -345,6 +345,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (typeof window !== 'undefined') {
       const hostname = window.location.hostname;
       const params = new URLSearchParams(window.location.search);
+      // 嵌入预览版强制视图（预览控制台内嵌时由外层页面设置），优先级最高
+      const forcedView = (window as any).__FORCE_VIEW__ as string | undefined;
+      if (forcedView && ['app', 'admin', 'passenger', 'wechat_mini', 'alipay_mini', 'qr_expired', 'vip_blocked', 'dispatch_valet'].includes(forcedView)) {
+        return forcedView as 'app' | 'admin' | 'passenger' | 'wechat_mini' | 'alipay_mini' | 'qr_expired' | 'vip_blocked' | 'dispatch_valet';
+      }
+      // view 参数可直达任意视图（预览调试 / 分享直达链接），优先级最高
+      const viewParam = params.get('view') as 'app' | 'admin' | 'passenger' | 'wechat_mini' | 'alipay_mini' | 'qr_expired' | 'vip_blocked' | 'dispatch_valet' | null;
+      if (viewParam && ['app', 'admin', 'passenger', 'wechat_mini', 'alipay_mini', 'qr_expired', 'vip_blocked', 'dispatch_valet'].includes(viewParam)) {
+        return viewParam;
+      }
       // Prioritize passenger view for QR code scans
       if (params.get('passenger') === 'true' || params.has('driver')) {
         return 'passenger';
@@ -1779,6 +1789,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 initialExpiry = squadAppSnap.data().vipExpiry;
               }
             }
+          }
+        } catch (_) {}
+
+        // V1.0 拦截：需要升级时禁止在服务器创建任何记录（仅 V2.0 可写）
+        // 中国大陆项目：被墙服务禁用，数据直连阿里云
+        try {
+          const needUpgrade = (typeof isClientNeedsUpgrade === 'function')
+            ? isClientNeedsUpgrade(CURRENT_CLIENT_APP_VERSION, sysVersion, sysForceUpgrade)
+            : false;
+          if (needUpgrade) {
+            console.warn('[V1.0 Block] 旧版本禁止创建 driver_users 记录');
+            setIsUserDataLoaded(true);
+            return;
           }
         } catch (_) {}
 
@@ -3540,6 +3563,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       );
     }
 
+    if (mobileActiveTab === 'wechat_mini') {
+      return (
+        <WeChatMiniSimulator
+          currentDriverPhone={userPhone}
+          onTriggerToast={triggerToast}
+        />
+      );
+    }
+
+    if (mobileActiveTab === 'alipay_mini') {
+      return (
+        <AlipayMiniSimulator
+          currentDriverPhone={userPhone}
+          onTriggerToast={triggerToast}
+        />
+      );
+    }
+
     if ((currentView !== 'create_order' && currentView !== 'navigation' && currentView !== 'cost' && currentView !== 'payment_qr') && ((mobileActiveTab === 'passenger' || mobileActiveTab === 'qr_expired' || mobileActiveTab === 'vip_blocked') || (mobileActiveTab !== 'app' && mobileActiveTab !== 'dispatch_valet' && passengerDriverPhone))) {
       return (
         <PassengerOrderView 
@@ -3891,6 +3932,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (params.get('native') === 'true' || params.get('standalone') === 'true') {
       return true;
     }
+
+    // 3. 预览模式：通过 ?view= 强制指定视图时（在线预览 iframe 嵌入），一律用纯净单屏
+    // 注意：view=admin 除外，管理后台是桌面 UI，走桌面分支渲染 AdminPanel
+    const forcedViewParam = params.get('view');
+    if (forcedViewParam && forcedViewParam !== 'admin') {
+      return true;
+    }
     
     return false;
   };
@@ -3950,6 +3998,23 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }
 
   if (isStandaloneAdmin()) {
+    return (
+      <div className="h-screen w-screen bg-[#07080b] flex flex-col overflow-hidden text-slate-200 antialiased font-sans">
+        <div className="flex-1 overflow-y-auto">
+          <AdminPanel 
+            userPhone={userPhone}
+            userRole={userRole}
+            userTeamCity={userTeamCity}
+            isAdminAuthenticated={isAdminAuthenticated}
+            setIsAdminAuthenticated={setIsAdminAuthenticated}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // ?view=admin 预览模式：全屏管理后台，无顶部标签、无手机框
+  if (mobileActiveTab === 'admin') {
     return (
       <div className="h-screen w-screen bg-[#07080b] flex flex-col overflow-hidden text-slate-200 antialiased font-sans">
         <div className="flex-1 overflow-y-auto">

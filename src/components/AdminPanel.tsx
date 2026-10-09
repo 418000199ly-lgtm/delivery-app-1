@@ -1983,6 +1983,83 @@ export default function AdminPanel({
     }
   };
 
+  // 一键清理：删除服务器上除开发者 15509601222 外的所有司机数据（V2.0 专用）
+  // 覆盖 driver_users / squad_members / squad_applications / online_applications / driver_locations
+  // 带重试与进度显示，不静默吞错。中国大陆项目：数据直连阿里云。
+  const [isPurging, setIsPurging] = useState(false);
+  const [purgeProgress, setPurgeProgress] = useState('');
+  const handlePurgeNonDeveloperData = async () => {
+    const ok = window.confirm('确定要删除服务器上除 15509601222（开发者）外的所有司机数据吗？\n\n将清理：driver_users / squad_members / squad_applications / online_applications / driver_locations\n\n此操作不可撤销！');
+    if (!ok) return;
+    setIsPurging(true);
+    setPurgeProgress('开始...');
+    const baseUrl = getBaseApiUrl();
+    const KEEP = '15509601222';
+    const COLS = ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations'];
+    let totalDeleted = 0;
+    const failures: string[] = [];
+    try {
+      for (const col of COLS) {
+        setPurgeProgress(`正在清理 ${col}...`);
+        let docs: any[] = [];
+        try {
+          const res = await fetch(`${baseUrl}/api/db/list?col=${col}&limit=5000&_t=${Date.now()}`, { cache: 'no-store' });
+          if (res.ok) {
+            const json = await res.json();
+            docs = Array.isArray(json.docs) ? json.docs : [];
+          }
+        } catch (e) {
+          failures.push(`${col}: 列表获取失败`);
+          continue;
+        }
+        for (const d of docs) {
+          const data = d?.data || {};
+          const raw = String(data.phone || data.phoneNumber || d.id || '');
+          if (raw.includes(KEEP)) continue; // 保留开发者及其商户号
+          const phone = raw.replace(/\D/g, '');
+          if (phone === KEEP) continue;
+          // 商户号（带A后缀）保留
+          if (raw.toUpperCase().endsWith('A') && raw.includes(KEEP)) continue;
+          let deleted = false;
+          for (let attempt = 0; attempt < 3 && !deleted; attempt++) {
+            try {
+              const r = await fetch(`${baseUrl}/api/db/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ col, id: d.id, hardDelete: true })
+              });
+              if (r.ok) deleted = true;
+            } catch (_) {}
+            if (!deleted) await new Promise(r => setTimeout(r, 500));
+          }
+          if (deleted) {
+            totalDeleted++;
+          } else {
+            failures.push(`${col}/${d.id}`);
+          }
+          setPurgeProgress(`${col}: 已删 ${totalDeleted} 条...`);
+        }
+      }
+      // 清理本地缓存
+      try {
+        Object.keys(localStorage).filter(k => k.startsWith('mock_db_')).forEach(k => {
+          if (!k.includes(KEEP)) localStorage.removeItem(k);
+        });
+        localStorage.setItem('dd_squad_members_v2', JSON.stringify([
+          { id: KEEP, phone: KEEP, phoneNumber: KEEP, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+        ]));
+      } catch (_) {}
+      setSquadMembersList([]);
+      setSquadAppsList([]);
+      setDriverUsersList([]);
+      const msg = `清理完成：共删除 ${totalDeleted} 条${failures.length ? `，失败 ${failures.length} 条：${failures.slice(0, 5).join(', ')}` : ''}`;
+      setPurgeProgress(msg);
+      triggerToast(msg);
+    } finally {
+      setIsPurging(false);
+    }
+  };
+
   // 一键转为非小队内成员（删除/移出小队后保留会员有效期到期时间，名字格式化为 司机XXXX）
   const handleConvertToNonSquad = async (targetPhoneToConvert: string) => {
     const cleanPhone = String(targetPhoneToConvert || '').replace(/\D/g, '').trim();
@@ -4647,6 +4724,15 @@ export default function AdminPanel({
                     >
                       <Zap className="w-3 h-3 text-slate-950 fill-current" />
                       <span>{isBatchRecharging ? '正在批量充值中...' : '⚡ 给列表成员一键充值50天'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePurgeNonDeveloperData}
+                      disabled={isPurging}
+                      className="px-2.5 py-1.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white font-black text-[10px] rounded-lg shadow-xs active:scale-95 transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50 shrink-0"
+                      title="删除服务器上除15509601222外的所有司机数据（V2.0专用清理）"
+                    >
+                      <span>{isPurging ? `🧹 ${purgeProgress}` : '🧹 一键清理非开发者数据'}</span>
                     </button>
                   </div>
 
