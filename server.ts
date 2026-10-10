@@ -2796,6 +2796,8 @@ async function startServer() {
       if (todayOrders !== undefined && !isNaN(todayOrders)) patch.todayOrders = todayOrders;
       if (lat !== undefined && !isNaN(lat)) patch.lat = lat;
       if (lng !== undefined && !isNaN(lng)) patch.lng = lng;
+      // 2026-10-11：记录GPS有效性（滑动上线无GPS时上报，派单跳过无坐标司机）
+      if (req.body.gpsValid !== undefined) patch.gpsValid = Boolean(req.body.gpsValid);
       if (isOnline !== undefined) {
         patch.isOnline = isOnline;
         if (!isOnline) {

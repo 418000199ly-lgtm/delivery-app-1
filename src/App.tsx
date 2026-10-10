@@ -3275,14 +3275,31 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         alert('🔒 提示：非VIP会员每日限制报单次数已用完（每天限额2次，明早6:00自动恢复，激活VIP解除限制）。');
         return;
       }
-      // 无GPS时禁止上线，不用城市中心假坐标冒充（2026-10-10修复）
-      if (!driverCoords?.lat || !driverCoords?.lng) {
-        alert('📍 定位中，请稍候…\n\nGPS尚未就绪，无法上线，请等待定位成功后再试。');
-        return;
-      }
+      // 2026-10-11用户要求：无论室内外，滑动上线即向阿里云上报一次（无GPS也不拦截，不用假坐标冒充）
+      // 有坐标就带坐标，无坐标只上报在线状态+时间戳（服务端看门狗按时间戳判断，不踢刚上线的司机）
     }
     setIsOnline(online);
     localStorage.setItem('dd_is_online', online ? 'true' : 'false');
+
+    // 滑动上线/下线即时上报阿里云（2026-10-11）
+    try {
+      const baseUrl = getBaseApiUrl();
+      const hasGps = !!(driverCoords?.lat && driverCoords?.lng);
+      const payload: any = {
+        phone: userPhone,
+        driverName: driverProfile?.name || userPhone,
+        isOnline: online,
+        timestamp: Date.now(),
+        // 无GPS时不传假坐标，服务端按时间戳+isOnline判断在线，派单时跳过无坐标司机
+        ...(hasGps ? { lat: driverCoords.lat, lng: driverCoords.lng } : {}),
+        gpsValid: hasGps,
+      };
+      fetch(`${baseUrl}/api/driver/location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(payload),
+      }).catch(() => {});
+    } catch (_) {}
 
     setIsPending559Offline(false);
     setCountdown559Sec(null);
