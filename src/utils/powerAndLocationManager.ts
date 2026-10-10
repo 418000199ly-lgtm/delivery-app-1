@@ -18,7 +18,8 @@ import { db, setDoc, doc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { resolveDriverRealName } from './nameResolver';
 import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
 import { scheduleResumeTask } from './resumeCoordinator';
-import { Geolocation as CapGeolocation } from '@capacitor/geolocation';
+// 2026-10-11: @capacitor/geolocation 7.x SPM 构建失败（no such module 'IONGeolocationLib'），暂时回退到 JS 定位
+// import { Geolocation as CapGeolocation } from '@capacitor/geolocation';
 
 // ===== GPS上报健康追踪（120秒强制下线 · App端自检）=====
 // 记录最近一次上报成功时间；超120秒无成功上报 → 本地视为离线
@@ -387,43 +388,15 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
   const executeLocate = () => {
     if (isDisposed) return;
 
-    // 2026-10-11：优先使用 Capacitor 原生定位（iOS CoreLocation / 安卓系统定位）
-    // 与滴滴同通道，系统级融合 GPS+WiFi+基站，室内精度最高，无需 Key
-    tryNativeCapacitorLocate();
+    // 2026-10-11：原生定位暂时禁用（SPM构建失败），直接走高德 JS
+    // TODO: 修复 @capacitor/geolocation 7.x 的 IONGeolocationLib 依赖问题后重新启用
+    tryAmapHighAccuracy();
   };
 
-  // 原生定位（第一优先级）
+  // 原生定位（暂时禁用，保留结构）
   const tryNativeCapacitorLocate = () => {
-    if (isDisposed) return;
-    try {
-      const timeoutMs = 8000;
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('native timeout')), timeoutMs)
-      );
-      const locatePromise = CapGeolocation.getCurrentPosition({
-        enableHighAccuracy: true,
-        timeout: timeoutMs,
-      });
-      Promise.race([locatePromise, timeoutPromise]).then((pos: any) => {
-        if (isDisposed) return;
-        const lat = pos?.coords?.latitude;
-        const lng = pos?.coords?.longitude;
-        const accuracy = pos?.coords?.accuracy;
-        if (lat && lng) {
-          // 原生定位返回 WGS84，需要转 GCJ-02（国内地图标准）
-          const gcj = wgs84ToGcj02(lat, lng);
-          uploadCoordinates(gcj.lat, gcj.lng, `Native ${accuracy ? Math.round(accuracy) + 'm' : ''}`);
-          scheduleNext(getNextIntervalMs(gcj.lat, gcj.lng));
-        } else {
-          tryAmapHighAccuracy();
-        }
-      }).catch(() => {
-        // 原生定位失败/超时 → 降级到高德 JS
-        tryAmapHighAccuracy();
-      });
-    } catch (_) {
-      tryAmapHighAccuracy();
-    }
+    // Disabled: @capacitor/geolocation SPM build failure
+    tryAmapHighAccuracy();
   };
 
   // 高德 JS 高精度定位（第二优先级）
