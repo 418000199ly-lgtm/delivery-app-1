@@ -828,11 +828,15 @@ export function calculateDaysFromExpiry(expiry?: string): string {
     }
 
     const expDate = new Date(year, month, day, 0, 0, 0, 0);
+    // 2099年及以上视为永久有效，不计算天数
+    if (year >= 2099) return '永久';
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
 
     const diffTime = expDate.getTime() - today.getTime();
     const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+    // 超过100年也视为永久
+    if (diffDays > 36500) return '永久';
 
     return diffDays > 0 ? String(diffDays) : '0';
   } catch (_) {
