@@ -3287,7 +3287,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const hasGps = !!(driverCoords?.lat && driverCoords?.lng);
       const payload: any = {
         phone: userPhone,
-        driverName: driverProfile?.name || userPhone,
+        driverName: userPhone,
         isOnline: online,
         timestamp: Date.now(),
         // 无GPS时不传假坐标，服务端按时间戳+isOnline判断在线，派单时跳过无坐标司机
