@@ -5087,7 +5087,7 @@ async function startServer() {
               return res.json({
                 success: true,
                 mode: 'real',
-                message: '✓ 阿里云短信验证码已成功发送至您的手机，请注意查收短信！'
+                message: '✓ 短信验证码已发送，请注意查收。'
               });
             } else if (
               respCode === 'biz.FREQUENCY' || 
@@ -5136,7 +5136,7 @@ async function startServer() {
         return res.json({
           success: true,
           mode: 'real',
-          message: '✓ 阿里云短信验证码已成功发送至您的手机，请注意查收短信！'
+          message: '✓ 短信验证码已发送，请注意查收。'
         });
       }
 
