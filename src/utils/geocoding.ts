@@ -323,19 +323,11 @@ export function calculateOrderDriverDistance(
   // 1. Resolve Driver Coords
   // w51/w53修复：司机GPS无效时不再回退到银川市中心（违反"未知坐标铁律"，曾致4.70km误算），
   // 直接标记距离未知
+  // 2026-10-11修复：删除 localStorage 旧坐标兜底（无时间戳，几小时前坐标会导致373km误算）
   let dLat = driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng) ? Number(driverCoords.lat) : 0;
   let dLng = driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng) ? Number(driverCoords.lng) : 0;
 
-  if (!isValidCoords(dLat, dLng) && typeof window !== 'undefined') {
-    const savedLat = localStorage.getItem('dd_bg_driver_coords_lat');
-    const savedLng = localStorage.getItem('dd_bg_driver_coords_lng');
-    if (savedLat && savedLng && isValidCoords(Number(savedLat), Number(savedLng))) {
-      dLat = Number(savedLat);
-      dLng = Number(savedLng);
-    }
-  }
-
-  // 司机坐标无效：不回退市中心，直接返回未知
+  // 司机坐标无效：不回退市中心、不读旧缓存，直接返回未知
   if (!isValidCoords(dLat, dLng)) {
     let oLat = Number(orderLat);
     let oLng = Number(orderLng);

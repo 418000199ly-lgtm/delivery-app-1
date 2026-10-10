@@ -1289,9 +1289,10 @@ export default function HomeView({
 
     const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
     const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+    // 2026-10-11修复：删除旧坐标+市中心兜底，无GPS时传null显示"距离未知"，不算假距离
     const currentDriverCoords = (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng))
       ? driverCoords
-      : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
+      : null;
 
     const { displayDistText: finalDistText, resolvedLat: finalLat, resolvedLng: finalLng } = calculateOrderDriverDistance(
       ord.startLocation,
@@ -5111,11 +5112,10 @@ export default function HomeView({
             return (
               <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
                 {visibleHallOrders.map((ord: any, idx: number) => {
-                  const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
-                  const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+                  // 2026-10-11修复：删除旧坐标+市中心兜底，无GPS时传null显示"距离未知"
                   const currentDriverCoords = (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng))
                     ? driverCoords
-                    : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
+                    : null;
 
                   const isReportTransfer = ord.orderType === '报单转单' || ord.orderRemark === '报单转单' || ord.type === '报单转单' || String(ord.destination || '').includes('报单转单');
 
