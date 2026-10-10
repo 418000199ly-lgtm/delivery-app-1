@@ -1575,11 +1575,13 @@ export default function CreateOrderView({
     const effectiveVipExpiry = settings?.vipExpiry || (cleanDriverPhone === '15509601222' ? '永久有效' : '待开通');
 
     if (typeof window === 'undefined') {
-      return `https://lyheiwandaijiamax.com/passenger_order.html?driver=${encodeURIComponent(cleanDriverPhone)}&name=${encodeURIComponent(effectiveBrandName)}&vip=${encodeURIComponent(effectiveVipExpiry)}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
+      return `https://api.lyheiwandaijiamax.com/passenger_order.html?driver=${encodeURIComponent(cleanDriverPhone)}&name=${encodeURIComponent(effectiveBrandName)}&vip=${encodeURIComponent(effectiveVipExpiry)}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
     }
     const hostname = window.location.hostname;
     
-    let baseOrigin = "https://lyheiwandaijiamax.com";
+    // a6/a7修复：乘客扫码页改走 api 域名（主域名 lyheiwandaijiamax.com 在部分手机上 DNS 解析失败，
+    // 但 api.lyheiwandaijiamax.com 在手机上可正常访问；Node 已直接 serve /passenger_order.html）
+    let baseOrigin = "https://api.lyheiwandaijiamax.com";
     const basePath = '/passenger_order.html';
     
     return `${baseOrigin}${basePath}?driver=${encodeURIComponent(cleanDriverPhone)}&name=${encodeURIComponent(effectiveBrandName)}&vip=${encodeURIComponent(effectiveVipExpiry)}&startLocation=${encodeURIComponent(startLocation || '')}&t=${currentTs}`;
