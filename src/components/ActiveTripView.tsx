@@ -228,6 +228,8 @@ export default function ActiveTripView({
 
   // Real-time GPS high-precision tracking & AMap mileage calculation
   const lastCoordsRef = useRef<{ lng: number; lat: number; timestamp: number } | null>(null);
+  // w16修复：漂移簇检测——记录最近3个锚点，识别室内GPS来回抖动
+  const anchorHistoryRef = useRef<{ lng: number; lat: number }[]>([]);
   const preciseDistanceRef = useRef<number>(safeTrip.currentDistance || 0);
 
   // Restore saved active trip GPS state on mount if present
@@ -276,6 +278,7 @@ export default function ActiveTripView({
     if (!lastCoordsRef.current) {
       // Set initial anchor point
       lastCoordsRef.current = { lng, lat, timestamp: now };
+      anchorHistoryRef.current = [{ lng, lat }];
       console.log('⚡ [GPS Tracker] Initialized reference GPS anchor position:', lastCoordsRef.current);
       try {
         localStorage.setItem(`active_trip_gps_${tripRef.current.id}`, JSON.stringify({
@@ -299,16 +302,34 @@ export default function ActiveTripView({
 
     const calculatedSpeed = distanceInMeters / dt; // m/s
 
-    // 2. Stationary jitter filter: if movement is tiny (< 3.0m) and speed is very low, simply refresh anchor without accumulating fake jitter
-    if (distanceInMeters < 3.0 && (speed !== null ? speed < 0.3 : calculatedSpeed < 0.3)) {
+    // 2. Stationary jitter / drift-cluster filter (w16修复)
+    // 室内GPS漂移特征：单次跳动 5-50 米，但来回 bouncing，不会持续朝一个方向走。
+    // 策略：a) 小位移直接过滤；b) 新位置若落在历史锚点附近 → 漂移回弹，不累积
+    const JITTER_DIST_M = 8.0;   // 8米内位移视为抖动（原3米太小，室内漂移轻松穿过）
+    const JITTER_SPEED_MS = 1.0; // 1m/s ≈ 3.6km/h，人步行速度下限，低于此不可能是开车
+    const DRIFT_CLUSTER_M = 25.0; // 25米半径内来回跳 = 漂移簇
+    if (distanceInMeters < JITTER_DIST_M && (speed !== null ? speed < JITTER_SPEED_MS : calculatedSpeed < JITTER_SPEED_MS)) {
       lastCoordsRef.current = { lng, lat, timestamp: now };
+      anchorHistoryRef.current.push({ lng, lat });
+      if (anchorHistoryRef.current.length > 3) anchorHistoryRef.current.shift();
       return;
+    }
+    // 漂移回弹检测：新位置离"上上个"锚点很近 → 说明在原地打转，不累积
+    for (const h of anchorHistoryRef.current) {
+      if (getDistance(h.lng, h.lat, lng, lat) < DRIFT_CLUSTER_M && distanceInMeters < DRIFT_CLUSTER_M * 2) {
+        console.log(`⚠️ [GPS Tracker] 漂移回弹过滤 (距历史锚点 ${getDistance(h.lng, h.lat, lng, lat).toFixed(1)}m)`);
+        lastCoordsRef.current = { lng, lat, timestamp: now };
+        anchorHistoryRef.current.push({ lng, lat });
+        if (anchorHistoryRef.current.length > 3) anchorHistoryRef.current.shift();
+        return;
+      }
     }
 
     // 3. Anomalous Teleport / High Speed Jump Guard (Allow up to 180 km/h = 50 m/s)
     if (calculatedSpeed > 50) {
       console.warn(`⚠️ [GPS Tracker] Anomalous GPS teleport filtered out (Speed: ${(calculatedSpeed * 3.6).toFixed(1)} km/h, Dist: ${distanceInMeters.toFixed(0)}m)`);
       lastCoordsRef.current = { lng, lat, timestamp: now }; // Reset anchor without adding bogus mileage
+      anchorHistoryRef.current = [{ lng, lat }]; // 跳变后清空历史，避免误判
       return;
     }
 
@@ -339,6 +360,9 @@ export default function ActiveTripView({
 
     // Advance last coordinate anchor
     lastCoordsRef.current = { lng, lat, timestamp: now };
+    // 真实移动：刷新漂移簇历史，避免旧锚点误判正常行驶
+    anchorHistoryRef.current.push({ lng, lat });
+    if (anchorHistoryRef.current.length > 3) anchorHistoryRef.current.shift();
 
     // Save active GPS state to localStorage for background/lock-screen recovery and landmark resolution
     try {
