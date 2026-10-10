@@ -3,7 +3,7 @@ import { ArrowLeft, MapPin, Phone, Info, CheckCircle2 } from 'lucide-react';
 import { db, doc, setDoc, getDocs, collection, getBaseApiUrl } from '../lib/dbProxy';
 import { geocodeAddress, calculateHaversineDistanceKm, formatDistance, DEFAULT_YINCHUAN_COORDS, isValidCoords } from '../utils/geocoding';
 import { speakText } from '../utils/speech';
-import { REMOVED_GENERIC_DRIVER_PHONES } from '../utils/nameResolver';
+
 import readyDriverImg from '../assets/images/ready_driver.jpg';
 import valetCarBannerImg from '../assets/images/valet_car_banner.jpg';
 import { READY_DRIVER_BASE64, VALET_CAR_BANNER_BASE64 } from '../assets/images/driverImageConstants';
@@ -136,7 +136,6 @@ export default function ReportTransferOrderModal({
           if (Array.isArray(parsed)) parsed.forEach((p: any) => removedSet.add(String(p).replace(/\D/g, '').trim()));
         }
       } catch (_) {}
-      REMOVED_GENERIC_DRIVER_PHONES.forEach(p => removedSet.add(p));
 
       // Always include master developer
       squadPhones.add('15509601222');

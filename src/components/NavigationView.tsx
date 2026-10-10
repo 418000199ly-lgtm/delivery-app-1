@@ -43,17 +43,8 @@ export default function NavigationView({
   const [scaleBarWidth, setScaleBarWidth] = useState<number>(53);
 
   // Real-time Gaode Traffic Light (红绿灯倒计时) State
-  const [hasTrafficLight, setHasTrafficLight] = useState<boolean>(false);
   const [totalTrafficLights, setTotalTrafficLights] = useState<number>(0);
-  const [trafficLights, setTrafficLights] = useState<{
-    left: { color: 'green' | 'yellow' | 'red'; seconds: number };
-    straight: { color: 'green' | 'yellow' | 'red'; seconds: number };
-    right: { color: 'green' | 'yellow' | 'red'; seconds: number };
-  }>({
-    left: { color: 'red', seconds: 28 },
-    straight: { color: 'green', seconds: 35 },
-    right: { color: 'green', seconds: 18 }
-  });
+  // 红绿灯状态已删除（2026-10-10）：虚假倒计时，有行车安全风险
 
   const lastRouteKeyRef = useRef<string>('');
   const currentDriverPosRef = useRef<{ lng: number; lat: number } | null>(null);
@@ -63,6 +54,12 @@ export default function NavigationView({
   const intersectionMarkerRef = useRef<any>(null);
   const lastRerouteTimestampRef = useRef<number>(0);
   const headingAngleRef = useRef<number>(0);
+  // BUG-1+2修复：保存完整steps用于指令推进和剩余距离实时计算
+  const routeStepsRef = useRef<any[]>([]);
+  const currentStepIndexRef = useRef<number>(0);
+  const arrivedAnnouncedRef = useRef<boolean>(false);
+  // BUG-9：GPS信号强度动态显示
+  const [gpsSignalText, setGpsSignalText] = useState<string>('定位中…');
 
   // Helper to calculate bearing angle between two points
   const calculateBearing = (startLat: number, startLng: number, destLat: number, destLng: number) => {
@@ -160,57 +157,6 @@ export default function NavigationView({
     return minDist === Infinity ? 0 : minDist;
   };
 
-  // Real-time Traffic Light Dynamic Countdown Loop
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTrafficLights((prev) => {
-        const nextState = { ...prev };
-
-        // Left turn light cycle
-        if (nextState.left.seconds <= 1) {
-          if (nextState.left.color === 'green') {
-            nextState.left = { color: 'yellow', seconds: 3 };
-          } else if (nextState.left.color === 'yellow') {
-            nextState.left = { color: 'red', seconds: 35 };
-          } else {
-            nextState.left = { color: 'green', seconds: 25 };
-          }
-        } else {
-          nextState.left = { ...nextState.left, seconds: nextState.left.seconds - 1 };
-        }
-
-        // Straight light cycle
-        if (nextState.straight.seconds <= 1) {
-          if (nextState.straight.color === 'green') {
-            nextState.straight = { color: 'yellow', seconds: 3 };
-          } else if (nextState.straight.color === 'yellow') {
-            nextState.straight = { color: 'red', seconds: 30 };
-          } else {
-            nextState.straight = { color: 'green', seconds: 40 };
-          }
-        } else {
-          nextState.straight = { ...nextState.straight, seconds: nextState.straight.seconds - 1 };
-        }
-
-        // Right turn light cycle
-        if (nextState.right.seconds <= 1) {
-          if (nextState.right.color === 'green') {
-            nextState.right = { color: 'yellow', seconds: 3 };
-          } else if (nextState.right.color === 'yellow') {
-            nextState.right = { color: 'red', seconds: 20 };
-          } else {
-            nextState.right = { color: 'green', seconds: 35 };
-          }
-        } else {
-          nextState.right = { ...nextState.right, seconds: nextState.right.seconds - 1 };
-        }
-
-        return nextState;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, []);
 
   // Trigger Toast Helper
   const showToast = (msg: string) => {
@@ -456,14 +402,17 @@ export default function NavigationView({
             }
 
             placeSearch.search(`${registeredCity || '银川市'}${cleanDest}`, (pStatus2: string, pResult2: any) => {
-              let dLng = initialLng + 0.015;
-              let dLat = initialLat + 0.01;
+              // BUG-5修复：解析失败不再捏造假目的地，直接报错中止
               if (pStatus2 === 'complete' && pResult2.poiList && pResult2.poiList.pois && pResult2.poiList.pois.length > 0) {
                 const poi2 = pResult2.poiList.pois[0];
-                dLng = poi2.location.getLng ? poi2.location.getLng() : poi2.location.lng;
-                dLat = poi2.location.getLat ? poi2.location.getLat() : poi2.location.lat;
+                const dLng = poi2.location.getLng ? poi2.location.getLng() : poi2.location.lng;
+                const dLat = poi2.location.getLat ? poi2.location.getLat() : poi2.location.lat;
+                onResolvedDest(dLng, dLat);
+              } else {
+                showToast('❌ 目的地解析失败，请检查地址是否正确');
+                setNextInstruction('目的地解析失败');
+                setNextRoad('请检查地址');
               }
-              onResolvedDest(dLng, dLat);
             });
           });
         });
@@ -471,11 +420,7 @@ export default function NavigationView({
 
       const resolveOrigin = (onResolvedOrigin: (oLng: number, oLat: number) => void) => {
         const safeCallback = (lng: number, lat: number) => {
-          // If result points to Yinchuan Municipal Government (106.230912, 38.487193), redirect to Yunxiang Residential Quarter
-          if (Math.abs(lng - 106.230912) < 0.002 && Math.abs(lat - 38.487193) < 0.002) {
-            onResolvedOrigin(106.2736, 38.4842);
-            return;
-          }
+          // BUG-7修复：删除坐标魔改，不伪造位置
           onResolvedOrigin(lng, lat);
         };
 
@@ -485,10 +430,22 @@ export default function NavigationView({
           return;
         }
 
-        // Priority 2: startLocation prop (e.g. 运祥小区 / 运祥小区(北寺巷))
+        // Priority 2: startLocation prop
+        // BUG-6修复：不再硬编码开发者个人地址，无有效起点时用实时GPS
         const queryStart = (cleanStart && !['银川', '银川市', '银川市人民政府', '太阳神大酒店', '当前位置', '定位中...', '未定位起点'].includes(cleanStart))
           ? cleanStart
-          : '运祥小区(北寺巷)';
+          : '';
+
+        // 无有效起点名时直接用实时GPS，不伪造
+        if (!queryStart) {
+          if (driverCoords && typeof driverCoords.lng === 'number' && typeof driverCoords.lat === 'number') {
+            safeCallback(driverCoords.lng, driverCoords.lat);
+          } else {
+            showToast('📍 定位中，请稍候…');
+            setNextInstruction('定位中…');
+          }
+          return;
+        }
 
         placeSearch.search(queryStart, (sStatus: string, sResult: any) => {
           if (sStatus === 'complete' && sResult.poiList && sResult.poiList.pois && sResult.poiList.pois.length > 0) {
@@ -563,6 +520,7 @@ export default function NavigationView({
   // Sync position updates from driverCoords prop or GPS without random jumps
   useEffect(() => {
     if (driverCoords && typeof driverCoords.lng === 'number' && typeof driverCoords.lat === 'number') {
+      setGpsSignalText('卫星信号强');
       updateDriverPosition(driverCoords.lng, driverCoords.lat);
     }
   }, [driverCoords]);
@@ -589,10 +547,12 @@ export default function NavigationView({
 
     const driving = drivingPluginRef.current;
     if (!driving) {
-      setNextInstruction('沿主干道继续前行');
-      setNextRoad(destName);
-      setRemainingDistance('约 3.50公里');
-      setRemainingTime('10分钟');
+      // BUG-8修复：规划失败不再显示假数字
+      setNextInstruction('路线规划失败');
+      setNextRoad('请检查网络后重试');
+      setRemainingDistance('—');
+      setRemainingTime('—');
+      showToast('❌ 路线规划失败，请检查网络');
       return;
     }
 
@@ -633,6 +593,9 @@ export default function NavigationView({
               }
             });
             activeRoutePathRef.current = allPathPts;
+            // 保存steps用于指令推进
+            routeStepsRef.current = route.steps;
+            currentStepIndexRef.current = 0;
           }
 
           if (route.steps && route.steps.length > 0) {
@@ -648,13 +611,10 @@ export default function NavigationView({
             // Determine if the current intersection actually has a real traffic light
             // In residential communities, small alleys (北寺巷, 小区内部), there are NO traffic lights
             const isCommunityOrAlley = /巷|小区|内部|支路|便道|无名|村道|停车场/.test(roadName) || /巷|小区|内部|支路|便道|无名|村道|停车场/.test(step.instruction || '');
-            const stepLightCount = typeof step.traffic_lights === 'number' ? step.traffic_lights : 0;
-            const isSignalizedIntersection = !isCommunityOrAlley && (stepLightCount > 0 || /大道|大街|主干|交叉口|十字路口/.test(roadName));
-            
-            setHasTrafficLight(isSignalizedIntersection);
+            // 红绿灯倒计时已删除（2026-10-10），不再需要判断路口类型
 
-            if (action.includes('左转')) setTurnAction('left');
-            else if (action.includes('右转')) setTurnAction('right');
+            if (action.includes('左转') || action.includes('左前方') || action.includes('靠左') || action.includes('向左')) setTurnAction('left');
+            else if (action.includes('右转') || action.includes('右前方') || action.includes('靠右') || action.includes('向右')) setTurnAction('right');
             else if (action.includes('掉头')) setTurnAction('uturn');
             else setTurnAction('straight');
 
@@ -670,11 +630,12 @@ export default function NavigationView({
             setNextRoad(destName);
           }
         } else {
-          setNextInstruction('已为您选择最平顺导航路线');
-          setNextRoad(destName);
-          setRemainingDistance('约 3.50公里');
-          setRemainingTime('10分钟');
-          speakVoice(`高德地图为您导航，前往【${destName}】，请沿前方主路行驶`);
+          // BUG-8修复：规划失败不再显示假数字
+          setNextInstruction('路线规划失败');
+          setNextRoad('请检查网络后重试');
+          setRemainingDistance('—');
+          setRemainingTime('—');
+          showToast('❌ 路线规划失败，请检查网络');
         }
       }
     );
@@ -738,6 +699,82 @@ export default function NavigationView({
         offRouteCountRef.current = 0;
       }
     }
+
+    // BUG-1+2修复：实时更新剩余距离和推进导航指令
+    updateRemainingAndInstruction(lng, lat);
+  };
+
+  // 根据当前位置计算剩余距离并推进导航指令
+  const updateRemainingAndInstruction = (lng: number, lat: number) => {
+    const path = activeRoutePathRef.current;
+    const steps = routeStepsRef.current;
+    if (!path || path.length < 2 || !steps || steps.length === 0) return;
+
+    // 找到路径上距离当前位置最近的点下标
+    let minIdx = 0;
+    let minDist = Infinity;
+    for (let i = 0; i < path.length; i++) {
+      const dx = (path[i][0] - lng) * 111320 * Math.cos(lat * Math.PI / 180);
+      const dy = (path[i][1] - lat) * 110574;
+      const d = dx * dx + dy * dy;
+      if (d < minDist) { minDist = d; minIdx = i; }
+    }
+
+    // 从最近点向后累加剩余距离
+    let remainingMeters = 0;
+    for (let i = minIdx; i < path.length - 1; i++) {
+      const dx = (path[i+1][0] - path[i][0]) * 111320 * Math.cos(path[i][1] * Math.PI / 180);
+      const dy = (path[i+1][1] - path[i][1]) * 110574;
+      remainingMeters += Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // 更新剩余距离显示
+    const remainingKm = remainingMeters / 1000;
+    setRemainingDistance(remainingKm >= 1 ? `${remainingKm.toFixed(2)}公里` : `${Math.round(remainingMeters)}米`);
+    // 时间按 25km/h 市区均速估算
+    const remainingMin = Math.max(1, Math.round(remainingMeters / 1000 / 25 * 60));
+    setRemainingTime(`${remainingMin}分钟`);
+
+    // 推进导航指令：找到当前最近点所属的 step
+    let accPts = 0;
+    let stepIdx = 0;
+    for (let s = 0; s < steps.length; s++) {
+      const stepPathLen = steps[s]?.path?.length || 0;
+      if (minIdx < accPts + stepPathLen) { stepIdx = s; break; }
+      accPts += stepPathLen;
+      stepIdx = s;
+    }
+    // 只有 step 前进时才更新（避免回退抖动）
+    if (stepIdx > currentStepIndexRef.current && stepIdx < steps.length) {
+      currentStepIndexRef.current = stepIdx;
+      const step = steps[stepIdx];
+      const stepDist = Number(step.distance || 0);
+      const roadName = step.road || '前方道路';
+      const action = step.action || '';
+      const formattedStepDist = stepDist >= 1000 ? `${(stepDist / 1000).toFixed(2)}公里` : `${stepDist}米`;
+      setNextInstruction(`${formattedStepDist}后 ${action}`);
+      setNextRoad(roadName);
+      // 更新转向图标
+      if (action.includes('左转') || action.includes('左前方') || action.includes('靠左') || action.includes('向左')) setTurnAction('left');
+      else if (action.includes('右转') || action.includes('右前方') || action.includes('靠右') || action.includes('向右')) setTurnAction('right');
+      else if (action.includes('掉头')) setTurnAction('uturn');
+      else setTurnAction('straight');
+      // 语音播报新指令
+      try { speakText(`${formattedStepDist}后 ${action}，${roadName}`); } catch (_) {}
+    }
+
+    // BUG-10：到达判定（距终点 <50m）
+    const destCoords = destinationCoordsRef.current;
+    if (destCoords) {
+      const dx = (destCoords.lng - lng) * 111320 * Math.cos(lat * Math.PI / 180);
+      const dy = (destCoords.lat - lat) * 110574;
+      const distToDest = Math.sqrt(dx * dx + dy * dy);
+      if (distToDest < 50 && !arrivedAnnouncedRef.current) {
+        arrivedAnnouncedRef.current = true;
+        try { speakText('已到达目的地附近，本次导航结束'); } catch (_) {}
+        showToast('🎉 已到达目的地附近');
+      }
+    }
   };
 
   const handleExit = () => {
@@ -762,7 +799,7 @@ export default function NavigationView({
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-1.5 text-emerald-400 text-[11px] font-bold">
             <Wifi className="w-3.5 h-3.5 animate-pulse text-emerald-400" />
-            <span>卫星信号强</span>
+            <span>{gpsSignalText}</span>
           </div>
 
           <button
@@ -815,100 +852,7 @@ export default function NavigationView({
             </div>
           </div>
 
-          {/* REAL-TIME GAODE TRAFFIC LIGHT COUNTDOWN (Only shown at actual signalized intersections, hidden in residential/alley roads) */}
-          {hasTrafficLight && (
-            <div className="shrink-0 flex flex-col items-end animate-in fade-in duration-200">
-              <div className="bg-slate-900/95 border border-slate-700/90 rounded-2xl px-2.5 py-1.5 shadow-2xl flex flex-col items-center select-none backdrop-blur-md">
-                
-                {/* Primary Active Maneuver Traffic Light Badge */}
-                {(() => {
-                  const activeLight = turnAction === 'left' || turnAction === 'uturn'
-                    ? trafficLights.left
-                    : turnAction === 'right'
-                    ? trafficLights.right
-                    : trafficLights.straight;
-
-                  const activeTurnLabel = turnAction === 'left'
-                    ? '左转'
-                    : turnAction === 'right'
-                    ? '右转'
-                    : turnAction === 'uturn'
-                    ? '掉头'
-                    : '直行';
-
-                  return (
-                    <div className="flex items-center gap-1.5 mb-1 w-full justify-between">
-                      <div className="flex items-center gap-1">
-                        <span className={`w-2.5 h-2.5 rounded-full ${
-                          activeLight.color === 'green'
-                            ? 'bg-emerald-500 shadow-[0_0_8px_#10b981] animate-pulse'
-                            : activeLight.color === 'yellow'
-                            ? 'bg-yellow-400 shadow-[0_0_8px_#eab308] animate-ping'
-                            : 'bg-rose-500 shadow-[0_0_8px_#f43f5e]'
-                        }`} />
-                        <span className="text-[11px] font-bold text-slate-200">{activeTurnLabel}</span>
-                      </div>
-                      <span className={`text-base font-black font-mono tracking-tight ${
-                        activeLight.color === 'green'
-                          ? 'text-emerald-400'
-                          : activeLight.color === 'yellow'
-                          ? 'text-yellow-300'
-                          : 'text-rose-400'
-                      }`}>
-                        {activeLight.seconds}s
-                      </span>
-                    </div>
-                  );
-                })()}
-
-                {/* Multi-lane Traffic Light Indicators (Left / Straight / Right) */}
-                <div className="flex items-center gap-1 text-[10px] font-mono border-t border-slate-800 pt-1 w-full justify-center">
-                  {/* Left */}
-                  <div className={`flex items-center gap-0.5 px-1 py-0.5 rounded transition-all ${
-                    turnAction === 'left' || turnAction === 'uturn'
-                      ? 'bg-white/20 ring-1 ring-white/40'
-                      : 'opacity-70'
-                  }`}>
-                    <span className="text-slate-400 text-[11px] font-bold">←</span>
-                    <span className={`font-black ${
-                      trafficLights.left.color === 'green' ? 'text-emerald-400' : trafficLights.left.color === 'yellow' ? 'text-yellow-300' : 'text-rose-400'
-                    }`}>
-                      {trafficLights.left.seconds}
-                    </span>
-                  </div>
-
-                  {/* Straight */}
-                  <div className={`flex items-center gap-0.5 px-1 py-0.5 rounded transition-all ${
-                    turnAction === 'straight'
-                      ? 'bg-white/20 ring-1 ring-white/40'
-                      : 'opacity-70'
-                  }`}>
-                    <span className="text-slate-400 text-[11px] font-bold">↑</span>
-                    <span className={`font-black ${
-                      trafficLights.straight.color === 'green' ? 'text-emerald-400' : trafficLights.straight.color === 'yellow' ? 'text-yellow-300' : 'text-rose-400'
-                    }`}>
-                      {trafficLights.straight.seconds}
-                    </span>
-                  </div>
-
-                  {/* Right */}
-                  <div className={`flex items-center gap-0.5 px-1 py-0.5 rounded transition-all ${
-                    turnAction === 'right'
-                      ? 'bg-white/20 ring-1 ring-white/40'
-                      : 'opacity-70'
-                  }`}>
-                    <span className="text-slate-400 text-[11px] font-bold">→</span>
-                    <span className={`font-black ${
-                      trafficLights.right.color === 'green' ? 'text-emerald-400' : trafficLights.right.color === 'yellow' ? 'text-yellow-300' : 'text-rose-400'
-                    }`}>
-                      {trafficLights.right.seconds}
-                    </span>
-                  </div>
-                </div>
-
-              </div>
-            </div>
-          )}
+          {/* 红绿灯倒计时已删除（2026-10-10）：此前为本地固定周期假数据，与真实信号灯无关，有误导闯红灯风险 */}
         </div>
       </div>
 

@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, doc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
-import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, REMOVED_GENERIC_DRIVER_PHONES, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
 import HubbleSettingsDialog, { HubbleFilterSettings } from './HubbleSettingsDialog';
@@ -718,7 +718,7 @@ export default function NearbyMapView({
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
-      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)) return;
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || isGenericDriverName(name, phone)) return;
       const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
       const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
       const rawOnline = member.isOnline === undefined ? true : Boolean(member.isOnline === true || member.isOnline === 'true');
@@ -745,7 +745,7 @@ export default function NearbyMapView({
       if (!liveLoc) return;
       const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
       const name = String(liveLoc.driverName || liveLoc.name || '').trim();
-      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(phone) || isGenericDriverName(name, phone)) return;
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || isGenericDriverName(name, phone)) return;
 
       const existing = candidateDriversMap.get(phone);
       const fallbackCoord = getYinchuanDriverCoords(phone);
@@ -784,7 +784,7 @@ export default function NearbyMapView({
 
     // 严格按地图渲染规则过滤：只有具备真实GPS且状态符合哈勃设置的司机才加入地图显示
     candidateDriversMap.forEach((driver) => {
-      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone) || REMOVED_GENERIC_DRIVER_PHONES.includes(driver.phone) || isGenericDriverName(driver.name, driver.phone)) return;
+      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone) || isGenericDriverName(driver.name, driver.phone)) return;
       // 必须有真实有效GPS坐标
       if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) return;
 

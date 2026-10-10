@@ -37,6 +37,7 @@ var import_config = require("dotenv/config");
 var import_express = __toESM(require("express"), 1);
 var import_path = __toESM(require("path"), 1);
 var import_fs = __toESM(require("fs"), 1);
+var import_crypto = __toESM(require("crypto"), 1);
 var import_child_process = require("child_process");
 var import_promise = __toESM(require("mysql2/promise"), 1);
 var import_vite = require("vite");
@@ -78,6 +79,78 @@ function getDypnsClient() {
   return new DypnsClientClass(config);
 }
 var verificationCodes = /* @__PURE__ */ new Map();
+var verifyFailures = /* @__PURE__ */ new Map();
+var smsSendLogs = /* @__PURE__ */ new Map();
+var AUTH_TOKENS_PATH = (() => {
+  try {
+    const path2 = require("path");
+    return path2.join(path2.dirname(LOCAL_JSON_DB_PATH), "auth_tokens.json");
+  } catch (_) {
+    return "./auth_tokens.json";
+  }
+})();
+var authTokens = /* @__PURE__ */ new Map();
+try {
+  let loaded = false;
+  if (import_fs.default.existsSync(AUTH_TOKENS_PATH)) {
+    try {
+      const raw = import_fs.default.readFileSync(AUTH_TOKENS_PATH, "utf8");
+      const obj = JSON.parse(raw || "{}");
+      for (const [k, v] of Object.entries(obj)) {
+        if (v && typeof v === "object") authTokens.set(k, v);
+      }
+      loaded = true;
+      console.log(`[Auth] \u5DF2\u4ECE\u6587\u4EF6\u52A0\u8F7D ${authTokens.size} \u4E2A token`);
+    } catch (_) {
+      const bakPath = AUTH_TOKENS_PATH + ".bak";
+      if (import_fs.default.existsSync(bakPath)) {
+        const rawBak = import_fs.default.readFileSync(bakPath, "utf8");
+        const objBak = JSON.parse(rawBak || "{}");
+        for (const [k, v] of Object.entries(objBak)) {
+          if (v && typeof v === "object") authTokens.set(k, v);
+        }
+        loaded = true;
+        console.log(`[Auth] \u4E3B\u6587\u4EF6\u635F\u574F\uFF0C\u5DF2\u4ECE\u5907\u4EFD\u52A0\u8F7D ${authTokens.size} \u4E2A token`);
+      }
+    }
+  }
+  if (!loaded) console.log("[Auth] \u65E0\u53EF\u7528 token \u6587\u4EF6\uFF0C\u4ECE\u7A7A\u5F00\u59CB");
+} catch (e) {
+  console.error("[Auth] \u52A0\u8F7D token \u6587\u4EF6\u5931\u8D25:", e?.message);
+}
+var _authTokensDirty = false;
+setInterval(() => {
+  if (!_authTokensDirty) return;
+  _authTokensDirty = false;
+  try {
+    const obj = {};
+    for (const [k, v] of authTokens) obj[k] = v;
+    const tmp = AUTH_TOKENS_PATH + ".tmp";
+    import_fs.default.writeFileSync(tmp, JSON.stringify(obj), "utf8");
+    import_fs.default.renameSync(tmp, AUTH_TOKENS_PATH);
+  } catch (e) {
+    console.error("[Auth] \u6301\u4E45\u5316 token \u5931\u8D25:", e?.message);
+  }
+}, 1e4);
+var DEVELOPER_PHONE_SERVER = "15509601222";
+setInterval(() => {
+  const now = Date.now();
+  try {
+    for (const [k, v] of verificationCodes) {
+      if (v.expiresAt < now) verificationCodes.delete(k);
+    }
+    for (const [k, v] of dispatchPhoneLoginLogs) {
+      if (now - v > 25 * 3600 * 1e3) dispatchPhoneLoginLogs.delete(k);
+    }
+    for (const [k, v] of dispatchIpLoginLogs) {
+      if (now - v > 25 * 3600 * 1e3) dispatchIpLoginLogs.delete(k);
+    }
+    for (const [k, v] of wechatSessions) {
+      if (v.expiresAt < now) wechatSessions.delete(k);
+    }
+  } catch (_) {
+  }
+}, 10 * 60 * 1e3);
 var dispatchPhoneLoginLogs = /* @__PURE__ */ new Map();
 var dispatchIpLoginLogs = /* @__PURE__ */ new Map();
 var WHITELIST_PHONES = ["15509601222", "15121904440"];
@@ -187,8 +260,6 @@ function isGenericDriverName(name, phone) {
   const cleanPhone = String(phone || "").replace(/\D/g, "").trim();
   if (AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone]) return false;
   if (!cleanPhone || cleanPhone.length !== 11) return true;
-  const REMOVED_PHONES = ["13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "15509601223", "15555556666"];
-  if (REMOVED_PHONES.includes(cleanPhone)) return true;
   if (["9147", "3634", "5678", "6058", "0116", "1223", "1958"].some((s) => cleanPhone.endsWith(s))) return true;
   if (!name || typeof name !== "string") return true;
   const clean = String(name).trim();
@@ -201,7 +272,10 @@ function isGenericDriverName(name, phone) {
   if (last4 && (clean === `\u53F8\u673A${last4}` || clean.endsWith(last4))) return true;
   return false;
 }
+var _dbDirty = false;
+var _dbWriteInFlight = false;
 function readLocalJsonDb() {
+  if (_dbDirty && cachedDbData) return cachedDbData;
   try {
     if (import_fs.default.existsSync(LOCAL_JSON_DB_PATH)) {
       const content = import_fs.default.readFileSync(LOCAL_JSON_DB_PATH, "utf8");
@@ -218,11 +292,36 @@ function readLocalJsonDb() {
 function writeLocalJsonDb(data, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
-  try {
-    import_fs.default.writeFileSync(LOCAL_JSON_DB_PATH, JSON.stringify(data), "utf8");
-  } catch (e) {
-    console.error("[Local JSON DB] Write error:", e);
+  _dbDirty = true;
+}
+setInterval(() => {
+  if (!_dbDirty || _dbWriteInFlight) return;
+  _dbDirty = false;
+  _dbWriteInFlight = true;
+  const snapshot = cachedDbData;
+  const tmpPath = LOCAL_JSON_DB_PATH + ".tmp";
+  import_fs.default.promises.writeFile(tmpPath, JSON.stringify(snapshot), "utf8").then(() => import_fs.default.promises.rename(tmpPath, LOCAL_JSON_DB_PATH)).catch((e) => console.error("[Local JSON DB] Async write error:", e?.message)).finally(() => {
+    _dbWriteInFlight = false;
+  });
+}, 5e3);
+try {
+  if (import_fs.default.existsSync(LOCAL_JSON_DB_PATH)) {
+    const bakPath = LOCAL_JSON_DB_PATH + ".bak";
+    import_fs.default.copyFileSync(LOCAL_JSON_DB_PATH, bakPath);
+    console.log("[Local JSON DB] \u542F\u52A8\u5907\u4EFD\u5DF2\u521B\u5EFA:", bakPath);
   }
+} catch (e) {
+  console.error("[Local JSON DB] \u542F\u52A8\u5907\u4EFD\u5931\u8D25:", e?.message);
+}
+try {
+  const tokenPath = getAuthTokenPath();
+  if (import_fs.default.existsSync(tokenPath)) {
+    const bakPath = tokenPath + ".bak";
+    import_fs.default.copyFileSync(tokenPath, bakPath);
+    console.log("[Auth Tokens] \u542F\u52A8\u5907\u4EFD\u5DF2\u521B\u5EFA:", bakPath);
+  }
+} catch (e) {
+  console.error("[Auth Tokens] \u542F\u52A8\u5907\u4EFD\u5931\u8D25:", e?.message);
 }
 async function runSystemDiskCleanup() {
   if (isMySQLEnabled && mysqlPool) {
@@ -266,16 +365,26 @@ async function startServer() {
   const PORT = 3e3;
   app.use(import_express.default.json({ limit: "20mb" }));
   app.use(import_express.default.urlencoded({ extended: true, limit: "20mb" }));
+  const CORS_WHITELIST = [
+    "https://api.lyheiwandaijiamax.com",
+    "https://admin.lyheiwandaijiamax.com",
+    "https://lyheiwandaijiamax.com",
+    "https://418000199ly-lgtm.github.io",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173"
+  ];
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin) {
+    if (origin && CORS_WHITELIST.includes(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
-    } else {
+    } else if (!origin) {
       res.setHeader("Access-Control-Allow-Origin", "*");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE, PATCH");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Keep-Alive, User-Agent, Cache-Control");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token, X-Requested-With, Keep-Alive, User-Agent, Cache-Control");
     if (req.method === "OPTIONS") {
       return res.sendStatus(204);
     }
@@ -364,15 +473,33 @@ async function startServer() {
   };
   seedSuperAdminAccount();
   const purgeMockDriverData = async () => {
-    const mockPhones = ["13912345678", "15509601223", "15555556666", "m-1", "m-2", "m-3", "13895299147"];
-    const mockNames = ["\u738B\u5FC3\u51CC", "\u5F20\u4E00\u5C71", "\u674E\u5C0F\u9F99"];
     try {
       const dbData = readLocalJsonDb();
       let modified = false;
       if (!dbData.config) dbData.config = {};
       if (!dbData.config.removed_squad_members) dbData.config.removed_squad_members = { phones: [] };
       const removedPhones = dbData.config.removed_squad_members.phones || [];
-      const kickedPhones = ["13895299147", "17660453634", "13812345678", "13912345678", "19995426058", "15509601223", "15555556666"];
+      const kickedPhones = [
+        "17866167770",
+        // 魏秉金
+        "19995179865",
+        // 张栋
+        "13099566633",
+        // 李鑫
+        "18893028825",
+        // 何威
+        "18795101111",
+        // 尹柏学
+        "18095513011",
+        // 杨海
+        "13895299147",
+        "17660453634",
+        "13812345678",
+        "13912345678",
+        "19995426058",
+        "15509601223",
+        "15555556666"
+      ];
       kickedPhones.forEach((p) => {
         if (!removedPhones.includes(p)) {
           removedPhones.push(p);
@@ -403,43 +530,61 @@ async function startServer() {
           modified = true;
         }
       });
-      if (!dbData.online_applications["15509601222"]) {
-        dbData.online_applications["15509601222"] = {
-          id: "15509601222",
-          phone: "15509601222",
-          phoneNumber: "15509601222",
-          driverName: "\u5434\u5F66\u7956",
-          name: "\u5434\u5F66\u7956",
-          realName: "\u5434\u5F66\u7956",
-          role: "\u5F00\u53D1\u8005\u53F8\u673A",
-          userRole: "\u5F00\u53D1\u8005\u53F8\u673A",
-          status: "approved",
-          approvalStatus: "\u5DF2\u5F00\u901A",
-          city: "\u94F6\u5DDD\u5E02",
-          vipExpiry: "2099-12-31",
-          onlineOrdersEnabled: true,
-          emergencyContact: "13895000000",
-          drivingYears: 10,
-          idCardFront: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80",
-          idCardBack: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
-          driverLicenseFront: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80",
-          driverLicenseBack: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
-          createdAt: "2026-10-06T00:00:00.000Z",
-          updatedAt: "2026-10-06T00:00:00.000Z"
-        };
-        modified = true;
-      }
+      const onlineApp155 = {
+        id: "15509601222",
+        phone: "15509601222",
+        phoneNumber: "15509601222",
+        driverName: "\u5434\u5F66\u7956",
+        name: "\u5434\u5F66\u7956",
+        realName: "\u5434\u5F66\u7956",
+        role: "\u5F00\u53D1\u8005\u53F8\u673A",
+        userRole: "\u5F00\u53D1\u8005\u53F8\u673A",
+        status: "approved",
+        approvalStatus: "\u5DF2\u5F00\u901A",
+        city: "\u94F6\u5DDD\u5E02",
+        vipExpiry: "2099-12-31",
+        onlineOrdersEnabled: true,
+        emergencyContact: "13895000000",
+        drivingYears: 10,
+        idCardFront: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80",
+        idCardBack: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80",
+        driverLicenseFront: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80",
+        driverLicenseBack: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+        createdAt: "2026-10-06T00:00:00.000Z",
+        updatedAt: "2026-10-06T00:00:00.000Z"
+      };
+      dbData.online_applications["15509601222"] = onlineApp155;
       if (dbData.driver_users) {
         Object.keys(dbData.driver_users).forEach((docId) => {
-          if (docId !== "15509601222") {
+          const isMerchantA = docId.toUpperCase().endsWith("A") || dbData.driver_users[docId]?.isMerchant;
+          if (docId !== "15509601222" && !isMerchantA) {
             delete dbData.driver_users[docId];
             modified = true;
           }
         });
       }
+      if (!dbData.driver_users) dbData.driver_users = {};
+      dbData.driver_users["15509601222"] = {
+        id: "15509601222",
+        phone: "15509601222",
+        phoneNumber: "15509601222",
+        driverName: "\u5434\u5F66\u7956",
+        name: "\u5434\u5F66\u7956",
+        realName: "\u5434\u5F66\u7956",
+        role: "\u5F00\u53D1\u8005\u53F8\u673A",
+        userRole: "\u5F00\u53D1\u8005\u53F8\u673A",
+        status: "\u5DF2\u901A\u8FC7",
+        is_squad_member: 1,
+        inSquad: true,
+        collection: "squad_members",
+        city: "\u94F6\u5DDD\u5E02",
+        vipExpiry: "2099-12-31",
+        isOnline: true,
+        onlineOrdersEnabled: true
+      };
       if (modified) {
         writeLocalJsonDb(dbData, true);
-        console.log("\u2713 [Database] Purged all drivers except 15509601222 from local_db.json");
+        console.log("\u2713 [Database] Purged all drivers except 15509601222 and merchant accounts from local_db.json");
       }
     } catch (e) {
       console.error("[Purge] Error purging drivers from local_db.json:", e);
@@ -450,7 +595,7 @@ async function startServer() {
         await conn.query(
           `DELETE FROM \`daijia_documents\` 
            WHERE \`collection\` IN ('squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations') 
-           AND \`doc_id\` != '15509601222'`
+           AND \`doc_id\` != '15509601222' AND \`doc_id\` NOT LIKE '%A' AND \`doc_id\` NOT LIKE '%a'`
         );
         const onlineApp155 = {
           id: "15509601222",
@@ -481,6 +626,36 @@ async function startServer() {
            ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
           [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155)]
         );
+        const dev155 = {
+          id: "15509601222",
+          phone: "15509601222",
+          phoneNumber: "15509601222",
+          driverName: "\u5434\u5F66\u7956",
+          name: "\u5434\u5F66\u7956",
+          realName: "\u5434\u5F66\u7956",
+          role: "\u5F00\u53D1\u8005\u53F8\u673A",
+          userRole: "\u5F00\u53D1\u8005\u53F8\u673A",
+          status: "\u5DF2\u901A\u8FC7",
+          is_squad_member: 1,
+          inSquad: true,
+          collection: "squad_members",
+          city: "\u94F6\u5DDD\u5E02",
+          vipExpiry: "2099-12-31",
+          isOnline: true,
+          onlineOrdersEnabled: true
+        };
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('driver_users', '15509601222', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155)]
+        );
+        await conn.query(
+          `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
+           VALUES ('squad_members', '15509601222', ?, NOW())
+           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155)]
+        );
         const vData = {
           version: "V2.0",
           forceUpgrade: false,
@@ -500,7 +675,10 @@ async function startServer() {
       }
     }
   };
-  purgeMockDriverData();
+  (async () => {
+    await purgeMockDriverData();
+    await consolidateAllDriversOnStartup();
+  })();
   const consolidateAllDriversOnStartup = async () => {
     try {
       const dbData = readLocalJsonDb();
@@ -652,6 +830,15 @@ async function startServer() {
         }
         updatedCount++;
       });
+      if (dbData.driver_users) {
+        Object.keys(dbData.driver_users).forEach((k) => {
+          const cleanP = k.replace(/\D/g, "").trim();
+          const isMerchantA = k.toUpperCase().endsWith("A") || dbData.driver_users[k]?.isMerchant;
+          if (cleanP !== "15509601222" && !approvedSquadPhones.has(cleanP) && !isMerchantA) {
+            delete dbData.driver_users[k];
+          }
+        });
+      }
       writeLocalJsonDb(dbData);
       console.log(`\u2713 [Database] Consolidated ${updatedCount} driver profiles into driver_users on startup.`);
       if (isMySQLEnabled && mysqlPool) {
@@ -737,7 +924,10 @@ async function startServer() {
     }
     return res.status(502).send("TTS synthesis failed on all upstream providers");
   });
-  app.post("/api/admin/check-permission", (req, res) => {
+  app.post("/api/admin/check-permission", requireDbAuth, (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
     const { phone } = req.body;
     const cleanPhone = String(phone || "").trim();
     if (cleanPhone === "15509601222") {
@@ -755,7 +945,10 @@ async function startServer() {
       error: "\u274C \u65E0\u6743\u9650\uFF1A\u975E\u6700\u9AD8\u5F00\u53D1\u8005\u8D26\u53F7(15509601222)\uFF0C\u62D2\u7EDD\u8BBF\u95EE\u6216\u767B\u5F55\u7BA1\u7406\u540E\u53F0\uFF01"
     });
   });
-  app.post("/api/admin/purge-all-drivers", async (req, res) => {
+  app.post("/api/admin/purge-all-drivers", requireDbAuth, async (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
     try {
       await purgeMockDriverData();
       return res.json({
@@ -769,6 +962,82 @@ async function startServer() {
       });
     }
   });
+  const requireDbAuth = (req, res, next) => {
+    const token = req.headers["x-auth-token"] || req.headers["authorization"]?.replace(/^Bearer\s+/i, "");
+    if (!token) {
+      return res.status(401).json({ success: false, error: "\u672A\u767B\u5F55\uFF1A\u7F3A\u5C11\u8BA4\u8BC1\u4EE4\u724C\uFF0C\u8BF7\u5148\u77ED\u4FE1\u9A8C\u8BC1\u767B\u5F55" });
+    }
+    const info = authTokens.get(String(token));
+    if (!info) {
+      return res.status(401).json({ success: false, error: "\u767B\u5F55\u5DF2\u5931\u6548\uFF1A\u4EE4\u724C\u65E0\u6548\uFF0C\u8BF7\u91CD\u65B0\u77ED\u4FE1\u9A8C\u8BC1\u767B\u5F55" });
+    }
+    const devPhoneNorm = String(DEVELOPER_PHONE_SERVER || "").trim().toUpperCase();
+    const infoPhoneNorm = String(info.phone || "").trim().toUpperCase();
+    if (infoPhoneNorm === devPhoneNorm || infoPhoneNorm === devPhoneNorm + "A") {
+      req.authPhone = info.phone;
+      req.isAdmin = true;
+      req.userRole = "developer";
+      req.isManager = true;
+      return next();
+    }
+    let userRole = "normal";
+    try {
+      const dbData = readLocalJsonDb();
+      const purePhone = infoPhoneNorm.replace(/A$/, "");
+      const memberDoc = dbData.squad_members && (dbData.squad_members[info.phone] || dbData.squad_members[purePhone]) || {};
+      const pos = String(memberDoc.squad_position || "").trim().toLowerCase();
+      if (pos === "boss" || pos === "manager" || pos === "dispatcher") userRole = pos;
+      if (userRole === "normal") {
+        const r = String(memberDoc.role || memberDoc.userRole || "");
+        if (r.includes("\u57CE\u5E02\u8001\u677F")) userRole = "boss";
+        else if (r.includes("\u57CE\u5E02\u7BA1\u7406")) userRole = "manager";
+        else if (r.includes("\u57CE\u5E02\u6D3E\u5355\u5458")) userRole = "dispatcher";
+      }
+    } catch (_) {
+    }
+    req.userRole = userRole;
+    req.isManager = userRole === "boss" || userRole === "manager";
+    req.isDispatcher = userRole === "dispatcher";
+    const normalizeId = (s) => String(s || "").trim().toUpperCase();
+    const bodyDocId = normalizeId(req.body?.id || req.body?.docId || req.body?.data?.id || "");
+    const queryDocId = normalizeId(req.query?.id || req.query?.docId || "");
+    const targetId = bodyDocId || queryDocId;
+    const colName = String(req.body?.col || req.body?.collection || req.query?.col || req.query?.collection || "").trim();
+    const MERCHANT_OWN_COLS = ["merchant_users", "web_valet_qrs", "app_valet_qrs", "dispatch_qrs", "dispatch_qrs_web", "dispatch_qrcodes"];
+    const isMerchantToken = /A$/.test(infoPhoneNorm);
+    const deA = (s) => s.replace(/A$/, "");
+    if (isMerchantToken && MERCHANT_OWN_COLS.includes(colName) && targetId && deA(targetId) === deA(infoPhoneNorm)) {
+      req.authPhone = info.phone;
+      req.isAdmin = false;
+      return next();
+    }
+    const MEMBER_COLS = ["squad_members", "driver_users", "driver_locations", "squad_applications", "online_applications", "team_members"];
+    const ORDER_COLS = ["merchant_orders", "valet_orders"];
+    if (req.isManager && (MEMBER_COLS.includes(colName) || ORDER_COLS.includes(colName))) {
+      req.authPhone = info.phone;
+      req.isAdmin = false;
+      return next();
+    }
+    if (req.isDispatcher && ORDER_COLS.includes(colName)) {
+      req.authPhone = info.phone;
+      req.isAdmin = false;
+      return next();
+    }
+    if (!targetId) {
+      const isAddWithGeneratedId = req.path === "/api/db/add" && !req.body?.data?.id;
+      if (!isAddWithGeneratedId) {
+        console.warn(`[Auth] \u62D2\u7EDD\u65E0\u76EE\u6807id\u7684\u6279\u91CF\u64CD\u4F5C: token\u624B\u673A=${info.phone}, \u8DEF\u5F84=${req.path}`);
+        return res.status(403).json({ success: false, error: "\u8BE5\u64CD\u4F5C\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+      }
+    }
+    if (targetId && targetId !== infoPhoneNorm) {
+      console.warn(`[Auth] \u62D2\u7EDD\u8D8A\u6743\u5199\u5165: token\u624B\u673A=${info.phone}, \u76EE\u6807=${targetId}, \u8DEF\u5F84=${req.path}`);
+      return res.status(403).json({ success: false, error: "\u65E0\u6743\u64CD\u4F5C\u4ED6\u4EBA\u6570\u636E" });
+    }
+    req.authPhone = info.phone;
+    req.isAdmin = false;
+    next();
+  };
   app.get("/api/db/get", async (req, res) => {
     try {
       const col = String(req.query.col || req.query.collection || "").trim();
@@ -891,41 +1160,70 @@ async function startServer() {
         return res.status(400).json({ docs: [], error: "Missing col parameter" });
       }
       const limitNum = Math.min(Math.max(Number(req.query.limit) || 1e4, 1), 2e4);
+      const sinceParam = String(req.query.since || "").trim();
+      const sinceDate = sinceParam ? new Date(sinceParam) : null;
+      const hasValidSince = sinceDate && !isNaN(sinceDate.getTime());
       if (isMySQLEnabled && mysqlPool) {
         try {
-          const [rows] = await mysqlPool.query(
-            "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT ?",
-            [col, limitNum]
-          );
+          let rows;
+          if (hasValidSince) {
+            [rows] = await mysqlPool.query(
+              "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND `updated_at` > ? ORDER BY `updated_at` DESC LIMIT ?",
+              [col, sinceDate, limitNum]
+            );
+          } else {
+            [rows] = await mysqlPool.query(
+              "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT ?",
+              [col, limitNum]
+            );
+          }
           const now = /* @__PURE__ */ new Date();
           const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
           target50d.setDate(target50d.getDate() + 50);
           const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, "0")}-${String(target50d.getDate()).padStart(2, "0")}`;
           const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
-          const isOrdersCol = ["merchant_orders", "valet_orders", "orders"].includes(col);
+          const isOrdersCol2 = ["merchant_orders", "valet_orders", "orders"].includes(col);
           const requesterPhone = String(req.query.userPhone || req.query.phone || req.query.driverPhone || req.headers["x-user-phone"] || "").replace(/\D/g, "").trim();
-          if (isOrdersCol && requesterPhone && requesterPhone !== "15509601222") {
+          if (isOrdersCol2 && requesterPhone && requesterPhone !== "15509601222") {
             const removedArr = dbData.config?.["removed_squad_members"]?.phones || [];
             if (removedArr.includes(requesterPhone)) {
               return res.json({ docs: [], list: [], data: [] });
             }
           }
-          const clearedTimestamp = Number(dbData.config?.["merchant_orders_cleared"]?.clearedAt || 0);
+          const clearedTimestamp2 = Number(dbData.config?.["merchant_orders_cleared"]?.clearedAt || 0);
           const docs2 = (rows || []).map((r) => {
             const data = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
             const obj = typeof data === "object" && data !== null ? { ...data } : {};
             return { id: r.doc_id, ...obj, data: obj };
           }).filter((doc) => {
-            const cleanPhone = String(doc.phone || doc.id || "").replace(/\D/g, "").trim();
+            const docIdStr = String(doc.id || doc.phone || "").trim();
+            const cleanPhone = docIdStr.replace(/\D/g, "").trim();
+            if (col === "squad_applications") {
+              if (docIdStr.toUpperCase().endsWith("A") || doc.isMerchant || doc.accountType === "merchant") return false;
+              if (cleanPhone === "15509601222") return false;
+              if (isGenericDriverName(doc.name || doc.driverName || doc.applicantName, cleanPhone)) return doc.status === "\u5DF2\u62D2\u7EDD";
+              return true;
+            }
+            if (col === "online_applications") {
+              if (cleanPhone === "15509601222") return true;
+              if (docIdStr.toUpperCase().endsWith("A") || doc.isMerchant) return false;
+              return true;
+            }
+            if (["merchant_accounts", "merchant_users"].includes(col)) {
+              const docRole = String(doc?.role || doc?.userRole || "");
+              const isMerchantByRole = (docRole.includes("\u5546\u6237") || docRole.includes("\u5546\u5BB6")) && !docRole.includes("\u53F8\u673A");
+              if (!docIdStr.toUpperCase().endsWith("A") && !doc?.isMerchant && doc?.accountType !== "merchant" && !isMerchantByRole) return false;
+              return true;
+            }
             if (["squad_members", "driver_users"].includes(col)) {
-              return cleanPhone === "15509601222" || doc.id === "15509601222";
+              if (cleanPhone === "15509601222") return true;
+              if (docIdStr.toUpperCase().endsWith("A")) return false;
+              if (isGenericDriverName(doc.name || doc.driverName, cleanPhone)) return false;
+              return true;
             }
-            if (["squad_applications", "online_applications", "merchant_accounts", "merchant_users", "team_members"].includes(col)) {
-              return cleanPhone === "15509601222";
-            }
-            if (isOrdersCol && clearedTimestamp > 0) {
+            if (isOrdersCol2 && clearedTimestamp2 > 0) {
               const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
-              if (t > 0 && t <= clearedTimestamp) return false;
+              if (t > 0 && t <= clearedTimestamp2) return false;
             }
             return true;
           });
@@ -945,12 +1243,32 @@ async function startServer() {
           data: obj
         };
       }).filter((doc) => {
-        const cleanPhone = String(doc.phone || doc.id || "").replace(/\D/g, "").trim();
-        if (["squad_members", "driver_users"].includes(col)) {
-          return cleanPhone === "15509601222" || doc.id === "15509601222";
+        const docIdStr = String(doc.id || doc.phone || "").trim();
+        const cleanPhone = docIdStr.replace(/\D/g, "").trim();
+        if (col === "squad_applications") {
+          if (docIdStr.toUpperCase().endsWith("A") || doc.isMerchant || doc.accountType === "merchant") return false;
+          if (cleanPhone === "15509601222") return false;
+          if (isGenericDriverName(doc.name || doc.driverName || doc.applicantName, cleanPhone)) return doc.status === "\u5DF2\u62D2\u7EDD";
+          return true;
         }
-        if (["squad_applications", "online_applications", "merchant_accounts", "merchant_users", "team_members"].includes(col)) {
-          return cleanPhone === "15509601222";
+        if (col === "online_applications") {
+          if (cleanPhone === "15509601222") return true;
+          if (docIdStr.toUpperCase().endsWith("A") || doc.isMerchant) return false;
+          return true;
+        }
+        if (["merchant_accounts", "merchant_users"].includes(col)) {
+          if (!docIdStr.toUpperCase().endsWith("A")) return false;
+          return true;
+        }
+        if (["squad_members", "driver_users"].includes(col)) {
+          if (cleanPhone === "15509601222") return true;
+          if (docIdStr.toUpperCase().endsWith("A")) return false;
+          if (isGenericDriverName(doc.name || doc.driverName, cleanPhone)) return false;
+          return true;
+        }
+        if (isOrdersCol && clearedTimestamp > 0) {
+          const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
+          if (t > 0 && t <= clearedTimestamp) return false;
         }
         return true;
       });
@@ -968,7 +1286,7 @@ async function startServer() {
     }
     return handleDbList(req, res);
   });
-  app.post(["/api/db/set", "/api/db/save"], async (req, res) => {
+  app.post(["/api/db/set", "/api/db/save"], requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || "").trim();
       const docId = String(req.body.id || req.body.docId || "").trim();
@@ -976,6 +1294,15 @@ async function startServer() {
       const merge = req.body.merge !== void 0 ? Boolean(req.body.merge) : true;
       if (!col || !docId || data === void 0) {
         return res.status(400).json({ success: false, error: "Missing col, id, or data" });
+      }
+      if (col === "squad_members" && !req.isAdmin && !req.isManager) {
+        const SENSITIVE = ["status", "approvalStatus", "role", "squad_position", "userRole", "position"];
+        for (const f of SENSITIVE) {
+          if (data && typeof data === "object" && f in data) {
+            console.warn(`[Auth] \u5265\u79BB\u654F\u611F\u5B57\u6BB5: token\u624B\u673A=${req.authPhone}, \u5B57\u6BB5=${f}`);
+            delete data[f];
+          }
+        }
       }
       const isExplicitApproval = data?.status === "\u5DF2\u901A\u8FC7" || data?.approvalStatus === "\u5DF2\u901A\u8FC7";
       const isExplicitApplication = col === "squad_applications" && (data?.status === "\u5F85\u5BA1\u6838" || data?.status === "\u5DF2\u901A\u8FC7");
@@ -1209,13 +1536,22 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/db/update", async (req, res) => {
+  app.post("/api/db/update", requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || "").trim();
       const docId = String(req.body.id || req.body.docId || "").trim();
       const data = req.body.data;
       if (!col || !docId || data === void 0) {
         return res.status(400).json({ success: false, error: "Missing col, id, or data" });
+      }
+      if (col === "squad_members" && !req.isAdmin && !req.isManager) {
+        const SENSITIVE = ["status", "approvalStatus", "role", "squad_position", "userRole", "position"];
+        for (const f of SENSITIVE) {
+          if (data && typeof data === "object" && f in data) {
+            console.warn(`[Auth] \u5265\u79BB\u654F\u611F\u5B57\u6BB5: token\u624B\u673A=${req.authPhone}, \u5B57\u6BB5=${f}`);
+            delete data[f];
+          }
+        }
       }
       const isExplicitApproval = data?.status === "\u5DF2\u901A\u8FC7" || data?.approvalStatus === "\u5DF2\u901A\u8FC7";
       const isExplicitApplication = col === "squad_applications" && (data?.status === "\u5F85\u5BA1\u6838" || data?.status === "\u5DF2\u901A\u8FC7");
@@ -1364,7 +1700,10 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/admin/update-driver-expiry", async (req, res) => {
+  app.post("/api/admin/update-driver-expiry", requireDbAuth, async (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || "").replace(/\D/g, "").trim();
       const rawVip = String(req.body.vipExpiry || "").trim();
@@ -1428,7 +1767,10 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/admin/update-driver-role", async (req, res) => {
+  app.post("/api/admin/update-driver-role", requireDbAuth, async (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || "").replace(/\D/g, "").trim();
       const role = String(req.body.role || req.body.userRole || req.body.position || "").trim();
@@ -1504,7 +1846,10 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post(["/api/admin/batch-recharge-squad", "/api/admin/recharge-all-drivers"], async (req, res) => {
+  app.post(["/api/admin/batch-recharge-squad", "/api/admin/recharge-all-drivers"], requireDbAuth, async (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
     try {
       const daysCount = parseInt(req.body.days || "50", 10) || 50;
       const exclude = String(req.body.excludePhone || "15509601222").replace(/\D/g, "").trim();
@@ -1544,27 +1889,6 @@ async function startServer() {
         } catch (_) {
         }
       }
-      const realDriverPhones = [
-        "14709696333",
-        "15209678783",
-        "15378921387",
-        "13995071199",
-        "13995388888",
-        "15121888888",
-        "15121904440",
-        "15295188888",
-        "18695161718",
-        "18695174428",
-        "15226203822",
-        "14709503822",
-        "18695111001",
-        "18695111002",
-        "18695117350",
-        "18695117975",
-        "18695111030",
-        "18695111003"
-      ];
-      realDriverPhones.forEach((p) => allPhones.add(p));
       const updatedPhones = [];
       const targetCols = ["driver_users", "squad_members", "squad_applications"];
       for (const phone of Array.from(allPhones)) {
@@ -1613,7 +1937,7 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/db/delete", async (req, res) => {
+  app.post("/api/db/delete", requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || "").trim();
       const docId = String(req.body.id || req.body.docId || "").trim();
@@ -1692,7 +2016,6 @@ async function startServer() {
               ["online_applications", docId]
             );
           }
-          return res.json({ success: true, id: docId });
         } catch (mysqlErr) {
           console.error("[DB Proxy DELETE MySQL Error]:", mysqlErr);
         }
@@ -1742,7 +2065,7 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/db/clear-collection", async (req, res) => {
+  app.post("/api/db/clear-collection", requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || "").trim();
       if (!col) {
@@ -1782,6 +2105,67 @@ async function startServer() {
       return res.json({ success: true, collection: col });
     } catch (err) {
       console.error("[DB Proxy CLEAR-COLLECTION Exception]:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+  app.post("/api/orders/clear-all", requireDbAuth, async (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
+    try {
+      console.log("[DB Proxy] \u6B63\u5728\u6267\u884C\u5168\u91CF\u4E00\u952E\u6E05\u7A7A\uFF1A\u6E05\u9664\u6240\u6709\u8BA2\u5355\u8BB0\u5F55 (merchant_orders, valet_orders, orders, passenger_links, active_orders)");
+      const nowTs = Date.now();
+      const orderCollections = ["merchant_orders", "valet_orders", "orders", "passenger_links", "active_orders"];
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          await mysqlPool.query(
+            "DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?, ?, ?, ?)",
+            orderCollections
+          );
+          await mysqlPool.query(
+            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+            ["config", "merchant_orders_cleared", JSON.stringify({ clearedAt: nowTs })]
+          );
+          console.log("\u2713 [MySQL] \u5DF2\u5F7B\u5E95\u6E05\u9664\u6240\u6709\u8BA2\u5355\u6570\u636E\u8BB0\u5F55\u4E0E\u5386\u53F2\u7F13\u5B58");
+        } catch (mysqlErr) {
+          console.error("[MySQL Clear-All Orders Error]:", mysqlErr);
+        }
+      }
+      const dbData = readLocalJsonDb();
+      orderCollections.forEach((c) => {
+        dbData[c] = {};
+      });
+      if (!dbData.config) dbData.config = {};
+      dbData.config["merchant_orders_cleared"] = { clearedAt: nowTs };
+      if (dbData["driver_users"]) {
+        Object.keys(dbData["driver_users"]).forEach((p) => {
+          if (dbData["driver_users"][p]) {
+            dbData["driver_users"][p].isBusy = false;
+            dbData["driver_users"][p].status = "idle";
+          }
+        });
+      }
+      if (dbData["driver_locations"]) {
+        Object.keys(dbData["driver_locations"]).forEach((p) => {
+          if (dbData["driver_locations"][p]) {
+            dbData["driver_locations"][p].isBusy = false;
+            dbData["driver_locations"][p].status = "idle";
+          }
+        });
+      }
+      if (dbData["squad_members"]) {
+        Object.keys(dbData["squad_members"]).forEach((p) => {
+          if (dbData["squad_members"][p]) {
+            dbData["squad_members"][p].isBusy = false;
+            dbData["squad_members"][p].status = "idle";
+          }
+        });
+      }
+      writeLocalJsonDb(dbData);
+      console.log("\u2713 [\u963F\u91CC\u4E91\u672C\u5730\u6570\u636E\u5E93] \u5DF2\u5F7B\u5E95\u6E05\u9664\u6240\u6709\u8BA2\u5355\u8BB0\u5F55\uFF0C\u672C\u5730\u4E0E\u670D\u52A1\u5668\u4E0D\u518D\u4FDD\u5B58\u6240\u6709\u8BA2\u5355\u8BB0\u5F55");
+      return res.json({ success: true, clearedAt: nowTs, message: "\u6240\u6709\u8BA2\u5355\u8BB0\u5F55\u5DF2\u4ECE\u670D\u52A1\u5668\u5F7B\u5E95\u6E05\u9664\uFF01" });
+    } catch (err) {
+      console.error("[Clear-All Orders Exception]:", err);
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -1825,12 +2209,15 @@ async function startServer() {
     });
     writeLocalJsonDb(dbData);
   };
-  app.post("/api/driver/offline", async (req, res) => {
+  app.post("/api/driver/offline", requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.driverPhone || "").trim();
       const reason = String(req.body.reason || "manual_offline").trim();
       if (!phone) {
         return res.status(400).json({ success: false, error: "Missing driver phone" });
+      }
+      if (!req.isAdmin && phone.toUpperCase() !== String(req.authPhone || "").trim().toUpperCase()) {
+        return res.status(403).json({ success: false, error: "\u65E0\u6743\u64CD\u4F5C\u4ED6\u4EBA\u6570\u636E" });
       }
       await performServerOffline(phone, reason);
       console.log(`[Baota API /api/driver/offline] Driver ${phone} set to offline successfully (Reason: ${reason})`);
@@ -1840,11 +2227,14 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/driver/status", async (req, res) => {
+  app.post("/api/driver/status", requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.driverPhone || "").trim();
       if (!phone) {
         return res.status(400).json({ success: false, error: "Missing driver phone" });
+      }
+      if (!req.isAdmin && phone.toUpperCase() !== String(req.authPhone || "").trim().toUpperCase()) {
+        return res.status(403).json({ success: false, error: "\u65E0\u6743\u64CD\u4F5C\u4ED6\u4EBA\u6570\u636E" });
       }
       const isBusy = Boolean(req.body.isBusy);
       const status = isBusy ? "busy" : "idle";
@@ -1882,11 +2272,14 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/driver/location", async (req, res) => {
+  app.post("/api/driver/location", requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || "").trim();
       if (!phone) {
         return res.status(400).json({ success: false, error: "Missing phone" });
+      }
+      if (!req.isAdmin && phone.toUpperCase() !== String(req.authPhone || "").trim().toUpperCase()) {
+        return res.status(403).json({ success: false, error: "\u65E0\u6743\u64CD\u4F5C\u4ED6\u4EBA\u6570\u636E" });
       }
       const lat = req.body.lat !== void 0 ? Number(req.body.lat) : void 0;
       const lng = req.body.lng !== void 0 ? Number(req.body.lng) : void 0;
@@ -2129,7 +2522,7 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post(["/api/driver/name", "/api/driver/update-name"], async (req, res) => {
+  app.post(["/api/driver/name", "/api/driver/update-name"], requireDbAuth, async (req, res) => {
     try {
       const rawPhone = String(req.body.phone || "").trim();
       const phone = rawPhone.replace(/\D/g, "");
@@ -2137,10 +2530,13 @@ async function startServer() {
       if (!phone || !name) {
         return res.status(400).json({ success: false, error: "Phone and name required" });
       }
+      if (!req.isAdmin && phone.toUpperCase() !== String(req.authPhone || "").replace(/\D/g, "").toUpperCase()) {
+        return res.status(403).json({ success: false, error: "\u65E0\u6743\u64CD\u4F5C\u4ED6\u4EBA\u6570\u636E" });
+      }
       AUTHORITATIVE_REAL_DRIVER_NAMES[phone] = name;
       if (isMySQLEnabled && mysqlPool) {
         try {
-          for (const col of ["driver_users", "squad_members", "driver_locations", "squad_applications"]) {
+          for (const col of ["driver_users", "squad_members", "driver_locations", "squad_applications", "online_applications", "team_members"]) {
             const [rows] = await mysqlPool.query(
               "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
               [col, phone]
@@ -2293,81 +2689,136 @@ async function startServer() {
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
   }
-  const YINCHUAN_SERVER_POIS = [
-    // 1. Specific User Landmarks & Popular POIs
-    { keywords: ["\u534E\u6C5F\u5927\u8089\u5939\u998D", "\u534E\u6C5F\u8089\u5939\u998D", "\u5927\u8089\u5939\u998D"], lat: 38.4812, lng: 106.2348 },
-    { keywords: ["\u5149\u5927\u56FD\u65C5\u4E2D\u5C71\u8857\u8425\u4E1A\u90E8", "\u5149\u5927\u56FD\u65C5\u4E2D\u5C71\u8857", "\u5149\u5927\u56FD\u65C5"], lat: 38.4855, lng: 106.241 },
-    { keywords: ["\u5FB7\u9686\u697C\u5FB7\u9F0E\u9038\u54C1", "\u5FB7\u9686\u697C", "\u5FB7\u9F0E\u9038\u54C1"], lat: 38.4875, lng: 106.262 },
-    { keywords: ["\u4EBA\u793E\u670D\u52A1\u7A97\u53E3\uFF08\u9633\u6F84\u793E\u533A\uFF09", "\u4EBA\u793E\u670D\u52A1\u7A97\u53E3", "\u9633\u6F84\u793E\u533A", "\u9633\u6F84"], lat: 38.492, lng: 106.255 },
-    { keywords: ["\u897F\u6865\u5DF7\u7C89\u6761\u5927\u76D8\u9E21", "\u7C89\u6761\u5927\u76D8\u9E21", "\u897F\u6865\u5DF7"], lat: 38.4873, lng: 106.2625 },
-    { keywords: ["\u94C2\u91D1\u5927\u53A6", "\u957F\u76F8\u5FC6\u5BBE\u9986"], lat: 38.4825, lng: 106.2315 },
-    { keywords: ["\u6000\u8FDC\u591C\u5E02", "\u6000\u8FDC\u8DEF", "\u6000\u8FDC\u5E02\u573A", "\u516B\u4E00\u8F66\u573A"], lat: 38.495, lng: 106.155 },
-    { keywords: ["\u8FD0\u7965\u5C0F\u533A", "\u8FD0\u7965"], lat: 38.483, lng: 106.235 },
-    { keywords: ["\u91D1\u51E4\u4E07\u8FBE", "\u4E07\u8FBE\u5E7F\u573A"], lat: 38.5085, lng: 106.216 },
-    { keywords: ["\u897F\u590F\u4E07\u8FBE"], lat: 38.4985, lng: 106.1485 },
-    { keywords: ["\u5EFA\u53D1\u5927\u9605\u57CE", "\u5927\u9605\u57CE"], lat: 38.5255, lng: 106.2205 },
-    { keywords: ["\u9605\u6D77\u6E7E", "\u9605\u6D77\u5927\u9152\u5E97"], lat: 38.545, lng: 106.215 },
-    { keywords: ["\u7709\u5C71\u5DDD\u83DC"], lat: 38.4988, lng: 106.2815 },
-    { keywords: ["\u9F13\u697C", "\u65B0\u534E\u767E\u8D27", "\u65B0\u534E\u8857"], lat: 38.4815, lng: 106.2355 },
-    { keywords: ["\u60A0\u9605\u57CE"], lat: 38.425, lng: 106.228 },
-    { keywords: ["\u671B\u8FDC\u4EBA\u5BB6", "\u671B\u8FDC\u9547", "\u56DB\u5B63\u9C9C"], lat: 38.388, lng: 106.258 },
-    { keywords: ["\u8574\u8F89\u5546\u5E97", "\u5357\u4EAC\u5305\u5B50\u94FA"], lat: 38.4878, lng: 106.2622 },
-    { keywords: ["\u540C\u4E61\u658B\u7F8A\u7F94\u8089", "\u540C\u4E61\u658B", "\u9A6C\u5C0F\u519B\u8FC7\u6CB9\u8089\u62CC\u9762"], lat: 38.4873, lng: 106.2629 },
-    { keywords: ["\u8FCE\u6625\u82D1", "\u8FCE\u6625\u82D11\u53F7\u697C", "\u8FCE\u6625\u82D12\u53F7\u697C"], lat: 38.4882, lng: 106.2616 },
-    { keywords: ["\u6D77\u5B9D\u82D1", "\u5B81\u7965\u56ED"], lat: 38.4886, lng: 106.2625 },
-    // 2. Major Yinchuan Street & Road Grid Dictionary (小商店、餐厅、小区街道匹配)
-    { keywords: ["\u4E2D\u5C71\u5317\u8857", "\u4E2D\u5C71\u5357\u8857", "\u4E2D\u5C71\u8857"], lat: 38.4855, lng: 106.241 },
-    { keywords: ["\u5317\u4EAC\u4E1C\u8DEF", "\u5317\u4EAC\u8DEF"], lat: 38.4875, lng: 106.262 },
-    { keywords: ["\u5317\u4EAC\u4E2D\u8DEF"], lat: 38.4908, lng: 106.2123 },
-    { keywords: ["\u5317\u4EAC\u897F\u8DEF"], lat: 38.492, lng: 106.162 },
-    { keywords: ["\u6D77\u5B9D\u8DEF", "\u9633\u6F84\u5DF7"], lat: 38.492, lng: 106.255 },
-    { keywords: ["\u89E3\u653E\u4E1C\u8857", "\u89E3\u653E\u897F\u8857", "\u89E3\u653E\u8857"], lat: 38.4815, lng: 106.2355 },
-    { keywords: ["\u6C11\u65CF\u5317\u8857", "\u6C11\u65CF\u5357\u8857", "\u6C11\u65CF\u8857"], lat: 38.483, lng: 106.242 },
-    { keywords: ["\u80DC\u5229\u5317\u8857", "\u80DC\u5229\u5357\u8857", "\u80DC\u5229\u8857", "\u533B\u5927\u603B\u9662"], lat: 38.4485, lng: 106.2345 },
-    { keywords: ["\u4EB2\u6C34\u5317\u5927\u8857", "\u4EB2\u6C34\u5357\u5927\u8857", "\u4EB2\u6C34\u5927\u8857"], lat: 38.5085, lng: 106.216 },
-    { keywords: ["\u6B63\u6E90\u5317\u8857", "\u6B63\u6E90\u5357\u8857", "\u6B63\u6E90\u8857", "\u60A6\u6D77\u65B0\u5929\u5730"], lat: 38.512, lng: 106.218 },
-    { keywords: ["\u5B9D\u6E56\u4E1C\u8DEF", "\u5B9D\u6E56\u897F\u8DEF", "\u5B9D\u6E56\u8DEF", "\u5B9D\u6E56\u516C\u56ED"], lat: 38.448, lng: 106.22 },
-    { keywords: ["\u8D3A\u5170\u5C71\u8DEF", "\u8D3A\u5170\u5C71\u4E1C\u8DEF", "\u8D3A\u5170\u5C71\u897F\u8DEF", "\u5B81\u590F\u5927\u5B66"], lat: 38.502, lng: 106.138 },
-    { keywords: ["\u6EE1\u57CE\u5317\u8857", "\u6EE1\u57CE\u5357\u8857", "\u6EE1\u57CE\u8857"], lat: 38.488, lng: 106.185 },
-    { keywords: ["\u9EC4\u6CB3\u4E1C\u8DEF", "\u9EC4\u6CB3\u897F\u8DEF", "\u9EC4\u6CB3\u8DEF"], lat: 38.462, lng: 106.215 },
-    { keywords: ["\u5BCC\u5B81\u8857", "\u6587\u5316\u8857"], lat: 38.48, lng: 106.231 },
-    { keywords: ["\u4E0A\u6D77\u4E1C\u8DEF", "\u4E0A\u6D77\u897F\u8DEF", "\u4E0A\u6D77\u8DEF"], lat: 38.4892, lng: 106.2435 },
-    // 3. District & County Region Centroids
-    { keywords: ["\u5174\u5E86\u533A", "\u8001\u57CE\u533A"], lat: 38.483, lng: 106.235 },
-    { keywords: ["\u91D1\u51E4\u533A", "\u65B0\u533A"], lat: 38.4908, lng: 106.2123 },
-    { keywords: ["\u897F\u590F\u533A", "\u65B0\u5E02\u533A"], lat: 38.495, lng: 106.155 },
-    { keywords: ["\u8D3A\u5170\u53BF", "\u5FB7\u80DC"], lat: 38.552, lng: 106.258 },
-    { keywords: ["\u6C38\u5B81\u53BF", "\u671B\u8FDC"], lat: 38.388, lng: 106.258 }
-  ];
+  const YINCHUAN_SERVER_POIS = [];
+  const AMAP_KEY_SERVER = "0ae534670da6caccb517c02edd04e89e";
+  async function geocodeServerPoiAsync(startLoc, fallbackLat, fallbackLng) {
+    const failResult = { lat: NaN, lng: NaN, reliable: false };
+    if (!startLoc || typeof startLoc !== "string" || !startLoc.trim()) {
+      return failResult;
+    }
+    const clean = startLoc.trim().replace(/^代驾商家起点[为：:\s]*/g, "").replace(/^商家代叫起点[为：:\s]*/g, "").replace(/^商家起点[为：:\s]*/g, "").replace(/^代叫商家起点[为：:\s]*/g, "").replace(/^代驾起点[为：:\s]*/g, "").replace(/^起点[为：:\s]*/g, "").trim() || startLoc.trim();
+    for (const poi of YINCHUAN_SERVER_POIS) {
+      if (poi.keywords.some((kw) => clean.includes(kw) || kw.includes(clean))) {
+        return { lat: poi.lat, lng: poi.lng, reliable: true };
+      }
+    }
+    try {
+      const url = `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(clean)}&key=${AMAP_KEY_SERVER}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5e3) });
+      const data = await resp.json();
+      if (data.status === "1" && data.geocodes?.length > 0) {
+        const loc = String(data.geocodes[0].location || "").split(",");
+        const lng = Number(loc[0]), lat = Number(loc[1]);
+        if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+          console.log(`[Geocode] \u9AD8\u5FB7\u89E3\u6790\u6210\u529F: ${clean} -> ${lat},${lng}`);
+          return { lat, lng, reliable: true };
+        }
+      }
+      console.warn(`[Geocode] \u9AD8\u5FB7\u89E3\u6790\u5931\u8D25: address=${clean}, status=${data.status}, info=${data.info}, infocode=${data.infocode}`);
+      if (data.infocode === "10009") {
+        console.warn(`[Geocode] Key\u5E73\u53F0\u9650\u5236(USERKEY_PLAT_NOMATCH): \u8BF7\u5728\u9AD8\u5FB7\u63A7\u5236\u53F0\u68C0\u67E5Key\u7684"\u670D\u52A1\u5E73\u53F0"\u8BBE\u7F6E\uFF0C\u670D\u52A1\u7AEF\u8C03\u7528\u9700\u8981"Web\u670D\u52A1"\u7C7B\u578BKey\u6216IP\u767D\u540D\u5355\u5305\u542B\u672C\u670D\u52A1\u5668IP`);
+      }
+    } catch (e) {
+      console.warn("[Geocode] \u9AD8\u5FB7 API \u5F02\u5E38:", e?.message);
+    }
+    console.warn(`[Geocode] \u5750\u6807\u672A\u77E5: ${clean}\uFF0C\u672C\u5730POI\u548C\u9AD8\u5FB7\u5747\u5931\u8D25`);
+    return failResult;
+  }
   function geocodeServerPoi(startLoc, fallbackLat, fallbackLng) {
     const defaultLat = fallbackLat && !isNaN(fallbackLat) && fallbackLat !== 0 ? fallbackLat : 38.483;
     const defaultLng = fallbackLng && !isNaN(fallbackLng) && fallbackLng !== 0 ? fallbackLng : 106.235;
     if (!startLoc || typeof startLoc !== "string" || !startLoc.trim()) {
       return { lat: defaultLat, lng: defaultLng };
     }
-    const clean = startLoc.trim();
+    const clean = startLoc.trim().replace(/^代驾商家起点[为：:\s]*/g, "").replace(/^商家代叫起点[为：:\s]*/g, "").replace(/^商家起点[为：:\s]*/g, "").replace(/^代叫商家起点[为：:\s]*/g, "").replace(/^代驾起点[为：:\s]*/g, "").replace(/^起点[为：:\s]*/g, "").trim() || startLoc.trim();
     for (const poi of YINCHUAN_SERVER_POIS) {
-      if (poi.keywords.some((kw) => clean.includes(kw))) {
+      if (poi.keywords.some((kw) => clean.includes(kw) || kw.includes(clean))) {
         return { lat: poi.lat, lng: poi.lng };
       }
     }
     return { lat: defaultLat, lng: defaultLng };
   }
-  app.post("/api/dispatch/nearest", async (req, res) => {
+  app.get(["/api/geocode", "/api/geo/locate"], requireDbAuth, async (req, res) => {
     try {
-      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3, excludePhone } = req.body || {};
+      const address = String(req.query.address || req.query.name || req.query.keyword || "").trim();
+      const fallbackLat = Number(req.query.lat || req.query.fallbackLat || 38.483);
+      const fallbackLng = Number(req.query.lng || req.query.fallbackLng || 106.235);
+      const poi = await geocodeServerPoiAsync(address, fallbackLat, fallbackLng);
+      return res.json({
+        success: true,
+        address,
+        lat: poi.lat,
+        lng: poi.lng,
+        reliable: poi.reliable
+      });
+    } catch (err) {
+      return res.json({ success: false, error: err.message, lat: NaN, lng: NaN });
+    }
+  });
+  app.post("/api/dispatch/nearest", requireDbAuth, async (req, res) => {
+    try {
+      const { orderData, reporterPhone, pickupLat, pickupLng, excludePhone } = req.body || {};
+      const radiusKm = Math.min(Number(req.body?.radiusKm) || 3, 3);
+      if (!req.isAdmin) {
+        const rawAuthPhone = String(req.authPhone || "").trim().toUpperCase();
+        if (rawAuthPhone.endsWith("A")) {
+        } else {
+          const authPhone = rawAuthPhone.replace(/A$/, "");
+          const MANAGER_ROLES = ["\u5F00\u53D1\u8005\u53F8\u673A", "\u5F00\u53D1\u8005", "\u603B\u6307\u6325\u5B98", "\u57CE\u5E02\u8001\u677F\u53F8\u673A", "\u57CE\u5E02\u8001\u677F", "\u57CE\u5E02\u7BA1\u7406\u53F8\u673A", "\u57CE\u5E02\u7BA1\u7406", "\u57CE\u5E02\u6D3E\u5355\u5458\u53F8\u673A", "\u57CE\u5E02\u6D3E\u5355\u5458"];
+          let isManager = false;
+          try {
+            if (isMySQLEnabled && mysqlPool) {
+              const [rows] = await mysqlPool.query(
+                "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+                ["squad_members", authPhone]
+              );
+              if (rows && rows.length > 0) {
+                const data = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
+                const role = String(data?.role || data?.userRole || "");
+                isManager = MANAGER_ROLES.some((r) => role.includes(r));
+              }
+            }
+          } catch (_) {
+          }
+          if (!isManager) {
+            return res.status(403).json({ success: false, error: "\u4EC5\u5C0F\u961F\u7BA1\u7406\u4EBA\u5458\u6216\u5546\u6237\u53EF\u4EE5\u4E0B\u5546\u6237\u4EE3\u53EB\u8BA2\u5355" });
+          }
+        }
+      }
       if (!orderData || !orderData.id && !orderData.orderNo) {
         return res.status(400).json({ success: false, error: "Missing orderData" });
       }
-      await new Promise((resolve) => setTimeout(resolve, 3e3));
       const startLocName = String(orderData.startLocation || orderData.passengerAddress || orderData.pickupAddress || "").trim();
       let pLat = Number(pickupLat || orderData.passengerLat || orderData.startLat || orderData.lat);
       let pLng = Number(pickupLng || orderData.passengerLng || orderData.startLng || orderData.lng);
       const isDefaultCentroid = isNaN(pLat) || isNaN(pLng) || pLat === 0 || pLng === 0 || Math.abs(pLat - 38.487167) < 1e-3 && Math.abs(pLng - 106.23091) < 1e-3 || Math.abs(pLat - 38.483) < 1e-3 && Math.abs(pLng - 106.235) < 1e-3;
-      if (isDefaultCentroid && startLocName) {
-        const poi = geocodeServerPoi(startLocName, pLat, pLng);
-        pLat = poi.lat;
-        pLng = poi.lng;
+      const prepareStartTs = Date.now();
+      const PREPARE_TIMEOUT_MS = 3e3;
+      if (!startLocName) {
+        console.warn(`[Dispatch] \u8D77\u70B9\u5730\u5740\u4E3A\u7A7A\uFF0C\u6807\u8BB0\u5750\u6807\u672A\u77E5\uFF0C\u76F4\u63A5\u8FDB\u5927\u5385`);
+        orderData.coordsUnknown = true;
+      } else if (isDefaultCentroid || isNaN(pLat) || isNaN(pLng)) {
+        const geocodePromise = geocodeServerPoiAsync(startLocName, pLat, pLng);
+        const timeoutPromise = new Promise(
+          (resolve) => setTimeout(() => resolve({ lat: pLat, lng: pLng, reliable: false, timedOut: true }), PREPARE_TIMEOUT_MS)
+        );
+        const poi = await Promise.race([geocodePromise, timeoutPromise]);
+        if (poi.timedOut) {
+          console.warn(`[Dispatch] \u9AD8\u5FB7\u89E3\u67903\u79D2\u8D85\u65F6: ${startLocName}\uFF0C\u6807\u8BB0\u5750\u6807\u672A\u77E5`);
+          orderData.coordsUnknown = true;
+        } else {
+          pLat = poi.lat;
+          pLng = poi.lng;
+          if (!poi.reliable) {
+            orderData.coordsUnknown = true;
+          }
+        }
+      }
+      const prepareElapsed = Date.now() - prepareStartTs;
+      console.log(`[Dispatch] \u51C6\u5907\u671F\u8017\u65F6: ${prepareElapsed}ms`);
+      if (prepareElapsed < PREPARE_TIMEOUT_MS) {
+        await new Promise((resolve) => setTimeout(resolve, PREPARE_TIMEOUT_MS - prepareElapsed));
+        console.log(`[Dispatch] \u51C6\u5907\u671F\u8865\u8DB3\u81F33\u79D2`);
       }
       const dbData = readLocalJsonDb();
       let squadList = [];
@@ -2421,8 +2872,10 @@ async function startServer() {
           }
         });
       }
+      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}`).trim();
       const candidates = [];
       const removedPhonesArr = dbData.config?.["removed_squad_members"]?.phones || [];
+      const existingDispatchedPhone = String(orderData.dispatchedDriverPhone || "").replace(/\D/g, "").trim();
       squadList.forEach(({ phone, data }) => {
         if (!phone || !data || data.isBanned) return;
         const cleanPhone = String(phone).replace(/\D/g, "").trim();
@@ -2457,22 +2910,18 @@ async function startServer() {
         const loc = locationMap[cleanPhone] || {};
         const isOnline = Boolean(loc.isOnline ?? data.isOnline ?? cleanPhone === "15509601222");
         if (!isOnline) return;
-        const isBusy = cleanPhone === "15509601222" ? Boolean(data.hasActiveOrder && data.currentStatus === "serving") : Boolean(
-          data.hasActiveOrder || data.currentStatus === "serving" || data.isBusy || loc.isBusy || data.currentView === "create_order" || loc.currentView === "create_order" || data.isInReportView === true || loc.isInReportView === true || data.status === "busy" || loc.status === "busy"
-        );
+        const isBusy = data.hasActiveOrder && data.activeOrderId && data.activeOrderId !== orderId || data.currentStatus === "serving" && data.activeOrderId && data.activeOrderId !== orderId || loc.isBusy && loc.activeOrderId && loc.activeOrderId !== orderId && loc.currentView !== "incoming_overlay";
         if (isBusy) return;
         let dLat = Number(loc.lat ?? data.lat);
         let dLng = Number(loc.lng ?? data.lng);
-        if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
-          dLat = 38.487167;
-          dLng = 106.23091;
+        if (isNaN(dLat) || isNaN(dLng) || dLat === 0 || dLng === 0) {
+          return;
         }
-        if (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) {
-          if (Math.abs(dLat - pLat) > 0.035 || Math.abs(dLng - pLng) > 0.045) {
-            return;
-          }
+        const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || 0);
+        if (locTs && Date.now() - locTs > 5 * 60 * 1e3) {
+          return;
         }
-        const distKm = !isNaN(pLat) && !isNaN(pLng) && pLat !== 0 ? calculateHaversineKm(pLat, pLng, dLat, dLng) : 0.5;
+        const distKm = !isNaN(pLat) && !isNaN(pLng) && pLat !== 0 && pLng !== 0 ? calculateHaversineKm(pLat, pLng, dLat, dLng) : Infinity;
         if (distKm <= radiusKm) {
           candidates.push({
             phone: cleanPhone,
@@ -2482,20 +2931,31 @@ async function startServer() {
           });
         }
       });
-      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}`).trim();
-      if (candidates.length > 0) {
-        const minDist = Math.min(...candidates.map((c) => c.distKm));
-        const tiedCandidates = candidates.filter((c) => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
-        const selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
-        const distText = selected.distKm < 0.05 ? "0\u7C73" : `${(selected.distKm * 1e3).toFixed(0)}\u7C73`;
+      const coordsUnknownForDispatch = Boolean(orderData?.coordsUnknown);
+      const coordFields = coordsUnknownForDispatch ? {} : {
+        passengerLat: pLat,
+        passengerLng: pLng,
+        resolvedLat: pLat,
+        resolvedLng: pLng
+      };
+      if (coordsUnknownForDispatch) {
+        console.warn(`[Dispatch] \u5750\u6807\u672A\u77E5\uFF0C\u76F4\u63A5\u8F6C\u5165\u9009\u5355\u5927\u5385\uFF0C\u4E0D\u505A\u8DDD\u79BB\u6D3E\u5355`);
+      }
+      if (!coordsUnknownForDispatch && candidates.length > 0) {
+        let selected = candidates.find((c) => c.phone === existingDispatchedPhone);
+        if (!selected) {
+          const minDist = Math.min(...candidates.map((c) => c.distKm));
+          const tiedCandidates = candidates.filter((c) => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
+          selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
+        }
+        const distText = selected.distKm < 1 ? `${Math.max(50, Math.round(selected.distKm * 1e3))}\u7C73` : `${selected.distKm.toFixed(2)}\u516C\u91CC`;
         const nowTs = Date.now();
         const driverQrUrl = `/uploads/qrcodes/${selected.phone}.png`;
         const dispatchedPayload = {
           ...orderData,
           id: orderId,
           orderId,
-          passengerLat: pLat,
-          passengerLng: pLng,
+          ...coordFields,
           status: "submitted",
           isValetOrder: true,
           isPlatformDispatch: true,
@@ -2507,7 +2967,9 @@ async function startServer() {
           qrcode_url: driverQrUrl,
           driverQrCode: driverQrUrl,
           distanceText: distText,
+          distKm: selected.distKm,
           dispatchCountdown: 60,
+          serverCountdown: 60,
           dispatchedAt: nowTs,
           dispatchExpiresAt: nowTs + 6e4,
           timestamp: nowTs
@@ -2520,6 +2982,7 @@ async function startServer() {
           status: "dispatched",
           statusCategory: "\u5DF2\u6307\u6D3E",
           dispatchCountdown: 60,
+          serverCountdown: 60,
           dispatchedAt: nowTs,
           dispatchExpiresAt: nowTs + 6e4,
           timestamp: nowTs
@@ -2545,6 +3008,8 @@ async function startServer() {
           dispatchedDriverName: selected.name,
           distKm: selected.distKm,
           distanceText: distText,
+          passengerLat: pLat,
+          passengerLng: pLng,
           remainingSeconds: 60,
           dispatchCountdown: 60,
           serverTime: nowTs,
@@ -2557,8 +3022,7 @@ async function startServer() {
           ...orderData,
           id: orderId,
           orderId,
-          passengerLat: pLat,
-          passengerLng: pLng,
+          ...coordFields,
           status: "hall",
           statusCategory: "\u7B49\u5F85\u63A5\u5355",
           in_hall: true,
@@ -2581,8 +3045,11 @@ async function startServer() {
         return res.json({
           success: true,
           isHall: true,
+          passengerLat: pLat,
+          passengerLng: pLng,
           serverTime: nowTs,
-          message: "\u65B9\u57063\u516C\u91CC\u5185\u65E0\u5728\u7EBF\u7A7A\u95F2\u53F8\u673A\uFF0C\u5DF2\u5168\u5458\u5E7F\u64AD\u8F6C\u5165\u9009\u5355\u5927\u5385"
+          coordsUnknown: coordsUnknownForDispatch || void 0,
+          message: coordsUnknownForDispatch ? "\u8D77\u70B9\u5750\u6807\u672A\u77E5\uFF0C\u5DF2\u8F6C\u5165\u9009\u5355\u5927\u5385\u4F9B\u5C0F\u961F\u53F8\u673A\u62A2\u5355" : "\u65B9\u57063\u516C\u91CC\u5185\u65E0\u5728\u7EBF\u7A7A\u95F2\u53F8\u673A\uFF0C\u5DF2\u5168\u5458\u5E7F\u64AD\u8F6C\u5165\u9009\u5355\u5927\u5385"
         });
       }
     } catch (err) {
@@ -2590,14 +3057,25 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/order/claim", async (req, res) => {
+  app.post("/api/order/claim", requireDbAuth, async (req, res) => {
     try {
-      const { orderId, driverPhone, driverName, orderPayload } = req.body;
+      const { orderId, driverName, orderPayload } = req.body;
       const cleanOrderId = String(orderId || "").trim();
-      const cleanDriverPhone = String(driverPhone || "").replace(/\D/g, "").trim();
+      const authPhoneRaw = String(req.authPhone || "").trim();
+      if (/a$/i.test(authPhoneRaw)) {
+        return res.status(403).json({ success: false, error: "\u5546\u6237\u8EAB\u4EFD\u4E0D\u80FD\u62A2\u5355" });
+      }
+      const cleanDriverPhone = authPhoneRaw.replace(/\D/g, "").trim();
       const cleanDriverName = String(driverName || `\u53F8\u673A${cleanDriverPhone.slice(-4)}`).trim();
       if (!cleanOrderId || !cleanDriverPhone) {
-        return res.status(400).json({ success: false, error: "Missing orderId or driverPhone" });
+        return res.status(400).json({ success: false, error: "Missing orderId" });
+      }
+      const ALLOWED_CLAIM_FIELDS = /* @__PURE__ */ new Set(["driverNote", "driverLocation", "driverLat", "driverLng", "estimatedArrival"]);
+      const safePayload = {};
+      if (orderPayload && typeof orderPayload === "object") {
+        for (const k of Object.keys(orderPayload)) {
+          if (ALLOWED_CLAIM_FIELDS.has(k)) safePayload[k] = orderPayload[k];
+        }
       }
       const dbData = readLocalJsonDb();
       const removedPhonesArr = dbData.config?.["removed_squad_members"]?.phones || [];
@@ -2629,7 +3107,7 @@ async function startServer() {
       const driverQrUrl = `/uploads/qrcodes/${cleanDriverPhone}.png`;
       const claimUpdateData = {
         ...targetOrder || {},
-        ...orderPayload || {},
+        ...safePayload,
         id: cleanOrderId,
         orderId: cleanOrderId,
         status: "claimed",
@@ -2648,14 +3126,17 @@ async function startServer() {
         claimedAt: now
       };
       dbData["merchant_orders"][cleanOrderId] = claimUpdateData;
-      if (!dbData["passenger_links"]) dbData["passenger_links"] = {};
-      dbData["passenger_links"][cleanDriverPhone] = {
+      if (dbData["passenger_links"] && dbData["passenger_links"][cleanDriverPhone]) {
+        delete dbData["passenger_links"][cleanDriverPhone];
+      }
+      if (!dbData["active_orders"]) dbData["active_orders"] = {};
+      dbData["active_orders"][cleanDriverPhone] = {
         ...claimUpdateData,
-        status: "submitted",
-        isDirectClaim: true,
-        dispatchCountdown: 60,
-        dispatchedAt: now,
-        dispatchExpiresAt: now + 6e4
+        orderId: cleanOrderId,
+        orderNo: req.body.orderNo || cleanOrderId,
+        status: "claimed",
+        statusCategory: "\u5DF2\u63A5\u5355",
+        isCancelled: false
       };
       writeLocalJsonDb(dbData);
       if (isMySQLEnabled && mysqlPool) {
@@ -2668,6 +3149,10 @@ async function startServer() {
             "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
             ["passenger_links", cleanDriverPhone, JSON.stringify(dbData["passenger_links"][cleanDriverPhone])]
           );
+          await mysqlPool.query(
+            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+            ["active_orders", cleanDriverPhone, JSON.stringify(dbData["active_orders"][cleanDriverPhone])]
+          );
         } catch (_) {
         }
       }
@@ -2677,11 +3162,16 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/order/decline", async (req, res) => {
+  app.post("/api/order/decline", requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverPhone } = req.body;
       const cleanOrderId = String(orderId || "").trim();
       const cleanDriverPhone = String(driverPhone || "").replace(/\D/g, "").trim();
+      const authPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
+      const isAdmin = !!req.isAdmin;
+      if (!isAdmin && cleanDriverPhone && authPhone !== cleanDriverPhone) {
+        return res.status(403).json({ success: false, error: "\u53EA\u80FD\u64CD\u4F5C\u81EA\u5DF1\u7684\u8BA2\u5355" });
+      }
       if (!cleanOrderId) {
         return res.status(400).json({ success: false, error: "Missing orderId" });
       }
@@ -2747,7 +3237,7 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/order/cancel", async (req, res) => {
+  app.post("/api/order/cancel", requireDbAuth, async (req, res) => {
     try {
       const orderId = String(req.body.orderId || req.body.id || "").trim();
       const driverPhone = String(req.body.driverPhone || req.body.phone || "").replace(/\D/g, "").trim();
@@ -2755,6 +3245,17 @@ async function startServer() {
       const cancelledBy = String(req.body.cancelledBy || (driverPhone ? "driver" : "admin")).trim();
       if (!orderId) {
         return res.status(400).json({ success: false, error: "Missing orderId" });
+      }
+      const authPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
+      const isAdmin = !!req.isAdmin;
+      if (!isAdmin) {
+        const dbDataCheck = readLocalJsonDb();
+        const targetOrderCheck = (dbDataCheck["merchant_orders"] || {})[orderId] || {};
+        const orderPlacer = String(targetOrderCheck.merchantPhone || targetOrderCheck.orderMerchantPhone || targetOrderCheck.phone || "").replace(/\D/g, "").trim();
+        const orderDriver = String(targetOrderCheck.dispatchedDriverPhone || targetOrderCheck.driverPhone || targetOrderCheck.assignedDriver || driverPhone || "").replace(/\D/g, "").trim();
+        if (authPhone !== orderPlacer && authPhone !== orderDriver) {
+          return res.status(403).json({ success: false, error: "\u53EA\u6709\u4E0B\u5355\u65B9\u3001\u63A5\u5355\u53F8\u673A\u6216\u7BA1\u7406\u5458\u53EF\u4EE5\u53D6\u6D88\u8BA2\u5355" });
+        }
       }
       console.log(`[Order Cancel] Permanent cancellation for orderId: ${orderId}, by: ${cancelledBy}, reason: ${cancelReason}`);
       const now = Date.now();
@@ -2790,12 +3291,20 @@ async function startServer() {
       }
       const assignedDriver = driverPhone || targetMerchant.dispatchedDriverPhone || targetMerchant.claimedDriverPhone;
       if (assignedDriver) {
-        if (dbData["passenger_links"] && dbData["passenger_links"][assignedDriver]) {
-          delete dbData["passenger_links"][assignedDriver];
-        }
-        if (dbData["active_orders"] && dbData["active_orders"][assignedDriver]) {
-          delete dbData["active_orders"][assignedDriver];
-        }
+        const driverCancelNotice = {
+          orderId,
+          orderNo: req.body.orderNo || orderId,
+          isCancelled: true,
+          status: "cancelled",
+          statusCategory: "\u5DF2\u53D6\u6D88",
+          cancelledBy,
+          cancelReason,
+          cancelledAt: now
+        };
+        if (!dbData["passenger_links"]) dbData["passenger_links"] = {};
+        dbData["passenger_links"][assignedDriver] = driverCancelNotice;
+        if (!dbData["active_orders"]) dbData["active_orders"] = {};
+        dbData["active_orders"][assignedDriver] = driverCancelNotice;
         if (dbData["driver_users"] && dbData["driver_users"][assignedDriver]) {
           dbData["driver_users"][assignedDriver] = {
             ...dbData["driver_users"][assignedDriver],
@@ -2830,9 +3339,23 @@ async function startServer() {
             ["merchant_orders", orderId, mergedData]
           );
           if (assignedDriver) {
+            const cancelNoticeStr = JSON.stringify({
+              orderId,
+              orderNo: req.body.orderNo || orderId,
+              isCancelled: true,
+              status: "cancelled",
+              statusCategory: "\u5DF2\u53D6\u6D88",
+              cancelledBy,
+              cancelReason,
+              cancelledAt: now
+            });
             await mysqlPool.query(
-              "DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?) AND `doc_id` = ?",
-              ["passenger_links", "active_orders", assignedDriver]
+              "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+              ["passenger_links", assignedDriver, cancelNoticeStr]
+            );
+            await mysqlPool.query(
+              "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+              ["active_orders", assignedDriver, cancelNoticeStr]
             );
             if (dbData["driver_users"] && dbData["driver_users"][assignedDriver]) {
               await mysqlPool.query(
@@ -2860,9 +3383,23 @@ async function startServer() {
         if (!order) continue;
         const isDispatched = (order.status === "dispatched" || order.status === "submitted" && Boolean(order.dispatchedDriverPhone)) && !order.claimedAt && order.status !== "claimed" && order.status !== "serving" && order.status !== "completed" && order.status !== "cancelled" && order.in_hall !== true;
         if (isDispatched && order.dispatchedDriverPhone) {
-          const dispatchedTime = Number(order.dispatchedAt || order.timestamp || 0);
-          if (dispatchedTime > 0 && now - dispatchedTime >= 6e4) {
-            const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, "").trim();
+          const dispatchedTime = Number(order.dispatchedAt || order.timestamp || now);
+          const expiresAt = Number(order.dispatchExpiresAt || dispatchedTime + 6e4);
+          const remainingSec = Math.max(0, Math.ceil((expiresAt - now) / 1e3));
+          const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, "").trim();
+          if (order.serverCountdown !== remainingSec || order.dispatchCountdown !== remainingSec) {
+            order.serverCountdown = remainingSec;
+            order.dispatchCountdown = remainingSec;
+            order.dispatchExpiresAt = expiresAt;
+            hasChanges = true;
+            if (timedOutDriverPhone && dbData["passenger_links"]?.[timedOutDriverPhone]) {
+              dbData["passenger_links"][timedOutDriverPhone].serverCountdown = remainingSec;
+              dbData["passenger_links"][timedOutDriverPhone].dispatchCountdown = remainingSec;
+              dbData["passenger_links"][timedOutDriverPhone].dispatchExpiresAt = expiresAt;
+            }
+          }
+          if (remainingSec <= 0) {
+            console.log(`[\u963F\u91CC\u4E91\u670D\u52A1\u5668\u5012\u8BA1\u65F6\u7ED3\u675F] \u8BA2\u5355 ${orderId} \u6D3E\u5355\u7ED9\u53F8\u673A ${timedOutDriverPhone} 60\u79D2\u8D85\u65F6\u672A\u786E\u8BA4\uFF0C\u670D\u52A1\u5668\u81EA\u52A8\u8F6C\u5165\u9009\u5355\u5927\u5385\uFF01`);
             const existingDeclined = Array.isArray(order.declinedDriverPhones) ? order.declinedDriverPhones : [];
             const existingTimeout = Array.isArray(order.timeoutDriverPhones) ? order.timeoutDriverPhones : [];
             const updatedOrder = {
@@ -2872,9 +3409,13 @@ async function startServer() {
               statusCategory: "\u547C\u53EB\u4E2D",
               dispatchedDriverPhone: "",
               dispatchedDriverName: "",
+              serverCountdown: 0,
+              dispatchCountdown: 0,
               declinedDriverPhones: Array.from(new Set([...existingDeclined, timedOutDriverPhone].filter(Boolean))),
               timeoutDriverPhones: Array.from(new Set([...existingTimeout, timedOutDriverPhone].filter(Boolean))),
-              lastTimeoutAt: now
+              lastTimeoutAt: now,
+              autoHallAt: now,
+              autoHallReason: "60\u79D2\u5012\u8BA1\u65F6\u7ED3\u675F\uFF0C\u4E2D\u56FD\u5927\u9646\u963F\u91CC\u4E91\u670D\u52A1\u5668\u81EA\u52A8\u5C06\u8BA2\u5355\u8F6C\u5165\u9009\u5355\u5927\u5385"
             };
             merchantOrders[orderId] = updatedOrder;
             hasChanges = true;
@@ -2929,7 +3470,81 @@ async function startServer() {
       }
     } catch (e) {
     }
-  }, 6e3);
+  }, 1e4);
+  app.get(["/api/dispatch/countdown", "/api/order/countdown"], async (req, res) => {
+    try {
+      const orderId = String(req.query.orderId || req.query.id || req.query.orderNo || "").trim();
+      const driverPhone = String(req.query.driverPhone || req.query.phone || "").replace(/\D/g, "").trim();
+      const now = Date.now();
+      const dbData = readLocalJsonDb();
+      const merchantOrders = dbData["merchant_orders"] || {};
+      let targetOrder = null;
+      if (orderId) {
+        targetOrder = merchantOrders[orderId];
+        if (!targetOrder) {
+          for (const [k, v] of Object.entries(merchantOrders)) {
+            if (v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId)) {
+              targetOrder = v;
+              break;
+            }
+          }
+        }
+      }
+      if (!targetOrder && driverPhone) {
+        const linkOrder = dbData["passenger_links"]?.[driverPhone];
+        if (linkOrder) {
+          const lId = String(linkOrder.id || linkOrder.orderId || linkOrder.orderNo || "").trim();
+          if (!orderId || lId && lId === orderId) {
+            targetOrder = linkOrder;
+          }
+        }
+      }
+      if (!targetOrder) {
+        return res.status(404).json({
+          success: false,
+          serverCountdown: 0,
+          isExpired: true,
+          inHall: false,
+          status: "not_found",
+          serverTime: now,
+          error: "\u8BA2\u5355\u4E0D\u5B58\u5728"
+        });
+      }
+      const isClaimedOrActiveForDriver = Boolean(
+        targetOrder.claimedDriverPhone && driverPhone && targetOrder.claimedDriverPhone === driverPhone || targetOrder.dispatchedDriverPhone && driverPhone && targetOrder.dispatchedDriverPhone === driverPhone || targetOrder.isDirectClaim === true || targetOrder.status === "claimed" || targetOrder.status === "dispatched" || targetOrder.status === "submitted" || targetOrder.statusCategory === "\u5DF2\u63A5\u5355" || targetOrder.statusCategory === "\u5DF2\u6307\u6D3E"
+      );
+      const isHall = !isClaimedOrActiveForDriver && (targetOrder.in_hall === true || targetOrder.status === "hall");
+      if (isHall) {
+        return res.json({
+          success: true,
+          orderId: targetOrder.id || orderId,
+          serverCountdown: 0,
+          isExpired: true,
+          inHall: true,
+          status: targetOrder.status || "hall",
+          serverTime: now
+        });
+      }
+      const dispatchedTime = Number(targetOrder.dispatchedAt || targetOrder.timestamp || now);
+      const exp = Number(targetOrder.dispatchExpiresAt || dispatchedTime + 6e4);
+      const remainingSec = Math.max(0, Math.ceil((exp - now) / 1e3));
+      return res.json({
+        success: true,
+        orderId: targetOrder.id || orderId,
+        serverCountdown: remainingSec,
+        dispatchCountdown: remainingSec,
+        isExpired: remainingSec <= 0,
+        inHall: remainingSec <= 0,
+        status: targetOrder.status,
+        dispatchedDriverPhone: targetOrder.dispatchedDriverPhone,
+        serverTime: now,
+        dispatchedAt: dispatchedTime,
+        dispatchExpiresAt: exp
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
   let lastAutoCleanTimestamp = 0;
   const executeServerAutoClean = async () => {
     console.log("[Auto-Clean] Starting scheduled 2-day disk and cache cleanup at 10:00 AM...");
@@ -3025,7 +3640,10 @@ async function startServer() {
       }
     }
   }, 5 * 60 * 1e3);
-  app.all(["/api/system/clean-disk", "/api/admin/clean-now"], async (req, res) => {
+  app.all(["/api/system/clean-disk", "/api/admin/clean-now"], requireDbAuth, async (req, res) => {
+    if (!req.isAdmin) {
+      return res.status(403).json({ success: false, error: "\u9700\u8981\u7BA1\u7406\u5458\u6743\u9650" });
+    }
     await executeServerAutoClean();
     res.json({
       success: true,
@@ -3033,7 +3651,7 @@ async function startServer() {
       timestamp: (/* @__PURE__ */ new Date()).toISOString()
     });
   });
-  app.post("/api/db/add", async (req, res) => {
+  app.post("/api/db/add", requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || "").trim();
       const data = req.body.data;
@@ -3398,6 +4016,31 @@ async function startServer() {
     if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
       return res.status(400).json({ success: false, error: "\u8BF7\u8F93\u5165\u6B63\u786E\u768411\u4F4D\u624B\u673A\u53F7\u7801" });
     }
+    {
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip || req.socket.remoteAddress || "127.0.0.1";
+      const now = Date.now();
+      const keyPhone = `p:${cleanPhone}`;
+      const keyIp = `ip:${clientIp}`;
+      for (const key of [keyPhone, keyIp]) {
+        const logs = (smsSendLogs.get(key) || []).filter((t) => now - t < 3600 * 1e3);
+        if (logs.length >= 5) {
+          return res.status(429).json({ success: false, error: "\u274C \u53D1\u9001\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF71\u5C0F\u65F6\u540E\u518D\u8BD5" });
+        }
+        if (logs.length > 0 && now - logs[logs.length - 1] < 60 * 1e3) {
+          const waitSec = Math.ceil((60 * 1e3 - (now - logs[logs.length - 1])) / 1e3);
+          return res.status(429).json({ success: false, error: `\u274C \u53D1\u9001\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7 ${waitSec} \u79D2\u540E\u518D\u8BD5` });
+        }
+        logs.push(now);
+        smsSendLogs.set(key, logs);
+      }
+      if (smsSendLogs.size > 5e3) {
+        for (const [k, v] of smsSendLogs) {
+          const fresh = v.filter((t) => now - t < 3600 * 1e3);
+          if (fresh.length === 0) smsSendLogs.delete(k);
+          else smsSendLogs.set(k, fresh);
+        }
+      }
+    }
     if (isAdminLogin || scope === "admin_panel") {
       if (cleanPhone !== "15509601222") {
         console.warn(`[SMS Server] Security Block: Denied SMS code for unauthorized phone ${cleanPhone} attempting admin login`);
@@ -3516,12 +4159,9 @@ async function startServer() {
                   message: "\u26A0\uFE0F \u89E6\u53D1\u963F\u91CC\u4E91\u53D1\u9001\u9891\u7387\u63A7\u5236\uFF1A\u60A8\u4E4B\u524D\u83B7\u53D6\u7684\u77ED\u4FE1\u9A8C\u8BC1\u7801\u4F9D\u7136\u6709\u6548\uFF0C\u8BF7\u67E5\u770B\u624B\u673A\u5DF2\u6536\u5230\u7684\u6700\u65B0\u9A8C\u8BC1\u7801\u76F4\u63A5\u8F93\u5165\u767B\u5F55\uFF01"
                 });
               }
-              const fallbackCode = phone === "15509601222" ? "6897" : generatedCode;
-              verificationCodes.set(phone, { code: fallbackCode, expiresAt: Date.now() + 10 * 60 * 1e3 });
-              return res.json({
-                success: true,
-                mode: "real_frequency_fallback",
-                message: "\u26A0\uFE0F \u89E6\u53D1\u963F\u91CC\u4E91\u53D1\u9001\u9891\u7387\u63A7\u5236\uFF1A\u7CFB\u7EDF\u5DF2\u5F00\u542F\u9AD8\u53EF\u7528\u517C\u5BB9\u4FDD\u62A4\uFF0C\u8BF7\u4F7F\u7528\u624B\u673A\u6536\u5230\u7684\u77ED\u4FE1\u9A8C\u8BC1\u7801\u76F4\u63A5\u767B\u5F55\uFF01"
+              return res.status(429).json({
+                success: false,
+                error: "\u26A0\uFE0F \u77ED\u4FE1\u53D1\u9001\u9891\u7387\u8FC7\u9AD8\uFF0C\u8BF7\u7B49\u5F85 60 \u79D2\u540E\u518D\u8BD5"
               });
             } else {
               console.log("[Alibaba Cloud Dypnsapi] Non-OK response code:", respCode);
@@ -3532,12 +4172,9 @@ async function startServer() {
           console.warn("[Alibaba Cloud Dypnsapi] Error:", dypnsErr.message);
           lastErrMsg = dypnsErr.message || lastErrMsg;
           if (lastErrMsg.toLowerCase().includes("frequency") || lastErrMsg.includes("check frequency failed") || lastErrMsg.includes("BUSINESS_LIMIT_CONTROL")) {
-            const fallbackCode = phone === "15509601222" ? "6897" : generatedCode;
-            verificationCodes.set(phone, { code: fallbackCode, expiresAt: Date.now() + 10 * 60 * 1e3 });
-            return res.json({
-              success: true,
-              mode: "real_frequency_fallback",
-              message: "\u26A0\uFE0F \u89E6\u53D1\u963F\u91CC\u4E91\u53D1\u9001\u9891\u7387\u63A7\u5236\uFF1A\u7CFB\u7EDF\u5DF2\u5F00\u542F\u9AD8\u53EF\u7528\u517C\u5BB9\u4FDD\u62A4\uFF0C\u8BF7\u4F7F\u7528\u624B\u673A\u5DF2\u6536\u5230\u7684\u77ED\u4FE1\u9A8C\u8BC1\u7801\u76F4\u63A5\u767B\u5F55\uFF01"
+            return res.status(429).json({
+              success: false,
+              error: "\u26A0\uFE0F \u77ED\u4FE1\u53D1\u9001\u9891\u7387\u8FC7\u9AD8\uFF0C\u8BF7\u7B49\u5F85 60 \u79D2\u540E\u518D\u8BD5"
             });
           }
         }
@@ -3562,12 +4199,47 @@ async function startServer() {
       });
     }
   });
+  app.post("/api/auth/logout", async (req, res) => {
+    try {
+      const token = String(req.headers["x-auth-token"] || req.body?.token || "").trim();
+      if (token && authTokens.has(token)) {
+        authTokens.delete(token);
+        _authTokensDirty = true;
+      }
+      return res.json({ success: true });
+    } catch (e) {
+      return res.json({ success: true });
+    }
+  });
   app.post("/api/sms/verify", async (req, res) => {
     const { phone, code, isAdminLogin, scope } = req.body;
     if (!phone || !code) {
       return res.status(400).json({ success: false, error: "\u624B\u673A\u53F7\u6216\u9A8C\u8BC1\u7801\u4E0D\u80FD\u4E3A\u7A7A" });
     }
     const cleanPhone = String(phone).trim();
+    const failInfo = verifyFailures.get(cleanPhone);
+    if (failInfo && Date.now() < failInfo.lockedUntil) {
+      const remainMin = Math.ceil((failInfo.lockedUntil - Date.now()) / 6e4);
+      return res.status(429).json({
+        success: false,
+        error: `\u274C \u9A8C\u8BC1\u7801\u9519\u8BEF\u6B21\u6570\u8FC7\u591A\uFF0C\u8BE5\u624B\u673A\u53F7\u5DF2\u9501\u5B9A\uFF0C\u8BF7 ${remainMin} \u5206\u949F\u540E\u518D\u8BD5`
+      });
+    }
+    const recordVerifyFailure = () => {
+      const info = verifyFailures.get(cleanPhone) || { count: 0, lockedUntil: 0 };
+      info.count += 1;
+      if (info.count >= 5) {
+        info.lockedUntil = Date.now() + 30 * 60 * 1e3;
+        info.count = 0;
+        verificationCodes.delete(cleanPhone);
+        verificationCodes.delete(phone);
+        console.warn(`[SMS] \u624B\u673A\u53F7 ${cleanPhone} \u9A8C\u8BC1\u7801\u9519\u8BEF5\u6B21\uFF0C\u9A8C\u8BC1\u7801\u5DF2\u9500\u6BC1\u5E76\u9501\u5B9A30\u5206\u949F`);
+      }
+      verifyFailures.set(cleanPhone, info);
+    };
+    const clearVerifyFailures = () => {
+      verifyFailures.delete(cleanPhone);
+    };
     if (isAdminLogin || scope === "admin_panel") {
       if (cleanPhone !== "15509601222") {
         console.warn(`[SMS Server] Security Block: Denied login verification for unauthorized phone ${cleanPhone}`);
@@ -3615,6 +4287,7 @@ async function startServer() {
     const isSimulated = !accessKeyId || !accessKeySecret;
     const handleLoginSuccess = async () => {
       verificationCodes.delete(phone);
+      clearVerifyFailures();
       if (scope === "dispatch_valet" && !WHITELIST_PHONES.includes(cleanPhone)) {
         dispatchPhoneLoginLogs.set(cleanPhone, now);
         dispatchIpLoginLogs.set(clientIp, now);
@@ -3661,10 +4334,24 @@ async function startServer() {
       } catch (regErr) {
         console.error("[Auto Register Driver User Error]:", regErr);
       }
-      return res.json({ success: true, message: "\u9A8C\u8BC1\u7801\u6821\u9A8C\u6210\u529F" });
+      const authToken = import_crypto.default.randomBytes(32).toString("hex");
+      const isMerchantLogin = String(scope || "").trim() === "dispatch_valet";
+      const tokenPhone = isMerchantLogin ? String(cleanPhone || "").trim().toUpperCase() + "A" : cleanPhone;
+      authTokens.set(authToken, {
+        phone: tokenPhone,
+        scope: scope || (isAdminLogin ? "admin_panel" : "driver"),
+        isMerchant: isMerchantLogin,
+        createdAt: Date.now()
+      });
+      _authTokensDirty = true;
+      if (authTokens.size > 5e4) {
+        console.warn("[Auth] token \u6570\u91CF\u8D85\u8FC75\u4E07\uFF0C\u4EC5\u8BB0\u5F55\u544A\u8B66\uFF0C\u4E0D\u81EA\u52A8\u6E05\u7406");
+      }
+      return res.json({ success: true, message: "\u9A8C\u8BC1\u7801\u6821\u9A8C\u6210\u529F", token: authToken });
     };
     if (isSimulated || record.code && record.code !== "ALIYUN_EXTERNAL" && record.code === String(code).trim()) {
       if (record.code !== "ALIYUN_EXTERNAL" && record.code !== String(code).trim()) {
+        recordVerifyFailure();
         return res.status(400).json({ success: false, error: "\u9A8C\u8BC1\u7801\u9519\u8BEF\uFF0C\u8BF7\u8F93\u5165\u6B63\u786E\u7684\u9A8C\u8BC1\u7801" });
       }
       return handleLoginSuccess();
@@ -3693,7 +4380,7 @@ async function startServer() {
       const resultVal = response?.body?.model?.verifyResult;
       const isMatchVal = response?.body?.model?.isMatch;
       const isSuccess = resultVal === true || resultVal === 1 || String(resultVal) === "1" || String(resultVal).toUpperCase() === "PASS" || String(resultVal).toUpperCase() === "SUCCESS" || String(resultVal) === "true" || isMatchVal === true || isMatchVal === 1 || String(isMatchVal) === "1" || responseCode === "OK" || response?.body?.success === true;
-      if (isSuccess || cleanPhone === "15509601222" && code && String(code).trim().length === 4) {
+      if (isSuccess) {
         return handleLoginSuccess();
       } else {
         const resCode = response?.body?.code || "";
@@ -3702,14 +4389,12 @@ async function startServer() {
           if (record && record.code && record.code !== "ALIYUN_EXTERNAL" && record.code === String(code).trim()) {
             return handleLoginSuccess();
           }
-          if (code && String(code).trim().length === 4) {
-            return handleLoginSuccess();
-          }
-          return res.status(400).json({
+          return res.status(429).json({
             success: false,
-            error: "\u26A0\uFE0F \u9A8C\u8BC1\u7801\u6821\u9A8C\u9891\u7387\u8FC7\u9AD8\uFF1A\u89E6\u53D1\u963F\u91CC\u4E91\u5B89\u5168\u9891\u7387\u9650\u5236\uFF0C\u8BF7\u7B49\u5F85 10 \u79D2\u540E\u91CD\u65B0\u70B9\u51FB\u9A8C\u8BC1\uFF01"
+            error: "\u26A0\uFE0F \u9A8C\u8BC1\u7801\u6821\u9A8C\u9891\u7387\u8FC7\u9AD8\uFF1A\u89E6\u53D1\u963F\u91CC\u4E91\u5B89\u5168\u9891\u7387\u9650\u5236\uFF0C\u8BF7\u7B49\u5F85 60 \u79D2\u540E\u91CD\u8BD5\uFF01"
           });
         }
+        recordVerifyFailure();
         return res.status(400).json({
           success: false,
           error: resMsg ? `\u9A8C\u8BC1\u7801\u6821\u9A8C\u5931\u8D25: ${resMsg}` : "\u9A8C\u8BC1\u7801\u8F93\u5165\u9519\u8BEF\u6216\u6838\u9A8C\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u8F93\u5165\u6216\u83B7\u53D6"
@@ -3717,12 +4402,9 @@ async function startServer() {
       }
     } catch (error) {
       console.log(`[SMS Service] High-availability verification check for: ${phone}`);
-      if (code && String(code).trim().length === 4) {
-        return handleLoginSuccess();
-      }
-      return res.status(400).json({
+      return res.status(503).json({
         success: false,
-        error: `\u9A8C\u8BC1\u7801\u6821\u9A8C\u5F02\u5E38: ${error.message || "\u7CFB\u7EDF\u7E41\u5FD9\uFF0C\u8BF7\u91CD\u8BD5"}`
+        error: `\u9A8C\u8BC1\u7801\u6821\u9A8C\u670D\u52A1\u6682\u65F6\u4E0D\u53EF\u7528: ${error.message || "\u7CFB\u7EDF\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5"}`
       });
     }
   });
@@ -3812,6 +4494,16 @@ async function startServer() {
   });
   app.post("/api/submit", async (req, res) => {
     try {
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || "unknown";
+      const now = Date.now();
+      if (!global.__submitLogs) global.__submitLogs = /* @__PURE__ */ new Map();
+      const submitLogs = global.__submitLogs;
+      const logs = (submitLogs.get(clientIp) || []).filter((t) => now - t < 6e4);
+      if (logs.length >= 3) {
+        return res.status(429).json({ success: false, error: "\u64CD\u4F5C\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
+      }
+      logs.push(now);
+      submitLogs.set(clientIp, logs);
       const { driverPhone, passengerPhone, startLocation, destination } = req.body;
       if (!driverPhone || !passengerPhone || !startLocation) {
         return res.status(400).json({ success: false, error: "\u7F3A\u5C11\u5FC5\u586B\u53C2\u6570" });
@@ -3868,16 +4560,27 @@ async function startServer() {
   }
   app.use("/uploads", import_express.default.static(import_path.default.join(process.cwd(), "uploads")));
   app.use(import_express.default.static(import_path.default.join(process.cwd(), "public")));
-  app.post("/api/upload-wechat-qr", async (req, res) => {
+  app.post("/api/upload-wechat-qr", requireDbAuth, async (req, res) => {
     try {
       const { phone, imageBase64, channel } = req.body;
       if (!phone || !imageBase64) {
         return res.status(400).json({ error: "Missing phone or imageBase64" });
       }
-      const cleanPhone = String(phone).replace(/\D/g, "").trim();
+      const rawPhone = String(phone).trim().toUpperCase();
+      const authPhone = String(req.authPhone || "").trim().toUpperCase();
+      if (!req.isAdmin && rawPhone !== authPhone) {
+        return res.status(403).json({ error: "\u65E0\u6743\u4E0A\u4F20\u4ED6\u4EBA\u4E8C\u7EF4\u7801" });
+      }
+      const cleanPhone = rawPhone.replace(/\D/g, "").trim();
+      if (!cleanPhone || cleanPhone.length !== 11) {
+        return res.status(400).json({ error: "\u624B\u673A\u53F7\u683C\u5F0F\u9519\u8BEF" });
+      }
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const buffer = Buffer.from(base64Data, "base64");
-      const isWeb = channel === "web" || channel === "mobile_web" || cleanPhone.endsWith("A") || cleanPhone.endsWith("a");
+      if (buffer.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: "\u56FE\u7247\u592A\u5927\uFF0C\u8BF7\u538B\u7F29\u540E\u4E0A\u4F20" });
+      }
+      const isWeb = channel === "web" || channel === "mobile_web" || rawPhone.endsWith("A");
       const filename = isWeb ? `${cleanPhone}_web.png` : `${cleanPhone}.png`;
       const filepath = import_path.default.join(qrcodesDir, filename);
       const fallbackFilepath = import_path.default.join(qrsDir, filename);
@@ -3940,68 +4643,23 @@ async function startServer() {
       res.status(500).json({ error: "Upload failed" });
     }
   });
-  app.post("/api/upload-alipay-qr", async (req, res) => {
-    try {
-      const { phone, imageBase64 } = req.body;
-      if (!phone || !imageBase64) {
-        return res.status(400).json({ error: "Missing phone or imageBase64" });
-      }
-      const cleanPhone = String(phone).replace(/\D/g, "").trim();
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      const buffer = Buffer.from(base64Data, "base64");
-      const filename = `${cleanPhone}_alipay.png`;
-      const filepath = import_path.default.join(qrcodesDir, filename);
-      const fallbackFilepath = import_path.default.join(qrsDir, filename);
-      await import_fs.default.promises.writeFile(filepath, buffer);
-      try {
-        await import_fs.default.promises.writeFile(fallbackFilepath, buffer);
-      } catch (_) {
-      }
-      const qrUrl = `/uploads/qrcodes/${filename}?t=${Date.now()}`;
-      const targetCols = ["driver_users", "alipay_qrs", "dispatch_qrs"];
-      const qrPayload = {
-        id: cleanPhone,
-        phone: cleanPhone,
-        alipayQrCode: qrUrl,
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-      for (const col of targetCols) {
-        if (isMySQLEnabled && mysqlPool) {
-          try {
-            const [rows] = await mysqlPool.query(
-              "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
-              [col, cleanPhone]
-            );
-            let merged = { ...qrPayload };
-            if (rows && rows.length > 0) {
-              const prev = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
-              merged = { ...prev, ...qrPayload };
-            }
-            await mysqlPool.query(
-              "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-              [col, cleanPhone, JSON.stringify(merged)]
-            );
-          } catch (_) {
-          }
-        }
-      }
-      try {
-        const dbData = readLocalJsonDb();
-        for (const col of targetCols) {
-          if (!dbData[col]) dbData[col] = {};
-          dbData[col][cleanPhone] = { ...dbData[col][cleanPhone] || {}, ...qrPayload };
-        }
-        writeLocalJsonDb(dbData);
-      } catch (_) {
-      }
-      res.json({ success: true, url: qrUrl });
-    } catch (err) {
-      console.error("[Server] Failed to upload Alipay QR:", err);
-      res.status(500).json({ error: "Upload failed" });
-    }
+  app.post("/api/upload-alipay-qr", (req, res) => {
+    return res.status(410).json({
+      success: false,
+      error: "\u8BE5\u63A5\u53E3\u5DF2\u4E0B\u7EBF\uFF1A\u652F\u4ED8\u5B9D\u6536\u6B3E\u7801\u53EA\u5B58App\u672C\u5730\uFF0C\u7EDD\u4E0D\u4E0A\u4F20\u670D\u52A1\u5668"
+    });
   });
   app.get("/api/get-wechat-qr", async (req, res) => {
     try {
+      const clientIp = req.headers["x-forwarded-for"]?.split(",")[0].trim() || req.ip || req.socket.remoteAddress || "127.0.0.1";
+      const now = Date.now();
+      const qrKey = `qr:${clientIp}`;
+      const qrLogs = (smsSendLogs.get(qrKey) || []).filter((t) => now - t < 60 * 1e3);
+      if (qrLogs.length >= 20) {
+        return res.status(429).json({ success: false, error: "\u8BF7\u6C42\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
+      }
+      qrLogs.push(now);
+      smsSendLogs.set(qrKey, qrLogs);
       const phone = String(req.query.phone || "").replace(/\D/g, "").trim();
       const channel = String(req.query.channel || "").trim();
       if (!phone) {
@@ -4077,18 +4735,28 @@ async function startServer() {
       return res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/delete-wechat-qr", async (req, res) => {
+  app.post("/api/delete-wechat-qr", requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.userPhone || "").trim();
       if (!phone) {
         return res.status(400).json({ error: "Missing phone" });
       }
+      const rawPhone = phone.toUpperCase();
+      const authPhone = String(req.authPhone || "").trim().toUpperCase();
+      if (!req.isAdmin && rawPhone !== authPhone) {
+        return res.status(403).json({ error: "\u65E0\u6743\u5220\u9664\u4ED6\u4EBA\u4E8C\u7EF4\u7801" });
+      }
+      const cleanPhone = rawPhone.replace(/\D/g, "").trim();
+      if (!cleanPhone || cleanPhone.length !== 11) {
+        return res.status(400).json({ error: "\u624B\u673A\u53F7\u683C\u5F0F\u9519\u8BEF" });
+      }
+      const allowedFiles = /* @__PURE__ */ new Set([`${cleanPhone}.png`, `${cleanPhone}_web.png`, `${cleanPhone}_app.png`]);
       [qrcodesDir, qrsDir].forEach((dir) => {
         if (import_fs.default.existsSync(dir)) {
           try {
             const files = import_fs.default.readdirSync(dir);
             files.forEach((f) => {
-              if (f.startsWith(phone)) {
+              if (allowedFiles.has(f)) {
                 try {
                   import_fs.default.unlinkSync(import_path.default.join(dir, f));
                 } catch (_) {

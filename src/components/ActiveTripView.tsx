@@ -377,7 +377,7 @@ export default function ActiveTripView({
       } catch (_) {}
     };
 
-    const bgInterval = setInterval(checkBgCoords, 3000);
+    const bgInterval = setInterval(checkBgCoords, 5000);
     return () => clearInterval(bgInterval);
   }, []);
 

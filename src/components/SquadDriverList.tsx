@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
-import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, REMOVED_GENERIC_DRIVER_PHONES } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName } from '../utils/nameResolver';
 
 interface SquadDriverListProps {
   userPhone?: string;
@@ -348,7 +348,7 @@ export default function SquadDriverList({
           const isGeneric = isGenericDriverName(resolvedName, phone) || isGenericDriverName(rawName, phone) || /^司机\d+/.test(resolvedName) || /^司机\d+/.test(rawName);
           if (isMeMember(phone)) {
             if (resolvedName) setMySquadName(resolvedName);
-          } else if (phone && !REMOVED_GENERIC_DRIVER_PHONES.includes(phone) && !isGeneric) {
+          } else if (phone && !false && !isGeneric) {
             list.push({ id: docSnap.id, phone, name: resolvedName, ...data });
           }
         });
@@ -374,7 +374,7 @@ export default function SquadDriverList({
                 const rawName = String(m?.name || m?.driverName || '').trim();
                 const real = resolveDriverRealName(phone, rawName);
                 const isGeneric = isGenericDriverName(real, phone) || isGenericDriverName(rawName, phone) || /^司机\d+/.test(real) || /^司机\d+/.test(rawName);
-                return phone && !isMeMember(phone) && !REMOVED_GENERIC_DRIVER_PHONES.includes(phone) && !isGeneric;
+                return phone && !isMeMember(phone) && !false && !isGeneric;
               })
               .map((m: any) => {
                 const phone = String(m?.phone || m?.id || '').trim();
@@ -480,7 +480,7 @@ export default function SquadDriverList({
           return;
         }
 
-        if (!isMe && (REMOVED_GENERIC_DRIVER_PHONES.includes(cleanP) || isGenericDriverName(d.rawRealName || d.name, cleanP))) return;
+        if (!isMe && (isGenericDriverName(d.rawRealName || d.name, cleanP))) return;
         const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
         const displayName = isMe
           ? currentDriverFullName
@@ -655,7 +655,7 @@ export default function SquadDriverList({
 
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
-      if (REMOVED_GENERIC_DRIVER_PHONES.includes(driver.phone) || isGenericDriverName(driver.name, driver.phone) || isGenericDriverName(driver.rawRealName, driver.phone)) return;
+      if (isGenericDriverName(driver.name, driver.phone) || isGenericDriverName(driver.rawRealName, driver.phone)) return;
       
       // 状态判断：只有在线司机显示；如果下线，必须在哈勃开启了showOffline才显示
       if (!driver.isOnline && !showOfflineDrivers) return;

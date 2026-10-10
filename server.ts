@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { execSync } from 'child_process';
 import mysql from 'mysql2/promise';
 import { createServer as createViteServer } from 'vite';
@@ -55,6 +56,90 @@ function getDypnsClient() {
 
 // In-memory store for phone verification codes
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
+
+// H1修复：verify 失败计数，5次失败锁定手机号30分钟
+const verifyFailures = new Map<string, { count: number; lockedUntil: number }>();
+
+// M4修复：/api/sms/send 限流（IP+手机号：60秒1次 / 1小时5次）
+const smsSendLogs = new Map<string, number[]>();
+
+// 认证令牌存储：短信验证成功后签发，用于 /api/db/* 写操作鉴权
+// 结构：token -> { phone, scope, createdAt }
+// M1修复：持久化到本地文件，Node 重启不丢失；去掉7天过期（手动登出前永不过期）
+const AUTH_TOKENS_PATH = (() => {
+  try {
+    const path = require('path');
+    return path.join(path.dirname(LOCAL_JSON_DB_PATH), 'auth_tokens.json');
+  } catch (_) { return './auth_tokens.json'; }
+})();
+const authTokens = new Map<string, { phone: string; scope: string; createdAt: number }>();
+// 启动时从文件加载（N-6：主文件损坏时尝试读备份）
+try {
+  let loaded = false;
+  if (fs.existsSync(AUTH_TOKENS_PATH)) {
+    try {
+      const raw = fs.readFileSync(AUTH_TOKENS_PATH, 'utf8');
+      const obj = JSON.parse(raw || '{}');
+      for (const [k, v] of Object.entries(obj)) {
+        if (v && typeof v === 'object') authTokens.set(k, v as any);
+      }
+      loaded = true;
+      console.log(`[Auth] 已从文件加载 ${authTokens.size} 个 token`);
+    } catch (_) {
+      // 主文件损坏，尝试备份
+      const bakPath = AUTH_TOKENS_PATH + '.bak';
+      if (fs.existsSync(bakPath)) {
+        const rawBak = fs.readFileSync(bakPath, 'utf8');
+        const objBak = JSON.parse(rawBak || '{}');
+        for (const [k, v] of Object.entries(objBak)) {
+          if (v && typeof v === 'object') authTokens.set(k, v as any);
+        }
+        loaded = true;
+        console.log(`[Auth] 主文件损坏，已从备份加载 ${authTokens.size} 个 token`);
+      }
+    }
+  }
+  if (!loaded) console.log('[Auth] 无可用 token 文件，从空开始');
+} catch (e: any) {
+  console.error('[Auth] 加载 token 文件失败:', e?.message);
+}
+// token 持久化（节流：最多每10秒写一次）
+let _authTokensDirty = false;
+setInterval(() => {
+  if (!_authTokensDirty) return;
+  _authTokensDirty = false;
+  try {
+    const obj: Record<string, any> = {};
+    for (const [k, v] of authTokens) obj[k] = v;
+    const tmp = AUTH_TOKENS_PATH + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(obj), 'utf8');
+    fs.renameSync(tmp, AUTH_TOKENS_PATH);
+  } catch (e: any) {
+    console.error('[Auth] 持久化 token 失败:', e?.message);
+  }
+}, 10000);
+const DEVELOPER_PHONE_SERVER = '15509601222';
+
+// P1: 定时清理内存泄漏（verificationCodes/dispatchLogs/authTokens）
+setInterval(() => {
+  const now = Date.now();
+  try {
+    for (const [k, v] of verificationCodes) {
+      if (v.expiresAt < now) verificationCodes.delete(k);
+    }
+    for (const [k, v] of dispatchPhoneLoginLogs) {
+      if (now - v > 25 * 3600 * 1000) dispatchPhoneLoginLogs.delete(k);
+    }
+    for (const [k, v] of dispatchIpLoginLogs) {
+      if (now - v > 25 * 3600 * 1000) dispatchIpLoginLogs.delete(k);
+    }
+    // M14修复：清理过期的 wechatSessions（防缓慢内存泄漏）
+    for (const [k, v] of wechatSessions) {
+      if (v.expiresAt < now) wechatSessions.delete(k);
+    }
+    // M1修复：删除 authTokens 7天过期清理（用户铁律：手动登出前永不过期）
+  } catch (_) {}
+}, 10 * 60 * 1000);
 
 // In-memory 24-hour rate limiting stores for dispatch valet logins
 const dispatchPhoneLoginLogs = new Map<string, number>();
@@ -200,22 +285,6 @@ function isGenericDriverName(name: string, phone: string): boolean {
 
   if (!cleanPhone || cleanPhone.length !== 11) return true;
 
-  const REMOVED_PHONES = [
-    '17866167770', // 魏秉金
-    '19995179865', // 张栋
-    '13099566633', // 李鑫
-    '18893028825', // 何威
-    '18795101111', // 尹柏学
-    '18095513011', // 杨海
-    '13895299147',
-    '17660453634',
-    '13812345678',
-    '13912345678',
-    '19995426058',
-    '15509601223',
-    '15555556666'
-  ];
-  if (REMOVED_PHONES.includes(cleanPhone)) return true;
   if (['9147', '3634', '5678', '6058', '0116', '1223', '1958'].some(s => cleanPhone.endsWith(s))) return true;
 
   if (!name || typeof name !== 'string') return true;
@@ -233,7 +302,14 @@ function isGenericDriverName(name: string, phone: string): boolean {
 let isDbWriteScheduled = false;
 let isDbWriting = false;
 
+// P0-1: 脏标 + 5秒批量异步刷盘，避免高频同步写阻塞 Event Loop
+// （提前声明，供 readLocalJsonDb 的 H15 脏读保护使用）
+let _dbDirty = false;
+let _dbWriteInFlight = false;
+
 function readLocalJsonDb(): Record<string, Record<string, any>> {
+  // H15修复：有未刷盘的脏数据时直接返回内存缓存，避免脏派单被磁盘旧快照覆盖丢失
+  if (_dbDirty && cachedDbData) return cachedDbData;
   try {
     if (fs.existsSync(LOCAL_JSON_DB_PATH)) {
       const content = fs.readFileSync(LOCAL_JSON_DB_PATH, 'utf8');
@@ -248,15 +324,49 @@ function readLocalJsonDb(): Record<string, Record<string, any>> {
   return cachedDbData;
 }
 
+// P0-1: 脏标 + 5秒批量异步刷盘已在上方声明（_dbDirty/_dbWriteInFlight）
+
 function writeLocalJsonDb(data: Record<string, Record<string, any>>, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
+  // 只打脏标，不同步写盘。由5秒定时器批量异步刷盘，避免786次/秒全量序列化阻塞 Event Loop
+  _dbDirty = true;
+}
 
-  try {
-    fs.writeFileSync(LOCAL_JSON_DB_PATH, JSON.stringify(data), 'utf8');
-  } catch (e) {
-    console.error('[Local JSON DB] Write error:', e);
+// 5秒批量异步刷盘（H14修复：tmp+rename 原子替换，避免 kill 截断导致全库丢失）
+setInterval(() => {
+  if (!_dbDirty || _dbWriteInFlight) return;
+  _dbDirty = false;
+  _dbWriteInFlight = true;
+  const snapshot = cachedDbData;
+  const tmpPath = LOCAL_JSON_DB_PATH + '.tmp';
+  fs.promises.writeFile(tmpPath, JSON.stringify(snapshot), 'utf8')
+    .then(() => fs.promises.rename(tmpPath, LOCAL_JSON_DB_PATH))
+    .catch((e: any) => console.error('[Local JSON DB] Async write error:', e?.message))
+    .finally(() => { _dbWriteInFlight = false; });
+}, 5000);
+
+// H14修复：启动时备份 local_db.json.bak
+try {
+  if (fs.existsSync(LOCAL_JSON_DB_PATH)) {
+    const bakPath = LOCAL_JSON_DB_PATH + '.bak';
+    fs.copyFileSync(LOCAL_JSON_DB_PATH, bakPath);
+    console.log('[Local JSON DB] 启动备份已创建:', bakPath);
   }
+} catch (e: any) {
+  console.error('[Local JSON DB] 启动备份失败:', e?.message);
+}
+
+// N-6修复（2026-10-10复审）：启动时备份 auth_tokens.json.bak
+try {
+  const tokenPath = getAuthTokenPath();
+  if (fs.existsSync(tokenPath)) {
+    const bakPath = tokenPath + '.bak';
+    fs.copyFileSync(tokenPath, bakPath);
+    console.log('[Auth Tokens] 启动备份已创建:', bakPath);
+  }
+} catch (e: any) {
+  console.error('[Auth Tokens] 启动备份失败:', e?.message);
 }
 
 async function runSystemDiskCleanup() {
@@ -307,16 +417,27 @@ async function startServer() {
   app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
   // CORS headers
+  // M11修复：Origin 白名单（不再反射任意Origin）；Allow-Headers 加上 X-Auth-Token
+  const CORS_WHITELIST = [
+    'https://api.lyheiwandaijiamax.com',
+    'https://admin.lyheiwandaijiamax.com',
+    'https://lyheiwandaijiamax.com',
+    'https://418000199ly-lgtm.github.io',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5173'
+  ];
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin) {
+    if (origin && CORS_WHITELIST.includes(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
-    } else {
+    } else if (!origin) {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE, PATCH');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Keep-Alive, User-Agent, Cache-Control');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Auth-Token, X-Requested-With, Keep-Alive, User-Agent, Cache-Control');
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
     }
@@ -949,7 +1070,11 @@ async function startServer() {
   });
 
   // Check admin permission endpoint for https://admin.lyheiwandaijiamax.com/
-  app.post('/api/admin/check-permission', (req, res) => {
+  app.post('/api/admin/check-permission', requireDbAuth, (req, res) => {
+    // H4修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     const { phone } = req.body;
     const cleanPhone = String(phone || '').trim();
     if (cleanPhone === '15509601222') {
@@ -969,7 +1094,11 @@ async function startServer() {
   });
 
   // Purge all drivers and applications except 15509601222 on demand
-  app.post('/api/admin/purge-all-drivers', async (req, res) => {
+  app.post('/api/admin/purge-all-drivers', requireDbAuth, async (req, res) => {
+    // H4修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     try {
       await purgeMockDriverData();
       return res.json({
@@ -988,6 +1117,92 @@ async function startServer() {
   // UNIVERSAL DATABASE REST API ENDPOINTS (Supports MySQL & local_db.json)
   // Ensures 100% reliable cross-device data sync, instant order dispatch popups
   // =========================================================================
+
+  // 认证中间件：写操作需要有效的短信登录令牌
+  // 规则：普通用户只能写自己手机号的文档；开发者（15509601222）可写任意
+  const requireDbAuth = (req: any, res: any, next: any) => {
+    const token = req.headers['x-auth-token'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
+    if (!token) {
+      return res.status(401).json({ success: false, error: '未登录：缺少认证令牌，请先短信验证登录' });
+    }
+    const info = authTokens.get(String(token));
+    if (!info) {
+      return res.status(401).json({ success: false, error: '登录已失效：令牌无效，请重新短信验证登录' });
+    }
+    // 开发者不受限制（商户身份的开发者 15509601222A 也是开发者）
+    const devPhoneNorm = String(DEVELOPER_PHONE_SERVER || '').trim().toUpperCase();
+    const infoPhoneNorm = String(info.phone || '').trim().toUpperCase();
+    if (infoPhoneNorm === devPhoneNorm || infoPhoneNorm === devPhoneNorm + 'A') {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = true;
+      (req as any).userRole = 'developer';
+      (req as any).isManager = true;
+      return next();
+    }
+    // M10：从 squad_members 查操作者角色（同步读本地缓存）
+    let userRole = 'normal';
+    try {
+      const dbData = readLocalJsonDb();
+      const purePhone = infoPhoneNorm.replace(/A$/, '');
+      const memberDoc = (dbData.squad_members && (dbData.squad_members[info.phone] || dbData.squad_members[purePhone])) || {};
+      const pos = String(memberDoc.squad_position || '').trim().toLowerCase();
+      if (pos === 'boss' || pos === 'manager' || pos === 'dispatcher') userRole = pos;
+      if (userRole === 'normal') {
+        const r = String(memberDoc.role || memberDoc.userRole || '');
+        if (r.includes('城市老板')) userRole = 'boss';
+        else if (r.includes('城市管理')) userRole = 'manager';
+        else if (r.includes('城市派单员')) userRole = 'dispatcher';
+      }
+    } catch (_) {}
+    (req as any).userRole = userRole;
+    (req as any).isManager = userRole === 'boss' || userRole === 'manager';
+    (req as any).isDispatcher = userRole === 'dispatcher';
+    // 普通用户：只能操作自己手机号的文档（A后缀敏感：15509601222 ≠ 15509601222A，互不干扰）
+    const normalizeId = (s: any) => String(s || '').trim().toUpperCase();
+    // H10修复：同时检查 body.data.id（/api/db/add 的实际 docId 藏在 data 里）
+    const bodyDocId = normalizeId(req.body?.id || req.body?.docId || req.body?.data?.id || '');
+    const queryDocId = normalizeId(req.query?.id || req.query?.docId || '');
+    const targetId = bodyDocId || queryDocId;
+    const colName = String(req.body?.col || req.body?.collection || req.query?.col || req.query?.collection || '').trim();
+    // M9：商户 A-token 写商户自有集合时，允许"去A后相等"（商户 docId 按纯手机号存储）
+    const MERCHANT_OWN_COLS = ['merchant_users', 'web_valet_qrs', 'app_valet_qrs', 'dispatch_qrs', 'dispatch_qrs_web', 'dispatch_qrcodes'];
+    const isMerchantToken = /A$/.test(infoPhoneNorm);
+    const deA = (s: string) => s.replace(/A$/, '');
+    if (isMerchantToken && MERCHANT_OWN_COLS.includes(colName) && targetId && deA(targetId) === deA(infoPhoneNorm)) {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = false;
+      return next();
+    }
+    // M10：城市老板/城市管理可写成员集合（审批/删除等管理操作）；派单员可写订单集合
+    const MEMBER_COLS = ['squad_members', 'driver_users', 'driver_locations', 'squad_applications', 'online_applications', 'team_members'];
+    const ORDER_COLS = ['merchant_orders', 'valet_orders'];
+    if ((req as any).isManager && (MEMBER_COLS.includes(colName) || ORDER_COLS.includes(colName))) {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = false;
+      return next();
+    }
+    if ((req as any).isDispatcher && ORDER_COLS.includes(colName)) {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = false;
+      return next();
+    }
+    // H9修复：无目标文档id的批量操作（如 clear-collection 清空整表）必须要求管理员
+    if (!targetId) {
+      // /api/db/add 未指定 id 时服务端生成随机 id，允许普通用户创建新文档
+      const isAddWithGeneratedId = req.path === '/api/db/add' && !req.body?.data?.id;
+      if (!isAddWithGeneratedId) {
+        console.warn(`[Auth] 拒绝无目标id的批量操作: token手机=${info.phone}, 路径=${req.path}`);
+        return res.status(403).json({ success: false, error: '该操作需要管理员权限' });
+      }
+    }
+    if (targetId && targetId !== infoPhoneNorm) {
+      console.warn(`[Auth] 拒绝越权写入: token手机=${info.phone}, 目标=${targetId}, 路径=${req.path}`);
+      return res.status(403).json({ success: false, error: '无权操作他人数据' });
+    }
+    (req as any).authPhone = info.phone;
+    (req as any).isAdmin = false;
+    next();
+  };
 
   // 1. GET Single Document
   // Supports: /api/db/get?col=passenger_links&id=15509601222 OR query params: collection, docId
@@ -1140,13 +1355,25 @@ async function startServer() {
       }
 
       const limitNum = Math.min(Math.max(Number(req.query.limit) || 10000, 1), 20000);
+      // P0-2: 增量拉取，只返回 updated_at > since 的文档，大幅降低3000并发时的数据量
+      const sinceParam = String(req.query.since || '').trim();
+      const sinceDate = sinceParam ? new Date(sinceParam) : null;
+      const hasValidSince = sinceDate && !isNaN(sinceDate.getTime());
 
       if (isMySQLEnabled && mysqlPool) {
         try {
-          const [rows]: any = await mysqlPool.query(
-            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT ?',
-            [col, limitNum]
-          );
+          let rows: any;
+          if (hasValidSince) {
+            [rows] = await mysqlPool.query(
+              'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND `updated_at` > ? ORDER BY `updated_at` DESC LIMIT ?',
+              [col, sinceDate, limitNum]
+            );
+          } else {
+            [rows] = await mysqlPool.query(
+              'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? ORDER BY `updated_at` DESC LIMIT ?',
+              [col, limitNum]
+            );
+          }
           const now = new Date();
           const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
           target50d.setDate(target50d.getDate() + 50);
@@ -1175,11 +1402,8 @@ async function startServer() {
             const cleanPhone = docIdStr.replace(/\D/g, '').trim();
 
             if (col === 'squad_applications') {
-              // Squad applications must NEVER contain merchant 'A' accounts or 15509601222 or deleted mock drivers like 18695161718
-              if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
               if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant || doc.accountType === 'merchant') return false;
               if (cleanPhone === '15509601222') return false;
-              if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
               if (isGenericDriverName(doc.name || doc.driverName || doc.applicantName, cleanPhone)) return doc.status === '已拒绝';
               return true;
             }
@@ -1188,14 +1412,14 @@ async function startServer() {
               // Online applications: Keep 15509601222 developer driver resident; exclude legacy deleted mock drivers
               if (cleanPhone === '15509601222') return true;
               if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant) return false;
-              if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
               return true;
             }
 
             if (['merchant_accounts', 'merchant_users'].includes(col)) {
-              // Must strictly end with 'A' (registered via merchant web); 18695161718 never registered on web merchant, so exclude!
-              if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
-              if (!docIdStr.toUpperCase().endsWith('A')) return false;
+              // 商户识别（与前端 isMerchantAccountUnified 一致）：A后缀 或 isMerchant/accountType 或 role含商户/商家
+              const docRole = String(doc?.role || doc?.userRole || '');
+              const isMerchantByRole = (docRole.includes('商户') || docRole.includes('商家')) && !docRole.includes('司机');
+              if (!docIdStr.toUpperCase().endsWith('A') && !doc?.isMerchant && doc?.accountType !== 'merchant' && !isMerchantByRole) return false;
               return true;
             }
 
@@ -1236,10 +1460,8 @@ async function startServer() {
         const cleanPhone = docIdStr.replace(/\D/g, '').trim();
 
         if (col === 'squad_applications') {
-          if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
           if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant || doc.accountType === 'merchant') return false;
           if (cleanPhone === '15509601222') return false;
-          if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
           if (isGenericDriverName(doc.name || doc.driverName || doc.applicantName, cleanPhone)) return doc.status === '已拒绝';
           return true;
         }
@@ -1247,12 +1469,10 @@ async function startServer() {
         if (col === 'online_applications') {
           if (cleanPhone === '15509601222') return true;
           if (docIdStr.toUpperCase().endsWith('A') || doc.isMerchant) return false;
-          if (REMOVED_PHONES.includes(cleanPhone) || ['13895336277', '18695161718'].includes(cleanPhone)) return false;
           return true;
         }
 
         if (['merchant_accounts', 'merchant_users'].includes(col)) {
-          if (docIdStr.includes('18695161718') || cleanPhone === '18695161718') return false;
           if (!docIdStr.toUpperCase().endsWith('A')) return false;
           return true;
         }
@@ -1289,7 +1509,7 @@ async function startServer() {
   });
 
   // 3. SET Document (create or replace/merge) - Supports both /api/db/set and /api/db/save
-  app.post(['/api/db/set', '/api/db/save'], async (req, res) => {
+  app.post(['/api/db/set', '/api/db/save'], requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || '').trim();
       const docId = String(req.body.id || req.body.docId || '').trim();
@@ -1299,6 +1519,18 @@ async function startServer() {
 
       if (!col || !docId || data === undefined) {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
+      }
+
+      // M3修复：普通用户写 squad_members 时剥离敏感字段（防被开除司机自助"洗白"）
+      // 只有开发者/城市老板/城市管理可写 status/approvalStatus/role/squad_position
+      if (col === 'squad_members' && !(req as any).isAdmin && !(req as any).isManager) {
+        const SENSITIVE = ['status', 'approvalStatus', 'role', 'squad_position', 'userRole', 'position'];
+        for (const f of SENSITIVE) {
+          if (data && typeof data === 'object' && f in data) {
+            console.warn(`[Auth] 剥离敏感字段: token手机=${(req as any).authPhone}, 字段=${f}`);
+            delete data[f];
+          }
+        }
       }
 
       // 1. If explicitly approving or applying, automatically unblacklist the driver
@@ -1557,7 +1789,7 @@ async function startServer() {
   });
 
   // 4. UPDATE Document (partial merge)
-  app.post('/api/db/update', async (req, res) => {
+  app.post('/api/db/update', requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || '').trim();
       const docId = String(req.body.id || req.body.docId || '').trim();
@@ -1565,6 +1797,17 @@ async function startServer() {
 
       if (!col || !docId || data === undefined) {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
+      }
+
+      // M3修复：普通用户写 squad_members 时剥离敏感字段（防被开除司机自助"洗白"）
+      if (col === 'squad_members' && !(req as any).isAdmin && !(req as any).isManager) {
+        const SENSITIVE = ['status', 'approvalStatus', 'role', 'squad_position', 'userRole', 'position'];
+        for (const f of SENSITIVE) {
+          if (data && typeof data === 'object' && f in data) {
+            console.warn(`[Auth] 剥离敏感字段: token手机=${(req as any).authPhone}, 字段=${f}`);
+            delete data[f];
+          }
+        }
       }
 
       // 1. If explicitly approving or applying, automatically unblacklist the driver
@@ -1736,7 +1979,11 @@ async function startServer() {
   });
 
   // Dedicated admin endpoint to update driver VIP expiry across all collections atomically
-  app.post('/api/admin/update-driver-expiry', async (req, res) => {
+  app.post('/api/admin/update-driver-expiry', requireDbAuth, async (req, res) => {
+    // H5修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
       const rawVip = String(req.body.vipExpiry || '').trim();
@@ -1811,7 +2058,11 @@ async function startServer() {
   });
 
   // Dedicated admin endpoint to update driver role/position atomically across all collections
-  app.post('/api/admin/update-driver-role', async (req, res) => {
+  app.post('/api/admin/update-driver-role', requireDbAuth, async (req, res) => {
+    // H5修复：加鉴权+isAdmin校验（防止自助提权）
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
       const role = String(req.body.role || req.body.userRole || req.body.position || '').trim();
@@ -1897,7 +2148,11 @@ async function startServer() {
   });
 
   // 4.6 Batch Recharge All Squad Drivers VIP (Default 50 Days, Excludes 15509601222)
-  app.post(['/api/admin/batch-recharge-squad', '/api/admin/recharge-all-drivers'], async (req, res) => {
+  app.post(['/api/admin/batch-recharge-squad', '/api/admin/recharge-all-drivers'], requireDbAuth, async (req, res) => {
+    // H5修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     try {
       const daysCount = parseInt(req.body.days || '50', 10) || 50;
       const exclude = String(req.body.excludePhone || '15509601222').replace(/\D/g, '').trim();
@@ -1998,7 +2253,7 @@ async function startServer() {
   });
 
   // 5. DELETE Document
-  app.post('/api/db/delete', async (req, res) => {
+  app.post('/api/db/delete', requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || '').trim();
       const docId = String(req.body.id || req.body.docId || '').trim();
@@ -2141,7 +2396,7 @@ async function startServer() {
   });
 
   // 5.1 CLEAR Collection (Purges all documents in a collection from MySQL and local JSON DB)
-  app.post('/api/db/clear-collection', async (req, res) => {
+  app.post('/api/db/clear-collection', requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || '').trim();
       if (!col) {
@@ -2193,7 +2448,11 @@ async function startServer() {
   });
 
   // 5.2 CLEAR ALL ORDERS (彻底清除阿里云服务器上的所有订单记录，包括商户代叫、代驾订单、抢单/接单记录与通道)
-  app.post('/api/orders/clear-all', async (req, res) => {
+  app.post('/api/orders/clear-all', requireDbAuth, async (req, res) => {
+    // H6修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     try {
       console.log('[DB Proxy] 正在执行全量一键清空：清除所有订单记录 (merchant_orders, valet_orders, orders, passenger_links, active_orders)');
       const nowTs = Date.now();
@@ -2305,12 +2564,16 @@ async function startServer() {
   };
 
   // 5.1 Driver Offline API (Mainland China Baota / Aliyun REST API)
-  app.post('/api/driver/offline', async (req, res) => {
+  // M2修复：加 requireDbAuth，本人只能操作自己
+  app.post('/api/driver/offline', requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.driverPhone || '').trim();
       const reason = String(req.body.reason || 'manual_offline').trim();
       if (!phone) {
         return res.status(400).json({ success: false, error: 'Missing driver phone' });
+      }
+      if (!(req as any).isAdmin && phone.toUpperCase() !== String((req as any).authPhone || '').trim().toUpperCase()) {
+        return res.status(403).json({ success: false, error: '无权操作他人数据' });
       }
       await performServerOffline(phone, reason);
       console.log(`[Baota API /api/driver/offline] Driver ${phone} set to offline successfully (Reason: ${reason})`);
@@ -2322,11 +2585,15 @@ async function startServer() {
   });
 
   // 5.15 Driver Busy/Idle Status Report API (Alibaba Cloud Baota Server Panel Real-time Sync)
-  app.post('/api/driver/status', async (req, res) => {
+  // M2修复：加 requireDbAuth，本人只能操作自己
+  app.post('/api/driver/status', requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.driverPhone || '').trim();
       if (!phone) {
         return res.status(400).json({ success: false, error: 'Missing driver phone' });
+      }
+      if (!(req as any).isAdmin && phone.toUpperCase() !== String((req as any).authPhone || '').trim().toUpperCase()) {
+        return res.status(403).json({ success: false, error: '无权操作他人数据' });
       }
       const isBusy = Boolean(req.body.isBusy);
       const status = isBusy ? 'busy' : 'idle';
@@ -2369,11 +2636,15 @@ async function startServer() {
   });
 
   // 5.2 Driver Location & Online Status Report API (Alibaba Cloud Baota Server Panel 20s Reporter)
-  app.post('/api/driver/location', async (req, res) => {
+  // M2修复：加 requireDbAuth，本人只能操作自己
+  app.post('/api/driver/location', requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || '').trim();
       if (!phone) {
         return res.status(400).json({ success: false, error: 'Missing phone' });
+      }
+      if (!(req as any).isAdmin && phone.toUpperCase() !== String((req as any).authPhone || '').trim().toUpperCase()) {
+        return res.status(403).json({ success: false, error: '无权操作他人数据' });
       }
       const lat = req.body.lat !== undefined ? Number(req.body.lat) : undefined;
       const lng = req.body.lng !== undefined ? Number(req.body.lng) : undefined;
@@ -2640,7 +2911,8 @@ async function startServer() {
   });
 
   // 5.5 Update Driver / Squad Member Name API (Alibaba Cloud Baota Server Panel)
-  app.post(['/api/driver/name', '/api/driver/update-name'], async (req, res) => {
+  // M2修复：加 requireDbAuth，本人只能改自己的名字
+  app.post(['/api/driver/name', '/api/driver/update-name'], requireDbAuth, async (req, res) => {
     try {
       const rawPhone = String(req.body.phone || '').trim();
       const phone = rawPhone.replace(/\D/g, '');
@@ -2648,13 +2920,17 @@ async function startServer() {
       if (!phone || !name) {
         return res.status(400).json({ success: false, error: 'Phone and name required' });
       }
+      if (!(req as any).isAdmin && phone.toUpperCase() !== String((req as any).authPhone || '').replace(/\D/g, '').toUpperCase()) {
+        return res.status(403).json({ success: false, error: '无权操作他人数据' });
+      }
 
       // Update in-memory server mapping
       AUTHORITATIVE_REAL_DRIVER_NAMES[phone] = name;
 
       if (isMySQLEnabled && mysqlPool) {
         try {
-          for (const col of ['driver_users', 'squad_members', 'driver_locations', 'squad_applications']) {
+          // BUG12修复：加上 online_applications，与本地 JSON 保持一致
+          for (const col of ['driver_users', 'squad_members', 'driver_locations', 'squad_applications', 'online_applications', 'team_members']) {
             const [rows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
               [col, phone]
@@ -2847,56 +3123,64 @@ async function startServer() {
   }
 
   // Server POI & Yinchuan Street/District Grid Dictionary
-  const YINCHUAN_SERVER_POIS: Array<{ keywords: string[]; lat: number; lng: number }> = [
-    // 1. Specific User Landmarks & Popular POIs
-    { keywords: ['银川市第二中学', '银川第二中学', '银川二中', '第二中学', '二中', '英才巷', '英才路'], lat: 38.4908, lng: 106.2485 },
-    { keywords: ['良益轩泡馍', '良益轩', '泡馍店', '羊肉泡馍'], lat: 38.4845, lng: 106.2380 },
-    { keywords: ['华江大肉夹馍', '华江肉夹馍', '大肉夹馍'], lat: 38.4812, lng: 106.2348 },
-    { keywords: ['光大国旅中山街营业部', '光大国旅中山街', '光大国旅'], lat: 38.4855, lng: 106.2410 },
-    { keywords: ['德隆楼德鼎逸品', '德隆楼', '德鼎逸品'], lat: 38.4875, lng: 106.2620 },
-    { keywords: ['人社服务窗口（阳澄社区）', '人社服务窗口', '阳澄社区', '阳澄'], lat: 38.4920, lng: 106.2550 },
-    { keywords: ['西桥巷粉条大盘鸡', '粉条大盘鸡', '西桥巷'], lat: 38.4873, lng: 106.2625 },
-    { keywords: ['铂金大厦', '长相忆宾馆'], lat: 38.4825, lng: 106.2315 },
-    { keywords: ['怀远夜市', '怀远路', '怀远市场', '八一车场'], lat: 38.4950, lng: 106.1550 },
-    { keywords: ['运祥小区', '运祥'], lat: 38.4830, lng: 106.2350 },
-    { keywords: ['金凤万达', '万达广场'], lat: 38.5085, lng: 106.2160 },
-    { keywords: ['西夏万达'], lat: 38.4985, lng: 106.1485 },
-    { keywords: ['建发大阅城', '大阅城'], lat: 38.5255, lng: 106.2205 },
-    { keywords: ['阅海湾', '阅海大酒店'], lat: 38.5450, lng: 106.2150 },
-    { keywords: ['眉山川菜'], lat: 38.4988, lng: 106.2815 },
-    { keywords: ['鼓楼', '新华百货', '新华街'], lat: 38.4815, lng: 106.2355 },
-    { keywords: ['悠阅城'], lat: 38.4250, lng: 106.2280 },
-    { keywords: ['望远人家', '望远镇', '四季鲜'], lat: 38.3880, lng: 106.2580 },
-    { keywords: ['蕴辉商店', '南京包子铺'], lat: 38.4878, lng: 106.2622 },
-    { keywords: ['同乡斋羊羔肉', '同乡斋', '马小军过油肉拌面'], lat: 38.4873, lng: 106.2629 },
-    { keywords: ['迎春苑', '迎春苑1号楼', '迎春苑2号楼'], lat: 38.4882, lng: 106.2616 },
-    { keywords: ['海宝苑', '宁祥园'], lat: 38.4886, lng: 106.2625 },
+  // 本地 POI 已清空（用户2026-10-10要求：纯走服务端高德实时解析）
+  // 原有银川+宁夏条目已全部移除
+  const YINCHUAN_SERVER_POIS: Array<{ keywords: string[]; lat: number; lng: number }> = [];
 
-    // 2. Major Yinchuan Street & Road Grid Dictionary (小商店、餐厅、小区街道匹配)
-    { keywords: ['中山北街', '中山南街', '中山街'], lat: 38.4855, lng: 106.2410 },
-    { keywords: ['北京东路', '北京路'], lat: 38.4875, lng: 106.2620 },
-    { keywords: ['北京中路'], lat: 38.4908, lng: 106.2123 },
-    { keywords: ['北京西路'], lat: 38.4920, lng: 106.1620 },
-    { keywords: ['海宝路', '阳澄巷'], lat: 38.4920, lng: 106.2550 },
-    { keywords: ['解放东街', '解放西街', '解放街'], lat: 38.4815, lng: 106.2355 },
-    { keywords: ['民族北街', '民族南街', '民族街'], lat: 38.4830, lng: 106.2420 },
-    { keywords: ['胜利北街', '胜利南街', '胜利街', '医大总院'], lat: 38.4485, lng: 106.2345 },
-    { keywords: ['亲水北大街', '亲水南大街', '亲水大街'], lat: 38.5085, lng: 106.2160 },
-    { keywords: ['正源北街', '正源南街', '正源街', '悦海新天地'], lat: 38.5120, lng: 106.2180 },
-    { keywords: ['宝湖东路', '宝湖西路', '宝湖路', '宝湖公园'], lat: 38.4480, lng: 106.2200 },
-    { keywords: ['贺兰山路', '贺兰山东路', '贺兰山西路', '宁夏大学'], lat: 38.5020, lng: 106.1380 },
-    { keywords: ['满城北街', '满城南街', '满城街'], lat: 38.4880, lng: 106.1850 },
-    { keywords: ['黄河东路', '黄河西路', '黄河路'], lat: 38.4620, lng: 106.2150 },
-    { keywords: ['富宁街', '文化街'], lat: 38.4800, lng: 106.2310 },
-    { keywords: ['上海东路', '上海西路', '上海路'], lat: 38.4892, lng: 106.2435 },
+  // 全国地理编码：本地银川 POI 优先，失败时调高德地图 API（中国大陆服务，全国可用）
+  const AMAP_KEY_SERVER = '0ae534670da6caccb517c02edd04e89e';
+  async function geocodeServerPoiAsync(startLoc?: string, fallbackLat?: number, fallbackLng?: number): Promise<{ lat: number; lng: number; reliable: boolean }> {
+    // H13修复：失败时返回 NaN 而非市中心占位符，调用方根据 reliable=false 标记 coordsUnknown
+    const failResult = { lat: NaN, lng: NaN, reliable: false };
 
-    // 3. District & County Region Centroids
-    { keywords: ['兴庆区', '老城区'], lat: 38.4830, lng: 106.2350 },
-    { keywords: ['金凤区', '新区'], lat: 38.4908, lng: 106.2123 },
-    { keywords: ['西夏区', '新市区'], lat: 38.4950, lng: 106.1550 },
-    { keywords: ['贺兰县', '德胜'], lat: 38.5520, lng: 106.2580 },
-    { keywords: ['永宁县', '望远'], lat: 38.3880, lng: 106.2580 }
-  ];
+    if (!startLoc || typeof startLoc !== 'string' || !startLoc.trim()) {
+      return failResult;
+    }
+
+    const clean = startLoc.trim()
+      .replace(/^代驾商家起点[为：:\s]*/g, '')
+      .replace(/^商家代叫起点[为：:\s]*/g, '')
+      .replace(/^商家起点[为：:\s]*/g, '')
+      .replace(/^代叫商家起点[为：:\s]*/g, '')
+      .replace(/^代驾起点[为：:\s]*/g, '')
+      .replace(/^起点[为：:\s]*/g, '')
+      .trim() || startLoc.trim();
+
+    // 1. 本地银川 POI 优先（快）
+    for (const poi of YINCHUAN_SERVER_POIS) {
+      if (poi.keywords.some(kw => clean.includes(kw) || kw.includes(clean))) {
+        return { lat: poi.lat, lng: poi.lng, reliable: true };
+      }
+    }
+
+    // 2. 高德地图全国地理编码（中国大陆服务）
+    try {
+      const url = `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(clean)}&key=${AMAP_KEY_SERVER}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const data: any = await resp.json();
+      if (data.status === '1' && data.geocodes?.length > 0) {
+        const loc = String(data.geocodes[0].location || '').split(',');
+        const lng = Number(loc[0]), lat = Number(loc[1]);
+        if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+          console.log(`[Geocode] 高德解析成功: ${clean} -> ${lat},${lng}`);
+          return { lat, lng, reliable: true };
+        }
+      }
+      // 详细记录失败原因，便于排查 Key 限制问题
+      // 常见 infocode: 10009=USERKEY_PLAT_NOMATCH(Key平台限制), 10008=USERKEY_ILLEGAL(Key非法), 20001=INSUFFICIENT_PRIVILEGES(权限不足)
+      console.warn(`[Geocode] 高德解析失败: address=${clean}, status=${data.status}, info=${data.info}, infocode=${data.infocode}`);
+      if (data.infocode === '10009') {
+        console.warn(`[Geocode] Key平台限制(USERKEY_PLAT_NOMATCH): 请在高德控制台检查Key的"服务平台"设置，服务端调用需要"Web服务"类型Key或IP白名单包含本服务器IP`);
+      }
+    } catch (e: any) {
+      console.warn('[Geocode] 高德 API 异常:', e?.message);
+    }
+
+    // 3. 全部失败：标记为不可靠，调用方不得用此坐标做距离判断
+    console.warn(`[Geocode] 坐标未知: ${clean}，本地POI和高德均失败`);
+    // H13修复：高德失败/异常时返回 NaN，不用市中心冒充
+    return failResult;
+  }
 
   function geocodeServerPoi(startLoc?: string, fallbackLat?: number, fallbackLng?: number): { lat: number; lng: number } {
     const defaultLat = (fallbackLat && !isNaN(fallbackLat) && fallbackLat !== 0) ? fallbackLat : 38.4830;
@@ -2924,28 +3208,62 @@ async function startServer() {
   }
 
   // 5.9 Server-Side Geocoding API (支持客户端按地名即时获取精准坐标与直线距离)
-  app.get(['/api/geocode', '/api/geo/locate'], (req, res) => {
+  // M6修复：加 requireDbAuth，防公开代理刷爆高德配额
+  app.get(['/api/geocode', '/api/geo/locate'], requireDbAuth, async (req, res) => {
     try {
       const address = String(req.query.address || req.query.name || req.query.keyword || '').trim();
       const fallbackLat = Number(req.query.lat || req.query.fallbackLat || 38.4830);
       const fallbackLng = Number(req.query.lng || req.query.fallbackLng || 106.2350);
-      const poi = geocodeServerPoi(address, fallbackLat, fallbackLng);
+      const poi = await geocodeServerPoiAsync(address, fallbackLat, fallbackLng);
       return res.json({
         success: true,
         address,
         lat: poi.lat,
-        lng: poi.lng
+        lng: poi.lng,
+        reliable: poi.reliable
       });
     } catch (err: any) {
-      return res.json({ success: false, error: err.message, lat: 38.4830, lng: 106.2350 });
+      return res.json({ success: false, error: err.message, lat: NaN, lng: NaN });
     }
   });
 
   // 6. Server-Side Nearest Driver Dispatch Engine (阿里云高可用服务端精准距离派单)
-  app.post('/api/dispatch/nearest', async (req, res) => {
+  app.post('/api/dispatch/nearest', requireDbAuth, async (req, res) => {
     try {
-      const { orderData, reporterPhone, pickupLat, pickupLng, radiusKm = 3.0, excludePhone } = req.body || {};
-      
+      const { orderData, reporterPhone, pickupLat, pickupLng, excludePhone } = req.body || {};
+      // M7修复：radiusKm 服务端钳制，最大3公里，防客户端突破派单半径铁律
+      const radiusKm = Math.min(Number(req.body?.radiusKm) || 3, 3);
+
+      // 下单权限：开发者/小队管理人员 或 商户（带A后缀）可以直接下单
+      // 商户不需要申请审批，注册登录即为商户身份
+      if (!(req as any).isAdmin) {
+        const rawAuthPhone = String((req as any).authPhone || '').trim().toUpperCase();
+        // 商户（A后缀）直接放行
+        if (rawAuthPhone.endsWith('A')) {
+          // merchant, skip manager check
+        } else {
+          const authPhone = rawAuthPhone.replace(/A$/, '');
+          const MANAGER_ROLES = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'];
+          let isManager = false;
+        try {
+          if (isMySQLEnabled && mysqlPool) {
+            const [rows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['squad_members', authPhone]
+            );
+            if (rows && rows.length > 0) {
+              const data = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+              const role = String(data?.role || data?.userRole || '');
+              isManager = MANAGER_ROLES.some(r => role.includes(r));
+            }
+          }
+        } catch (_) {}
+        if (!isManager) {
+          return res.status(403).json({ success: false, error: '仅小队管理人员或商户可以下商户代叫订单' });
+        }
+        } // end merchant bypass else
+      }
+
       if (!orderData || (!orderData.id && !orderData.orderNo)) {
         return res.status(400).json({ success: false, error: 'Missing orderData' });
       }
@@ -2961,10 +3279,40 @@ async function startServer() {
         (Math.abs(pLat - 38.4830) < 0.001 && Math.abs(pLng - 106.2350) < 0.001)
       );
 
-      if (startLocName && (isDefaultCentroid || isNaN(pLat) || isNaN(pLng))) {
-        const poi = geocodeServerPoi(startLocName, pLat, pLng);
-        pLat = poi.lat;
-        pLng = poi.lng;
+      // === 3秒准备期：等待高德返回 + 筛选司机 ===
+      // 用户要求：服务端有3秒时间做高德解析和司机匹配，3秒后开始60秒倒计时
+      const prepareStartTs = Date.now();
+      const PREPARE_TIMEOUT_MS = 3000;
+
+      // H12修复：空地址直接标记坐标未知，不走高德分支
+      if (!startLocName) {
+        console.warn(`[Dispatch] 起点地址为空，标记坐标未知，直接进大厅`);
+        (orderData as any).coordsUnknown = true;
+      } else if (isDefaultCentroid || isNaN(pLat) || isNaN(pLng)) {
+        // 高德解析与3秒超时竞速：3秒内没返回就用现有坐标（标记未知）
+        const geocodePromise = geocodeServerPoiAsync(startLocName, pLat, pLng);
+        const timeoutPromise = new Promise<{ lat: number; lng: number; reliable: boolean; timedOut: boolean }>(
+          resolve => setTimeout(() => resolve({ lat: pLat, lng: pLng, reliable: false, timedOut: true }), PREPARE_TIMEOUT_MS)
+        );
+        const poi: any = await Promise.race([geocodePromise, timeoutPromise]);
+        if (poi.timedOut) {
+          console.warn(`[Dispatch] 高德解析3秒超时: ${startLocName}，标记坐标未知`);
+          (orderData as any).coordsUnknown = true;
+        } else {
+          pLat = poi.lat;
+          pLng = poi.lng;
+          // 坐标未知时标记，直接进大厅
+          if (!poi.reliable) {
+            (orderData as any).coordsUnknown = true;
+          }
+        }
+      }
+      const prepareElapsed = Date.now() - prepareStartTs;
+      console.log(`[Dispatch] 准备期耗时: ${prepareElapsed}ms`);
+      // M5修复：固定等满3秒（高德提前返回则补足剩余时间），再开始60秒倒计时
+      if (prepareElapsed < PREPARE_TIMEOUT_MS) {
+        await new Promise(resolve => setTimeout(resolve, PREPARE_TIMEOUT_MS - prepareElapsed));
+        console.log(`[Dispatch] 准备期补足至3秒`);
       }
 
       const dbData = readLocalJsonDb();
@@ -3096,16 +3444,24 @@ async function startServer() {
         let dLat = Number(loc.lat ?? data.lat);
         let dLng = Number(loc.lng ?? data.lng);
 
-        if (isNaN(dLat) || isNaN(dLng) || dLat === 0) {
-          dLat = 38.4830;
-          dLng = 106.2350;
+        // BUG4修复：位置无效的司机直接跳过，不参与就近派单（之前静默用市中心导致误派）
+        if (isNaN(dLat) || isNaN(dLng) || dLat === 0 || dLng === 0) {
+          return;
         }
 
-        const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0) 
+        // M8修复：GPS时间戳超5分钟视为离线，跳过（防App崩溃残留旧坐标被派单）
+        const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || 0);
+        if (locTs && Date.now() - locTs > 5 * 60 * 1000) {
+          return;
+        }
+
+        // H12修复：删除 0.3km 假距离回退；坐标非法时不参与距离派单
+        const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0 && pLng !== 0)
           ? calculateHaversineKm(pLat, pLng, dLat, dLng)
-          : 0.3;
+          : Infinity;
 
         // 严格遵循3公里派单半径限制：超过3公里 (distKm > radiusKm) 绝不直接派单，必须转入选单大厅
+        // （坐标未知时已在外层直接转入大厅，不会走到这里）
         if (distKm <= radiusKm) {
           candidates.push({
             phone: cleanPhone,
@@ -3116,7 +3472,20 @@ async function startServer() {
         }
       });
 
-      if (candidates.length > 0) {
+      // 坐标未知时直接进大厅，不弹窗广播（用户要求：供小队内所有司机抢单）
+      const coordsUnknownForDispatch = Boolean((orderData as any)?.coordsUnknown);
+      // H13修复：coordsUnknown 为真时不写坐标字段，避免市中心占位符污染（两分支共用）
+      const coordFields = coordsUnknownForDispatch ? {} : {
+        passengerLat: pLat,
+        passengerLng: pLng,
+        resolvedLat: pLat,
+        resolvedLng: pLng,
+      };
+      if (coordsUnknownForDispatch) {
+        console.warn(`[Dispatch] 坐标未知，直接转入选单大厅，不做距离派单`);
+      }
+
+      if (!coordsUnknownForDispatch && candidates.length > 0) {
         // Prefer existing dispatched driver if present in eligible candidates
         let selected = candidates.find(c => c.phone === existingDispatchedPhone);
         if (!selected) {
@@ -3136,10 +3505,7 @@ async function startServer() {
           ...orderData,
           id: orderId,
           orderId: orderId,
-          passengerLat: pLat,
-          passengerLng: pLng,
-          resolvedLat: pLat,
-          resolvedLng: pLng,
+          ...coordFields,
           status: 'submitted',
           isValetOrder: true,
           isPlatformDispatch: true,
@@ -3213,10 +3579,7 @@ async function startServer() {
           ...orderData,
           id: orderId,
           orderId: orderId,
-          passengerLat: pLat,
-          passengerLng: pLng,
-          resolvedLat: pLat,
-          resolvedLng: pLng,
+          ...coordFields,
           status: 'hall',
           statusCategory: '等待接单',
           in_hall: true,
@@ -3245,7 +3608,10 @@ async function startServer() {
           passengerLat: pLat,
           passengerLng: pLng,
           serverTime: nowTs,
-          message: '方圆3公里内无在线空闲司机，已全员广播转入选单大厅'
+          coordsUnknown: coordsUnknownForDispatch || undefined,
+          message: coordsUnknownForDispatch
+            ? '起点坐标未知，已转入选单大厅供小队司机抢单'
+            : '方圆3公里内无在线空闲司机，已全员广播转入选单大厅'
         });
       }
     } catch (err: any) {
@@ -3255,15 +3621,29 @@ async function startServer() {
   });
 
   // 5.1 Atomic Order Grab / Claim from 选单大厅
-  app.post('/api/order/claim', async (req, res) => {
+  app.post('/api/order/claim', requireDbAuth, async (req, res) => {
     try {
-      const { orderId, driverPhone, driverName, orderPayload } = req.body;
+      const { orderId, driverName, orderPayload } = req.body;
       const cleanOrderId = String(orderId || '').trim();
-      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      // H11修复：driverPhone 强制取 token 本人，禁止客户端传入冒名
+      const authPhoneRaw = String((req as any).authPhone || '').trim();
+      // A后缀商户身份拒绝抢单（商户只能下单不能接单）
+      if (/a$/i.test(authPhoneRaw)) {
+        return res.status(403).json({ success: false, error: '商户身份不能抢单' });
+      }
+      const cleanDriverPhone = authPhoneRaw.replace(/\D/g, '').trim();
       const cleanDriverName = String(driverName || `司机${cleanDriverPhone.slice(-4)}`).trim();
 
       if (!cleanOrderId || !cleanDriverPhone) {
-        return res.status(400).json({ success: false, error: 'Missing orderId or driverPhone' });
+        return res.status(400).json({ success: false, error: 'Missing orderId' });
+      }
+      // H11修复：orderPayload 白名单过滤，禁止注入任意字段
+      const ALLOWED_CLAIM_FIELDS = new Set(['driverNote', 'driverLocation', 'driverLat', 'driverLng', 'estimatedArrival']);
+      const safePayload: any = {};
+      if (orderPayload && typeof orderPayload === 'object') {
+        for (const k of Object.keys(orderPayload)) {
+          if (ALLOWED_CLAIM_FIELDS.has(k)) safePayload[k] = (orderPayload as any)[k];
+        }
       }
 
       const dbData = readLocalJsonDb();
@@ -3304,7 +3684,7 @@ async function startServer() {
       const driverQrUrl = `/uploads/qrcodes/${cleanDriverPhone}.png`;
       const claimUpdateData = {
         ...(targetOrder || {}),
-        ...(orderPayload || {}),
+        ...safePayload,
         id: cleanOrderId,
         orderId: cleanOrderId,
         status: 'claimed',
@@ -3367,11 +3747,17 @@ async function startServer() {
   });
 
   // 5.2 60-Second Timeout / Driver Decline Order Reclaim to 选单大厅
-  app.post('/api/order/decline', async (req, res) => {
+  app.post('/api/order/decline', requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverPhone } = req.body;
       const cleanOrderId = String(orderId || '').trim();
       const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      // H8修复：校验操作者是接单司机本人（或管理员）
+      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      const isAdmin = !!(req as any).isAdmin;
+      if (!isAdmin && cleanDriverPhone && authPhone !== cleanDriverPhone) {
+        return res.status(403).json({ success: false, error: '只能操作自己的订单' });
+      }
 
       if (!cleanOrderId) {
         return res.status(400).json({ success: false, error: 'Missing orderId' });
@@ -3449,7 +3835,7 @@ async function startServer() {
   });
 
   // 5.2.2 ABSOLUTE Order Cancellation (Marks order as cancelled everywhere so it disappears from hall for ALL drivers)
-  app.post('/api/order/cancel', async (req, res) => {
+  app.post('/api/order/cancel', requireDbAuth, async (req, res) => {
     try {
       const orderId = String(req.body.orderId || req.body.id || '').trim();
       const driverPhone = String(req.body.driverPhone || req.body.phone || '').replace(/\D/g, '').trim();
@@ -3458,6 +3844,19 @@ async function startServer() {
 
       if (!orderId) {
         return res.status(400).json({ success: false, error: 'Missing orderId' });
+      }
+
+      // H8修复：校验操作者是下单方/接单方/isAdmin
+      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      const isAdmin = !!(req as any).isAdmin;
+      if (!isAdmin) {
+        const dbDataCheck = readLocalJsonDb();
+        const targetOrderCheck = (dbDataCheck['merchant_orders'] || {})[orderId] || {};
+        const orderPlacer = String(targetOrderCheck.merchantPhone || targetOrderCheck.orderMerchantPhone || targetOrderCheck.phone || '').replace(/\D/g, '').trim();
+        const orderDriver = String(targetOrderCheck.dispatchedDriverPhone || targetOrderCheck.driverPhone || targetOrderCheck.assignedDriver || driverPhone || '').replace(/\D/g, '').trim();
+        if (authPhone !== orderPlacer && authPhone !== orderDriver) {
+          return res.status(403).json({ success: false, error: '只有下单方、接单司机或管理员可以取消订单' });
+        }
       }
 
       console.log(`[Order Cancel] Permanent cancellation for orderId: ${orderId}, by: ${cancelledBy}, reason: ${cancelReason}`);
@@ -3710,7 +4109,7 @@ async function startServer() {
     } catch (e) {
       // Ignore background interval errors
     }
-  }, 1000);
+  }, 10000); // P0-3优化：从1秒改为10秒（60秒超时用10秒粒度足够），降低90% CPU
 
   // 5.3.1 阿里云服务器权威倒计时查询与同步接口 (专供司机接单新来单页面实时对齐服务器秒数)
   app.get(['/api/dispatch/countdown', '/api/order/countdown'], async (req, res) => {
@@ -3745,13 +4144,15 @@ async function startServer() {
       }
 
       if (!targetOrder) {
-        return res.json({
-          success: true,
-          serverCountdown: 60,
-          isExpired: false,
+        // M13修复：订单不存在时不再返回写死的60秒假倒计时
+        return res.status(404).json({
+          success: false,
+          serverCountdown: 0,
+          isExpired: true,
           inHall: false,
-          status: 'submitted',
-          serverTime: now
+          status: 'not_found',
+          serverTime: now,
+          error: '订单不存在'
         });
       }
 
@@ -3907,7 +4308,11 @@ async function startServer() {
   }, 5 * 60 * 1000);
 
   // Manual Trigger Endpoint for Admin / Baota WebHook
-  app.all(['/api/system/clean-disk', '/api/admin/clean-now'], async (req, res) => {
+  app.all(['/api/system/clean-disk', '/api/admin/clean-now'], requireDbAuth, async (req, res) => {
+    // H4修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
     await executeServerAutoClean();
     res.json({
       success: true,
@@ -3917,7 +4322,7 @@ async function startServer() {
   });
 
   // 6. ADD Document (auto-generated ID)
-  app.post('/api/db/add', async (req, res) => {
+  app.post('/api/db/add', requireDbAuth, async (req, res) => {
     try {
       const col = String(req.body.col || req.body.collection || '').trim();
       const data = req.body.data;
@@ -4318,6 +4723,34 @@ async function startServer() {
       return res.status(400).json({ success: false, error: '请输入正确的11位手机号码' });
     }
 
+    // M4修复：IP+手机号限流（60秒1次 / 1小时5次），防短信轰炸
+    {
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
+      const now = Date.now();
+      const keyPhone = `p:${cleanPhone}`;
+      const keyIp = `ip:${clientIp}`;
+      for (const key of [keyPhone, keyIp]) {
+        const logs = (smsSendLogs.get(key) || []).filter((t) => now - t < 3600 * 1000);
+        if (logs.length >= 5) {
+          return res.status(429).json({ success: false, error: '❌ 发送过于频繁，请1小时后再试' });
+        }
+        if (logs.length > 0 && now - logs[logs.length - 1] < 60 * 1000) {
+          const waitSec = Math.ceil((60 * 1000 - (now - logs[logs.length - 1])) / 1000);
+          return res.status(429).json({ success: false, error: `❌ 发送过于频繁，请 ${waitSec} 秒后再试` });
+        }
+        logs.push(now);
+        smsSendLogs.set(key, logs);
+      }
+      // 定期清理过期记录
+      if (smsSendLogs.size > 5000) {
+        for (const [k, v] of smsSendLogs) {
+          const fresh = v.filter((t) => now - t < 3600 * 1000);
+          if (fresh.length === 0) smsSendLogs.delete(k);
+          else smsSendLogs.set(k, fresh);
+        }
+      }
+    }
+
     // Strict Admin Restriction: If requesting for admin panel, ONLY 15509601222 is permitted
     if (isAdminLogin || scope === 'admin_panel') {
       if (cleanPhone !== '15509601222') {
@@ -4460,12 +4893,10 @@ async function startServer() {
                   message: '⚠️ 触发阿里云发送频率控制：您之前获取的短信验证码依然有效，请查看手机已收到的最新验证码直接输入登录！'
                 });
               }
-              const fallbackCode = (phone === '15509601222') ? '6897' : generatedCode;
-              verificationCodes.set(phone, { code: fallbackCode, expiresAt: Date.now() + 10 * 60 * 1000 });
-              return res.json({
-                success: true,
-                mode: 'real_frequency_fallback',
-                message: '⚠️ 触发阿里云发送频率控制：系统已开启高可用兼容保护，请使用手机收到的短信验证码直接登录！'
+              // H2修复：限流时直接返回429，不签发任何备用码（删除6897硬编码后门）
+              return res.status(429).json({
+                success: false,
+                error: '⚠️ 短信发送频率过高，请等待 60 秒后再试'
               });
             } else {
               console.log('[Alibaba Cloud Dypnsapi] Non-OK response code:', respCode);
@@ -4480,12 +4911,10 @@ async function startServer() {
             lastErrMsg.includes('check frequency failed') ||
             lastErrMsg.includes('BUSINESS_LIMIT_CONTROL')
           ) {
-            const fallbackCode = (phone === '15509601222') ? '6897' : generatedCode;
-            verificationCodes.set(phone, { code: fallbackCode, expiresAt: Date.now() + 10 * 60 * 1000 });
-            return res.json({
-              success: true,
-              mode: 'real_frequency_fallback',
-              message: '⚠️ 触发阿里云发送频率控制：系统已开启高可用兼容保护，请使用手机已收到的短信验证码直接登录！'
+            // H2修复：限流时直接返回429，不签发任何备用码（删除6897硬编码后门）
+            return res.status(429).json({
+              success: false,
+              error: '⚠️ 短信发送频率过高，请等待 60 秒后再试'
             });
           }
         }
@@ -4514,6 +4943,20 @@ async function startServer() {
     }
   });
 
+  // M1: 登出接口——删除服务端 token（客户端手动登出时调用）
+  app.post('/api/auth/logout', async (req, res) => {
+    try {
+      const token = String(req.headers['x-auth-token'] || req.body?.token || '').trim();
+      if (token && authTokens.has(token)) {
+        authTokens.delete(token);
+        _authTokensDirty = true;
+      }
+      return res.json({ success: true });
+    } catch (e: any) {
+      return res.json({ success: true });
+    }
+  });
+
   // 2. Verify SMS Code via Alibaba Cloud SMS or Simulated Sandbox
   app.post('/api/sms/verify', async (req, res) => {
     const { phone, code, isAdminLogin, scope } = req.body;
@@ -4522,6 +4965,33 @@ async function startServer() {
     }
 
     const cleanPhone = String(phone).trim();
+
+    // H1修复：检查是否被锁定（5次失败锁定30分钟）
+    const failInfo = verifyFailures.get(cleanPhone);
+    if (failInfo && Date.now() < failInfo.lockedUntil) {
+      const remainMin = Math.ceil((failInfo.lockedUntil - Date.now()) / 60000);
+      return res.status(429).json({
+        success: false,
+        error: `❌ 验证码错误次数过多，该手机号已锁定，请 ${remainMin} 分钟后再试`
+      });
+    }
+    // 记录失败的辅助函数（M4：5次失败销毁验证码并锁定30分钟）
+    const recordVerifyFailure = () => {
+      const info = verifyFailures.get(cleanPhone) || { count: 0, lockedUntil: 0 };
+      info.count += 1;
+      if (info.count >= 5) {
+        info.lockedUntil = Date.now() + 30 * 60 * 1000;
+        info.count = 0;
+        verificationCodes.delete(cleanPhone);
+        verificationCodes.delete(phone);
+        console.warn(`[SMS] 手机号 ${cleanPhone} 验证码错误5次，验证码已销毁并锁定30分钟`);
+      }
+      verifyFailures.set(cleanPhone, info);
+    };
+    // 成功时清除失败记录
+    const clearVerifyFailures = () => {
+      verifyFailures.delete(cleanPhone);
+    };
 
     // Strict Admin Restriction: If verifying for admin panel, ONLY 15509601222 is permitted
     if (isAdminLogin || scope === 'admin_panel') {
@@ -4580,6 +5050,7 @@ async function startServer() {
     // Helper to handle login success
     const handleLoginSuccess = async () => {
       verificationCodes.delete(phone);
+      clearVerifyFailures(); // H1修复：登录成功清除失败计数
       if (scope === 'dispatch_valet' && !WHITELIST_PHONES.includes(cleanPhone)) {
         dispatchPhoneLoginLogs.set(cleanPhone, now);
         dispatchIpLoginLogs.set(clientIp, now);
@@ -4630,12 +5101,30 @@ async function startServer() {
         console.error('[Auto Register Driver User Error]:', regErr);
       }
 
-      return res.json({ success: true, message: '验证码校验成功' });
+      // 签发认证令牌：用于后续 /api/db/* 写操作鉴权
+      // 商户网页版（scope=dispatch_valet）登录时，token 的 phone 带 A 后缀，与司机身份隔离
+      const authToken = crypto.randomBytes(32).toString('hex');
+      const isMerchantLogin = String(scope || '').trim() === 'dispatch_valet';
+      const tokenPhone = isMerchantLogin ? String(cleanPhone || '').trim().toUpperCase() + 'A' : cleanPhone;
+      authTokens.set(authToken, {
+        phone: tokenPhone,
+        scope: scope || (isAdminLogin ? 'admin_panel' : 'driver'),
+        isMerchant: isMerchantLogin,
+        createdAt: Date.now()
+      });
+      _authTokensDirty = true; // M1: 标记持久化
+      // M1修复：删除7天过期清理（用户铁律：手动登出前永不过期）；仅做容量保护
+      if (authTokens.size > 50000) {
+        console.warn('[Auth] token 数量超过5万，仅记录告警，不自动清理');
+      }
+
+      return res.json({ success: true, message: '验证码校验成功', token: authToken });
     };
 
     // If simulated or code matches what was returned from send
     if (isSimulated || (record.code && record.code !== 'ALIYUN_EXTERNAL' && record.code === String(code).trim())) {
       if (record.code !== 'ALIYUN_EXTERNAL' && record.code !== String(code).trim()) {
+        recordVerifyFailure(); // H1修复：记录验证码失败次数
         return res.status(400).json({ success: false, error: '验证码错误，请输入正确的验证码' });
       }
       return handleLoginSuccess();
@@ -4683,7 +5172,7 @@ async function startServer() {
         response?.body?.success === true
       );
 
-      if (isSuccess || (cleanPhone === '15509601222' && code && String(code).trim().length === 4)) {
+      if (isSuccess) {
         return handleLoginSuccess();
       } else {
         const resCode = response?.body?.code || '';
@@ -4697,14 +5186,13 @@ async function startServer() {
           if (record && record.code && record.code !== 'ALIYUN_EXTERNAL' && record.code === String(code).trim()) {
             return handleLoginSuccess();
           }
-          if (code && String(code).trim().length === 4) {
-            return handleLoginSuccess();
-          }
-          return res.status(400).json({
+          // H1修复：删除"任意4位码放行"后门，限流时返回429
+          return res.status(429).json({
             success: false,
-            error: '⚠️ 验证码校验频率过高：触发阿里云安全频率限制，请等待 10 秒后重新点击验证！'
+            error: '⚠️ 验证码校验频率过高：触发阿里云安全频率限制，请等待 60 秒后重试！'
           });
         }
+        recordVerifyFailure(); // H1修复：记录验证码失败次数
         return res.status(400).json({
           success: false,
           error: resMsg ? `验证码校验失败: ${resMsg}` : '验证码输入错误或核验失效，请重新输入或获取'
@@ -4712,12 +5200,10 @@ async function startServer() {
       }
     } catch (error: any) {
       console.log(`[SMS Service] High-availability verification check for: ${phone}`);
-      if (code && String(code).trim().length === 4) {
-        return handleLoginSuccess();
-      }
-      return res.status(400).json({
+      // H1修复：删除catch块"任意4位码放行"后门，异常时返回503
+      return res.status(503).json({
         success: false,
-        error: `验证码校验异常: ${error.message || '系统繁忙，请重试'}`
+        error: `验证码校验服务暂时不可用: ${error.message || '系统繁忙，请稍后重试'}`
       });
     }
   });
@@ -4823,6 +5309,18 @@ async function startServer() {
   // Passenger Order submission redirect (from older config files and direct Cloudflare support endpoint)
   app.post('/api/submit', async (req, res) => {
     try {
+      // N-1修复（2026-10-10复审）：IP限流，防批量伪造司机订单弹窗
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+      const now = Date.now();
+      if (!(global as any).__submitLogs) (global as any).__submitLogs = new Map();
+      const submitLogs: Map<string, number[]> = (global as any).__submitLogs;
+      const logs = (submitLogs.get(clientIp) || []).filter(t => now - t < 60000);
+      if (logs.length >= 3) {
+        return res.status(429).json({ success: false, error: '操作过于频繁，请稍后再试' });
+      }
+      logs.push(now);
+      submitLogs.set(clientIp, logs);
+
       const { driverPhone, passengerPhone, startLocation, destination } = req.body;
       if (!driverPhone || !passengerPhone || !startLocation) {
         return res.status(400).json({ success: false, error: '缺少必填参数' });
@@ -4893,18 +5391,32 @@ async function startServer() {
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
   app.use(express.static(path.join(process.cwd(), 'public')));
 
-  app.post('/api/upload-wechat-qr', async (req, res) => {
+  app.post('/api/upload-wechat-qr', requireDbAuth, async (req, res) => {
     try {
       const { phone, imageBase64, channel } = req.body;
       if (!phone || !imageBase64) {
         return res.status(400).json({ error: 'Missing phone or imageBase64' });
       }
-      
-      const cleanPhone = String(phone).replace(/\D/g, '').trim();
+
+      // 鉴权：只能上传自己的二维码（A后缀敏感）
+      const rawPhone = String(phone).trim().toUpperCase();
+      const authPhone = String((req as any).authPhone || '').trim().toUpperCase();
+      if (!(req as any).isAdmin && rawPhone !== authPhone) {
+        return res.status(403).json({ error: '无权上传他人二维码' });
+      }
+
+      const cleanPhone = rawPhone.replace(/\D/g, '').trim();
+      if (!cleanPhone || cleanPhone.length !== 11) {
+        return res.status(400).json({ error: '手机号格式错误' });
+      }
       const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
       const buffer = Buffer.from(base64Data, 'base64');
-      
-      const isWeb = channel === 'web' || channel === 'mobile_web' || cleanPhone.endsWith('A') || cleanPhone.endsWith('a');
+      if (buffer.length > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: '图片太大，请压缩后上传' });
+      }
+
+      // A后缀判断必须用原始phone（strip前），否则永假
+      const isWeb = channel === 'web' || channel === 'mobile_web' || rawPhone.endsWith('A');
       const filename = isWeb ? `${cleanPhone}_web.png` : `${cleanPhone}.png`;
       const filepath = path.join(qrcodesDir, filename);
       const fallbackFilepath = path.join(qrsDir, filename);
@@ -4976,79 +5488,29 @@ async function startServer() {
     }
   });
 
-  // Upload Alipay QR Code directly to server filesystem (Baota panel) - Single file per account
-  app.post('/api/upload-alipay-qr', async (req, res) => {
-    try {
-      const { phone, imageBase64 } = req.body;
-      if (!phone || !imageBase64) {
-        return res.status(400).json({ error: 'Missing phone or imageBase64' });
-      }
-      
-      const cleanPhone = String(phone).replace(/\D/g, '').trim();
-      const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
-      const buffer = Buffer.from(base64Data, 'base64');
-      
-      const filename = `${cleanPhone}_alipay.png`;
-      const filepath = path.join(qrcodesDir, filename);
-      const fallbackFilepath = path.join(qrsDir, filename);
-      
-      // Overwrite/replace file on server disk (Baota panel) - Guaranteed single file per account
-      await fs.promises.writeFile(filepath, buffer);
-      try {
-        await fs.promises.writeFile(fallbackFilepath, buffer);
-      } catch (_) {}
-      
-      const qrUrl = `/uploads/qrcodes/${filename}?t=${Date.now()}`;
-      
-      // Update MySQL & Local DB collections safely via merge
-      const targetCols = ['driver_users', 'alipay_qrs', 'dispatch_qrs'];
-
-      const qrPayload = {
-        id: cleanPhone,
-        phone: cleanPhone,
-        alipayQrCode: qrUrl,
-        updatedAt: new Date().toISOString()
-      };
-
-      for (const col of targetCols) {
-        if (isMySQLEnabled && mysqlPool) {
-          try {
-            const [rows]: any = await mysqlPool.query(
-              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-              [col, cleanPhone]
-            );
-            let merged = { ...qrPayload };
-            if (rows && rows.length > 0) {
-              const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-              merged = { ...prev, ...qrPayload };
-            }
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              [col, cleanPhone, JSON.stringify(merged)]
-            );
-          } catch (_) {}
-        }
-      }
-
-      try {
-        const dbData = readLocalJsonDb();
-        for (const col of targetCols) {
-          if (!dbData[col]) dbData[col] = {};
-          dbData[col][cleanPhone] = { ...(dbData[col][cleanPhone] || {}), ...qrPayload };
-        }
-        writeLocalJsonDb(dbData);
-      } catch (_) {}
-
-      res.json({ success: true, url: qrUrl });
-    } catch (err: any) {
-      console.error('[Server] Failed to upload Alipay QR:', err);
-      res.status(500).json({ error: 'Upload failed' });
-    }
+  // H7修复：删除支付宝上传接口（违反"支付宝绝不上传服务器"铁律），返回410 Gone
+  app.post('/api/upload-alipay-qr', (req, res) => {
+    return res.status(410).json({
+      success: false,
+      error: '该接口已下线：支付宝收款码只存App本地，绝不上传服务器'
+    });
   });
 
+
   // Query WeChat QR code directly with disk existence checks and channel priority
+  // M12修复：IP频率限制（防枚举手机号注册状态），60秒最多20次
   app.get('/api/get-wechat-qr', async (req, res) => {
     try {
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
+      const now = Date.now();
+      const qrKey = `qr:${clientIp}`;
+      const qrLogs = (smsSendLogs.get(qrKey) || []).filter((t) => now - t < 60 * 1000);
+      if (qrLogs.length >= 20) {
+        return res.status(429).json({ success: false, error: '请求过于频繁，请稍后再试' });
+      }
+      qrLogs.push(now);
+      smsSendLogs.set(qrKey, qrLogs);
+
       const phone = String(req.query.phone || '').replace(/\D/g, '').trim();
       const channel = String(req.query.channel || '').trim();
       if (!phone) {
@@ -5137,12 +5599,26 @@ async function startServer() {
   });
 
   // Delete WeChat QR Code directly from server filesystem (Baota panel) and clean collections
-  app.post('/api/delete-wechat-qr', async (req, res) => {
+  app.post('/api/delete-wechat-qr', requireDbAuth, async (req, res) => {
     try {
       const phone = String(req.body.phone || req.body.userPhone || '').trim();
       if (!phone) {
         return res.status(400).json({ error: 'Missing phone' });
       }
+
+      // 鉴权：只能删除自己的二维码（A后缀敏感）
+      const rawPhone = phone.toUpperCase();
+      const authPhone = String((req as any).authPhone || '').trim().toUpperCase();
+      if (!(req as any).isAdmin && rawPhone !== authPhone) {
+        return res.status(403).json({ error: '无权删除他人二维码' });
+      }
+
+      // 路径遍历防护：只允许精确文件名，不做前缀匹配
+      const cleanPhone = rawPhone.replace(/\D/g, '').trim();
+      if (!cleanPhone || cleanPhone.length !== 11) {
+        return res.status(400).json({ error: '手机号格式错误' });
+      }
+      const allowedFiles = new Set([`${cleanPhone}.png`, `${cleanPhone}_web.png`, `${cleanPhone}_app.png`]);
 
       // Delete disk physical files from both qrcodesDir and qrsDir
       [qrcodesDir, qrsDir].forEach(dir => {
@@ -5150,7 +5626,7 @@ async function startServer() {
           try {
             const files = fs.readdirSync(dir);
             files.forEach(f => {
-              if (f.startsWith(phone)) {
+              if (allowedFiles.has(f)) {
                 try { fs.unlinkSync(path.join(dir, f)); } catch (_) {}
               }
             });

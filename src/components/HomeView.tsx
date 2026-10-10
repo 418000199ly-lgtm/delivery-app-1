@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS, findNearestKnownPoi } from '../utils/geocoding';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
+import { maskPhone } from '../utils/maskPhone';
 import { 
   ShoppingBag, 
   Users, 
@@ -59,14 +60,15 @@ import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
 import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
-import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, isOfficialSquadMember } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, isOfficialSquadMember, isSquadAppPending } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
 import wechatPayQrImg from '../assets/images/wechat_pay_qr_1782906451645.jpg';
 import { READY_DRIVER_BASE64, READY_DRIVER_PATH, VALET_CAR_BANNER_BASE64, VALET_CAR_BANNER_PATH } from '../assets/images/driverImageConstants';
+import { DEVELOPER_PHONE } from '../utils/constants';
 
 interface HomeViewProps {
   settings: ChauffeurSettings;
@@ -340,7 +342,7 @@ export default function HomeView({
 
   // --- Squad Management States (Declared first to avoid TDZ in role and squad helper functions) ---
   const [squadMembers, setSquadMembers] = useState<any[]>(() => {
-    const masterMember = { phone: '15509601222', id: '15509601222', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true };
+    const masterMember = { phone: DEVELOPER_PHONE, id: DEVELOPER_PHONE, name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true };
     try {
       const saved = typeof window !== 'undefined' ? localStorage.getItem('dd_squad_members_v2') : null;
       if (saved) {
@@ -348,7 +350,7 @@ export default function HomeView({
         if (Array.isArray(parsed)) {
           const valid = parsed.filter((m: any) => {
             const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
-            if (p === '15509601222') return true;
+            if (p === DEVELOPER_PHONE) return true;
             return isOfficialSquadMember(m);
           });
           if (valid.length > 0) return valid;
@@ -407,7 +409,8 @@ export default function HomeView({
         if (isMock(id, phone, name)) return;
         const st = String(app.status || app.approvalStatus || '').trim();
         // 仅当状态为待审核（未审批）时才计数；若审批通过（已通过）或审批拒绝（已拒绝），则不计入
-        if (['待审核', 'pending', '审核中'].includes(st)) {
+        // 用统一 helper，兼容 待审核/pending/审核中 三种历史值
+        if (isSquadAppPending(st)) {
           const key = phone || id;
           if (key) pendingMap.set(key, app);
         }
@@ -423,7 +426,7 @@ export default function HomeView({
   // 只有开发者司机、城市老板司机、城市管理司机、城市派单员司机才有权限在商户代叫右上角显示待审核申请人数角标
   const canViewPendingApplicantBadge = () => {
     const currentPhone = getCurrentPhone();
-    if (currentPhone === '15509601222') return true;
+    if (currentPhone === DEVELOPER_PHONE) return true;
 
     const storedRole = typeof window !== 'undefined' ? localStorage.getItem('dd_user_role') : null;
     let activeRole = storedRole || userRole || '普通司机';
@@ -451,7 +454,7 @@ export default function HomeView({
   const isDriverRemoved = (phoneToCheck?: string) => {
     const phone = (phoneToCheck || getCurrentPhone()).trim();
     if (!phone) return false;
-    if (phone === '15509601222') return false; // 开发者账号永不移出
+    if (phone === DEVELOPER_PHONE) return false; // 开发者账号永不移出
 
     // 检查是否在被移出黑名单中
     let removedList: string[] = [];
@@ -519,7 +522,7 @@ export default function HomeView({
   const isDriverInSquad = (phoneToCheck?: string) => {
     const phone = (phoneToCheck || getCurrentPhone()).trim();
     if (!phone) return false;
-    if (phone === '15509601222') return true; // 开发者最高权限默认在小队
+    if (phone === DEVELOPER_PHONE) return true; // 开发者最高权限默认在小队
 
     // 0. 已被移出的司机绝不是小队成员！
     if (isDriverRemoved(phone)) return false;
@@ -569,7 +572,7 @@ export default function HomeView({
 
   const [localRole, setLocalRole] = useState<string>(() => {
     const curP = getCurrentPhone();
-    if (curP && curP !== '15509601222' && isDriverRemoved(curP)) {
+    if (curP && curP !== DEVELOPER_PHONE && isDriverRemoved(curP)) {
       return '普通司机';
     }
     return userRole || '普通司机';
@@ -577,7 +580,7 @@ export default function HomeView({
 
   useEffect(() => {
     const curP = getCurrentPhone();
-    if (curP && curP !== '15509601222' && isDriverRemoved(curP)) {
+    if (curP && curP !== DEVELOPER_PHONE && isDriverRemoved(curP)) {
       setLocalRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
     } else {
       setLocalRole(prev => (prev !== userRole ? userRole : prev));
@@ -602,6 +605,8 @@ export default function HomeView({
   const [onlineTime, setOnlineTime] = useState(0);
   const touchStartRef = useRef<number>(0);
   const sliderWidthRef = useRef<HTMLDivElement>(null);
+  // BUG-4修复：防重复提交同步锁（React state更新前极速双击可绕过disabled）
+  const submittingRef = useRef(false);
 
   // User Profile dialog state
   const [showUserModal, setShowUserModal] = useState(false);
@@ -671,7 +676,7 @@ export default function HomeView({
 
         // 检查当前登录司机是否已被移出小队
         const curP = getCurrentPhone();
-        if (curP && curP !== '15509601222' && removedSet.has(curP)) {
+        if (curP && curP !== DEVELOPER_PHONE && removedSet.has(curP)) {
           setLocalRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
           // 移出小队的司机不能使用附近地图、商户代叫和管理派单视图
           setShowNearbyMap(prev => (prev ? false : prev));
@@ -699,24 +704,24 @@ export default function HomeView({
           const map = new Map<string, any>();
           prev.forEach(m => {
             const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
-            if (p && (p === '15509601222' || (!removedSet.has(p) && isOfficialSquadMember(m, removedSet)))) map.set(p, m);
+            if (p && (p === DEVELOPER_PHONE || (!removedSet.has(p) && isOfficialSquadMember(m, removedSet)))) map.set(p, m);
           });
           localMemberList.forEach((m: any) => {
             const p = String(m.phone || m.id || '').replace(/\D/g, '').trim();
-            if (p && (p === '15509601222' || (!removedSet.has(p) && isOfficialSquadMember(m, removedSet)))) {
+            if (p && (p === DEVELOPER_PHONE || (!removedSet.has(p) && isOfficialSquadMember(m, removedSet)))) {
               const existing = map.get(p) || {};
               map.set(p, { ...existing, ...m, role: m.role || existing.role || '普通司机', userRole: m.userRole || m.role || existing.userRole || '普通司机' });
             }
           });
           // 彻底剔除所有在移出黑名单中的司机（开发者账号除外）
           removedSet.forEach(rp => {
-            if (rp !== '15509601222') map.delete(rp);
+            if (rp !== DEVELOPER_PHONE) map.delete(rp);
           });
 
-          if (!map.has('15509601222')) {
-            map.set('15509601222', {
-              id: '15509601222',
-              phone: '15509601222',
+          if (!map.has(DEVELOPER_PHONE)) {
+            map.set(DEVELOPER_PHONE, {
+              id: DEVELOPER_PHONE,
+              phone: DEVELOPER_PHONE,
               name: '吴彦祖',
               role: '开发者司机',
               userRole: '开发者司机',
@@ -740,7 +745,7 @@ export default function HomeView({
     window.addEventListener('squad_members_updated', syncRemoved);
     window.addEventListener('squad_member_approved', syncRemoved);
     window.addEventListener('squad_applicants_updated', syncRemoved);
-    const timer = setInterval(syncRemoved, 2000);
+    const timer = setInterval(syncRemoved, 5000);
     return () => {
       window.removeEventListener('storage', syncRemoved);
       window.removeEventListener('focus', syncRemoved);
@@ -767,7 +772,7 @@ export default function HomeView({
 
     // 2. 构建与管理后台（AdminPanel）100% 严格一致的权威小队成员 membersMap
     const membersMap = new Map<string, any>();
-    membersMap.set('15509601222', { phone: '15509601222', name: '吴彦祖', role: '开发者司机', status: '已通过' });
+    membersMap.set(DEVELOPER_PHONE, { phone: DEVELOPER_PHONE, name: '吴彦祖', role: '开发者司机', status: '已通过' });
 
     let currentList = squadMembers || [];
     if (currentList.length === 0 && typeof window !== 'undefined') {
@@ -786,7 +791,7 @@ export default function HomeView({
         const rawP = String(m.phone || m.phoneNumber || m.id || '').trim();
         const p = rawP.replace(/\D/g, '').trim();
         if (!p || p.length < 11 || rawP.toUpperCase().endsWith('A')) return;
-        if (p === '15509601222') return;
+        if (p === DEVELOPER_PHONE) return;
         if (isOfficialSquadMember(m, removedSet)) {
           membersMap.set(p, m);
         }
@@ -876,7 +881,7 @@ export default function HomeView({
       if (!data) return false;
       const myPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
       const isApproved = checkApprovalStatus();
-      if (!isApproved && myPhone !== '15509601222') {
+      if (!isApproved && myPhone !== DEVELOPER_PHONE) {
         return false;
       }
       const st = String(data.status || '').toLowerCase();
@@ -903,12 +908,12 @@ export default function HomeView({
       // 2. 司机A超时未接单或主动点击取消订单后，该订单绝不进入司机A的选单大厅 (开发者 15509601222 在单机预览测试时允许查看与抢单)
       const declinedList = Array.isArray(data.declinedDriverPhones) ? data.declinedDriverPhones.map((p: any) => String(p).replace(/\D/g, '').trim()) : [];
       const timeoutList = Array.isArray(data.timeoutDriverPhones) ? data.timeoutDriverPhones.map((p: any) => String(p).replace(/\D/g, '').trim()) : [];
-      if (myPhone && myPhone !== '15509601222' && (declinedList.includes(myPhone) || timeoutList.includes(myPhone))) {
+      if (myPhone && myPhone !== DEVELOPER_PHONE && (declinedList.includes(myPhone) || timeoutList.includes(myPhone))) {
         return false;
       }
 
       const oKey = String(data.id || data.orderId || data.orderNo || '').trim();
-      if (myPhone && myPhone !== '15509601222' && oKey) {
+      if (myPhone && myPhone !== DEVELOPER_PHONE && oKey) {
         try {
           const localDeclined = JSON.parse(localStorage.getItem(`dd_declined_orders_${myPhone}`) || '[]');
           if (Array.isArray(localDeclined) && localDeclined.includes(oKey)) {
@@ -1165,7 +1170,7 @@ export default function HomeView({
               in_hall: false,
               cancelReason: '选单大厅20分钟无人接单，系统自动取消',
               cancelledAt: now
-            }, { merge: true }).catch(() => {});
+            }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
             if (docId) claimedOrCancelledIds.add(docId);
             if (orderId) claimedOrCancelledIds.add(orderId);
           } else {
@@ -1276,7 +1281,8 @@ export default function HomeView({
       ord.startLocation,
       ord.resolvedLat || ord.passengerLat,
       ord.resolvedLng || ord.passengerLng,
-      currentDriverCoords
+      currentDriverCoords,
+      Boolean(ord.coordsUnknown)
     );
 
     try {
@@ -1388,11 +1394,12 @@ export default function HomeView({
 
       const baseUrl = getBaseApiUrl();
 
-      // Atomic grab attempt via server API
+      // Atomic grab attempt via server API（服务端原子校验，防撞单）
       try {
+        const authHeaders = (() => { try { const t = localStorage.getItem('dd_auth_token'); return t ? { 'X-Auth-Token': t } : {}; } catch (_) { return {}; } })();
         const claimRes = await fetch(`${baseUrl}/api/order/claim`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
           body: JSON.stringify({
             orderId: ord.id || ord.orderId || ord.orderNo,
             driverPhone: userPhone,
@@ -1402,19 +1409,37 @@ export default function HomeView({
         });
         if (claimRes.status === 409) {
           alert('⚠️ 该订单已被其他小队司机抢走！');
+          // 刷新大厅列表，移除已抢单
+          setHallOrders(prev => prev.filter(o => {
+            const k = String(o.id || o.orderId || o.orderNo || '').trim();
+            return k !== String(ord.id || ord.orderId || ord.orderNo || '').trim();
+          }));
           return;
         }
-      } catch (_) {}
+        if (claimRes.status === 401) {
+          alert('⚠️ 登录已过期，请重新短信登录后再抢单！');
+          return;
+        }
+        if (!claimRes.ok) {
+          const errData = await claimRes.json().catch(() => ({}));
+          alert(`⚠️ 抢单失败：${errData.error || '服务器异常，请重试'}`);
+          return;
+        }
+      } catch (e: any) {
+        // 网络异常时不继续，避免撞单
+        alert(`⚠️ 抢单请求失败：${e?.message || '网络异常'}，请检查网络后重试`);
+        return;
+      }
 
       if (db) {
-        await setDoc(doc(db, 'merchant_orders', ord.id), claimUpdateData, { merge: true }).catch(() => {});
+        await setDoc(doc(db, 'merchant_orders', ord.id), claimUpdateData, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
 
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'merchant_orders', docId: ord.id, data: claimUpdateData })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
@@ -1465,7 +1490,7 @@ export default function HomeView({
       if (userPhone) {
         reportDriverBusyStatus(userPhone, true, { currentView: 'create_order', isBusy: true });
         if (db) {
-          deleteDoc(doc(db, 'passenger_links', userPhone)).catch(() => {});
+          deleteDoc(doc(db, 'passenger_links', userPhone)).catch(e => console.warn("[SilentCatch]", e?.message || e));
         }
       }
 
@@ -1498,14 +1523,20 @@ export default function HomeView({
   }, [userPhone]);
 
   // 秒级提交申请加入小队处理函数
-  const processApplicationSubmission = (closeModalCallback: () => void) => {
+  const processApplicationSubmission = async (closeModalCallback: () => void) => {
+    // BUG-4修复：同步锁防极速双击重复提交
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+
     if (!hasDriverUploadedQrCode()) {
       showMissingWechatQrAlert();
+      submittingRef.current = false;
       return;
     }
 
     if (!applyName.trim()) {
       setLocalAlert({ title: '提示', message: '请输入申请人真实姓名', type: 'error' });
+      submittingRef.current = false;
       return;
     }
     const currentPhone = (applyPhone || getCurrentPhone()).trim();
@@ -1529,7 +1560,7 @@ export default function HomeView({
       } catch (_) {}
 
       // 注册与全局更新本次申请的真实名字
-      updateDriverGlobalName(currentPhone, freshName).catch(() => {});
+      updateDriverGlobalName(currentPhone, freshName).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       // 1. 从被删除名单中移除该手机号（重新申请）
       const cleanRemoved = (removedMemberPhones || []).filter(p => {
@@ -1592,7 +1623,7 @@ export default function HomeView({
         }];
       });
 
-      // 5. 写入 宝塔面板 HTTP REST API 后端 与 Firestore
+      // 5. 写入 宝塔面板 HTTP REST API 后端 与 Firestore（BUG-2修复：等待结果，全部失败则报错不显示假成功）
       const appPayload = {
         id: `app-${Date.now()}`,
         name: freshName,
@@ -1610,22 +1641,38 @@ export default function HomeView({
         rejectionTime: '',
         selectedReasons: []
       };
-      if (db) {
-        setDoc(doc(db, 'squad_applications', currentPhone), appPayload).catch(() => {});
-        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(() => {});
-      }
 
       const baseUrl = getBaseApiUrl();
+      const writeResults = await Promise.allSettled([
+        db ? setDoc(doc(db, 'squad_applications', currentPhone), appPayload).then(() => 'db-ok') : Promise.reject('no-db'),
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
+        }).then(r => { if (!r.ok) throw new Error(`http-${r.status}`); return 'fetch-ok'; }),
+      ]);
+      const allFailed = writeResults.every(r => r.status === 'rejected');
+      if (allFailed) {
+        // 全部写入失败：回滚本地，提示用户
+        try {
+          localStorage.setItem('dd_applicants_v2', JSON.stringify(existingApps));
+          localStorage.setItem('dd_squad_members_v2', JSON.stringify(existingMembers));
+        } catch (_) {}
+        setIsSubmittingApply(false);
+        submittingRef.current = false;
+        setLocalAlert({ title: '提交失败', message: '网络异常，申请未能发送到服务器，请检查网络后重试', type: 'error' });
+        return;
+      }
+
+      if (db) {
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: cleanRemoved }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+      }
+
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: cleanRemoved } })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       try {
         window.dispatchEvent(new CustomEvent('squad_application_submitted', { detail: { phone: currentPhone } }));
@@ -1633,6 +1680,7 @@ export default function HomeView({
     } catch (_) {}
 
     setIsSubmittingApply(false);
+    submittingRef.current = false;
     setIsReapplying(false);
     setShowDispatchModal(true);
     triggerToast('✓ 您的入队申请已成功提交，正在等待管理审核');
@@ -1643,7 +1691,7 @@ export default function HomeView({
     if (!currentPhone) return false;
 
     // 开发者 15509601222 拥有最高开发者权限，默认自动加入小队，页面永远锁定审核通过页面
-    if (currentPhone === '15509601222') {
+    if (currentPhone === DEVELOPER_PHONE) {
       return true;
     }
 
@@ -1762,13 +1810,13 @@ export default function HomeView({
           for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'driver_users']) {
             fetch(`${baseUrl}/api/db/set`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({ collection: colName, docId: currentPhone, data: qrPayload })
-            }).catch(() => {});
+            }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           }
 
-          setDoc(doc(db, 'dispatch_qrs', currentPhone), qrPayload, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'driver_users', currentPhone), { wechatQrCode: qrCode, qrCode: qrCode }, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'dispatch_qrs', currentPhone), qrPayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+          setDoc(doc(db, 'driver_users', currentPhone), { wechatQrCode: qrCode, qrCode: qrCode }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         } catch (_) {}
       }
     }
@@ -2316,7 +2364,7 @@ export default function HomeView({
       apiApps.forEach(rawA => {
         const a = (rawA?.data && typeof rawA.data === 'object') ? { ...rawA.data, ...rawA, id: rawA.id || rawA.data?.id } : rawA;
         const p = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
-        if (p && p === '15509601222') {
+        if (p && p === DEVELOPER_PHONE) {
           appMap.set(p, { ...a, phone: p });
         }
       });
@@ -2331,7 +2379,7 @@ export default function HomeView({
       const allRemovedSet = new Set(
         [...cloudRemovedPhones, ...(removedMemberPhones || [])]
           .map(p => String(p).replace(/\D/g, '').trim())
-          .filter(p => p && p !== '15509601222')
+          .filter(p => p && p !== DEVELOPER_PHONE)
       );
 
       // 任何已经通过审核或处于待审核新流程的司机，从被删除黑名单中豁免
@@ -2358,7 +2406,7 @@ export default function HomeView({
 
       // 如果当前登录手机号已被移出且没有任何有效新申请，强制清退小队状态与本地缓存
       const curLoggedInPhone = getCurrentPhone();
-      if (curLoggedInPhone && curLoggedInPhone !== '15509601222' && allRemovedSet.has(curLoggedInPhone)) {
+      if (curLoggedInPhone && curLoggedInPhone !== DEVELOPER_PHONE && allRemovedSet.has(curLoggedInPhone)) {
         setUserRole('普通司机');
         try {
           localStorage.setItem('dd_user_role', '普通司机');
@@ -2401,13 +2449,13 @@ export default function HomeView({
         }
         const name = String(m.name || m.driverName || '').trim();
         const st = String(m.status || m.approvalStatus || '').trim();
-        const isApproved = phone === '15509601222' || name === '吴彦祖' || ['已通过', 'approved', '通过'].includes(st);
+        const isApproved = phone === DEVELOPER_PHONE || name === '吴彦祖' || ['已通过', 'approved', '通过'].includes(st);
 
-        if (phone === '15509601222' || name === '吴彦祖') {
-          map.set('15509601222', {
+        if (phone === DEVELOPER_PHONE || name === '吴彦祖') {
+          map.set(DEVELOPER_PHONE, {
             ...m,
-            id: '15509601222',
-            phone: '15509601222',
+            id: DEVELOPER_PHONE,
+            phone: DEVELOPER_PHONE,
             name: '吴彦祖',
             role: '开发者司机',
             userRole: '开发者司机',
@@ -2416,7 +2464,7 @@ export default function HomeView({
           return;
         }
 
-        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId) || phone.includes('3747') || name.includes('3747') || REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) {
+        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId) || phone.includes('3747') || name.includes('3747')) {
           return; // 彻底跳过已被删除的司机
         }
 
@@ -2452,7 +2500,7 @@ export default function HomeView({
       });
 
       // 保证 15509601222 (开发者司机/超级管理员) 始终在列表中，绝不丢失
-      const masterPhone = '15509601222';
+      const masterPhone = DEVELOPER_PHONE;
       if (!map.has(masterPhone)) {
         map.set(masterPhone, {
           id: masterPhone,
@@ -2474,7 +2522,7 @@ export default function HomeView({
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(mergedList));
       } catch (_) {}
 
-      if (currentPhone && currentPhone !== '15509601222') {
+      if (currentPhone && currentPhone !== DEVELOPER_PHONE) {
         const hasPendingOrApprovedApp = combinedApps.some(a => {
           const p = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
           const st = String(a?.status || a?.approvalStatus || '').trim();
@@ -2561,7 +2609,7 @@ export default function HomeView({
             setSquadMembers(prev => {
               const filtered = prev.filter(m => {
                 const p = String(m.phone || m.id).replace(/\D/g, '').trim();
-                return p === '15509601222' || !phones.includes(p);
+                return p === DEVELOPER_PHONE || !phones.includes(p);
               });
               try {
                 localStorage.setItem('dd_squad_members_v2', JSON.stringify(filtered));
@@ -2575,13 +2623,13 @@ export default function HomeView({
               if (Array.isArray(savedApps)) {
                 const filteredApps = savedApps.filter((a: any) => {
                   const p = String(a.phone || a.id).replace(/\D/g, '').trim();
-                  return p === '15509601222' || !phones.includes(p);
+                  return p === DEVELOPER_PHONE || !phones.includes(p);
                 });
                 localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredApps));
               }
             } catch (_) {}
 
-            if (curP && curP !== '15509601222' && phones.includes(curP)) {
+            if (curP && curP !== DEVELOPER_PHONE && phones.includes(curP)) {
               const wasApproved = localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true';
               const oldRole = localStorage.getItem('dd_user_role');
               setUserRole('普通司机');
@@ -2613,7 +2661,7 @@ export default function HomeView({
             if (Array.isArray(parsed)) removedList = parsed.map((p: any) => String(p).trim());
           }
         } catch (_) {}
-        const removedSet = new Set(removedList.filter(p => p !== '15509601222'));
+        const removedSet = new Set(removedList.filter(p => p !== DEVELOPER_PHONE));
 
         const apps: any[] = [];
         snapshot.forEach((docSnap) => {
@@ -2636,7 +2684,7 @@ export default function HomeView({
           setPendingSquadApplicantCount(calculatePendingApplicants());
         } catch (_) {}
         const curP = getCurrentPhone();
-        if (curP && curP !== '15509601222') {
+        if (curP && curP !== DEVELOPER_PHONE) {
           const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === curP);
           const myAppSt = String(myApp?.status || '').trim();
           const hasActiveApp = ['待审核', 'pending', '审核中', '已通过', 'approved', '通过'].includes(myAppSt);
@@ -2724,9 +2772,9 @@ export default function HomeView({
         }
         const name = String(data?.name || data?.driverName || '').trim();
         const st = String(data?.status || '').trim();
-        const isApproved = phone === '15509601222' || ['已通过', 'approved', '通过'].includes(st);
+        const isApproved = phone === DEVELOPER_PHONE || ['已通过', 'approved', '通过'].includes(st);
 
-        if (phone !== '15509601222') {
+        if (phone !== DEVELOPER_PHONE) {
           if (removedList.includes(phone) || (name && removedList.includes(name)) || removedList.includes(docSnap.id)) {
             return; // 过滤已被删除且未重新通过审核的司机
           }
@@ -2736,7 +2784,7 @@ export default function HomeView({
             id: docSnap.id,
             ...data,
             phone,
-            name: data?.name || data?.driverName || (phone === '15509601222' ? '吴彦祖' : `司机${phone.slice(-4)}`),
+            name: data?.name || data?.driverName || (phone === DEVELOPER_PHONE ? '吴彦祖' : `司机${phone.slice(-4)}`),
             role: data?.role || data?.userRole || '普通司机',
             userRole: data?.userRole || data?.role || '普通司机',
             status: '已通过'
@@ -2760,7 +2808,7 @@ export default function HomeView({
       });
 
       // 保证 15509601222 (超级管理员) 始终在列表中
-      const masterPhone = '15509601222';
+      const masterPhone = DEVELOPER_PHONE;
       if (!map.has(masterPhone)) {
         map.set(masterPhone, {
           id: masterPhone,
@@ -2773,7 +2821,7 @@ export default function HomeView({
       }
 
       // 保留本地已通过审核且未被移出的司机
-      if (curP && curP !== '15509601222' && !removedList.includes(curP) && !isDriverRemoved(curP) && (localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true')) {
+      if (curP && curP !== DEVELOPER_PHONE && !removedList.includes(curP) && !isDriverRemoved(curP) && (localStorage.getItem(`dd_approved_${curP}`) === 'true' || localStorage.getItem(`dd_in_squad_${curP}`) === 'true')) {
         if (!map.has(curP)) {
           map.set(curP, {
             id: curP,
@@ -2789,7 +2837,7 @@ export default function HomeView({
       const list = Array.from(map.values());
 
       // 只要不在快照中或者已被移出小队，立即清除司机本地身份与小队权限缓存
-      if (curP && curP !== '15509601222') {
+      if (curP && curP !== DEVELOPER_PHONE) {
         const isCurInSnapshot = list.some(m => String(m.phone || m.id).trim() === curP);
         if (!isCurInSnapshot || removedList.includes(curP) || isDriverRemoved(curP)) {
           const oldRole = localStorage.getItem('dd_user_role');
@@ -3417,7 +3465,7 @@ export default function HomeView({
         isTeamApproved ||
         isUserApproved ||
         isSquadApproved ||
-        userPhone === '15509601222'
+        userPhone === DEVELOPER_PHONE
       );
 
       if (isApprovedOverall) {
@@ -3573,7 +3621,7 @@ export default function HomeView({
   // 实时监听 driver_users 改变，若后台/模拟器修改了当前账号的身份（如设置普通司机），立即毫秒级同步更新
   useEffect(() => {
     const currentPhone = (userPhone || localStorage.getItem('dd_user_phone') || '').trim();
-    if (!currentPhone || currentPhone === '15509601222') return;
+    if (!currentPhone || currentPhone === DEVELOPER_PHONE) return;
 
     const myDoc = allDrivers.find(d => String(d.id || d.phone || d.phoneNumber).trim() === currentPhone);
     if (myDoc) {
@@ -3779,7 +3827,7 @@ export default function HomeView({
         const data = doc.data();
         if (data && !data.isBanned) {
           const phone = doc.id;
-          const isManagement = managementPhones.includes(phone) || phone === '15509601222' || phone === userPhone;
+          const isManagement = managementPhones.includes(phone) || phone === DEVELOPER_PHONE || phone === userPhone;
           const isApprovedAndInSquad = (data.onlineOrdersEnabled || data.isOnline) && squadPhones.includes(phone);
 
           if (isManagement || isApprovedAndInSquad) {
@@ -3851,15 +3899,15 @@ export default function HomeView({
       };
 
       if (db) {
-        await setDoc(doc(db, 'passenger_links', closestDriver.phone), orderPayload).catch(() => {});
+        await setDoc(doc(db, 'passenger_links', closestDriver.phone), orderPayload).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
 
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'passenger_links', docId: closestDriver.phone, data: orderPayload })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       if (userPhone && String(closestDriver.phone).trim() === String(userPhone).trim()) {
         window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
@@ -3974,19 +4022,19 @@ export default function HomeView({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/delete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'squad_members', docId: phone })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       fetch(`${baseUrl}/api/db/delete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'squad_applications', docId: phone })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       fetch(`${baseUrl}/api/db/save`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'driver_users', docId: phone, data: { role: '普通司机', userRole: '普通司机' } })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       // Clean local storage & add to removed list
       try {
@@ -4011,12 +4059,12 @@ export default function HomeView({
         setRemovedMemberPhones(savedRemoved);
 
         // Sync removed_squad_members to cloud
-        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         fetch(`${baseUrl}/api/db/save`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
-        }).catch(() => {});
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       } catch (_) {}
 
       setSquadMembers(prev => prev.filter((m: any) => String(m.phone || m.id).trim() !== phone));
@@ -4060,7 +4108,7 @@ export default function HomeView({
           teamName: newName,
           updatedAt: new Date().toISOString(),
           setBy: userPhone || '开发者'
-        }, { merge: true }).catch(() => {});
+        }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
       setIsEditingSquadName(false);
       alert('✓ 小队名称已成功保存，并在所有端实时生效！');
@@ -4706,14 +4754,14 @@ export default function HomeView({
               }
 
               const currentPhone = getCurrentPhone();
-              const isSuperDev = currentPhone === '15509601222';
+              const isSuperDev = currentPhone === DEVELOPER_PHONE;
               const isRemoved = !isSuperDev && isDriverRemoved(currentPhone);
               const inSquad = isSuperDev || isDriverInSquad(currentPhone);
 
               if (isRemoved || !inSquad) {
                 setLocalAlert({
                   title: '提示',
-                  message: '您未加入小队。',
+                  message: '您不是小队成员。',
                   type: 'warning'
                 });
                 return;
@@ -4748,7 +4796,7 @@ export default function HomeView({
               }
 
               const currentPhone = getCurrentPhone();
-              const isSuperDev = currentPhone === '15509601222';
+              const isSuperDev = currentPhone === DEVELOPER_PHONE;
               const isRemoved = !isSuperDev && isDriverRemoved(currentPhone);
               const inSquad = isSuperDev || isDriverInSquad(currentPhone);
 
@@ -4863,7 +4911,7 @@ export default function HomeView({
                 return;
               }
               const currentPhone = getCurrentPhone();
-              const isSuperDev = currentPhone === '15509601222';
+              const isSuperDev = currentPhone === DEVELOPER_PHONE;
               const isApproved = isSuperDev || checkApprovalStatus();
               const isPending = !isApproved && checkPendingStatus();
               const isRejected = !isApproved && !isPending && checkRejectionStatus();
@@ -4972,7 +5020,7 @@ export default function HomeView({
           {(() => {
             const isApproved = checkApprovalStatus();
             const myCurrentPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
-            if (!isApproved && myCurrentPhone !== '15509601222') {
+            if (!isApproved && myCurrentPhone !== DEVELOPER_PHONE) {
               return (
                 <div className="flex-1 flex flex-col items-center justify-center text-center p-3 text-slate-400">
                   <Bell className="w-7 h-7 text-slate-300 mb-1.5" />
@@ -5090,7 +5138,8 @@ export default function HomeView({
                     ord.startLocation,
                     ord.passengerLat || ord.lat || ord.startLat,
                     ord.passengerLng || ord.lng || ord.startLng,
-                    currentDriverCoords
+                    currentDriverCoords,
+                    Boolean(ord.coordsUnknown)
                   );
 
                   const finalDistText = displayDistText;
@@ -5469,7 +5518,7 @@ export default function HomeView({
       {showDispatchModal && (
         (() => {
           const currentPhone = getCurrentPhone();
-          const isSuperDev = currentPhone === '15509601222';
+          const isSuperDev = currentPhone === DEVELOPER_PHONE;
           const isRemoved = !isSuperDev && isDriverRemoved(currentPhone);
           const inSquad = isSuperDev || isDriverInSquad(currentPhone);
           // 管理层司机且在小队内未被删除，且开启了后台视图时进入管理后台
@@ -6477,7 +6526,7 @@ export default function HomeView({
                   <div className="grid grid-cols-2 gap-2 text-[11px] text-left">
                     <div className="bg-slate-50 p-2 rounded-lg">
                       <span className="text-slate-500 block text-[9px]">司机手机号</span>
-                      <span className="font-extrabold text-slate-800 font-mono">{onlineApp.driverPhone}</span>
+                      <span className="font-extrabold text-slate-800 font-mono">{maskPhone(onlineApp.driverPhone)}</span>
                     </div>
                     <div className="bg-slate-50 p-2 rounded-lg">
                       <span className="text-slate-500 block text-[9px]">司机姓名</span>

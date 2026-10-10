@@ -12,7 +12,8 @@ import {
   onSnapshot, 
   getDocs,
   getDoc,
-  getBaseApiUrl 
+  getBaseApiUrl,
+  getAuthHeaders
 } from '../lib/dbProxy';
 import { 
   Plus, 
@@ -58,7 +59,8 @@ import {
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry, isOfficialSquadMember, getRemovedSquadSet } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified } from '../utils/nameResolver';
+import { DEVELOPER_PHONE } from '../utils/constants';
 
 function calculateExpiryFromDays(days: string): string {
   const trimmed = String(days || '').trim();
@@ -97,10 +99,47 @@ export default function AdminPanel({
 }: AdminPanelProps = {}) {
   const [localIsAdminAuthenticated, setLocalIsAdminAuthenticated] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('isAdminAuthenticated') === 'true';
+      // 管理后台会话：不设过期，手动登出前一直有效（用户2026-10-10要求）
+      // 以服务端签发的 dd_auth_token 为准（/api/sms/verify 下发），不再信任前端生成的 admin_ 前缀（2026-10-10修复）
+      try {
+        const authToken = localStorage.getItem('dd_auth_token');
+        if (authToken && authToken.trim()) {
+          return true;
+        }
+      } catch (_) {}
     }
     return false;
   });
+
+  // N-3修复（2026-10-10复审）：挂载时验证服务端 token 有效性，防止"幽灵登录"
+  //（token 被服务端删除/服务器重启未加载时，UI 显示已登录但所有写操作 401）
+  useEffect(() => {
+    if (!localIsAdminAuthenticated) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getAuthHeaders, getBaseApiUrl } = await import('../lib/dbProxy');
+        const baseUrl = getBaseApiUrl();
+        const res = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=15509601222`, {
+          headers: { ...getAuthHeaders() },
+        });
+        if (!cancelled && (res.status === 401 || res.status === 403)) {
+          // token 失效：清登录态并提示重新登录
+          try {
+            localStorage.removeItem('dd_auth_token');
+            localStorage.removeItem('isAdminAuthenticated');
+            localStorage.removeItem('admin_session_token');
+            localStorage.removeItem('admin_session_ts');
+          } catch (_) {}
+          setLocalIsAdminAuthenticated(false);
+          // Toast 由登录页显示（避免 useEffect 闭包时序问题）
+        }
+      } catch (_) {
+        // 网络异常不误伤，保持登录态
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const isAdminAuthenticated = propIsAdminAuthenticated !== undefined ? propIsAdminAuthenticated : localIsAdminAuthenticated;
   const setIsAdminAuthenticated = (val: boolean) => {
@@ -279,7 +318,7 @@ export default function AdminPanel({
 
   // Active user's team status based on real-time DB data or fallback props
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
-  const activeRole = userPhone === '15509601222'
+  const activeRole = userPhone === DEVELOPER_PHONE
     ? '开发者司机'
     : (loggedInMember ? loggedInMember.role : '普通司机');
   const activeCity = loggedInMember ? loggedInMember.city : '';
@@ -330,7 +369,7 @@ export default function AdminPanel({
             return { ...d, driverName: realName, name: realName };
           }).filter((d: any) => {
             const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-            return p === '15509601222' || d.isMerchant;
+            return p === DEVELOPER_PHONE || d.isMerchant;
           });
         }
       }
@@ -346,7 +385,7 @@ export default function AdminPanel({
         if (Array.isArray(parsed) && parsed.length > 0) {
           return parsed.filter((m: any) => {
             const p = String(m.phoneNumber || m.phone || m.id || '').replace(/\D/g, '').trim();
-            return p === '15509601222';
+            return p === DEVELOPER_PHONE;
           });
         }
       }
@@ -369,12 +408,8 @@ export default function AdminPanel({
   const [adminCitySearch, setAdminCitySearch] = useState('');
   const [driverTabCategory, setDriverTabCategory] = useState<'squad' | 'nonsquad' | 'merchant' | 'all'>('squad');
 
-  // Helper to identify merchant accounts created via merchant valet (ends with 'A')
-  const isMerchantAccount = (drv: any) => {
-    if (!drv) return false;
-    const p = String(drv.phoneNumber || drv.phone || drv.id || '').trim();
-    return Boolean(drv.isMerchant || drv.accountType === 'merchant' || p.endsWith('A') || p.endsWith('a'));
-  };
+  // 商户/商家身份统一判断（与 App 端 z5/商户代叫页一致，见 nameResolver.isMerchantAccountUnified）
+  const isMerchantAccount = (drv: any) => isMerchantAccountUnified(drv);
 
   // Helper to strictly identify official squad members dynamically based on server squad_members DB
   const checkIsOfficialSquadMember = (drv: any) => {
@@ -781,7 +816,7 @@ export default function AdminPanel({
           loadedUsers = items.map((i: any) => i?.data || i).filter(Boolean);
         }
 
-        const masterDeveloper = '15509601222';
+        const masterDeveloper = DEVELOPER_PHONE;
         const squadToDelete = loadedSquad.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
         const appsToDelete = loadedApps.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
         const usersToDelete = loadedUsers.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
@@ -794,9 +829,9 @@ export default function AdminPanel({
             ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations'].forEach((col) => {
               fetch(`${baseUrl}/api/db/delete`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({ col, id: phone, hardDelete: true })
-              }).catch(() => {});
+              }).catch(e => console.warn("[SilentCatch]", e?.message || e));
             });
           }
 
@@ -839,12 +874,12 @@ export default function AdminPanel({
         const data = doc.data() || {};
         const rawP = String(data.phone || data.phoneNumber || doc.id || '').trim();
         const p = rawP.replace(/\D/g, '').trim();
-        if (p === '15509601222') {
+        if (p === DEVELOPER_PHONE) {
           list.push({
             ...data,
-            id: '15509601222',
-            phone: '15509601222',
-            phoneNumber: '15509601222',
+            id: DEVELOPER_PHONE,
+            phone: DEVELOPER_PHONE,
+            phoneNumber: DEVELOPER_PHONE,
             driverName: '吴彦祖',
             name: '吴彦祖',
             role: '开发者司机',
@@ -918,7 +953,7 @@ export default function AdminPanel({
         if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
           setMerchantAccountsList(res.data);
         }
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members`).then(r => r.json()).then(res => {
         if (res && res.data && Array.isArray(res.data.phones)) {
@@ -927,7 +962,7 @@ export default function AdminPanel({
             localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(res.data.phones));
           } catch (_) {}
         }
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     } catch (_) {}
 
     return () => {
@@ -967,12 +1002,11 @@ export default function AdminPanel({
     const activeRemoved = new Set([
       ...Array.from(getRemovedSquadSet()),
       ...(removedSquadPhones || []).map((p: any) => String(p || '').replace(/\D/g, '').trim()),
-      ...REMOVED_GENERIC_DRIVER_PHONES.map((p: any) => String(p || '').replace(/\D/g, '').trim())
     ].filter(Boolean));
-    activeRemoved.delete('15509601222');
+    activeRemoved.delete(DEVELOPER_PHONE);
 
     const squadPhoneSet = new Set<string>();
-    squadPhoneSet.add('15509601222');
+    squadPhoneSet.add(DEVELOPER_PHONE);
 
     // 1. Process squad_members
     squadMembersList.forEach((m: any) => {
@@ -990,8 +1024,8 @@ export default function AdminPanel({
         phoneNumber: phone,
         driverName: name,
         name: name,
-        role: m.role || m.userRole || (phone === '15509601222' ? '开发者司机' : '普通司机'),
-        userRole: m.role || m.userRole || (phone === '15509601222' ? '开发者司机' : '普通司机'),
+        role: m.role || m.userRole || (phone === DEVELOPER_PHONE ? '开发者司机' : '普通司机'),
+        userRole: m.role || m.userRole || (phone === DEVELOPER_PHONE ? '开发者司机' : '普通司机'),
         status: '已通过',
         approvalStatus: '已通过',
         is_squad_member: 1,
@@ -1016,7 +1050,7 @@ export default function AdminPanel({
       const existing = driverMap.get(phone) || {};
       const name = resolveDriverRealName(phone, a.name || a.applicantName || a.driverName || existing.name || `司机${phone.slice(-4)}`);
       const vExpiry = resolveVip50(phone, a.vipExpiry, existing.vipExpiry);
-      const isApprovedInSquad = (squadPhoneSet.has(phone) || phone === '15509601222') && !activeRemoved.has(phone);
+      const isApprovedInSquad = (squadPhoneSet.has(phone) || phone === DEVELOPER_PHONE) && !activeRemoved.has(phone);
       const rawSt = String(a.status || a.approvalStatus || '').trim();
       const resolvedStatus = isApprovedInSquad 
         ? '已通过' 
@@ -1062,7 +1096,7 @@ export default function AdminPanel({
         : resolveVip50(phone, existing.vipExpiry);
 
       const isRemoved = activeRemoved.has(phone);
-      const isActuallyInSquad = (squadPhoneSet.has(phone) || phone === '15509601222') && !isRemoved;
+      const isActuallyInSquad = (squadPhoneSet.has(phone) || phone === DEVELOPER_PHONE) && !isRemoved;
 
       const finalStatus = isRemoved 
         ? '未加入小队' 
@@ -1080,8 +1114,8 @@ export default function AdminPanel({
         name: name,
         city: du.city || existing.city || '银川市',
         vipExpiry: vExpiry,
-        role: du.role || du.userRole || existing.role || (phone === '15509601222' ? '开发者司机' : '普通司机'),
-        userRole: du.role || du.userRole || existing.userRole || (phone === '15509601222' ? '开发者司机' : '普通司机'),
+        role: du.role || du.userRole || existing.role || (phone === DEVELOPER_PHONE ? '开发者司机' : '普通司机'),
+        userRole: du.role || du.userRole || existing.userRole || (phone === DEVELOPER_PHONE ? '开发者司机' : '普通司机'),
         status: finalStatus,
         approvalStatus: finalStatus,
         is_squad_member: finalIsSquad,
@@ -1096,11 +1130,11 @@ export default function AdminPanel({
     });
 
     // 开发者 15509601222 始终常驻
-    if (!driverMap.has('15509601222')) {
-      driverMap.set('15509601222', {
-        id: '15509601222',
-        phone: '15509601222',
-        phoneNumber: '15509601222',
+    if (!driverMap.has(DEVELOPER_PHONE)) {
+      driverMap.set(DEVELOPER_PHONE, {
+        id: DEVELOPER_PHONE,
+        phone: DEVELOPER_PHONE,
+        phoneNumber: DEVELOPER_PHONE,
         driverName: '吴彦祖',
         name: '吴彦祖',
         role: '开发者司机',
@@ -1109,7 +1143,7 @@ export default function AdminPanel({
         is_squad_member: 1,
         collection: 'squad_members',
         city: '银川市',
-        vipExpiry: '2026-11-24',
+        vipExpiry: '永久有效',
         isOnline: true,
         onlineOrdersEnabled: true
       });
@@ -1143,7 +1177,7 @@ export default function AdminPanel({
     // 7. Process merchant_accounts (Phone ending strictly with 'A', e.g. 15509601222A -> 商户15509601222A)
     merchantAccountsList.forEach((ma: any) => {
       const fullPhone = String(ma.phone || ma.phoneNumber || ma.id || '').trim();
-      if (!fullPhone || !fullPhone.toUpperCase().endsWith('A') || fullPhone.includes('18695161718')) return; // 彻底取消 18695161718 商户显示
+      if (!fullPhone || !fullPhone.toUpperCase().endsWith('A')) return;
       const rawNum = fullPhone.replace(/\D/g, '');
       const merchantDisplayName = ma.name && ma.name !== '商户、商家' ? ma.name : `商户${fullPhone}`;
       driverMap.set(fullPhone, {
@@ -1170,7 +1204,7 @@ export default function AdminPanel({
     });
 
     // 7. Ensure master developer 15509601222 always exists as official squad developer
-    const devPhone = '15509601222';
+    const devPhone = DEVELOPER_PHONE;
     const existingDev = driverMap.get(devPhone) || {};
     driverMap.set(devPhone, {
       ...existingDev,
@@ -1189,7 +1223,7 @@ export default function AdminPanel({
       city: existingDev.city || '银川市',
       vipExpiry: (existingDev.vipExpiry !== undefined && existingDev.vipExpiry !== null && existingDev.vipExpiry !== '')
         ? existingDev.vipExpiry
-        : '2099-12-31',
+        : '永久有效',
       isOnline: Boolean(existingDev.isOnline),
       onlineOrdersEnabled: Boolean(existingDev.onlineOrdersEnabled !== false),
       isBanned: false
@@ -1304,12 +1338,12 @@ export default function AdminPanel({
         ...(data || {})
       };
 
-      const hasAnyRecord = Boolean(docSnap.exists() || squadData || appData || matchInAll || localSquadMember || cleanPhone === '15509601222');
+      const hasAnyRecord = Boolean(docSnap.exists() || squadData || appData || matchInAll || localSquadMember || cleanPhone === DEVELOPER_PHONE);
 
       if (hasAnyRecord) {
         const realName = resolveDriverRealName(
           cleanPhone,
-          combined.driverName || combined.name || combined.applicantName || (cleanPhone === '15509601222' ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`)
+          combined.driverName || combined.name || combined.applicantName || (cleanPhone === DEVELOPER_PHONE ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`)
         );
 
         let resolvedVip = (data?.vipExpiry !== undefined && data?.vipExpiry !== null && data?.vipExpiry !== '')
@@ -1326,8 +1360,8 @@ export default function AdminPanel({
           phone: cleanPhone,
           driverName: realName,
           name: realName,
-          role: cleanPhone === '15509601222' ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
-          userRole: cleanPhone === '15509601222' ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
+          role: cleanPhone === DEVELOPER_PHONE ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
+          userRole: cleanPhone === DEVELOPER_PHONE ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
           city: combined.city || '银川市',
           vipExpiry: resolvedVip,
           status: combined.status || '已通过',
@@ -1355,13 +1389,13 @@ export default function AdminPanel({
       }
     }, (err) => {
       console.error("Error fetching single driver details:", err);
-      if (cleanPhone === '15509601222') {
+      if (cleanPhone === DEVELOPER_PHONE) {
         const cached = localStorage.getItem('dd_settings_15509601222');
         let cVip = '待开通';
         try { if (cached) cVip = JSON.parse(cached).vipExpiry || '待开通'; } catch (_) {}
         const devData = {
-          phoneNumber: '15509601222',
-          phone: '15509601222',
+          phoneNumber: DEVELOPER_PHONE,
+          phone: DEVELOPER_PHONE,
           driverName: '吴彦祖',
           city: '银川市',
           vipExpiry: cVip,
@@ -1394,13 +1428,13 @@ export default function AdminPanel({
         const rawPhone = String(itemData.phone || itemData.phoneNumber || docSnap.id || '').trim();
         const p = rawPhone.replace(/\D/g, '');
         if (rawPhone.toUpperCase().endsWith('A') || itemData.isMerchant || itemData.accountType === 'merchant') return;
-        const isLegacyDeleted = ['13895336277', '13895299147', '17660453634', '13812345678', '13912345678', '19995426058', '15509601223', '15555556666', '18695161718', '14709696333', '15209678783', '15378921387', '13995071199', '13995388888', '15121888888', '15121904440', '15295188888'].includes(p);
-        if (p === '15509601222') {
+        // 黑名单已移除（2026-10-10 用户要求）：线上单开通审批不做号码限制
+        if (p === DEVELOPER_PHONE) {
           list.push({
             ...itemData,
-            id: '15509601222',
-            phone: '15509601222',
-            phoneNumber: '15509601222',
+            id: DEVELOPER_PHONE,
+            phone: DEVELOPER_PHONE,
+            phoneNumber: DEVELOPER_PHONE,
             driverName: '吴彦祖',
             name: '吴彦祖',
             realName: '吴彦祖',
@@ -1409,20 +1443,20 @@ export default function AdminPanel({
             status: 'approved',
             approvalStatus: '已开通',
             city: '银川市',
-            vipExpiry: '2099-12-31',
+            vipExpiry: '永久有效',
             onlineOrdersEnabled: true
           });
-        } else if (p && p.length === 11 && !isLegacyDeleted && !rawPhone.startsWith('司机') && itemData.status === 'pending') {
+        } else if (p && p.length === 11 && !rawPhone.startsWith('司机') && itemData.status === 'pending') {
           list.push({ id: docSnap.id, ...itemData });
         }
       });
 
       // Ensure master developer 15509601222 always exists as approved developer in online_applications
-      if (!list.some(a => String(a.phone || a.id).replace(/\D/g, '').trim() === '15509601222')) {
+      if (!list.some(a => String(a.phone || a.id).replace(/\D/g, '').trim() === DEVELOPER_PHONE)) {
         list.push({
-          id: '15509601222',
-          phone: '15509601222',
-          phoneNumber: '15509601222',
+          id: DEVELOPER_PHONE,
+          phone: DEVELOPER_PHONE,
+          phoneNumber: DEVELOPER_PHONE,
           driverName: '吴彦祖',
           name: '吴彦祖',
           realName: '吴彦祖',
@@ -1431,7 +1465,7 @@ export default function AdminPanel({
           status: 'approved',
           approvalStatus: '已开通',
           city: '银川市',
-          vipExpiry: '2099-12-31',
+          vipExpiry: '永久有效',
           onlineOrdersEnabled: true,
           emergencyContact: '13895000000',
           drivingYears: 10,
@@ -1522,7 +1556,7 @@ export default function AdminPanel({
         const baseUrl = getBaseApiUrl();
         await fetch(`${baseUrl}/api/driver/update-name`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: appId, name: trimmed })
         });
       } catch (_) {}
@@ -1570,7 +1604,7 @@ export default function AdminPanel({
         const baseUrl = getBaseApiUrl();
         await fetch(`${baseUrl}/api/driver/update-name`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone, name: trimmed })
         });
       } catch (_) {}
@@ -1590,7 +1624,7 @@ export default function AdminPanel({
     if (!phone) return;
 
     // Check if operator is authorized: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机
-    const isAuthorized = userPhone === '15509601222' ||
+    const isAuthorized = userPhone === DEVELOPER_PHONE ||
       ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(activeRole) ||
       ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(userRole || '');
 
@@ -1600,21 +1634,31 @@ export default function AdminPanel({
     }
     
     try {
-      // 1. Update Application status to Approved
-      await setDoc(doc(db, 'online_applications', phone), {
-        ...app,
-        status: 'approved',
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      // 二，同步或下发该司机的线上开单可用设置与开通接单城市
-      await setDoc(doc(db, 'driver_users', phone), {
-        phoneNumber: phone,
-        onlineOrdersEnabled: true,
-        city: app.city || '',
-        driverName: app.driverName || '',
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      // 1+2. 并行写入两张表，用 allSettled 跟踪每项结果（2026-10-10修复）
+      const results = await Promise.allSettled([
+        // 1. Update Application status to Approved
+        setDoc(doc(db, 'online_applications', phone), {
+          ...app,
+          status: 'approved',
+          updatedAt: new Date().toISOString()
+        }, { merge: true }),
+        // 2. 同步或下发该司机的线上开单可用设置与开通接单城市
+        setDoc(doc(db, 'driver_users', phone), {
+          phoneNumber: phone,
+          onlineOrdersEnabled: true,
+          city: app.city || '',
+          driverName: app.driverName || '',
+          updatedAt: new Date().toISOString()
+        }, { merge: true }),
+      ]);
+      const failed = results
+        .map((r, i) => ({ r, name: i === 0 ? 'online_applications' : 'driver_users' }))
+        .filter(x => x.r.status === 'rejected');
+      if (failed.length > 0) {
+        const reasons = failed.map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message || '未知错误'}`).join('；');
+        triggerToast(`⚠️ 部分写入失败：${reasons}`);
+        return;
+      }
 
       triggerToast(`✓ 成功批准司机 ${app.driverName} (${phone}) 的线上开通资质！自动调度权限已下发生效。`);
       if (currentSelectedApp && currentSelectedApp.id === phone) {
@@ -1631,7 +1675,7 @@ export default function AdminPanel({
     if (!phone) return;
 
     // Check if operator is authorized: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机
-    const isAuthorized = userPhone === '15509601222' ||
+    const isAuthorized = userPhone === DEVELOPER_PHONE ||
       ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(activeRole) ||
       ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员'].includes(userRole || '');
 
@@ -1643,20 +1687,30 @@ export default function AdminPanel({
     const finalReason = reason.trim() || '信息资质核验存在偏差，身份证人像页或驾驶执照文字存在模糊遮挡等情况，请重新选取高清合规证照提交。';
 
     try {
-      // 1. Update Application status to Rejected
-      await setDoc(doc(db, 'online_applications', phone), {
-        ...app,
-        status: 'rejected',
-        rejectionReason: finalReason,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
-
-      // 2. Clear Driver User settings toggle state
-      await setDoc(doc(db, 'driver_users', phone), {
-        phoneNumber: phone,
-        onlineOrdersEnabled: false,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      // 1+2. 并行写入两张表，用 allSettled 跟踪每项结果（2026-10-10修复）
+      const results = await Promise.allSettled([
+        // 1. Update Application status to Rejected
+        setDoc(doc(db, 'online_applications', phone), {
+          ...app,
+          status: 'rejected',
+          rejectionReason: finalReason,
+          updatedAt: new Date().toISOString()
+        }, { merge: true }),
+        // 2. Clear Driver User settings toggle state
+        setDoc(doc(db, 'driver_users', phone), {
+          phoneNumber: phone,
+          onlineOrdersEnabled: false,
+          updatedAt: new Date().toISOString()
+        }, { merge: true }),
+      ]);
+      const failed = results
+        .map((r, i) => ({ r, name: i === 0 ? 'online_applications' : 'driver_users' }))
+        .filter(x => x.r.status === 'rejected');
+      if (failed.length > 0) {
+        const reasons = failed.map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message || '未知错误'}`).join('；');
+        triggerToast(`⚠️ 部分写入失败：${reasons}`);
+        return;
+      }
 
       triggerToast(`✗ 已驳回司机 ${app.driverName} (${phone}) 的线上开通资质，驳回缘由已同步生效。`);
       setRejectionReasonInput('');
@@ -1808,7 +1862,7 @@ export default function AdminPanel({
       } catch (_) {}
     }
 
-    triggerToast('🎉 司机账号会员有效期已成功实时同步更新！');
+    // 成功提示移到服务器确认后，避免 z1 的 2099-12-31 假象（先乐观更新 UI，失败要明确报错）
 
     try {
       // 4. Direct server proxy call to ensure atomic persistence across all 3 collections on server
@@ -1816,25 +1870,32 @@ export default function AdminPanel({
 
       const serverPromise = fetch(`${baseUrl}/api/admin/update-driver-expiry`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ phone: cleanPhone, vipExpiry: finalExpiry })
-      }).catch(e => console.warn('server update-driver-expiry error:', e));
+      }).then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json().catch(() => ({}));
+      });
 
       // ALWAYS execute direct REST setDoc calls for ALL 3 COLLECTIONS on active server
-      const baotaSetPromises = Promise.allSettled([
-        'driver_users', 'squad_members', 'squad_applications'
-      ].map(col =>
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            col,
-            id: cleanPhone,
-            data: { phone: cleanPhone, phoneNumber: cleanPhone, vipExpiry: finalExpiry, updatedAt: new Date().toISOString() },
-            merge: true
+      const _cols = ['driver_users', 'squad_members', 'squad_applications'];
+      const baotaSetPromises = Promise.allSettled(
+        _cols.map(col =>
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({
+              col,
+              id: cleanPhone,
+              data: { phone: cleanPhone, phoneNumber: cleanPhone, vipExpiry: finalExpiry, updatedAt: new Date().toISOString() },
+              merge: true
+            })
+          }).then(r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r;
           })
-        }).catch(err => console.warn(`Set ${col} error:`, err))
-      ));
+        )
+      );
 
       // 5. Fire-and-forget Firestore write so China network blocking never delays the UI
       Promise.allSettled([
@@ -1852,11 +1913,23 @@ export default function AdminPanel({
           vipExpiry: finalExpiry,
           updatedAt: new Date().toISOString()
         }, { merge: true })
-      ]).catch(() => {});
+      ]).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
-      await Promise.all([serverPromise, baotaSetPromises]);
+      const [serverResult, baotaResults] = await Promise.all([
+        serverPromise.then(() => ({ ok: true })).catch((e: any) => ({ ok: false, error: e })),
+        baotaSetPromises
+      ]);
+      const failedCols = (baotaResults as PromiseSettledResult<any>[]).map((r, i) => r.status === 'rejected' ? _cols[i] : null).filter(Boolean) as string[];
+      if (failedCols.length === 0 && (serverResult as any).ok) {
+        triggerToast('🎉 司机账号会员有效期已成功实时同步更新！');
+      } else {
+        const failMsg = [...failedCols.map(c => `${c}写入失败`), ...((serverResult as any).ok ? [] : ['服务器接口失败'])].join('、');
+        console.error('[会员有效期] 写入失败:', failMsg);
+        triggerToast(`⚠️ 会员有效期部分写入失败：${failMsg}，请重试`);
+      }
     } catch (e: any) {
       console.error('更新会员到期时间异常:', e);
+      triggerToast(`❌ 更新会员有效期失败：${e?.message || '网络异常'}，请重试`);
     } finally {
       // Keep guard active for 10 seconds to let all background polling settle safely
       setTimeout(() => {
@@ -1882,33 +1955,33 @@ export default function AdminPanel({
       const rechargePromises = [
         fetch(`${baseUrl}/api/admin/batch-recharge-squad`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ days: 50, excludePhone: '15509601222' })
-        }).catch(() => {})
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ days: 50, excludePhone: DEVELOPER_PHONE })
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e))
       ];
 
       // 2. Gather all phones from all collections and state
       const targetPhones = new Set<string>();
       Object.keys(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(p => {
-        if (p !== '15509601222') targetPhones.add(p);
+        if (p !== DEVELOPER_PHONE) targetPhones.add(p);
       });
       allDrivers.forEach(d => {
         const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-        if (p && p.length === 11 && p !== '15509601222' && isOfficialSquadMember(d)) targetPhones.add(p);
+        if (p && p.length === 11 && p !== DEVELOPER_PHONE && isOfficialSquadMember(d)) targetPhones.add(p);
       });
       squadMembersList.forEach(m => {
         const p = String(m.phoneNumber || m.phone || m.id || '').replace(/\D/g, '').trim();
-        if (p && p.length === 11 && p !== '15509601222') targetPhones.add(p);
+        if (p && p.length === 11 && p !== DEVELOPER_PHONE) targetPhones.add(p);
       });
       squadAppsList.forEach(a => {
         const p = String(a.phoneNumber || a.phone || a.id || '').replace(/\D/g, '').trim();
-        if (p && p.length === 11 && p !== '15509601222') targetPhones.add(p);
+        if (p && p.length === 11 && p !== DEVELOPER_PHONE) targetPhones.add(p);
       });
 
       // 3. Optimistically update local allDrivers state and localStorage
       setAllDrivers(prev => prev.map(d => {
         const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-        if (p && p !== '15509601222') {
+        if (p && p !== DEVELOPER_PHONE) {
           try {
             const settingsKey = `dd_settings_${p}`;
             const cached = localStorage.getItem(settingsKey);
@@ -1922,7 +1995,7 @@ export default function AdminPanel({
       }));
 
       // 4. Update target driver if selected in left card
-      if (targetPhone && targetPhone.replace(/\D/g, '').trim() !== '15509601222') {
+      if (targetPhone && targetPhone.replace(/\D/g, '').trim() !== DEVELOPER_PHONE) {
         setTempExpiry(targetExpiry);
         setTempDays('50');
         setDriverDoc(prev => prev ? ({ ...prev, vipExpiry: targetExpiry }) : prev);
@@ -1933,31 +2006,31 @@ export default function AdminPanel({
       targetPhones.forEach(phone => {
         ['driver_users', 'squad_members', 'online_applications', 'squad_applications'].forEach(col => {
           // Fire-and-forget background Firestore write (if accessible)
-          setDoc(doc(db, col, phone), { vipExpiry: targetExpiry, status: '已通过' }, { merge: true }).catch(() => {});
+          setDoc(doc(db, col, phone), { vipExpiry: targetExpiry, status: '已通过' }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
           writePromises.push(
             fetch(`${baseUrl}/api/db/set`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({
                 col,
                 id: phone,
                 data: { phone, phoneNumber: phone, vipExpiry: targetExpiry, status: '已通过', updatedAt: new Date().toISOString() },
                 merge: true
               })
-            }).catch(() => {})
+            }).catch(e => console.warn("[SilentCatch]", e?.message || e))
           );
           writePromises.push(
             fetch(`${baotaUrl}/api/db/set`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({
                 col,
                 id: phone,
                 data: { phone, phoneNumber: phone, vipExpiry: targetExpiry, status: '已通过', updatedAt: new Date().toISOString() },
                 merge: true
               })
-            }).catch(() => {})
+            }).catch(e => console.warn("[SilentCatch]", e?.message || e))
           );
         });
       });
@@ -1994,7 +2067,7 @@ export default function AdminPanel({
     setIsPurging(true);
     setPurgeProgress('开始...');
     const baseUrl = getBaseApiUrl();
-    const KEEP = '15509601222';
+    const KEEP = DEVELOPER_PHONE;
     const COLS = ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations'];
     let totalDeleted = 0;
     const failures: string[] = [];
@@ -2025,7 +2098,7 @@ export default function AdminPanel({
             try {
               const r = await fetch(`${baseUrl}/api/db/delete`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({ col, id: d.id, hardDelete: true })
               });
               if (r.ok) deleted = true;
@@ -2064,7 +2137,7 @@ export default function AdminPanel({
   const handleConvertToNonSquad = async (targetPhoneToConvert: string) => {
     const cleanPhone = String(targetPhoneToConvert || '').replace(/\D/g, '').trim();
     if (!cleanPhone || cleanPhone.length !== 11) return;
-    if (cleanPhone === '15509601222') {
+    if (cleanPhone === DEVELOPER_PHONE) {
       alert('❌ 15509601222 最高开发者不能转为非小队成员！');
       return;
     }
@@ -2106,28 +2179,34 @@ export default function AdminPanel({
         updatedAt: new Date().toISOString()
       };
 
-      await Promise.all([
-        deleteDoc(doc(db, 'squad_members', cleanPhone)).catch(() => {}),
-        deleteDoc(doc(db, 'squad_applications', cleanPhone)).catch(() => {}),
-        setDoc(doc(db, 'driver_users', cleanPhone), updatedUserDoc, { merge: true }).catch(() => {}),
-        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(() => {})
-      ]);
+      // 3. 更新云端数据库：用 allSettled 跟踪每个操作，失败要报错不能静默吞掉
+      const dbOps = [
+        { name: '删除小队成员', fn: () => deleteDoc(doc(db, 'squad_members', cleanPhone)) },
+        { name: '删除小队申请', fn: () => deleteDoc(doc(db, 'squad_applications', cleanPhone)) },
+        { name: '更新司机档案', fn: () => setDoc(doc(db, 'driver_users', cleanPhone), updatedUserDoc, { merge: true }) },
+        { name: '更新移除名单', fn: () => setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }) },
+      ];
+      const dbResults = await Promise.allSettled(dbOps.map(op => op.fn()));
+      const dbFailed = dbResults.map((r, i) => r.status === 'rejected' ? dbOps[i].name : null).filter(Boolean);
+      if (dbFailed.length > 0) {
+        console.error('[一键转非小队] 数据库操作失败:', dbFailed);
+        triggerToast(`⚠️ 部分云端操作失败：${dbFailed.join('、')}，请检查网络后重试`);
+      }
 
-      fetch(`${baseUrl}/api/db/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: cleanPhone })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'driver_users', docId: cleanPhone, data: updatedUserDoc })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
-      }).catch(() => {});
+      const restOps = [
+        { name: 'REST删除小队成员', url: `${baseUrl}/api/db/delete`, body: { collection: 'squad_members', docId: cleanPhone } },
+        { name: 'REST保存司机档案', url: `${baseUrl}/api/db/save`, body: { collection: 'driver_users', docId: cleanPhone, data: updatedUserDoc } },
+        { name: 'REST更新移除名单', url: `${baseUrl}/api/db/save`, body: { collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } } },
+      ];
+      const restResults = await Promise.allSettled(restOps.map(op =>
+        fetch(op.url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(op.body) })
+          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
+      ));
+      const restFailed = restResults.map((r, i) => r.status === 'rejected' ? restOps[i].name : null).filter(Boolean);
+      if (restFailed.length > 0) {
+        console.error('[一键转非小队] REST操作失败:', restFailed);
+        triggerToast(`⚠️ 部分服务器同步失败：${restFailed.join('、')}`);
+      }
 
       // 4. 更新 React 本地状态
       setSquadMembersList(prev => prev.filter(m => String(m.phone || m.id).replace(/\D/g, '') !== cleanPhone));
@@ -2199,27 +2278,51 @@ export default function AdminPanel({
         updatedAt: new Date().toISOString()
       };
 
-      await Promise.all([
-        setDoc(doc(db, 'squad_members', cleanPhone), updatedSquadDoc, { merge: true }).catch(() => {}),
-        setDoc(doc(db, 'driver_users', cleanPhone), updatedSquadDoc, { merge: true }).catch(() => {}),
-        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(() => {})
-      ]);
+      // 3. 写入数据库：用 allSettled 跟踪，失败要报错
+      // BUG4修复：通过后删除 squad_applications 中的原申请，避免幽灵申请
+      // BUG5修复+用户要求：新成员默认小队内普通司机，写入 team_members 职位记录
+      const teamMemberDoc = {
+        phone: cleanPhone,
+        phoneNumber: cleanPhone,
+        driverName: realName,
+        name: realName,
+        role: '普通司机',
+        userRole: '普通司机',
+        squad_position: 'normal',
+        status: '已通过',
+        joinedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      const dbOps2 = [
+        { name: '写入小队成员', fn: () => setDoc(doc(db, 'squad_members', cleanPhone), updatedSquadDoc, { merge: true }) },
+        { name: '写入司机档案', fn: () => setDoc(doc(db, 'driver_users', cleanPhone), updatedSquadDoc, { merge: true }) },
+        { name: '写入职位记录', fn: () => setDoc(doc(db, 'team_members', cleanPhone), teamMemberDoc, { merge: true }) },
+        { name: '清理申请记录', fn: () => deleteDoc(doc(db, 'squad_applications', cleanPhone)) },
+        { name: '更新移除名单', fn: () => setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }) },
+      ];
+      const dbResults2 = await Promise.allSettled(dbOps2.map(op => op.fn()));
+      const dbFailed2 = dbResults2.map((r, i) => r.status === 'rejected' ? dbOps2[i].name : null).filter(Boolean);
+      if (dbFailed2.length > 0) {
+        console.error('[一键转小队] 数据库操作失败:', dbFailed2);
+        triggerToast(`⚠️ 部分云端操作失败：${dbFailed2.join('、')}，请检查网络后重试`);
+      }
 
-      fetch(`${baseUrl}/api/db/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'squad_members', docId: cleanPhone, data: updatedSquadDoc })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'driver_users', docId: cleanPhone, data: updatedSquadDoc })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
-      }).catch(() => {});
+      const restOps2 = [
+        { name: 'REST写入小队成员', url: `${baseUrl}/api/db/save`, body: { collection: 'squad_members', docId: cleanPhone, data: updatedSquadDoc } },
+        { name: 'REST写入司机档案', url: `${baseUrl}/api/db/save`, body: { collection: 'driver_users', docId: cleanPhone, data: updatedSquadDoc } },
+        { name: 'REST写入职位记录', url: `${baseUrl}/api/db/save`, body: { collection: 'team_members', docId: cleanPhone, data: teamMemberDoc } },
+        { name: 'REST清理申请记录', url: `${baseUrl}/api/db/delete`, body: { collection: 'squad_applications', docId: cleanPhone } },
+        { name: 'REST更新移除名单', url: `${baseUrl}/api/db/save`, body: { collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } } },
+      ];
+      const restResults2 = await Promise.allSettled(restOps2.map(op =>
+        fetch(op.url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(op.body) })
+          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
+      ));
+      const restFailed2 = restResults2.map((r, i) => r.status === 'rejected' ? restOps2[i].name : null).filter(Boolean);
+      if (restFailed2.length > 0) {
+        console.error('[一键转小队] REST操作失败:', restFailed2);
+        triggerToast(`⚠️ 部分服务器同步失败：${restFailed2.join('、')}`);
+      }
 
       // 4. 更新 React 本地状态
       setSquadMembersList(prev => {
@@ -2250,6 +2353,55 @@ export default function AdminPanel({
       triggerToast(`✓ 已成功将 ${cleanPhone} 转为【小队内正式成员】（名字：${realName}，会员有效期：${existingVip}）`);
     } catch (err: any) {
       alert('转化小队成员失败：' + err.message);
+    }
+  };
+
+  // 拒绝小队申请：将 squad_applications 状态标为已拒绝，司机端可看到结果
+  const handleRejectSquadApplication = async (targetPhone: string, reason?: string) => {
+    const cleanPhone = String(targetPhone || '').replace(/\D/g, '').trim();
+    if (!cleanPhone || cleanPhone.length !== 11) return;
+
+    const finalReason = (reason || '').trim() || '申请信息不符合小队要求，请完善后重新申请。';
+    if (!confirm(`确定拒绝 ${cleanPhone} 的小队申请吗？\n原因：${finalReason}`)) return;
+
+    try {
+      const baseUrl = getBaseApiUrl();
+      const rejectData = {
+        status: '已拒绝',
+        approvalStatus: '已拒绝',
+        rejectedBy: userPhone || DEVELOPER_PHONE,
+        rejectionReason: finalReason,
+        rejectionTime: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      // 更新 squad_applications 状态为已拒绝（保留记录供查询）
+      const results = await Promise.allSettled([
+        setDoc(doc(db, 'squad_applications', cleanPhone), rejectData, { merge: true }),
+        fetch(`${baseUrl}/api/db/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ collection: 'squad_applications', docId: cleanPhone, data: rejectData, merge: true })
+        }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
+      ]);
+
+      const failed = results.filter(r => r.status === 'rejected');
+      if (failed.length > 0) {
+        triggerToast(`⚠️ 拒绝操作部分失败，请重试`);
+      } else {
+        triggerToast(`✓ 已拒绝 ${cleanPhone} 的小队申请`);
+      }
+
+      // 更新本地状态
+      setAllDrivers(prev => prev.map(d => {
+        const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '');
+        if (p === cleanPhone) {
+          return { ...d, status: '已拒绝', approvalStatus: '已拒绝' };
+        }
+        return d;
+      }));
+    } catch (err: any) {
+      alert('拒绝申请失败：' + err.message);
     }
   };
 
@@ -2440,6 +2592,7 @@ export default function AdminPanel({
       await setDoc(docRef, {
         phone: phone,
         role: memberRole,
+        userRole: memberRole,
         city: targetCity,
         remark: memberRemark.trim(),
         status: 'approved',
@@ -2469,16 +2622,34 @@ export default function AdminPanel({
           phone: phone,
           status: '已通过',
           role: memberRole,
+          userRole: memberRole,
           city: targetCity || '',
           updatedAt: new Date().toISOString()
         }, { merge: true });
 
+        // BUG7修复：职位调整同步 squad_applications
+        await setDoc(doc(db, 'squad_applications', phone), {
+          role: memberRole,
+          userRole: memberRole,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+
         const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/admin/update-driver-role`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone, role: memberRole, city: targetCity || '' })
-        }).catch(() => {});
+        // BUG8修复：服务端职位更新失败要明确报错
+        try {
+          const roleRes = await fetch(`${baseUrl}/api/admin/update-driver-role`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ phone, role: memberRole, city: targetCity || '' })
+          });
+          if (!roleRes.ok) {
+            console.error('[职位设置] 服务端同步失败:', roleRes.status);
+            triggerToast(`⚠️ 职位已本地保存，但服务器同步失败（HTTP ${roleRes.status}），请检查网络`);
+          }
+        } catch (e: any) {
+          console.error('[职位设置] 服务端同步异常:', e);
+          triggerToast(`⚠️ 职位已本地保存，但服务器同步失败，请检查网络后重试`);
+        }
       } catch (_) {}
 
       triggerToast(`✓ 成功设置团队成员手机号 ${phone} 为【${memberRole}】（城市：${targetCity || '全国'}）！`);
@@ -2705,7 +2876,7 @@ export default function AdminPanel({
       }
       
       // Strict Local Master Phone Check
-      if (phoneTrimmed !== '15509601222') {
+      if (phoneTrimmed !== DEVELOPER_PHONE) {
         setLoginError('只有最高开发者账号才有权限获取管理后台验证码');
         return;
       }
@@ -2723,7 +2894,7 @@ export default function AdminPanel({
             const timeoutId = setTimeout(() => controller.abort(), 15000);
             const res = await fetch(url, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify(bodyObj),
               signal: controller.signal
             });
@@ -2762,7 +2933,7 @@ export default function AdminPanel({
       setLoginError('');
 
       const phoneTrimmed = adminPhone.trim();
-      if (phoneTrimmed !== '15509601222') {
+      if (phoneTrimmed !== DEVELOPER_PHONE) {
         setLoginError('已硬核开启数据库对比，你没有权限无法发送短信验证码或登录');
         return;
       }
@@ -2789,7 +2960,7 @@ export default function AdminPanel({
             const timeoutId = setTimeout(() => controller.abort(), 15000);
             const res = await fetch(url, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify(bodyObj),
               signal: controller.signal
             });
@@ -2808,10 +2979,15 @@ export default function AdminPanel({
         const data = await postApi('/api/sms/verify', { phone: phoneTrimmed, code: adminSmsCode.trim(), isAdminLogin: true, scope: 'admin_panel' });
         setIsAdminLoggingIn(false);
 
-        if (data.success || (phoneTrimmed === '15509601222' && adminSmsCode.trim().length >= 4)) {
+        if (data.success) {
           setIsAdminAuthenticated(true);
+          // 存储服务端签发的认证令牌（用于 /api/db/* 写操作鉴权），以此作为管理后台门禁（2026-10-10修复）
+          if (data.token) {
+            try { localStorage.setItem('dd_auth_token', data.token); } catch (_) {}
+          }
+          // 不再生成前端 admin_session_token，门禁以 dd_auth_token 为准
           localStorage.setItem('isAdminAuthenticated', 'true');
-          localStorage.setItem('dd_user_phone', '15509601222');
+          localStorage.setItem('dd_user_phone', DEVELOPER_PHONE);
 
           setShowToast(true);
           setToastMsg('🎉 最高开发者（15509601222）双因子安全授权成功，接管管理大屏！');
@@ -2834,10 +3010,11 @@ export default function AdminPanel({
         const enteredCode = adminSmsCode.trim();
         const savedCode = sessionStorage.getItem(`admin_sms_${phoneTrimmed}`) || adminSimulatedCode;
         
-        if ((savedCode && enteredCode === savedCode.trim()) || (enteredCode.length >= 4)) {
+        if (savedCode && enteredCode === savedCode.trim()) {
           setIsAdminAuthenticated(true);
+          // 降级登录：不再生成前端 admin_session_token（2026-10-10修复）
           localStorage.setItem('isAdminAuthenticated', 'true');
-          localStorage.setItem('dd_user_phone', '15509601222');
+          localStorage.setItem('dd_user_phone', DEVELOPER_PHONE);
 
           setShowToast(true);
           setToastMsg('🎉 最高开发者（15509601222）身份授权成功，接管管理大屏！');
@@ -3321,7 +3498,21 @@ export default function AdminPanel({
             <button
               onClick={() => {
                 setIsAdminAuthenticated(false);
+                // 彻底清理所有会话令牌，防止登出后刷新"复活"（2026-10-10修复）
                 localStorage.removeItem('isAdminAuthenticated');
+                localStorage.removeItem('admin_session_token');
+                localStorage.removeItem('admin_session_ts');
+                // N-3修复（2026-10-10复审）：通知服务端删除 token，防止残留
+                try {
+                  const t = localStorage.getItem('dd_auth_token');
+                  if (t) {
+                    fetch(`${getBaseApiUrl()}/api/auth/logout`, {
+                      method: 'POST',
+                      headers: { 'X-Auth-Token': t },
+                    }).catch(() => {});
+                  }
+                } catch (_) {}
+                localStorage.removeItem('dd_auth_token');
                 setShowToast(true);
                 setToastMsg('🔒 运营安全校验已退出，重新限制面板接管');
                 setTimeout(() => {
@@ -3453,7 +3644,21 @@ export default function AdminPanel({
             <button
               onClick={() => {
                 setIsAdminAuthenticated(false);
+                // 彻底清理所有会话令牌，防止登出后刷新"复活"（2026-10-10修复）
                 localStorage.removeItem('isAdminAuthenticated');
+                localStorage.removeItem('admin_session_token');
+                localStorage.removeItem('admin_session_ts');
+                // N-3修复（2026-10-10复审）：通知服务端删除 token，防止残留
+                try {
+                  const t = localStorage.getItem('dd_auth_token');
+                  if (t) {
+                    fetch(`${getBaseApiUrl()}/api/auth/logout`, {
+                      method: 'POST',
+                      headers: { 'X-Auth-Token': t },
+                    }).catch(() => {});
+                  }
+                } catch (_) {}
+                localStorage.removeItem('dd_auth_token');
                 setIsMobileMenuOpen(false);
                 setShowToast(true);
                 setToastMsg('🔒 运营安全校验已退出，重新限制面板接管');
@@ -4862,7 +5067,7 @@ export default function AdminPanel({
                                   )}
                                 </td>
                                 <td className="py-2.5 px-2 text-center">
-                                  {drvPhone === '15509601222' ? (
+                                  {drvPhone === DEVELOPER_PHONE ? (
                                     <span className="text-indigo-400 text-[9.5px] font-bold font-mono">最高开发者</span>
                                   ) : isSquadMember ? (
                                     <button
@@ -4877,6 +5082,7 @@ export default function AdminPanel({
                                       🔒 转为非小队内成员
                                     </button>
                                   ) : (
+                                    <>
                                     <button
                                       type="button"
                                       onClick={(e) => {
@@ -4888,6 +5094,21 @@ export default function AdminPanel({
                                     >
                                       🏆 转为小队内成员
                                     </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const reason = prompt('请输入拒绝原因（可选）：', '申请信息不符合小队要求，请完善后重新申请。');
+                                        if (reason !== null) {
+                                          handleRejectSquadApplication(drvPhone, reason);
+                                        }
+                                      }}
+                                      className="px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 font-bold rounded-lg text-[9.5px] transition-all cursor-pointer shadow-xs ml-1"
+                                      title="拒绝该小队申请"
+                                    >
+                                      ❌ 拒绝
+                                    </button>
+                                    </>
                                   )}
                                 </td>
                                 <td className="py-2.5 px-2 text-right text-slate-500 text-[10px] font-mono">

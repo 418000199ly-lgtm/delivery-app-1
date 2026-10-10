@@ -319,7 +319,8 @@ export function calculateOrderDriverDistance(
   orderStartLocation?: string,
   orderLat?: number | null,
   orderLng?: number | null,
-  driverCoords?: { lat: number; lng: number } | null
+  driverCoords?: { lat: number; lng: number } | null,
+  coordsUnknown?: boolean
 ): { distKm: number; displayDistText: string; resolvedLat: number; resolvedLng: number } {
   // 1. Resolve Driver Coords
   let dLat = driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng) ? Number(driverCoords.lat) : 0;

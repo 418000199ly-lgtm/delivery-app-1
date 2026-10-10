@@ -49,7 +49,7 @@ import {
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64, DRIVER_MASCOT_BASE64 } from '../assets/images/driverImageConstants';
-import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, formatDriverMaskedName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
+import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, formatDriverMaskedName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
 // Haversine Distance Formula (直线距离计算)
@@ -854,8 +854,7 @@ export default function MobileDispatchValetOrder({
           return parsed.filter((a: any) => {
             const fullKey = String(a?.phone || a?.id || '').trim();
             const p = fullKey.replace(/\D/g, '').trim();
-            if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
-            if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return false;
+            if (p === '15509601222') return false;
             if (fullKey.toUpperCase().endsWith('A') || a?.isMerchant || a?.accountType === 'merchant') return false;
             const name = String(a?.name || a?.applicantName || a?.driverName || '').trim();
             if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
@@ -899,7 +898,7 @@ export default function MobileDispatchValetOrder({
             if (item && (item.phone || item.id)) {
               const fullKey = String(item.phone || item.id || '').trim();
               const key = fullKey.replace(/\D/g, '').trim();
-              if (key === '15509601222' || key === '18695161718' || fullKey.includes('18695161718') || key.includes('718')) return;
+              if (key === '15509601222' || key.includes('718')) return;
               if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
               const rawName = String(item.name || item.driverName || item.applicantName || '').trim();
               if (rawName.includes('718') || rawName.includes('商户') || rawName.includes('商家')) return;
@@ -922,9 +921,9 @@ export default function MobileDispatchValetOrder({
           if (['app-1', 'app-2', 'app-3'].includes(a.id)) return false;
           const fullKey = String(a.phone || a.id || '').trim();
           const p = fullKey.replace(/\D/g, '').trim();
-          if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
+          if (p === '15509601222') return false;
           if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
-          if (removedSquadSet.has(p) || REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return false;
+          if (removedSquadSet.has(p)) return false;
           const name = String(a.name || a.applicantName || a.driverName || '').trim();
           if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
           if (isGenericDriverName(name, p)) return false;
@@ -953,7 +952,7 @@ export default function MobileDispatchValetOrder({
           const p = String(docSnap.id || data?.phone || '').trim();
           const cleanP = p.replace(/\D/g, '');
           const name = String(data?.name || data?.applicantName || data?.driverName || '').trim();
-          if (cleanP === '18695161718' || p.includes('18695161718') || cleanP.includes('718') || p.toUpperCase().endsWith('A') || name.includes('718') || name.includes('商户') || name.includes('商家')) {
+          if (p.toUpperCase().endsWith('A') || name.includes('718') || name.includes('商户') || name.includes('商家')) {
             deleteDoc(doc(db, 'squad_applications', docSnap.id)).catch(() => {});
             return;
           }
@@ -993,9 +992,8 @@ export default function MobileDispatchValetOrder({
               if (['app-1', 'app-2', 'app-3'].includes(a.id)) return false;
               const fullKey = String(a.phone || a.id || '').trim();
               const p = fullKey.replace(/\D/g, '').trim();
-              if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
+              if (p === '15509601222') return false;
               if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
-              if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return a.status === '已拒绝';
               const name = String(a.name || a.applicantName || a.driverName || '').trim();
               if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
               if (isGenericDriverName(name, p)) return a.status === '已拒绝';
@@ -1771,9 +1769,9 @@ export default function MobileDispatchValetOrder({
     try {
       const saved = localStorage.getItem('dd_removed_squad_phones_v2');
       const list = saved ? JSON.parse(saved) : [];
-      return Array.from(new Set([...list, ...REMOVED_GENERIC_DRIVER_PHONES]));
+      return Array.from(new Set([...list, ]));
     } catch (_) {}
-    return [...REMOVED_GENERIC_DRIVER_PHONES];
+    return [];
   });
 
   const [merchantUsers, setMerchantUsers] = useState<any[]>(() => {
@@ -1817,11 +1815,6 @@ export default function MobileDispatchValetOrder({
         const data = d.data();
         const p = String(data?.phone || d.id || '').trim();
         const cleanP = p.replace(/\D/g, '');
-        if (cleanP === '18695161718' || p.includes('18695161718')) {
-          deleteDoc(doc(db, 'merchant_users', d.id)).catch(() => {});
-          deleteDoc(doc(db, 'merchant_accounts', d.id)).catch(() => {});
-          return;
-        }
         if (p.toUpperCase().endsWith('A')) {
           list.push({ id: d.id, ...data });
         }
@@ -4962,7 +4955,6 @@ export default function MobileDispatchValetOrder({
           const phone = String(item.phone || item.id || '').replace(/\D/g, '').trim();
           if (phone === '15509601222') return false;
           if (isMockDriver(item)) return true;
-          if (REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) return true;
 
           const activeRemoved = getRemovedSquadSet();
           if (activeRemoved.has(phone)) return true;
@@ -5003,11 +4995,6 @@ export default function MobileDispatchValetOrder({
             const rawPhone = String(m.phone || m.id || '').trim();
             const cleanPhone = rawPhone.replace(/\D/g, '').trim();
 
-            // 彻底删除 18695161718A / 18695161718 商户记录
-            if (rawPhone.includes('18695161718') || cleanPhone === '18695161718') {
-              if (rawPhone.toUpperCase().endsWith('A') || m.role === '商户、商家') return;
-            }
-
             // 严格识别：只有带有 'A' 尾缀的才是商户；未带 'A' 的 15509601222 才是开发者司机！
             const isMerchant = rawPhone.toUpperCase().endsWith('A');
             const isMaster = !isMerchant && cleanPhone === '15509601222';
@@ -5027,7 +5014,7 @@ export default function MobileDispatchValetOrder({
                 : (isMaster ? '开发者司机' : (rawRole === '商户、商家' ? '普通司机' : rawRole));
 
               // 只有拥有真实姓名的正式小队成员才会在 App 成员列表 (w14) 展示！非小队通用账号 (如 司机0116) 彻底排除！
-              if (!isMerchant && (isGenericDriverName(memberName, cleanPhone) || REMOVED_GENERIC_DRIVER_PHONES.includes(cleanPhone))) {
+              if (!isMerchant && (isGenericDriverName(memberName, cleanPhone))) {
                 return;
               }
 
@@ -5069,10 +5056,7 @@ export default function MobileDispatchValetOrder({
           const rawP = String(mu?.phone || mu?.id || '').trim();
           const cleanP = rawP.replace(/\D/g, '').trim();
 
-          // 彻底取消 18695161718A / 18695161718 显示
-          if (cleanP === '18695161718' || rawP.includes('18695161718')) return;
-
-          // 必须是以 'A' 结尾的隐形/显式商户账号！纯数字手机号（如 18695161718、15509601222）在 App 点击商户代叫组件绝不作为商户账号！
+          // 必须是以 'A' 结尾的隐形/显式商户账号！纯数字手机号（如 15509601222）在 App 点击商户代叫组件绝不作为商户账号！
           if (!rawP || !rawP.toUpperCase().endsWith('A') || isRemovedItem(mu)) return;
 
           const displayName = mu.name && mu.name !== '商户、商家' ? mu.name : `商户${rawP}`;
@@ -5126,7 +5110,7 @@ export default function MobileDispatchValetOrder({
 
         const removedSet = new Set<string>(
           (removedMemberPhones || [])
-            .concat(REMOVED_GENERIC_DRIVER_PHONES)
+            
             .map((p: any) => String(p).replace(/\D/g, '').trim())
             .filter(Boolean)
         );

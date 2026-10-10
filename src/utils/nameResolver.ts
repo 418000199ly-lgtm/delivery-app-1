@@ -113,27 +113,8 @@ export function canClearListPermission(role: string, phone?: string): boolean {
 }
 
 /**
- * Permanently kicked-out mock / generic / unauthorized driver phones
+ * 硬编码黑名单已删除（2026-10-10）：用户要求取消号码限制，改由服务端"已删除司机"标记控制
  */
-export const REMOVED_GENERIC_DRIVER_PHONES = [
-  '17866167770', // 魏秉金
-  '19995179865', // 张栋
-  '13099566633', // 李鑫
-  '18893028825', // 何威
-  '18795101111', // 尹柏学
-  '18095513011', // 杨海
-  '13895299147', // 司机9147
-  '17660453634', // 司机3634
-  '13812345678', // 司机5678
-  '13912345678', // 司机5678
-  '19995426058', // 司机6058
-  '18195005671', // 司机5671
-  '15509601223', // 司机1223
-  '18695103399', // 司机3399
-  '18695106647', // 司机6647
-  '15555556666',
-  'm-1', 'm-2', 'm-3'
-];
 
 export function getRemovedSquadSet(): Set<string> {
   const set = new Set<string>();
@@ -180,10 +161,6 @@ export function isOfficialSquadMember(drv: any, removedSet?: Set<string>): boole
 
   // 2. 15509601222 开发者司机常驻小队正式成员，拥有最高权限，永远为 true
   if (p === '15509601222') return true;
-
-  if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) {
-    return false;
-  }
 
   const activeRemovedSet = removedSet || getRemovedSquadSet();
   if (activeRemovedSet.has(p)) {
@@ -469,7 +446,6 @@ export function isGenericDriverName(name?: string | null, phone?: string | null)
     return false;
   }
   if (!cleanPhone || cleanPhone.length !== 11) return true;
-  if (cleanPhone && REMOVED_GENERIC_DRIVER_PHONES.includes(cleanPhone)) return true;
 
   if (!name || typeof name !== 'string') {
     return true;
@@ -862,4 +838,19 @@ export function calculateDaysFromExpiry(expiry?: string): string {
   } catch (_) {
     return '0';
   }
+}
+
+// 补缺失的导出（2026-10-10修复：stash版本引用了不存在的函数）
+export function isMerchantAccountUnified(drv: any): boolean {
+  if (!drv) return false;
+  const phone = String(drv.phone || drv.id || '');
+  if (phone.toUpperCase().endsWith('A')) return true;
+  if (drv.isMerchant === true || drv.accountType === 'merchant') return true;
+  if (drv.role === '商户' || drv.role === '商家' || drv.role === '商户、商家') return true;
+  return false;
+}
+
+export function isSquadAppPending(status: any): boolean {
+  const s = String(status || '').trim();
+  return s === '待审核' || s === 'pending' || s === '审核中';
 }

@@ -48,7 +48,7 @@ import {
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64 } from '../assets/images/driverImageConstants';
-import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, REMOVED_GENERIC_DRIVER_PHONES, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
+import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
 // Haversine Distance Formula (直线距离计算)
@@ -512,7 +512,7 @@ export default function DispatchValetOrder({
     };
 
     fetchBaotaQr();
-    const intervalId = setInterval(fetchBaotaQr, 3000);
+    const intervalId = setInterval(fetchBaotaQr, 5000);
 
     return () => {
       isMounted = false;
@@ -675,7 +675,6 @@ export default function DispatchValetOrder({
             const fullKey = String(a?.phone || a?.id || '').trim();
             const p = fullKey.replace(/\D/g, '').trim();
             if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
-            if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return false;
             if (fullKey.toUpperCase().endsWith('A') || a?.isMerchant || a?.accountType === 'merchant') return false;
             const name = String(a?.name || a?.applicantName || a?.driverName || '').trim();
             if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
@@ -744,7 +743,7 @@ export default function DispatchValetOrder({
           const p = fullKey.replace(/\D/g, '').trim();
           if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
           if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
-          if (removedSquadSet.has(p) || REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return false;
+          if (removedSquadSet.has(p)) return false;
           const name = String(a.name || a.applicantName || a.driverName || '').trim();
           if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
           if (isGenericDriverName(name, p)) return false;
@@ -763,7 +762,7 @@ export default function DispatchValetOrder({
     };
 
     fetchAppsHttp();
-    const appHttpInterval = setInterval(fetchAppsHttp, 3000);
+    const appHttpInterval = setInterval(fetchAppsHttp, 5000);
 
     if (db) {
       unsubApps = onSnapshot(collection(db, 'squad_applications'), (snapshot) => {
@@ -815,7 +814,6 @@ export default function DispatchValetOrder({
               const p = fullKey.replace(/\D/g, '').trim();
               if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
               if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
-              if (REMOVED_GENERIC_DRIVER_PHONES.includes(p)) return a.status === '已拒绝';
               const name = String(a.name || a.applicantName || a.driverName || '').trim();
               if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
               if (isGenericDriverName(name, p)) return a.status === '已拒绝';
@@ -1589,9 +1587,9 @@ export default function DispatchValetOrder({
     try {
       const saved = localStorage.getItem('dd_removed_squad_phones_v2');
       const list = saved ? JSON.parse(saved) : [];
-      return Array.from(new Set([...list, ...REMOVED_GENERIC_DRIVER_PHONES]));
+      return Array.from(new Set([...list, ]));
     } catch (_) {}
-    return [...REMOVED_GENERIC_DRIVER_PHONES];
+    return [];
   });
 
   const [merchantUsers, setMerchantUsers] = useState<any[]>(() => {
@@ -2257,7 +2255,7 @@ export default function DispatchValetOrder({
     };
 
     fetchFromAliyunHttp();
-    const httpInterval = setInterval(fetchFromAliyunHttp, 3000);
+    const httpInterval = setInterval(fetchFromAliyunHttp, 5000);
 
     const unsubscribe = onSnapshot(collection(db, 'driver_users'), (snapshot) => {
       const list: any[] = [];
@@ -4504,7 +4502,6 @@ export default function DispatchValetOrder({
           const phone = String(item.phone || item.id || '').replace(/\D/g, '').trim();
           if (phone === '15509601222') return false;
           if (isMockDriver(item)) return true;
-          if (REMOVED_GENERIC_DRIVER_PHONES.includes(phone)) return true;
 
           const activeRemovedSet = getRemovedSquadSet();
           if (
@@ -4564,7 +4561,7 @@ export default function DispatchValetOrder({
                 ? '商户、商家' 
                 : (isMaster ? '开发者司机' : (rawRole === '商户、商家' ? '普通司机' : rawRole));
 
-              if (!isMerchant && (isGenericDriverName(memberName, cleanPhone) || REMOVED_GENERIC_DRIVER_PHONES.includes(cleanPhone))) {
+              if (!isMerchant && (isGenericDriverName(memberName, cleanPhone))) {
                 return;
               }
 
@@ -4663,7 +4660,7 @@ export default function DispatchValetOrder({
 
         const removedSet = new Set<string>(
           (removedMemberPhones || [])
-            .concat(REMOVED_GENERIC_DRIVER_PHONES)
+            
             .map((p: any) => String(p).replace(/\D/g, '').trim())
             .filter(Boolean)
         );

@@ -1,7 +1,27 @@
 import { safeSetItem } from '../utils/safeStorage';
+import { DEVELOPER_PHONE } from '../utils/constants';
+
+// 缓存版本：每次发版递增，自动隔离旧缓存，防止预览显示过期数据
+// 中国大陆项目：数据直连阿里云，禁用被墙服务
+const DB_CACHE_VERSION = 'v20261010e';
 
 // DB reference object for Mainland China Aliyun Baota MySQL REST API interface compatibility
 const dbPlaceholder = { _isProxy: true };
+
+// 启动时清理旧版本缓存，防止显示过期数据（一次性）
+try {
+  const lastVer = localStorage.getItem('db_cache_version');
+  if (lastVer !== DB_CACHE_VERSION) {
+    Object.keys(localStorage).filter(k => k.startsWith('mock_db_')).forEach(k => {
+      try { localStorage.removeItem(k); } catch (_) {}
+    });
+    // 清理 AdminPanel 的聚合缓存
+    ['cached_unified_drivers', 'dd_squad_members_v2', 'dd_applicants_v2', 'dd_removed_squad_phones_v2'].forEach(k => {
+      try { localStorage.removeItem(k); } catch (_) {}
+    });
+    localStorage.setItem('db_cache_version', DB_CACHE_VERSION);
+  }
+} catch (_) {}
 
 // Types for Aliyun Baota MySQL / Native REST API document structure
 export class ProxyDocumentSnapshot {
@@ -39,6 +59,18 @@ export class ProxyQuerySnapshot {
 }
 
 // Global settings to route API requests to Mainland China Aliyun Baota server
+
+/** 获取认证请求头：短信登录后服务端签发的 token，用于 /api/db/* 写操作鉴权 */
+export function getAuthHeaders(): Record<string, string> {
+  try {
+    const token = localStorage.getItem('dd_auth_token');
+    if (token) {
+      return { 'X-Auth-Token': token };
+    }
+  } catch (_) {}
+  return {};
+}
+
 export function getBaseApiUrl(): string {
   try {
     const customUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('custom_api_base_url');
@@ -170,7 +202,7 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     const result = await res.json();
     if (result.exists && result.data) {
       try {
-        const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
+        const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
         safeSetItem(cacheKey, JSON.stringify(result.data));
       } catch (_) {}
     }
@@ -178,10 +210,10 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
   } catch (err: any) {
     // Secondary simulation fallback to guarantee absolute offline stability
     const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
-    if (DRIVER_COLLECTIONS.includes(docRef.collectionName) && cleanId !== '15509601222') {
+    if (DRIVER_COLLECTIONS.includes(docRef.collectionName) && cleanId !== DEVELOPER_PHONE) {
       return new ProxyDocumentSnapshot(cleanId, null, false);
     }
-    const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
+    const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
     const cached = localStorage.getItem(cacheKey);
     let parsed = cached ? JSON.parse(cached) : null;
     return new ProxyDocumentSnapshot(cleanId, parsed, Boolean(parsed));
@@ -195,7 +227,7 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
   const isMerge = options?.merge !== false; // Default to merge: true
   
   // Cache locally first for instant reactive response and local offline availability
-  const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
+  const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
   try {
     if (isMerge) {
       const existing = localStorage.getItem(cacheKey);
@@ -217,7 +249,7 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
   try {
     const res = await safeFetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         col: docRef.collectionName,
         id: cleanId,
@@ -241,7 +273,7 @@ export async function updateDoc(docRef: any, data: any) {
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
 
   // Merge locally in mock store first
-  const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
+  const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
   try {
     const current = localStorage.getItem(cacheKey);
     const parsed = current ? JSON.parse(current) : {};
@@ -259,7 +291,7 @@ export async function updateDoc(docRef: any, data: any) {
   try {
     const res = await safeFetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         col: docRef.collectionName,
         id: cleanId,
@@ -280,7 +312,7 @@ export async function deleteDoc(docRef: any) {
   const url = `${baseUrl}/api/db/delete`;
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
 
-  const cacheKey = `mock_db_${docRef.collectionName}_${cleanId}`;
+  const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
   try {
     localStorage.removeItem(cacheKey);
   } catch (_) {}
@@ -288,7 +320,7 @@ export async function deleteDoc(docRef: any) {
   try {
     const res = await safeFetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         col: docRef.collectionName,
         id: cleanId
@@ -308,7 +340,7 @@ export async function addDoc(collectionRef: any, data: any) {
   const url = `${baseUrl}/api/db/add`;
   const randomId = 'doc_' + Math.random().toString(36).substring(2, 11);
   
-  const tempCacheKey = `mock_db_${collectionRef.collectionName}_${randomId}`;
+  const tempCacheKey = `mock_db_${DB_CACHE_VERSION}_${collectionRef.collectionName}_${randomId}`;
   try {
     localStorage.setItem(tempCacheKey, JSON.stringify(data));
   } catch (_) {}
@@ -316,7 +348,7 @@ export async function addDoc(collectionRef: any, data: any) {
   try {
     const res = await safeFetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         col: collectionRef.collectionName,
         data
@@ -331,7 +363,7 @@ export async function addDoc(collectionRef: any, data: any) {
     // Clean up temporary pre-cache key and update with real server document ID
     try {
       localStorage.removeItem(tempCacheKey);
-      localStorage.setItem(`mock_db_${collectionRef.collectionName}_${finalId}`, JSON.stringify(data));
+      localStorage.setItem(`mock_db_${DB_CACHE_VERSION}_${collectionRef.collectionName}_${finalId}`, JSON.stringify(data));
     } catch (_) {}
 
     return { id: finalId };
@@ -366,7 +398,7 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
     try {
       if (!constraints || constraints.length === 0) {
         const serverDocIds = new Set((result.docs || []).map((d: any) => String(d.id)));
-        const prefix = `mock_db_${colName}_`;
+        const prefix = `mock_db_${DB_CACHE_VERSION}_${colName}_`;
         const now = Date.now();
         for (let i = localStorage.length - 1; i >= 0; i--) {
           const key = localStorage.key(i);
@@ -390,7 +422,7 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
         }
         (result.docs || []).forEach((d: any) => {
           if (d && d.id) {
-            localStorage.setItem(`mock_db_${colName}_${d.id}`, JSON.stringify(d.data));
+            localStorage.setItem(`mock_db_${DB_CACHE_VERSION}_${colName}_${d.id}`, JSON.stringify(d.data));
           }
         });
       }
@@ -405,9 +437,9 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
-        if (key && key.startsWith(`mock_db_${colName}_`)) {
-          const docId = key.substring(`mock_db_${colName}_`.length);
-          if (DRIVER_COLLECTIONS.includes(colName) && docId !== '15509601222') {
+        if (key && key.startsWith(`mock_db_${DB_CACHE_VERSION}_${colName}_`)) {
+          const docId = key.substring(`mock_db_${DB_CACHE_VERSION}_${colName}_`.length);
+          if (DRIVER_COLLECTIONS.includes(colName) && docId !== DEVELOPER_PHONE) {
             continue;
           }
           const cached = localStorage.getItem(key);
@@ -488,12 +520,12 @@ export function onSnapshot(
     } catch (_) {}
   }
 
-  // Adaptive polling: 1500ms when tab is visible, 8000ms when hidden/background to minimize server CPU
+  // Adaptive polling: P0-2优化 5000ms 可见/30000ms 后台（原 1500/8000），支撑3000并发
   const getPollInterval = () => {
     if (typeof document !== 'undefined' && document.hidden) {
-      return 8000;
+      return 30000;
     }
-    return 1500;
+    return 5000;
   };
 
   let pollTimer: any = null;
@@ -545,7 +577,7 @@ export async function clearCollection(colName: string) {
 
   // Clean up local storage caches for this collection
   try {
-    const prefix = `mock_db_${colName}_`;
+    const prefix = `mock_db_${DB_CACHE_VERSION}_${colName}_`;
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
       if (key && key.startsWith(prefix)) {
@@ -557,7 +589,7 @@ export async function clearCollection(colName: string) {
   try {
     const res = await safeFetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ col: colName })
     });
     if (!res.ok) {

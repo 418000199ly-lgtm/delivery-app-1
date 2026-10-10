@@ -36,7 +36,7 @@ import { Sparkles, CheckCircle, Database, Smartphone, Users, ShieldAlert, FileCo
 import AdminPanel from './components/AdminPanel';
 import LoginView from './components/LoginView';
 import MobileDispatchValetOrder from './components/MobileDispatchValetOrder';
-import { db, doc, onSnapshot, setDoc, deleteDoc, collection, getDoc, getBaseApiUrl } from './lib/dbProxy';
+import { db, doc, onSnapshot, setDoc, deleteDoc, collection, getDoc, getBaseApiUrl, getAuthHeaders } from './lib/dbProxy';
 import { IncomingOrderOverlay } from './components/IncomingOrderOverlay';
 import { speakText, initAudioUnlock } from './utils/speech';
 import { 
@@ -51,6 +51,7 @@ import { getDeviceId, clearDeviceSession } from './utils/deviceSession';
 import { downloadDeployZip } from './utils/downloadHelper';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusyStatus } from './utils/powerAndLocationManager';
+import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
 
 const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => {
   const norm = (cityName || '').trim();
@@ -382,7 +383,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return params.get('driver');
   });
   const [userPhone, setUserPhone] = useState<string | null>(() => {
-    return localStorage.getItem('dd_user_phone') || null;
+    // 司机登录：不设过期，手动登出前一直保持登录（用户2026-10-10要求）
+    try {
+      const phone = localStorage.getItem('dd_user_phone');
+      if (phone) {
+        // 手机号格式校验
+        if (!/^1[3-9]\d{9}$/.test(phone)) {
+          localStorage.removeItem('dd_user_phone');
+          localStorage.removeItem('dd_login_ts');
+          return null;
+        }
+      }
+      return phone || null;
+    } catch (_) {
+      return localStorage.getItem('dd_user_phone') || null;
+    }
   });
   const [isUserDataLoaded, setIsUserDataLoaded] = useState<boolean>(false);
 
@@ -416,10 +431,36 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   // Initialize Audio Context & Speech Synthesis unlock listener
   useEffect(() => {
     initAudioUnlock();
+    // 启动时校验 token 与手机号一致性（2026-10-10修复）：防止改 localStorage 冒充他人
+    (async () => {
+      try {
+        const phone = localStorage.getItem('dd_user_phone');
+        const token = localStorage.getItem('dd_auth_token');
+        if (phone && token) {
+          const baseUrl = getBaseApiUrl();
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 5000);
+          const res = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${encodeURIComponent(phone)}&_t=${Date.now()}`, {
+            headers: { 'X-Auth-Token': token },
+            signal: ctrl.signal,
+          });
+          clearTimeout(tid);
+          if (res.status === 401 || res.status === 403) {
+            // token 无效或与手机号不匹配，清理登录态强制重登
+            ['dd_user_phone', 'dd_auth_token', 'isAdminAuthenticated', 'admin_session_token', 'admin_session_ts'].forEach(k => {
+              try { localStorage.removeItem(k); } catch (_) {}
+            });
+            alert('⚠️ 登录已失效，请重新短信登录。');
+            window.location.reload();
+          }
+        }
+      } catch (_) {
+        // 网络异常时不强制登出，避免离线误伤
+      }
+    })();
   }, []);
 
-  // Current software app version
-  const CURRENT_CLIENT_APP_VERSION = 'V2.0';
+  // Current software app version（集中管理：src/utils/constants.ts，直接使用导入的常量）
 
   const isClientNeedsUpgrade = (clientVer: string, targetVer: string, force: boolean) => {
     if (!force) return false;
@@ -505,7 +546,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             for (const prefix of prefixes) {
               if (key.startsWith(prefix)) {
                 const docId = key.substring(prefix.length);
-                if (docId !== '15509601222') {
+                if (docId !== DEVELOPER_PHONE) {
                   localStorage.removeItem(key);
                 }
                 break;
@@ -518,10 +559,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         localStorage.setItem('dd_applicants_v2', '[]');
         localStorage.setItem('dd_squad_applications_v2', '[]');
         localStorage.setItem('dd_squad_members_v2', JSON.stringify([
-          { id: '15509601222', phone: '15509601222', phoneNumber: '15509601222', driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+          { id: DEVELOPER_PHONE, phone: DEVELOPER_PHONE, phoneNumber: DEVELOPER_PHONE, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
         ]));
         localStorage.setItem('cached_unified_drivers', JSON.stringify([
-          { id: '15509601222', phone: '15509601222', phoneNumber: '15509601222', driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
+          { id: DEVELOPER_PHONE, phone: DEVELOPER_PHONE, phoneNumber: DEVELOPER_PHONE, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
         ]));
         localStorage.setItem('dd_merchant_users_v2', '[]');
         localStorage.setItem('dd_team_members', '[]');
@@ -631,7 +672,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const isBatch = Boolean(detail?.isBatch || !cleanDetailPhone);
 
       if ((isBatch || cleanDetailPhone === cleanUserPhone) && detail.vipExpiry !== undefined) {
-        if (cleanUserPhone !== '15509601222' || !isBatch) {
+        if (cleanUserPhone !== DEVELOPER_PHONE || !isBatch) {
           const freshVip = String(detail.vipExpiry).trim();
           setSettings(prev => {
             if (prev.vipExpiry !== freshVip) {
@@ -709,7 +750,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           const cleanMsgPhone = String(msg?.phone || '').replace(/\D/g, '').trim();
           const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
           if (msg && msg.type === 'batch_vip_50d_update' && msg.targetExpiry) {
-            if (cleanUserPhone !== '15509601222') {
+            if (cleanUserPhone !== DEVELOPER_PHONE) {
               setSettings(prev => {
                 if (prev.vipExpiry !== msg.targetExpiry) {
                   const updated = { ...prev, vipExpiry: msg.targetExpiry };
@@ -752,7 +793,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }, [userPhone]);
 
   const isCurrentUserRemoved = () => {
-    if (!userPhone || userPhone === '15509601222') return false;
+    if (!userPhone || userPhone === DEVELOPER_PHONE) return false;
     try {
       const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
       if (savedR && JSON.parse(savedR).includes(userPhone)) return true;
@@ -762,7 +803,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const isUserSquadMember = () => {
     if (!userPhone) return false;
-    if (userPhone === '15509601222') return true;
+    if (userPhone === DEVELOPER_PHONE) return true;
     if (isCurrentUserRemoved()) return false;
     try {
       if (localStorage.getItem(`dd_approved_${userPhone}`) === 'true') return true;
@@ -777,7 +818,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   };
 
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
-  const userRole = (userPhone === '15509601222')
+  const userRole = (userPhone === DEVELOPER_PHONE)
     ? '开发者司机'
     : (isCurrentUserRemoved() ? '普通司机' : (squadRole || (loggedInMember ? loggedInMember.role : '普通司机')));
   const userTeamCity = loggedInMember ? loggedInMember.city : '';
@@ -823,7 +864,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   const [isSquadApprovedOrManagement, setIsSquadApprovedOrManagement] = useState<boolean>(() => {
     try {
       const phone = localStorage.getItem('dd_user_phone') || '';
-      if (phone === '15509601222') return true;
+      if (phone === DEVELOPER_PHONE) return true;
       if (phone && localStorage.getItem(`dd_approved_${phone}`) === 'true') return true;
       if (phone && localStorage.getItem(`dd_in_squad_${phone}`) === 'true') return true;
     } catch (_) {}
@@ -837,7 +878,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     }
 
     const managementRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者'];
-    if (userPhone === '15509601222') {
+    if (userPhone === DEVELOPER_PHONE) {
       setIsSquadApprovedOrManagement(true);
     }
 
@@ -866,7 +907,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           // 实时通知全局小队成员组件同步剔除
           window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { removedList: removed } }));
 
-          if (userPhone && userPhone !== '15509601222' && removed.includes(userPhone)) {
+          if (userPhone && userPhone !== DEVELOPER_PHONE && removed.includes(userPhone)) {
             setIsSquadApprovedOrManagement(prev => (prev ? false : prev));
             setSquadRole(prev => (prev !== '普通司机' ? '普通司机' : prev));
             const wasApproved = localStorage.getItem(`dd_approved_${userPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true';
@@ -903,7 +944,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const unsub2 = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
       if (snap.exists()) {
         const sm = snap.data();
-        if (userPhone !== '15509601222') {
+        if (userPhone !== DEVELOPER_PHONE) {
           const st = sm?.status || sm?.approvalStatus || '';
           if (['已通过', 'approved', '通过'].includes(st)) {
             checkAndSetApproved(true);
@@ -923,7 +964,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           }
         }
       } else {
-        if (userPhone !== '15509601222') {
+        if (userPhone !== DEVELOPER_PHONE) {
           setIsSquadApprovedOrManagement(false);
           try {
             localStorage.removeItem(`dd_approved_${userPhone}`);
@@ -937,7 +978,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const unsub3 = onSnapshot(doc(db, 'squad_applications', userPhone), (snap) => {
       if (snap.exists()) {
         const app = snap.data();
-        if (userPhone !== '15509601222') {
+        if (userPhone !== DEVELOPER_PHONE) {
           const st = app?.status || '';
           if (['已通过', 'approved', '通过'].includes(st)) {
             checkAndSetApproved(true);
@@ -953,7 +994,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         }
       }
       if (!snap.exists()) {
-        if (userPhone !== '15509601222') {
+        if (userPhone !== DEVELOPER_PHONE) {
           setIsSquadApprovedOrManagement(false);
           try {
             localStorage.removeItem(`dd_approved_${userPhone}`);
@@ -1001,7 +1042,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
                 // Realtime role synchronization from driver_users
                 const freshRole = uData?.role || uData?.userRole || uData?.position || '普通司机';
-                if (userPhone !== '15509601222') {
+                if (userPhone !== DEVELOPER_PHONE) {
                   setSquadRole(freshRole);
                   try {
                     const currentLocalRole = localStorage.getItem('dd_user_role');
@@ -1034,7 +1075,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         }
 
         // 2. 检查当前司机是否已被管理员移出小队
-        if (userPhone && userPhone !== '15509601222') {
+        if (userPhone && userPhone !== DEVELOPER_PHONE) {
           let isUserRemoved = false;
           try {
             const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
@@ -1118,7 +1159,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             }
           } else {
             // Document does not exist in squad_members database
-            if (userPhone && userPhone !== '15509601222') {
+            if (userPhone && userPhone !== DEVELOPER_PHONE) {
               setIsSquadApprovedOrManagement(false);
               try {
                 localStorage.removeItem(`dd_approved_${userPhone}`);
@@ -1149,7 +1190,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     const handleRoleUpdateForApp = () => {
       const curPhone = userPhone || localStorage.getItem('dd_user_phone') || '';
-      if (!curPhone || curPhone === '15509601222') return;
+      if (!curPhone || curPhone === DEVELOPER_PHONE) return;
 
       let isRemoved = false;
       try {
@@ -1251,33 +1292,33 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       // 100% Mainland China Aliyun Baota REST endpoints
       fetch(`${baseUrl}/api/driver/offline`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ phone: targetPhone, reason })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'driver_users', docId: targetPhone, data: offlinePayload, merge: true })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       if (isUserSquadMember()) {
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'squad_members', docId: targetPhone, data: offlinePayload, merge: true })
-        }).catch(() => {});
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
 
       fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           phone: targetPhone,
           isOnline: false,
           timestamp: Date.now()
         })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
 
     // Daily 05:59 silent offline transition
@@ -1406,22 +1447,22 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         lastOfflineTime: new Date().toISOString()
       };
       if (db) {
-        setDoc(doc(db, 'driver_locations', userPhone), offlinePayload, { merge: true }).catch(() => {});
-        setDoc(doc(db, 'driver_users', userPhone), offlinePayload, { merge: true }).catch(() => {});
-        setDoc(doc(db, 'squad_members', userPhone), offlinePayload, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'driver_locations', userPhone), offlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+        setDoc(doc(db, 'driver_users', userPhone), offlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+        setDoc(doc(db, 'squad_members', userPhone), offlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
       try {
         const baseUrl = getBaseApiUrl();
         fetch(`${baseUrl}/api/driver/location`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             phone: userPhone,
             isOnline: false,
             isBusy: false,
             timestamp: Date.now()
           })
-        }).catch(() => {});
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       } catch (_) {}
     }
     // Clear all settings and user-specific keys from localStorage
@@ -1431,12 +1472,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       localStorage.removeItem('dd_user_phone');
       localStorage.removeItem('dd_settings');
       localStorage.removeItem('dd_user_role');
+      localStorage.removeItem('dd_login_ts');
+      localStorage.removeItem('dd_auth_token');
       localStorage.removeItem('dd_current_trip');
       localStorage.removeItem('dd_current_order');
       localStorage.removeItem('dd_active_incoming_order');
       localStorage.removeItem('dd_user_wechat_qr');
       localStorage.removeItem('dd_dispatch_wechat_qr');
       localStorage.removeItem('dd_dispatch_fee_qr');
+      // 二维码：退出登录时清除本地保存，重新登录必须重新上传（用户要求）
+      localStorage.removeItem('dd_user_wechat_clean_qr');
+      localStorage.removeItem('dd_last_payment_qr');
+      localStorage.removeItem('dd_user_alipay_qr');
+      localStorage.removeItem('dd_dispatch_alipay_qr');
       if (userPhone) {
         localStorage.removeItem(`dd_settings_${userPhone}`);
         localStorage.removeItem(`dd_billing_rules_${userPhone}`);
@@ -1445,6 +1493,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         localStorage.removeItem(`dd_squad_member_${userPhone}`);
         localStorage.removeItem(`dd_dispatch_wechat_qr_${userPhone}`);
         localStorage.removeItem(`dd_dispatch_fee_qr_${userPhone}`);
+        localStorage.removeItem(`dd_dispatch_alipay_qr_${userPhone}`);
+        localStorage.removeItem(`dd_user_wechat_clean_qr_${userPhone}`);
       }
       for (let i = localStorage.length - 1; i >= 0; i--) {
         const key = localStorage.key(i);
@@ -1565,7 +1615,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         } catch (_) {
           setSettings({
             ...DEFAULT_SETTINGS,
-            customAppName: userPhone === '15509601222' ? '滴滴代驾' : 'XX代驾',
+            customAppName: userPhone === DEVELOPER_PHONE ? '滴滴代驾' : 'XX代驾',
             vipExpiry: DEFAULT_SETTINGS.vipExpiry
           });
         }
@@ -1573,7 +1623,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         setSettings(prev => ({
           ...DEFAULT_SETTINGS,
           ...prev,
-          customAppName: userPhone === '15509601222' ? '滴滴代驾' : (prev.customAppName || 'XX代驾'),
+          customAppName: userPhone === DEVELOPER_PHONE ? '滴滴代驾' : (prev.customAppName || 'XX代驾'),
           vipExpiry: prev.vipExpiry || DEFAULT_SETTINGS.vipExpiry
         }));
       }
@@ -1653,7 +1703,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               changed = true;
             }
             if (data.driverName !== undefined && data.driverName && data.driverName !== '代驾司机' && data.driverName !== '在线代驾司机') {
-              if (userPhone === '15509601222' || data.driverName !== '吴彦祖') {
+              if (userPhone === DEVELOPER_PHONE || data.driverName !== '吴彦祖') {
                 if (prev.driverName !== data.driverName) {
                   nextSettings.driverName = data.driverName;
                   changed = true;
@@ -1684,10 +1734,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               nextSettings.homepageColorway = data.homepageColorway;
               changed = true;
             }
+            // b3要求：收款码只读App本地，绝不从服务器调取
+            // 以下服务器→本地的微信二维码同步已禁用（2026-10-10）
+            // 本地截图上传的二维码为唯一来源，服务器仅做备份
             const isQrDeleted = typeof window !== 'undefined' && userPhone ? localStorage.getItem(`dd_qr_deleted_${userPhone}`) === 'true' : false;
-            const incomingWechatQr = data.wechatQrCode !== undefined ? (data.wechatQrCode || data.qrCode || data.qrcode_url || '') : (data.qrCode || data.qrcode_url);
+            // const incomingWechatQr = data.wechatQrCode !== undefined ? (data.wechatQrCode || data.qrCode || data.qrcode_url || '') : (data.qrCode || data.qrcode_url);
             
-            if (isQrDeleted || incomingWechatQr === '') {
+            if (isQrDeleted) {
               if (prev.wechatQrCode !== '') {
                 nextSettings.wechatQrCode = '';
                 changed = true;
@@ -1699,26 +1752,28 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                   localStorage.removeItem('dd_user_wechat_clean_qr');
                 } catch (_) {}
               }
-            } else if (incomingWechatQr && typeof incomingWechatQr === 'string' && incomingWechatQr.trim() && prev.wechatQrCode !== incomingWechatQr) {
-              nextSettings.wechatQrCode = incomingWechatQr.trim();
-              changed = true;
-              try {
-                localStorage.removeItem(`dd_qr_deleted_${userPhone}`);
-                localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, incomingWechatQr.trim());
-                localStorage.setItem('dd_dispatch_wechat_qr', incomingWechatQr.trim());
-                localStorage.setItem('dd_user_wechat_qr', incomingWechatQr.trim());
-              } catch (_) {}
             }
-            const incomingAlipayQr = data.alipayQrCode;
-            if (incomingAlipayQr && typeof incomingAlipayQr === 'string' && incomingAlipayQr.trim() && prev.alipayQrCode !== incomingAlipayQr) {
-              nextSettings.alipayQrCode = incomingAlipayQr.trim();
-              changed = true;
-              try {
-                localStorage.setItem(`dd_dispatch_alipay_qr_${userPhone}`, incomingAlipayQr.trim());
-                localStorage.setItem('dd_dispatch_alipay_qr', incomingAlipayQr.trim());
-                localStorage.setItem('dd_user_alipay_qr', incomingAlipayQr.trim());
-              } catch (_) {}
-            }
+            // else if (incomingWechatQr && typeof incomingWechatQr === 'string' && incomingWechatQr.trim() && prev.wechatQrCode !== incomingWechatQr) {
+            //   nextSettings.wechatQrCode = incomingWechatQr.trim();
+            //   changed = true;
+            //   try {
+            //     localStorage.removeItem(`dd_qr_deleted_${userPhone}`);
+            //     localStorage.setItem(`dd_dispatch_wechat_qr_${userPhone}`, incomingWechatQr.trim());
+            //     localStorage.setItem('dd_dispatch_wechat_qr', incomingWechatQr.trim());
+            //     localStorage.setItem('dd_user_wechat_qr', incomingWechatQr.trim());
+            //   } catch (_) {}
+            // }
+            // 支付宝同理：只读本地，不从服务器同步
+            // const incomingAlipayQr = data.alipayQrCode;
+            // if (incomingAlipayQr && typeof incomingAlipayQr === 'string' && incomingAlipayQr.trim() && prev.alipayQrCode !== incomingAlipayQr) {
+            //   nextSettings.alipayQrCode = incomingAlipayQr.trim();
+            //   changed = true;
+            //   try {
+            //     localStorage.setItem(`dd_dispatch_alipay_qr_${userPhone}`, incomingAlipayQr.trim());
+            //     localStorage.setItem('dd_dispatch_alipay_qr', incomingAlipayQr.trim());
+            //     localStorage.setItem('dd_user_alipay_qr', incomingAlipayQr.trim());
+            //   } catch (_) {}
+            // }
             const isVipNow = checkVipActive(nextSettings.vipExpiry || prev.vipExpiry);
             const locallyTurnedOn = typeof window !== 'undefined' && userPhone
               ? localStorage.getItem(`dd_deviation_mitigation_${userPhone}`) === 'true'
@@ -1917,25 +1972,25 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         lastUpdatedTime: new Date().toISOString()
       };
 
-      setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(() => {});
+      setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       if (isUserSquadMember()) {
-        setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
 
       // Realtime report online/offline status to Aliyun/Baota server API
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: payload, merge: true })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       if (isUserSquadMember()) {
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: payload, merge: true })
-        }).catch(() => {});
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
     }
   }, [isOnline, userPhone]);
@@ -1994,7 +2049,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               setIncomingOrder(null);
               triggerToast('⚠️ 该订单已完结，无需重复接单');
             }
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         }
       }
     };
@@ -2057,8 +2112,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           );
           if (isValet) {
             // Trigger high-priority system alert for background / lockscreen (deduplicated)
+            // BUG7修复：所有订单类型统一做15秒去重，防止4路触发源重复弹窗
             const now = Date.now();
-            if (lastAlertedOrderKeyRef.current !== orderKey || now - lastAlertedOrderTimeRef.current > 15000) {
+            const isDuplicate = lastAlertedOrderKeyRef.current === orderKey && now - lastAlertedOrderTimeRef.current <= 15000;
+            if (!isDuplicate) {
               lastAlertedOrderKeyRef.current = orderKey;
               lastAlertedOrderTimeRef.current = now;
               triggerBackgroundOrderAlert(data);
@@ -2068,6 +2125,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const prevId = String(prev.orderId || prev.id || prev.orderNo || '').trim();
                 const nextId = String(data.orderId || data.id || data.orderNo || '').trim();
                 if (prevId && nextId && prevId === nextId) {
+                  // 同一订单15秒内重复触发：不重置弹窗，避免语音叠加
+                  if (isDuplicate) return prev;
                   // Keep existing object if it is the same order to prevent unnecessary unmounts & speech resets
                   return { ...prev, ...data };
                 }
@@ -2144,15 +2203,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
           // Clean up passenger_links doc immediately
           try {
-            deleteDoc(docRef).catch(() => {});
+            deleteDoc(docRef).catch(e => console.warn("[SilentCatch]", e?.message || e));
           } catch (_) {}
           try {
             const baseUrl = getBaseApiUrl();
             fetch(`${baseUrl}/api/db/delete`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({ collection: 'passenger_links', docId: cleanPhone })
-            }).catch(() => {});
+            }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           } catch (_) {}
 
           if (!alreadyHandled) {
@@ -2228,15 +2287,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           handledCancelledOrderKeysRef.current.add(cancelKey);
 
           try {
-            deleteDoc(activeDocRef).catch(() => {});
+            deleteDoc(activeDocRef).catch(e => console.warn("[SilentCatch]", e?.message || e));
           } catch (_) {}
           try {
             const baseUrl = getBaseApiUrl();
             fetch(`${baseUrl}/api/db/delete`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({ collection: 'active_orders', docId: cleanPhone })
-            }).catch(() => {});
+            }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           } catch (_) {}
 
           if (!alreadyHandled) {
@@ -2349,6 +2408,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           if (docSnap.exists()) {
             const data = docSnap.data();
             if (data?.status === 'cancelled' || data?.statusCategory === '已取消' || data?.statusCategory === '订单已取消') {
+              // 去重：同一订单只处理一次，避免5秒轮询导致语音无限循环
+              const cancelKey = `cancel_merchant_${data?.orderId || data?.id || docId}_${data?.cancelTime || data?.timestamp || ''}`;
+              if (handledCancelledOrderKeysRef.current.has(cancelKey)) return;
+              handledCancelledOrderKeysRef.current.add(cancelKey);
               handleOrderCancelled(data);
             }
           }
@@ -2507,7 +2570,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/order/claim`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           orderId: orderIdToClaim,
           orderNo: orderNoToClaim,
@@ -2515,16 +2578,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           driverName: currentDriverName,
           orderPayload: { ...(incomingOrder || {}), ...trip, ...claimUpdateData }
         })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       if (db) {
-        setDoc(doc(db, 'merchant_orders', orderIdToClaim), claimUpdateData, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'merchant_orders', orderIdToClaim), claimUpdateData, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'merchant_orders', docId: orderIdToClaim, data: claimUpdateData })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
 
     // Update active_orders collection to reflect claimed state and wipe old cancellation
@@ -2534,18 +2597,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         orderId: orderIdToClaim,
         orderNo: orderNoToClaim,
         isCancelled: false
-      }, { merge: true }).catch(() => {});
+      }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
     const baseUrl = getBaseApiUrl();
     fetch(`${baseUrl}/api/db/set`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         collection: 'active_orders',
         docId: cleanUserPhone,
         data: { ...claimUpdateData, orderId: orderIdToClaim, orderNo: orderNoToClaim, isCancelled: false }
       })
-    }).catch(() => {});
+    }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
     // Clear stale cancelled order tracker
     try {
@@ -2620,14 +2683,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const baseUrl = getBaseApiUrl();
         fetch(`${baseUrl}/api/order/decline`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ orderId, driverPhone: cleanUserPhone })
         }).catch(() => {
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: updateData })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         });
       }
 
@@ -2688,9 +2751,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const baseUrl = getBaseApiUrl();
     fetch(`${baseUrl}/api/db/delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ collection: 'passenger_links', docId: cleanUserPhone })
-    }).catch(() => {});
+    }).catch(e => console.warn("[SilentCatch]", e?.message || e));
   };
 
   // Handle route locking: if an active ride is underway, keep display constrained to active navigation
@@ -2849,7 +2912,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             return u;
           });
         }
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
   };
 
@@ -3101,14 +3164,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
           try {
             if (db) {
-              setDoc(doc(db, 'merchant_orders', merchantOrderId), compPayload, { merge: true }).catch(() => {});
+              setDoc(doc(db, 'merchant_orders', merchantOrderId), compPayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
             }
             const baseUrl = getBaseApiUrl();
             fetch(`${baseUrl}/api/db/set`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({ collection: 'merchant_orders', docId: merchantOrderId, data: compPayload })
-            }).catch(() => {});
+            }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           } catch (_) {}
 
           try {
@@ -3210,6 +3273,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         alert('🔒 提示：非VIP会员每日限制报单次数已用完（每天限额2次，明早6:00自动恢复，激活VIP解除限制）。');
         return;
       }
+      // 无GPS时禁止上线，不用城市中心假坐标冒充（2026-10-10修复）
+      if (!driverCoords?.lat || !driverCoords?.lng) {
+        alert('📍 定位中，请稍候…\n\nGPS尚未就绪，无法上线，请等待定位成功后再试。');
+        return;
+      }
     }
     setIsOnline(online);
     localStorage.setItem('dd_is_online', online ? 'true' : 'false');
@@ -3244,9 +3312,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const timestampIso = new Date().toISOString();
       const resolvedSelfName = resolveDriverRealName(userPhone, settings.driverName, settings);
       const city = settings?.city || '银川市';
-      const fallbackGrid = getCityCenterCoords(city);
-      const currentLat = driverCoords?.lat || fallbackGrid.lat;
-      const currentLng = driverCoords?.lng || fallbackGrid.lng;
+      // 直接使用真实GPS坐标，无GPS时已在上方拦截（2026-10-10修复，不再用城市中心冒充）
+      const currentLat = driverCoords?.lat || 0;
+      const currentLng = driverCoords?.lng || 0;
 
       const onlinePayload = {
         phone: userPhone,
@@ -3266,21 +3334,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         console.error("Failed to sync isOnline toggle to Firestore driver_users:", e);
       });
       if (isUserSquadMember() && !isCurrentUserRemoved()) {
-        setDoc(doc(db, 'squad_members', userPhone), onlinePayload, { merge: true }).catch(() => {});
+        setDoc(doc(db, 'squad_members', userPhone), onlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
-      setDoc(doc(db, 'driver_locations', userPhone), onlinePayload, { merge: true }).catch(() => {});
+      setDoc(doc(db, 'driver_locations', userPhone), onlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       const baseUrl = getBaseApiUrl();
       if (!online) {
         fetch(`${baseUrl}/api/driver/offline`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: userPhone, reason: 'manual_toggle' })
-        }).catch(() => {});
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
       fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ 
           phone: userPhone, 
           driverName: resolvedSelfName,
@@ -3290,24 +3358,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           isOnline: online, 
           timestamp: Date.now() 
         })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: onlinePayload, merge: true })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       if (isUserSquadMember()) {
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload, merge: true })
-        }).catch(() => {});
+        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'driver_locations', docId: userPhone, data: onlinePayload, merge: true })
-      }).catch(() => {});
+      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
   };
 
@@ -3369,39 +3437,39 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             phone: userPhone,
             updatedAt: Date.now()
           };
-          setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ collection: 'dispatch_qrs', docId: userPhone, data: qrPayload, merge: true })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: newSettings.wechatQrCode, qrCode: newSettings.wechatQrCode }, merge: true })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         } else {
           // Explicitly delete from server collections and disk
           fetch(`${baseUrl}/api/delete-wechat-qr`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ phone: userPhone })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           fetch(`${baseUrl}/api/db/delete`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ col: 'dispatch_qrs', id: userPhone })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           fetch(`${baseUrl}/api/db/delete`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ col: 'dispatch_qrcodes', id: userPhone })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: '', qrCode: '' }, merge: true })
-          }).catch(() => {});
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         }
       }
     }
@@ -3615,11 +3683,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         <LoginView
           onLoginSuccess={(phone) => {
             const cleanPhone = phone.trim();
+            // 司机登录加固：记录登录时间戳，30天过期；手机号格式校验
+            if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+              console.warn('[Login] 手机号格式无效:', cleanPhone);
+              return;
+            }
             localStorage.setItem('dd_user_phone', cleanPhone);
+            localStorage.setItem('dd_login_ts', Date.now().toString());
             setIsUserDataLoaded(false);
             setUserPhone(cleanPhone);
             setSquadRole('普通司机');
-            setIsSquadApprovedOrManagement(cleanPhone === '15509601222');
+            setIsSquadApprovedOrManagement(cleanPhone === DEVELOPER_PHONE);
             const settingsKey = `dd_settings_${cleanPhone}`;
             const cachedSettings = localStorage.getItem(settingsKey);
             if (cachedSettings) {
