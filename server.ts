@@ -2800,6 +2800,11 @@ async function startServer() {
         patch.isOnline = isOnline;
         if (!isOnline) {
           patch.onlineOrdersEnabled = false;
+        } else {
+          // a1-a5修复：恢复上线时清除看门狗踢出标记，否则标记永久残留
+          patch.kickedOfflineAt = 0;
+          patch.kickReason = '';
+          patch.onlineOrdersEnabled = true;
         }
       }
 
