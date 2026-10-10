@@ -1377,7 +1377,11 @@ async function startServer() {
       if (!col || !docId) {
         return res.status(400).json({ exists: false, error: 'Missing col or id parameter' });
       }
-      if (col === '_config' || col === 'config') {
+      if (col === '_config') {
+        return res.status(403).json({ exists: false, error: '禁止读取系统配置' });
+      }
+      // config 集合允许读（城市配置、总开关等），但禁止读敏感子文档
+      if (col === 'config' && (docId === 'tokenSecret' || docId.startsWith('_'))) {
         return res.status(403).json({ exists: false, error: '禁止读取系统配置' });
       }
 
@@ -1503,6 +1507,19 @@ async function startServer() {
 
       if (foundData !== null && foundData !== undefined) {
         return res.json({ exists: true, id: docId, data: foundData });
+      }
+      // 城市配置兜底（2026-10-11）：部署覆盖导致配置丢失时，返回银川默认开通，避免"暂未开通服务"
+      if (col === 'config' && docId === 'city_configs') {
+        const defaultConfigs = {
+          configs: {
+            '银川': { online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true, squadNames: ['银川代驾小队'] },
+            '银川市': { online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true, squadNames: ['银川代驾小队'] }
+          }
+        };
+        return res.json({ exists: true, id: docId, data: defaultConfigs });
+      }
+      if (col === 'config' && docId === 'master_switches') {
+        return res.json({ exists: true, id: docId, data: { online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true } });
       }
       return res.json({ exists: false, id: docId, data: null });
     } catch (err: any) {
