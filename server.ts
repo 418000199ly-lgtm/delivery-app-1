@@ -123,6 +123,87 @@ setInterval(() => {
   _authTokensDirty = false;
   persistAuthTokensSync();
 }, 10000);
+
+// ===== 无状态签名 token（根治"登录已过期"：服务端不存 token，靠密钥验签）=====
+// 格式：v1.<base64url(payload)>.<base64url(hmac-sha256)>
+// payload: {p:手机号, s:scope, m:是否商户, i:签发时间}
+// 用户铁律：手动登出前永不过期 → token 本身不设过期，登出走 blocklist
+function _b64urlEncode(s: string): string {
+  return Buffer.from(s, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function _b64urlDecode(s: string): string {
+  let b = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (b.length % 4) b += '=';
+  return Buffer.from(b, 'base64').toString('utf8');
+}
+// 密钥：存 local_db.json 的 _config.tokenSecret，部署包自带 local_db.json 故跨部署不丢
+function getTokenSecret(): string {
+  try {
+    const db: any = readLocalJsonDb();
+    if (db && db._config && typeof db._config.tokenSecret === 'string' && db._config.tokenSecret.length >= 32) {
+      return db._config.tokenSecret;
+    }
+    const secret = crypto.randomBytes(48).toString('hex');
+    try {
+      const dbData: any = readLocalJsonDb() || {};
+      dbData._config = dbData._config || {};
+      dbData._config.tokenSecret = secret;
+      writeLocalJsonDb(dbData);
+      console.log('[Auth] 已生成新的 token 签名密钥并持久化');
+    } catch (e: any) {
+      console.error('[Auth] 保存 token 密钥失败:', e?.message);
+    }
+    return secret;
+  } catch (_) {
+    return 'fallback-secret-' + String(Date.now());
+  }
+}
+function createSignedToken(phone: string, scope: string, isMerchant: boolean): string {
+  const payload = JSON.stringify({ p: phone, s: scope, m: !!isMerchant, i: Date.now() });
+  const pb = _b64urlEncode(payload);
+  const sig = crypto.createHmac('sha256', getTokenSecret()).update('v1.' + pb).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `v1.${pb}.${sig}`;
+}
+function verifySignedToken(token: string): { phone: string; scope: string; isMerchant: boolean } | null {
+  try {
+    const parts = String(token || '').split('.');
+    if (parts.length !== 3 || parts[0] !== 'v1') return null;
+    const [, pb, sig] = parts;
+    const expect = crypto.createHmac('sha256', getTokenSecret()).update('v1.' + pb).digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    // 常量时间比较防时序攻击
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expect);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const payload = JSON.parse(_b64urlDecode(pb));
+    if (!payload || !payload.p) return null;
+    // 登出黑名单检查
+    try {
+      const db: any = readLocalJsonDb();
+      const bl = db && db._config && db._config.tokenBlocklist;
+      if (Array.isArray(bl) && bl.includes(token)) return null;
+    } catch (_) {}
+    return { phone: String(payload.p), scope: String(payload.s || 'driver'), isMerchant: !!payload.m };
+  } catch (_) {
+    return null;
+  }
+}
+function blocklistToken(token: string) {
+  try {
+    const dbData: any = readLocalJsonDb() || {};
+    dbData._config = dbData._config || {};
+    const bl: string[] = Array.isArray(dbData._config.tokenBlocklist) ? dbData._config.tokenBlocklist : [];
+    if (!bl.includes(token)) {
+      bl.push(token);
+      // 黑名单只保留最近 5000 个，防无限增长
+      if (bl.length > 5000) bl.splice(0, bl.length - 5000);
+      dbData._config.tokenBlocklist = bl;
+      writeLocalJsonDb(dbData);
+    }
+  } catch (e: any) {
+    console.error('[Auth] token 拉黑失败:', e?.message);
+  }
+}
+
 const DEVELOPER_PHONE_SERVER = '15509601222';
 
 // P1: 定时清理内存泄漏（verificationCodes/dispatchLogs/authTokens）
@@ -1085,7 +1166,12 @@ async function startServer() {
     if (!token) {
       return res.status(401).json({ success: false, error: '未登录：缺少认证令牌，请先短信验证登录' });
     }
-    const info = authTokens.get(String(token));
+    // 根治"登录已过期"：优先验签无状态 token（服务端不存，重启/部署不丢）；
+    // 老版本随机 token 走内存 Map 兼容过渡
+    const signed = verifySignedToken(String(token));
+    const info = signed
+      ? { phone: signed.phone, scope: signed.scope, isMerchant: signed.isMerchant, createdAt: 0 }
+      : authTokens.get(String(token));
     if (!info) {
       return res.status(401).json({ success: false, error: '登录已失效：令牌无效，请重新短信验证登录' });
     }
@@ -4957,10 +5043,14 @@ async function startServer() {
   app.post('/api/auth/logout', async (req, res) => {
     try {
       const token = String(req.headers['x-auth-token'] || req.body?.token || '').trim();
-      if (token && authTokens.has(token)) {
-        authTokens.delete(token);
-        _authTokensDirty = true;
-        persistAuthTokensSync(); // a5修复：登出立即写盘
+      if (token) {
+        // 无状态签名 token：加入黑名单使其失效
+        if (token.startsWith('v1.')) blocklistToken(token);
+        if (authTokens.has(token)) {
+          authTokens.delete(token);
+          _authTokensDirty = true;
+          persistAuthTokensSync(); // a5修复：登出立即写盘
+        }
       }
       return res.json({ success: true });
     } catch (e: any) {
@@ -5128,12 +5218,15 @@ async function startServer() {
 
       // 签发认证令牌：用于后续 /api/db/* 写操作鉴权
       // 商户网页版（scope=dispatch_valet）登录时，token 的 phone 带 A 后缀，与司机身份隔离
-      const authToken = crypto.randomBytes(32).toString('hex');
+      // 根治"登录已过期"：改用无状态 HMAC 签名 token，服务端无需存储，重启/部署不丢
+      const tokenScope = scope || (isAdminLogin ? 'admin_panel' : 'driver');
       const isMerchantLogin = String(scope || '').trim() === 'dispatch_valet';
       const tokenPhone = isMerchantLogin ? String(cleanPhone || '').trim().toUpperCase() + 'A' : cleanPhone;
+      const authToken = createSignedToken(tokenPhone, tokenScope, isMerchantLogin);
+      // 兼容旧版：同时写入内存 Map，老 token 在过渡期内仍可用
       authTokens.set(authToken, {
         phone: tokenPhone,
-        scope: scope || (isAdminLogin ? 'admin_panel' : 'driver'),
+        scope: tokenScope,
         isMerchant: isMerchantLogin,
         createdAt: Date.now()
       });
