@@ -1069,55 +1069,6 @@ async function startServer() {
     return res.status(502).send('TTS synthesis failed on all upstream providers');
   });
 
-  // Check admin permission endpoint for https://admin.lyheiwandaijiamax.com/
-  app.post('/api/admin/check-permission', requireDbAuth, (req, res) => {
-    // H4修复：加鉴权+isAdmin校验
-    if (!(req as any).isAdmin) {
-      return res.status(403).json({ success: false, error: '需要管理员权限' });
-    }
-    const { phone } = req.body;
-    const cleanPhone = String(phone || '').trim();
-    if (cleanPhone === '15509601222') {
-      return res.json({
-        success: true,
-        isSuperAdmin: true,
-        phone: '15509601222',
-        role: 'SUPER_DEVELOPER_ADMIN',
-        message: '最高开发者特权账号(15509601222)数据库匹配成功'
-      });
-    }
-    return res.status(403).json({
-      success: false,
-      isSuperAdmin: false,
-      error: '❌ 无权限：非最高开发者账号(15509601222)，拒绝访问或登录管理后台！'
-    });
-  });
-
-  // Purge all drivers and applications except 15509601222 on demand
-  app.post('/api/admin/purge-all-drivers', requireDbAuth, async (req, res) => {
-    // H4修复：加鉴权+isAdmin校验
-    if (!(req as any).isAdmin) {
-      return res.status(403).json({ success: false, error: '需要管理员权限' });
-    }
-    try {
-      await purgeMockDriverData();
-      return res.json({
-        success: true,
-        message: '✓ 已成功清理所有司机及申请审批信息，仅保留 15509601222'
-      });
-    } catch (err: any) {
-      return res.status(500).json({
-        success: false,
-        error: err?.message || 'Purge failed'
-      });
-    }
-  });
-
-  // =========================================================================
-  // UNIVERSAL DATABASE REST API ENDPOINTS (Supports MySQL & local_db.json)
-  // Ensures 100% reliable cross-device data sync, instant order dispatch popups
-  // =========================================================================
-
   // 认证中间件：写操作需要有效的短信登录令牌
   // 规则：普通用户只能写自己手机号的文档；开发者（15509601222）可写任意
   const requireDbAuth = (req: any, res: any, next: any) => {
@@ -1203,6 +1154,56 @@ async function startServer() {
     (req as any).isAdmin = false;
     next();
   };
+
+  // Check admin permission endpoint for https://admin.lyheiwandaijiamax.com/
+  app.post('/api/admin/check-permission', requireDbAuth, (req, res) => {
+    // H4修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
+    const { phone } = req.body;
+    const cleanPhone = String(phone || '').trim();
+    if (cleanPhone === '15509601222') {
+      return res.json({
+        success: true,
+        isSuperAdmin: true,
+        phone: '15509601222',
+        role: 'SUPER_DEVELOPER_ADMIN',
+        message: '最高开发者特权账号(15509601222)数据库匹配成功'
+      });
+    }
+    return res.status(403).json({
+      success: false,
+      isSuperAdmin: false,
+      error: '❌ 无权限：非最高开发者账号(15509601222)，拒绝访问或登录管理后台！'
+    });
+  });
+
+  // Purge all drivers and applications except 15509601222 on demand
+  app.post('/api/admin/purge-all-drivers', requireDbAuth, async (req, res) => {
+    // H4修复：加鉴权+isAdmin校验
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '需要管理员权限' });
+    }
+    try {
+      await purgeMockDriverData();
+      return res.json({
+        success: true,
+        message: '✓ 已成功清理所有司机及申请审批信息，仅保留 15509601222'
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Purge failed'
+      });
+    }
+  });
+
+  // =========================================================================
+  // UNIVERSAL DATABASE REST API ENDPOINTS (Supports MySQL & local_db.json)
+  // Ensures 100% reliable cross-device data sync, instant order dispatch popups
+  // =========================================================================
+
 
   // 1. GET Single Document
   // Supports: /api/db/get?col=passenger_links&id=15509601222 OR query params: collection, docId
