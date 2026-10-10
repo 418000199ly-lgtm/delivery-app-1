@@ -19,6 +19,27 @@ import { resolveDriverRealName } from './nameResolver';
 import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
 import { scheduleResumeTask } from './resumeCoordinator';
 
+// ===== GPS上报健康追踪（120秒强制下线 · App端自检）=====
+// 记录最近一次上报成功时间；超120秒无成功上报 → 本地视为离线
+let _lastGpsUploadSuccessAt = 0;
+let _lastGpsUploadAttemptAt = 0;
+export function markGpsUploadAttempt() {
+  _lastGpsUploadAttemptAt = Date.now();
+}
+export function markGpsUploadSuccess() {
+  _lastGpsUploadSuccessAt = Date.now();
+}
+/** App端自检：GPS上报是否健康（120秒内有成功上报） */
+export function isGpsUploadHealthy(): boolean {
+  if (_lastGpsUploadSuccessAt === 0) return true; // 从未上报过（如刚启动），不误判
+  return Date.now() - _lastGpsUploadSuccessAt <= 120 * 1000;
+}
+/** 距上次成功上报的毫秒数（供UI显示） */
+export function msSinceLastGpsUpload(): number {
+  if (_lastGpsUploadSuccessAt === 0) return 0;
+  return Date.now() - _lastGpsUploadSuccessAt;
+}
+
 interface LocationReporterConfig {
   userPhone: string;
   isOnline: boolean;
@@ -281,8 +302,9 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     }
 
     // 1. 异步更新各大集合（静默失败不阻塞）
-    setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'driver_locations', userPhone), payload, { merge: true }).catch(() => {});
+    markGpsUploadAttempt();
+    setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).then(() => markGpsUploadSuccess()).catch(() => {});
+    setDoc(doc(db, 'driver_locations', userPhone), payload, { merge: true }).then(() => markGpsUploadSuccess()).catch(() => {});
 
     // 严密防线：已被移出小队的司机绝不向 squad_members 写入，防止已删除成员被意外复活
     let isRemovedLoc = false;
@@ -320,7 +342,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
           appVersion: sysVersion,
           timestamp: Date.now()
         })
-      }).catch(() => {});
+      }).then((r) => { if (r.ok) markGpsUploadSuccess(); }).catch(() => {});
     } catch (_) {}
   };
 

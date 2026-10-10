@@ -495,6 +495,37 @@ async function startServer() {
     runSystemDiskCleanup().catch(() => {});
   }, 12 * 60 * 60 * 1000);
 
+  // 120秒无GPS强制下线（用户需求：大退/关机/断网的司机不占用派单，
+  // 避免高峰期订单派给死司机空等60秒；司机重新上线后自动恢复）
+  // 每30秒扫描一次，lastLocationTime 超120秒未更新 → isOnline=false
+  const GPS_OFFLINE_THRESHOLD_MS = 120 * 1000;
+  setInterval(() => {
+    try {
+      const dbData: any = readLocalJsonDb();
+      const locs = dbData?.driver_locations;
+      if (!locs || typeof locs !== 'object') return;
+      const now = Date.now();
+      let kicked = 0;
+      let changed = false;
+      for (const k of Object.keys(locs)) {
+        const item = locs[k];
+        if (!item || item.isOnline !== true) continue;
+        const t = Number(item.lastLocationTime || item.locationTimestamp || item.lastStatusUpdateTime || 0);
+        if (t > 0 && now - t > GPS_OFFLINE_THRESHOLD_MS) {
+          locs[k] = { ...item, isOnline: false, onlineOrdersEnabled: false, kickedOfflineAt: now, kickReason: 'gps_timeout_120s' };
+          kicked++;
+          changed = true;
+        }
+      }
+      if (changed) {
+        writeLocalJsonDb(dbData);
+        if (kicked > 0) console.log(`[GPS看门狗] ${kicked} 名司机120秒无GPS，已强制下线`);
+      }
+    } catch (e: any) {
+      console.error('[GPS看门狗] 扫描异常:', e?.message);
+    }
+  }, 30 * 1000);
+
   const app = express();
   const PORT = 3000;
 
@@ -3545,9 +3576,10 @@ async function startServer() {
           return;
         }
 
-        // M8修复：GPS时间戳超5分钟视为离线，跳过（防App崩溃残留旧坐标被派单）
-        const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || 0);
-        if (locTs && Date.now() - locTs > 5 * 60 * 1000) {
+        // GPS 120秒无更新视为离线，跳过（用户铁律：120秒无GPS强制下线，防死司机占用派单）
+        // 服务端30秒看门狗已提前标记 isOnline=false，这里是派单时的最后一道防线
+        const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || loc.lastLocationTime || 0);
+        if (locTs && Date.now() - locTs > 120 * 1000) {
           return;
         }
 
