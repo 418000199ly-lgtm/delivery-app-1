@@ -641,6 +641,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           </div>
           <div>
             <span className="text-base sm:text-lg font-black text-[#dc2626] font-mono tracking-tight">{distanceText}</span>
+            {/* 滴滴模式：显示位置时效（2026-10-11） */}
+            {(() => {
+              const age = Number((order as any)?.driverGpsAgeMinutes ?? -1);
+              if (age < 0) return null;
+              if (age < 2) return null; // 2分钟内不显示
+              const txt = age < 60 ? `位置${age}分钟前` : `位置${Math.floor(age/60)}小时前`;
+              return <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">⚠️ {txt}</span>;
+            })()}
           </div>
         </section>
 

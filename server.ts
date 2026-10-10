@@ -507,32 +507,42 @@ async function startServer() {
     runSystemDiskCleanup().catch(() => {});
   }, 12 * 60 * 60 * 1000);
 
-  // 120秒无GPS强制下线（用户需求：大退/关机/断网的司机不占用派单，
-  // 避免高峰期订单派给死司机空等60秒；司机重新上线后自动恢复）
-  // 每30秒扫描一次，lastLocationTime 超120秒未更新 → isOnline=false
-  const GPS_OFFLINE_THRESHOLD_MS = 120 * 1000;
+  // 滴滴模式（2026-10-11用户要求）：GPS过期只标记stale，不强制下线
+  // 司机在家/地下停车场无GPS时仍保持在线可接单，派单用最后已知坐标，订单显示位置时效
+  // 每30秒扫描一次，lastLocationTime 超120秒未更新 → gpsStale=true（不踢下线）
+  const GPS_STALE_THRESHOLD_MS = 120 * 1000;
   setInterval(() => {
     try {
       const dbData: any = readLocalJsonDb();
       const locs = dbData?.driver_locations;
       if (!locs || typeof locs !== 'object') return;
       const now = Date.now();
-      let kicked = 0;
+      let marked = 0;
       let changed = false;
       for (const k of Object.keys(locs)) {
         const item = locs[k];
         if (!item || item.isOnline !== true) continue;
         const t = Number(item.lastLocationTime || item.locationTimestamp || item.lastStatusUpdateTime || 0);
-        // M2修复：无时间戳(t<=0)按过期处理（fail-safe），幽灵司机不再永生
-        if (now - t > GPS_OFFLINE_THRESHOLD_MS) {
-          locs[k] = { ...item, isOnline: false, onlineOrdersEnabled: false, kickedOfflineAt: now, kickReason: 'gps_timeout_120s' };
-          kicked++;
+        // 滴滴模式：超120秒未更新 → 标记gpsStale，不下线（司机仍可接单，派单用最后坐标）
+        if (now - t > GPS_STALE_THRESHOLD_MS) {
+          if (!item.gpsStale) {
+            locs[k] = { ...item, gpsStale: true, gpsStaleSince: now, gpsStaleMinutes: Math.floor((now - t) / 60000) };
+            marked++;
+            changed = true;
+          } else {
+            locs[k].gpsStaleMinutes = Math.floor((now - t) / 60000);
+            changed = true;
+          }
+        } else if (item.gpsStale) {
+          // GPS恢复，清除stale标记
+          const { gpsStale, gpsStaleSince, gpsStaleMinutes, ...rest } = item;
+          locs[k] = rest;
           changed = true;
         }
       }
       if (changed) {
         writeLocalJsonDb(dbData);
-        if (kicked > 0) console.log(`[GPS看门狗] ${kicked} 名司机120秒无GPS，已强制下线`);
+        if (marked > 0) console.log(`[GPS] ${marked} 名司机GPS超120秒未更新，已标记stale（保持在线可接单）`);
       }
     } catch (e: any) {
       console.error('[GPS看门狗] 扫描异常:', e?.message);
@@ -3618,13 +3628,10 @@ async function startServer() {
           return;
         }
 
-        // GPS 120秒无更新视为离线，跳过（用户铁律：120秒无GPS强制下线，防死司机占用派单）
-        // 服务端30秒看门狗已提前标记 isOnline=false，这里是派单时的最后一道防线
-        // M2修复：无时间戳按过期处理，不再放行幽灵司机
+        // 滴滴模式（2026-10-11）：不过滤GPS时效，用最后已知坐标派单
+        // 位置时效传给司机，由司机决定接不接（订单显示"位置X分钟前"）
         const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || loc.lastLocationTime || 0);
-        if (Date.now() - locTs > 120 * 1000) {
-          return;
-        }
+        const gpsAgeMinutes = locTs > 0 ? Math.floor((Date.now() - locTs) / 60000) : -1;
 
         // H12修复：删除 0.3km 假距离回退；坐标非法时不参与距离派单
         const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0 && pLng !== 0)
@@ -3633,11 +3640,13 @@ async function startServer() {
 
         // 严格遵循3公里派单半径限制：超过3公里 (distKm > radiusKm) 绝不直接派单，必须转入选单大厅
         // （坐标未知时已在外层直接转入大厅，不会走到这里）
+        // 滴滴模式：gpsAgeMinutes 传给订单，前端显示"位置X分钟前"，由司机决定接不接
         if (distKm <= radiusKm) {
           candidates.push({
             phone: cleanPhone,
             name: data.driverName || data.name || (cleanPhone === '15509601222' ? '吴彦祖' : `司机${cleanPhone.slice(-4)}`),
             distKm,
+            gpsAgeMinutes,
             data
           });
         }
@@ -3701,6 +3710,8 @@ async function startServer() {
           driverQrCode: driverQrUrl,
           distanceText: distText,
           distKm: selected.distKm,
+          // 滴滴模式：位置时效（分钟），前端显示"位置X分钟前"，-1表示未知
+          driverGpsAgeMinutes: selected.gpsAgeMinutes ?? -1,
           dispatchCountdown: 60,
           serverCountdown: 60,
           dispatchedAt: nowTs,

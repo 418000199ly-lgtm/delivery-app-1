@@ -39,19 +39,6 @@ export function msSinceLastGpsUpload(): number {
   if (_lastGpsUploadSuccessAt === 0) return 0;
   return Date.now() - _lastGpsUploadSuccessAt;
 }
-/** 开发者测试位置：15509601222 可在室内手动设置测试坐标（localStorage: dd_dev_test_location = {"lat":x,"lng":y}） */
-export function getDevTestLocation(): { lat: number; lng: number } | null {
-  try {
-    const raw = localStorage.getItem('dd_dev_test_location');
-    if (!raw) return null;
-    const o = JSON.parse(raw);
-    const lat = Number(o.lat), lng = Number(o.lng);
-    if (lat && lng && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-      return { lat, lng };
-    }
-  } catch (_) {}
-  return null;
-}
 
 interface LocationReporterConfig {
   userPhone: string;
@@ -429,25 +416,12 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
           scheduleNext(getNextIntervalMs(converted.lat, converted.lng));
         },
         () => {
-          // 开发者测试位置兜底（室内无GPS时）
-          const devLoc = getDevTestLocation();
-          if (devLoc && userPhone === '15509601222') {
-            uploadCoordinates(devLoc.lat, devLoc.lng, 'DevTestLocation');
-            scheduleNext(getNextIntervalMs(devLoc.lat, devLoc.lng));
-          } else {
-            scheduleNext(getNextIntervalMs());
-          }
+          scheduleNext(getNextIntervalMs());
         },
         { enableHighAccuracy: true, timeout: 7000, maximumAge: 10000 }
       );
     } else {
-      const devLoc = getDevTestLocation();
-      if (devLoc && userPhone === '15509601222') {
-        uploadCoordinates(devLoc.lat, devLoc.lng, 'DevTestLocation');
-        scheduleNext(getNextIntervalMs(devLoc.lat, devLoc.lng));
-      } else {
-        scheduleNext(getNextIntervalMs());
-      }
+      scheduleNext(getNextIntervalMs());
     }
   };
 
