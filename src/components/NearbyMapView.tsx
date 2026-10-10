@@ -15,6 +15,7 @@ import {
 import { ChauffeurSettings } from '../types';
 import { db, collection, doc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
 import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
+import { scheduleResumeTask } from '../utils/resumeCoordinator';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
 import HubbleSettingsDialog, { HubbleFilterSettings } from './HubbleSettingsDialog';
@@ -504,7 +505,10 @@ export default function NearbyMapView({
     // Instant catchup when switching back to foreground
     const handleVisibilityCatchup = () => {
       if (!document.hidden) {
-        fetchBaotaLocations();
+        // 卡顿修复：拉全量司机GPS是重型任务，走协调器延迟到空闲时执行
+        scheduleResumeTask('nearby-fetch-locations', 'heavy', () => {
+          fetchBaotaLocations();
+        });
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityCatchup);

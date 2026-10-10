@@ -17,6 +17,7 @@
 import { db, setDoc, doc, getBaseApiUrl } from '../lib/dbProxy';
 import { resolveDriverRealName } from './nameResolver';
 import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
+import { scheduleResumeTask } from './resumeCoordinator';
 
 interface LocationReporterConfig {
   userPhone: string;
@@ -444,7 +445,10 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
   // 3. 监听页面可见性：切回前台时立即执行校准
   const handleVisibilityChange = () => {
     if (!document.hidden && !isDisposed) {
-      executeLocate();
+      // 卡顿修复：GPS硬件调用走协调器错峰，避免与数据刷新抢主线程
+      scheduleResumeTask('power-locate-resume', 'normal', () => {
+        if (!isDisposed) executeLocate();
+      });
     }
   };
   document.addEventListener('visibilitychange', handleVisibilityChange);

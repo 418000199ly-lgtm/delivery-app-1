@@ -1,5 +1,6 @@
 import { safeSetItem } from '../utils/safeStorage';
 import { DEVELOPER_PHONE } from '../utils/constants';
+import { scheduleResumeTask } from '../utils/resumeCoordinator';
 
 // 缓存版本：每次发版递增，自动隔离旧缓存，防止预览显示过期数据
 // 中国大陆项目：数据直连阿里云，禁用被墙服务
@@ -544,8 +545,12 @@ export function onSnapshot(
   const handleVisibilityChange = () => {
     if (isUnsubscribed) return;
     if (typeof document !== 'undefined' && !document.hidden) {
-      // Tab became active: trigger immediate sync
-      checkUpdate();
+      // 卡顿修复：切回前台时不再每个订阅各自立即发请求，
+      // 改走全局协调器错峰（normal 优先级），避免 15 个订阅同时开火堵死主线程
+      const taskId = `dbproxy-resume-${targetRef.collectionName}-${targetRef.type === 'document' ? targetRef.id : 'col'}`;
+      scheduleResumeTask(taskId, 'normal', () => {
+        if (!isUnsubscribed) checkUpdate();
+      });
     }
   };
 

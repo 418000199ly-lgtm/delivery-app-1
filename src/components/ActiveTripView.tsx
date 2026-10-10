@@ -3,6 +3,7 @@ import { MapPin, Navigation, ChevronRight, Clock, ShieldCheck, X, PlusCircle, Mi
 import { TripState, ChauffeurSettings, BillingRules, DEFAULT_SLOTS, checkVipActive } from '../types';
 import { calculateOrderTripCost, getTimeSlotForTime } from '../utils/billingUtils';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
+import { scheduleResumeTask } from '../utils/resumeCoordinator';
 import NavigationView from './NavigationView';
 
 const SUGGESTED_DESTINATIONS = [
@@ -213,7 +214,7 @@ export default function ActiveTripView({
     // App resume/unlock sync
     const handleVisibilitySync = () => {
       if (document.visibilityState === 'visible') {
-        updateDurations();
+        scheduleResumeTask('trip-update-durations', 'normal', () => updateDurations());
       }
     };
     document.addEventListener('visibilitychange', handleVisibilitySync);
@@ -459,12 +460,15 @@ export default function ActiveTripView({
       }, 4000);
 
       // Instant GPS Sync on App Resume / Screen Unlock
+      // 卡顿修复：GPS硬件调用走协调器错峰，避免与数据刷新抢主线程
       const handleAppResumeSync = () => {
-        console.log('📱 [GPS Tracker] Screen unlocked / App resumed. Syncing GPS distance instantly...');
-        navigator.geolocation.getCurrentPosition(processPosition, handlePosError, {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
+        scheduleResumeTask('trip-gps-resume', 'normal', () => {
+          console.log('📱 [GPS Tracker] Screen unlocked / App resumed. Syncing GPS distance instantly...');
+          navigator.geolocation.getCurrentPosition(processPosition, handlePosError, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
         });
       };
 

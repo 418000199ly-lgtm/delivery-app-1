@@ -50,6 +50,7 @@ import { isOrderAlreadyEnded } from './utils/orderValidation';
 import { getDeviceId, clearDeviceSession } from './utils/deviceSession';
 import { downloadDeployZip } from './utils/downloadHelper';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
+import { scheduleResumeTask } from './utils/resumeCoordinator';
 import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusyStatus } from './utils/powerAndLocationManager';
 import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
 
@@ -1175,7 +1176,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const syncInterval = setInterval(checkStatusSync, 2000);
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        checkStatusSync();
+        // 卡顿修复：走协调器错峰，避免与15个数据订阅同时开火
+        scheduleResumeTask('app-check-status', 'normal', () => checkStatusSync());
       }
     };
     window.addEventListener('visibilitychange', onVisibilityChange);
@@ -1404,7 +1406,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        checkDaily559AM();
+        scheduleResumeTask('app-check-559', 'normal', () => checkDaily559AM());
       }
     };
     const handleFocus = () => checkDaily559AM();

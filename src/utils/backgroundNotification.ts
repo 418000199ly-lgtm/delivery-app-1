@@ -2,6 +2,7 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { App } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { speakText } from './speech';
+import { scheduleResumeTask } from './resumeCoordinator';
 
 const PENDING_ORDER_STORAGE_KEY = 'dd_pending_incoming_order';
 
@@ -281,12 +282,15 @@ export function registerBackgroundOrderListeners(onOrderTriggered: (order: any) 
   }
 
   // Listener 3: Web visibilitychange (when browser tab or PWA comes to foreground)
+  // 卡顿修复：待处理订单是关键任务，走协调器 critical 优先级
   const handleVisibility = () => {
     if (!document.hidden) {
-      const cached = getPendingOrderCache();
-      if (cached) {
-        onOrderTriggered(cached);
-      }
+      scheduleResumeTask('bg-pending-order', 'critical', () => {
+        const cached = getPendingOrderCache();
+        if (cached) {
+          onOrderTriggered(cached);
+        }
+      });
     }
   };
   document.addEventListener('visibilitychange', handleVisibility);
