@@ -55,7 +55,7 @@ import {
   MoreVertical
 } from 'lucide-react';
 import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive, DEFAULT_SLOTS } from '../types';
-import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
+import { reportDriverBusyStatus, isGpsUploadHealthy, msSinceLastGpsUpload } from '../utils/powerAndLocationManager';
 import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
 import OrderDetailModal from './OrderDetailModal';
@@ -341,6 +341,22 @@ export default function HomeView({
   };
 
   // --- Squad Management States (Declared first to avoid TDZ in role and squad helper functions) ---
+  // a1-a5修复：GPS 上报健康状态（服务端120秒看门狗踢下线后，App UI 需同步警告）
+  const [gpsUnhealthy, setGpsUnhealthy] = useState(false);
+  useEffect(() => {
+    if (!isOnline) { setGpsUnhealthy(false); return; }
+    const checkGps = () => {
+      try {
+        const healthy = isGpsUploadHealthy();
+        const msSince = msSinceLastGpsUpload();
+        // 超过90秒无成功上报即警告（服务端120秒踢下线，提前30秒预警）
+        setGpsUnhealthy(!healthy && msSince > 90000);
+      } catch (_) {}
+    };
+    checkGps();
+    const id = setInterval(checkGps, 10000);
+    return () => clearInterval(id);
+  }, [isOnline]);
   const [squadMembers, setSquadMembers] = useState<any[]>(() => {
     const masterMember = { phone: DEVELOPER_PHONE, id: DEVELOPER_PHONE, name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true };
     try {
@@ -4639,6 +4655,12 @@ export default function HomeView({
               }`}>
                 {isOnline ? '正在听单' : '离线状态'}
               </span>
+              {/* a1-a5修复：GPS 上报异常警告（服务端120秒无GPS会踢下线） */}
+              {isOnline && gpsUnhealthy && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-red-500 text-white animate-pulse" title="GPS 定位上报异常，服务端可能已将您踢下线">
+                  ⚠️ GPS异常
+                </span>
+              )}
 
             </div>
             {/* VIP/membership status banner is hidden per user request */}
