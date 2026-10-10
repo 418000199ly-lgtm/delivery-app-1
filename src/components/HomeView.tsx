@@ -2280,10 +2280,12 @@ export default function HomeView({
         squadNames: Array.isArray(cfg.squadNames) && cfg.squadNames.length > 0 ? cfg.squadNames : [`${norm}代驾小队`]
       };
     }
+    // 2026-10-11：配置未加载时默认开通（服务端有兜底返回银川配置，避免fresh install卡死）
+    // 只有明确配置为 false 时才关闭
     return {
-      online_app_enabled: false,
-      merchant_dispatch_enabled: false,
-      squad_management_enabled: false,
+      online_app_enabled: true,
+      merchant_dispatch_enabled: true,
+      squad_management_enabled: true,
       squadNames: [`${norm}代驾小队`]
     };
   };

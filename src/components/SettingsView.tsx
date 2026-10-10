@@ -115,10 +115,11 @@ export default function SettingsView({
         squad_management_enabled: cfg.squad_management_enabled === true,
       };
     }
+    // 2026-10-11：配置未加载时默认开通
     return {
-      online_app_enabled: false,
-      merchant_dispatch_enabled: false,
-      squad_management_enabled: false,
+      online_app_enabled: true,
+      merchant_dispatch_enabled: true,
+      squad_management_enabled: true,
     };
   };
 
