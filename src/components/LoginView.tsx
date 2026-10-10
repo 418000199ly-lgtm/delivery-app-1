@@ -113,7 +113,7 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
 
       if (data.success) {
         setTimer(60);
-        setInfoMsg(data.message || '✓ 阿里云短信验证码已成功发送至您的手机，请注意查收短信！');
+        setInfoMsg(data.message || '✓ 短信验证码已发送，请注意查收。');
       } else {
         setErrorMsg(`❌ 验证码获取失败: ${data.error || '服务器响应异常'}`);
       }
