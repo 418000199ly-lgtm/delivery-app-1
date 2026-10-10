@@ -188,6 +188,10 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
       setIsLoggingIn(false);
 
       if (data.success) {
+        // a1-a5修复：保存服务端下发的 HMAC token，否则抢单时 401"登录已过期"
+        try {
+          if (data.token) localStorage.setItem('dd_auth_token', data.token);
+        } catch (_) {}
         // Enforce single active device session per phone number upon successful SMS verification
         const { registerDeviceSession } = await import('../utils/deviceSession');
         await registerDeviceSession(phoneTrimmed);
