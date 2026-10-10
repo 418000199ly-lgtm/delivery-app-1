@@ -440,7 +440,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       try {
         const geolocation = new AMap.Geolocation({
           enableHighAccuracy: false, // 允许网络定位
-          timeout: 10000,
+          timeout: 20000, // 2026-10-11：室内WiFi扫描需要更长时间，从10秒加到20秒
           noIpLocate: 0,
           noGeoLocation: 0,
         });
@@ -494,7 +494,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
             () => {
               scheduleNext(getNextIntervalMs());
             },
-            { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
+            { enableHighAccuracy: false, timeout: 20000, maximumAge: 30000 }
           );
         },
         { enableHighAccuracy: true, timeout: 7000, maximumAge: 10000 }
