@@ -177,7 +177,8 @@ export default function PaymentQRView({
                       const parsed = JSON.parse(cachedSet);
                       if (parsed?.wechatQrCode && parsed.wechatQrCode.trim()) return parsed.wechatQrCode.trim();
                     }
-                    const localQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`) || localStorage.getItem('dd_user_wechat_qr'))?.trim();
+                    // M6修复：只读per-phone key，删除共享key回退，防止跨账号串码
+                    const localQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${userP}`))?.trim();
                     if (localQr) return localQr;
                   } catch (_) {}
                   return '';

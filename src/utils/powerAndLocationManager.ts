@@ -14,7 +14,7 @@
  *    - 切回前台时瞬间唤醒并执行一次实时位置校准。
  */
 
-import { db, setDoc, doc, getBaseApiUrl } from '../lib/dbProxy';
+import { db, setDoc, doc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { resolveDriverRealName } from './nameResolver';
 import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
 import { scheduleResumeTask } from './resumeCoordinator';
@@ -107,7 +107,7 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
     const baseUrl = getBaseApiUrl();
     fetch(`${baseUrl}/api/driver/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         phone: cleanPhone,
         isBusy,
@@ -119,7 +119,7 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
     // 同时写 DB 代理通用接口，确保持久层秒级同步
     fetch(`${baseUrl}/api/db/set`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         collection: 'driver_users',
         docId: cleanPhone,
@@ -130,7 +130,7 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
 
     fetch(`${baseUrl}/api/db/set`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({
         collection: 'driver_locations',
         docId: cleanPhone,
@@ -328,7 +328,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           phone: userPhone,
           ...(isGenericName ? {} : { driverName: resolvedSelfName }),

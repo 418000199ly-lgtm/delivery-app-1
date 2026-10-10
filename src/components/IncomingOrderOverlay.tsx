@@ -3,10 +3,10 @@ import { Clock, Bike } from 'lucide-react';
 import { TripState, BillingRules } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
-import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance, DEFAULT_YINCHUAN_COORDS } from '../utils/geocoding';
+import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance } from '../utils/geocoding';
 import { isOrderAlreadyEnded } from '../utils/orderValidation';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
-import { getBaseApiUrl } from '../lib/dbProxy';
+import { getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 
 interface IncomingOrderOverlayProps {
   order: {
@@ -267,9 +267,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
     const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
     const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
+    // H9修复：driverCoords 无效时传 null，不再回退银川市中心假坐标，调用方显示"距离未知"
     const currentCoords = (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng))
       ? driverCoords
-      : (savedLat && savedLng ? { lat: Number(savedLat), lng: Number(savedLng) } : DEFAULT_YINCHUAN_COORDS);
+      : (savedLat && savedLng && isValidCoords(Number(savedLat), Number(savedLng)) ? { lat: Number(savedLat), lng: Number(savedLng) } : null);
 
     const { displayDistText } = calculateOrderDriverDistance(
       order.startLocation,
@@ -492,7 +493,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const baseUrl = getBaseApiUrl();
         fetch(`${baseUrl}/api/order/claim`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             orderId: rawOrderId,
             orderNo: orderNumber,

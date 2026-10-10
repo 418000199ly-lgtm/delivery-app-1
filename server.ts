@@ -415,7 +415,19 @@ function readLocalJsonDb(): Record<string, Record<string, any>> {
 function writeLocalJsonDb(data: Record<string, Record<string, any>>, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
-  // 只打脏标，不同步写盘。由5秒定时器批量异步刷盘，避免786次/秒全量序列化阻塞 Event Loop
+  // M3修复：immediate=true 时同步写盘（tmp+rename 原子替换），关键写入（抢单/黑名单）不再依赖5秒批量
+  if (immediate) {
+    try {
+      const tmpPath = LOCAL_JSON_DB_PATH + '.tmp';
+      fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf8');
+      fs.renameSync(tmpPath, LOCAL_JSON_DB_PATH);
+    } catch (e: any) {
+      console.error('[Local JSON DB] Sync write error:', e?.message);
+      _dbDirty = true; // 同步失败则回退打脏标，由5秒定时器重试
+    }
+    return;
+  }
+  // immediate=false：只打脏标，由5秒定时器批量异步刷盘，避免高频全量序列化阻塞 Event Loop
   _dbDirty = true;
 }
 
@@ -511,7 +523,8 @@ async function startServer() {
         const item = locs[k];
         if (!item || item.isOnline !== true) continue;
         const t = Number(item.lastLocationTime || item.locationTimestamp || item.lastStatusUpdateTime || 0);
-        if (t > 0 && now - t > GPS_OFFLINE_THRESHOLD_MS) {
+        // M2修复：无时间戳(t<=0)按过期处理（fail-safe），幽灵司机不再永生
+        if (now - t > GPS_OFFLINE_THRESHOLD_MS) {
           locs[k] = { ...item, isOnline: false, onlineOrdersEnabled: false, kickedOfflineAt: now, kickReason: 'gps_timeout_120s' };
           kicked++;
           changed = true;
@@ -1263,6 +1276,28 @@ async function startServer() {
       (req as any).isAdmin = false;
       return next();
     }
+    // H1修复：业务接口与读接口只做基础 token 验证，不走"无targetId需管理员"逻辑
+    // （这些接口请求体本来就没有 id/docId 字段，H9 的批量操作拦截不能误伤它们）
+    // 注意：/api/db/set|save|update|delete|add|clear-collection 等写接口不在此列，仍走下方严格校验
+    const BUSINESS_PATHS = new Set([
+      '/api/order/claim',
+      '/api/dispatch/nearest',
+      '/api/driver/location',
+      '/api/driver/status',
+      '/api/driver/offline',
+      '/api/driver/name',
+      '/api/db/get',
+      '/api/db/list',
+      '/api/geocode',
+      '/api/geo/locate',
+      '/api/auth/validate',
+      '/api/auth/logout',
+    ]);
+    if (BUSINESS_PATHS.has(req.path)) {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = false;
+      return next();
+    }
     // H9修复：无目标文档id的批量操作（如 clear-collection 清空整表）必须要求管理员
     if (!targetId) {
       // /api/db/add 未指定 id 时服务端生成随机 id，允许普通用户创建新文档
@@ -1333,13 +1368,17 @@ async function startServer() {
 
   // 1. GET Single Document
   // Supports: /api/db/get?col=passenger_links&id=15509601222 OR query params: collection, docId
-  app.get('/api/db/get', async (req, res) => {
+  // H3修复：加 requireDbAuth，禁止读取 _config/config（HMAC密钥等敏感配置）
+  app.get('/api/db/get', requireDbAuth, async (req, res) => {
     try {
       const col = String(req.query.col || req.query.collection || '').trim();
       const docId = String(req.query.id || req.query.docId || '').trim();
 
       if (!col || !docId) {
         return res.status(400).json({ exists: false, error: 'Missing col or id parameter' });
+      }
+      if (col === '_config' || col === 'config') {
+        return res.status(403).json({ exists: false, error: '禁止读取系统配置' });
       }
 
       const now = new Date();
@@ -1474,11 +1513,16 @@ async function startServer() {
 
   // 2. LIST Documents from Collection
   // Supports: /api/db/list?col=merchant_orders&limit=10000&constraints=... AND /api/db/:col
+  // H3修复：加 requireDbAuth，禁止列取 _config/config（HMAC密钥等敏感配置）
   const handleDbList = async (req: express.Request, res: express.Response) => {
     try {
       const col = String(req.params.col || req.query.col || req.query.collection || '').trim();
       if (!col) {
         return res.status(400).json({ docs: [], error: 'Missing col parameter' });
+      }
+      // H3修复：任何用户都不能批量读取系统配置集合
+      if (col === '_config' || col === 'config') {
+        return res.status(403).json({ docs: [], error: '禁止读取系统配置' });
       }
 
       const limitNum = Math.min(Math.max(Number(req.query.limit) || 10000, 1), 20000);
@@ -1626,8 +1670,9 @@ async function startServer() {
     }
   };
 
-  app.get('/api/db/list', handleDbList);
-  app.get('/api/db/:col', (req, res, next) => {
+  // H3修复：读接口加 requireDbAuth（防匿名批量拉取司机隐私数据）
+  app.get('/api/db/list', requireDbAuth, handleDbList);
+  app.get('/api/db/:col', requireDbAuth, (req, res, next) => {
     const col = req.params.col;
     if (['get', 'set', 'save', 'update', 'delete', 'clear-collection', 'add', 'migrate-from-firestore'].includes(col)) {
       return next();
@@ -1999,17 +2044,18 @@ async function startServer() {
 
       let finalData = data;
 
+      // M4修复：统一合并基——先读MySQL和JSON，以MySQL为准合并一次；MySQL写失败直接500，不再静默吞错
       if (isMySQLEnabled && mysqlPool) {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          [col, docId]
+        );
+        if (rows && rows.length > 0) {
+          const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+          finalData = { ...prev, ...data };
+        }
+        const dataStr = JSON.stringify(finalData);
         try {
-          const [rows]: any = await mysqlPool.query(
-            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-            [col, docId]
-          );
-          if (rows && rows.length > 0) {
-            const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-            finalData = { ...prev, ...data };
-          }
-          const dataStr = JSON.stringify(finalData);
           await mysqlPool.query(
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
             'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
@@ -2017,14 +2063,13 @@ async function startServer() {
           );
         } catch (mysqlErr: any) {
           console.error('[DB Proxy UPDATE MySQL Error]:', mysqlErr);
+          return res.status(500).json({ success: false, error: '数据库写入失败: ' + (mysqlErr?.message || 'MySQL error') });
         }
       }
 
-      // JSON DB Fallback
+      // JSON DB Fallback（与MySQL用同一 finalData，不再二次重算覆盖）
       const dbData = readLocalJsonDb();
       if (!dbData[col]) dbData[col] = {};
-      const prev = dbData[col][docId] || {};
-      finalData = { ...prev, ...data };
       dbData[col][docId] = finalData;
 
       // Automatically mirror approved squad/application drivers into driver_users
@@ -2778,7 +2823,12 @@ async function startServer() {
       const isOnline = req.body.isOnline !== undefined ? Boolean(req.body.isOnline) : undefined;
       const isBusy = req.body.isBusy !== undefined ? Boolean(req.body.isBusy) : false;
       const todayOrders = req.body.todayOrders !== undefined ? Number(req.body.todayOrders) : undefined;
-      const timestamp = req.body.timestamp || Date.now();
+      // M1修复：拒绝未来时间戳（防客户端传未来时间绕过120秒看门狗）
+      let timestamp = req.body.timestamp ? Number(req.body.timestamp) : Date.now();
+      if (!isNaN(timestamp) && timestamp > Date.now() + 60000) {
+        return res.status(400).json({ success: false, error: '时间戳无效：不能是未来时间' });
+      }
+      if (isNaN(timestamp) || timestamp <= 0) timestamp = Date.now();
 
       const driverName = req.body.driverName || req.body.name;
       const patch: any = { 
@@ -2872,7 +2922,8 @@ async function startServer() {
   });
 
   // 5.3 Get All Real-Time Driver Locations API
-  app.get('/api/driver/locations', async (req, res) => {
+  // H5修复：加 requireDbAuth（附近页用，登录司机可读，禁止匿名批量拉取实时GPS）
+  app.get('/api/driver/locations', requireDbAuth, async (req, res) => {
     try {
       const locations: Record<string, any> = {};
       const dbData = readLocalJsonDb();
@@ -2952,7 +3003,8 @@ async function startServer() {
   });
 
   // 5.4 Get Squad Members API (China Baota Panel Direct)
-  app.get('/api/squad/members', async (req, res) => {
+  // H5修复：加 requireDbAuth（防匿名批量拉取成员手机号/姓名）
+  app.get('/api/squad/members', requireDbAuth, async (req, res) => {
     try {
       const list: any[] = [];
       const seen = new Set<string>();
@@ -3262,7 +3314,11 @@ async function startServer() {
   const YINCHUAN_SERVER_POIS: Array<{ keywords: string[]; lat: number; lng: number }> = [];
 
   // 全国地理编码：本地银川 POI 优先，失败时调高德地图 API（中国大陆服务，全国可用）
-  const AMAP_KEY_SERVER = '0ae534670da6caccb517c02edd04e89e';
+  // H7修复：Key 优先从环境变量读取（硬编码仅作回退，部署后请在宝塔环境变量中配置并轮换）
+  const AMAP_KEY_SERVER = process.env.AMAP_KEY_SERVER || '0ae534670da6caccb517c02edd04e89e';
+  if (!process.env.AMAP_KEY_SERVER) {
+    console.warn('[Config] AMAP_KEY_SERVER 未配置环境变量，使用内置值；请尽快在高德控制台轮换该 Key 并配置环境变量');
+  }
   async function geocodeServerPoiAsync(startLoc?: string, fallbackLat?: number, fallbackLng?: number): Promise<{ lat: number; lng: number; reliable: boolean }> {
     // H13修复：失败时返回 NaN 而非市中心占位符，调用方根据 reliable=false 标记 coordsUnknown
     const failResult = { lat: NaN, lng: NaN, reliable: false };
@@ -3316,30 +3372,7 @@ async function startServer() {
     return failResult;
   }
 
-  function geocodeServerPoi(startLoc?: string, fallbackLat?: number, fallbackLng?: number): { lat: number; lng: number } {
-    const defaultLat = (fallbackLat && !isNaN(fallbackLat) && fallbackLat !== 0) ? fallbackLat : 38.4830;
-    const defaultLng = (fallbackLng && !isNaN(fallbackLng) && fallbackLng !== 0) ? fallbackLng : 106.2350;
-
-    if (!startLoc || typeof startLoc !== 'string' || !startLoc.trim()) {
-      return { lat: defaultLat, lng: defaultLng };
-    }
-
-    const clean = startLoc.trim()
-      .replace(/^代驾商家起点[为：:\s]*/g, '')
-      .replace(/^商家代叫起点[为：:\s]*/g, '')
-      .replace(/^商家起点[为：:\s]*/g, '')
-      .replace(/^代叫商家起点[为：:\s]*/g, '')
-      .replace(/^代驾起点[为：:\s]*/g, '')
-      .replace(/^起点[为：:\s]*/g, '')
-      .trim() || startLoc.trim();
-
-    for (const poi of YINCHUAN_SERVER_POIS) {
-      if (poi.keywords.some(kw => clean.includes(kw) || kw.includes(clean))) {
-        return { lat: poi.lat, lng: poi.lng };
-      }
-    }
-    return { lat: defaultLat, lng: defaultLng };
-  }
+  // H9修复：已删除同步版 geocodeServerPoi 死代码（返回银川市中心占位符，违反未知坐标铁律；零调用点）
 
   // 5.9 Server-Side Geocoding API (支持客户端按地名即时获取精准坐标与直线距离)
   // M6修复：加 requireDbAuth，防公开代理刷爆高德配额
@@ -3568,12 +3601,14 @@ async function startServer() {
         const isOnline = Boolean(loc.isOnline ?? data.isOnline ?? (cleanPhone === '15509601222'));
         if (!isOnline) return;
 
-        const isBusy = (
-          (data.hasActiveOrder && data.activeOrderId && data.activeOrderId !== orderId) ||
-          (data.currentStatus === 'serving' && data.activeOrderId && data.activeOrderId !== orderId) ||
-          (loc.isBusy && loc.activeOrderId && loc.activeOrderId !== orderId && loc.currentView !== 'incoming_overlay')
-        );
-        if (isBusy) return;
+        // M5修复：删除忙碌死过滤（hasActiveOrder/activeOrderId/currentStatus 全仓库零写入点，三子句恒为假；
+        // 行程忙碌状态由客户端 TripState 管理，服务端不做此判断）
+
+        // H-G2修复：明确标记无GPS的上线司机直接跳过（滑动上线即上报功能：无GPS时只传时间戳不传坐标，
+        // 旧坐标残留+新鲜时间戳会导致按几小时前位置误派单）。gpsValid 为 undefined 的老数据按有GPS兼容处理。
+        if ((loc as any).gpsValid === false) {
+          return;
+        }
 
         let dLat = Number(loc.lat ?? data.lat);
         let dLng = Number(loc.lng ?? data.lng);
@@ -3585,8 +3620,9 @@ async function startServer() {
 
         // GPS 120秒无更新视为离线，跳过（用户铁律：120秒无GPS强制下线，防死司机占用派单）
         // 服务端30秒看门狗已提前标记 isOnline=false，这里是派单时的最后一道防线
+        // M2修复：无时间戳按过期处理，不再放行幽灵司机
         const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || loc.lastLocationTime || 0);
-        if (locTs && Date.now() - locTs > 120 * 1000) {
+        if (Date.now() - locTs > 120 * 1000) {
           return;
         }
 
@@ -3629,6 +3665,18 @@ async function startServer() {
           // 20米 (0.02km) 极近范围随机派单规则：
           const tiedCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
           selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
+        }
+
+        // H6修复：写入前用库内最新状态二次校验（防并发派单双写：高德解析+3秒等待期间可能已被其他请求派单）
+        {
+          const freshDb = readLocalJsonDb();
+          const freshOrder = freshDb?.['merchant_orders']?.[orderId];
+          const alreadyDispatched = String(freshOrder?.dispatchedDriverPhone || '').trim();
+          const alreadyClaimed = String(freshOrder?.claimedDriverPhone || '').trim();
+          if (alreadyDispatched || alreadyClaimed) {
+            console.log(`[Dispatch] 订单 ${orderId} 已被派单/抢单（${alreadyDispatched || alreadyClaimed}），本次跳过写入`);
+            return res.json({ success: true, dispatched: true, driverPhone: alreadyDispatched || alreadyClaimed, alreadyDispatched: true });
+          }
         }
 
         const distText = selected.distKm < 1.0 
@@ -4464,6 +4512,17 @@ async function startServer() {
 
       if (!col || data === undefined) {
         return res.status(400).json({ success: false, error: 'Missing col or data' });
+      }
+
+      // H8修复：与 set/update 一致，普通用户写 squad_members 时剥离敏感字段（防通过 add 自封职位提权）
+      if (col === 'squad_members' && !(req as any).isAdmin && !(req as any).isManager) {
+        const SENSITIVE = ['status', 'approvalStatus', 'role', 'squad_position', 'userRole', 'position'];
+        for (const f of SENSITIVE) {
+          if (data && typeof data === 'object' && f in data) {
+            console.warn(`[Auth] 剥离敏感字段(add): token手机=${(req as any).authPhone}, 字段=${f}`);
+            delete data[f];
+          }
+        }
       }
 
       const generatedId = 'doc_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
@@ -5314,6 +5373,7 @@ async function startServer() {
         console.log('[Alibaba Cloud SMS] Check response code:', responseCode, responseMsg ? `message: ${responseMsg}` : '');
       }
 
+      // H2修复：只认阿里云 VerifyResult 明确成功，Code=OK 仅代表接口调用成功（错码也返回OK），绝不能作为登录依据
       const resultVal = response?.body?.model?.verifyResult as any;
       const isMatchVal = response?.body?.model?.isMatch as any;
       const isSuccess = (
@@ -5325,9 +5385,7 @@ async function startServer() {
         String(resultVal) === 'true' ||
         isMatchVal === true ||
         isMatchVal === 1 ||
-        String(isMatchVal) === '1' ||
-        responseCode === 'OK' ||
-        response?.body?.success === true
+        String(isMatchVal) === '1'
       );
 
       if (isSuccess) {

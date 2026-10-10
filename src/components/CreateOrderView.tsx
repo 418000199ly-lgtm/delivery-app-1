@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { QrCode, Clock, RotateCw, CheckCircle2, Plus, Minus, Phone } from 'lucide-react';
 import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats, DEFAULT_SLOTS } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
-import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { speakText } from '../utils/speech';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 import PassengerOrderView from './PassengerOrderView';
@@ -357,10 +357,10 @@ export default function CreateOrderView({
             console.error("Error cancelling merchant order in Firestore:", e);
           }
           try {
-            const baseUrl = typeof window !== 'undefined' ? (window.location.origin.includes('localhost') ? 'http://localhost:3000' : window.location.origin) : '';
+            const baseUrl = getBaseApiUrl();
             fetch(`${baseUrl}/api/order/cancel`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({
                 orderId: targetId,
                 driverPhone: userPhone,

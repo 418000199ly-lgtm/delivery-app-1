@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { geocodeAddress, geocodeAddressViaServer, isValidCoords, calculateOrderDriverDistance, calculateHaversineDistanceKm, formatDistance, isDefaultYinchuanCoords } from '../utils/geocoding';
 import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from '../utils/locationResolver';
-import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
+import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
@@ -557,7 +557,7 @@ export default function MobileDispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       const res = await fetch(`${baseUrl}/api/sms/send`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           phone: trimmedPhone,
           scope: 'dispatch_valet'
@@ -600,7 +600,7 @@ export default function MobileDispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       const res = await fetch(`${baseUrl}/api/sms/verify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           phone: trimmedPhone,
           code: loginCode.trim(),
@@ -731,7 +731,7 @@ export default function MobileDispatchValetOrder({
     try {
       await fetch(`${baseUrl}/api/orders/clear-all`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }
       });
     } catch (_) {}
 
@@ -1116,7 +1116,7 @@ export default function MobileDispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: updated } })
       }).catch(() => {});
       return updated;
@@ -1240,7 +1240,7 @@ export default function MobileDispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'squad_applications',
           docId: targetPhone,
@@ -1254,7 +1254,7 @@ export default function MobileDispatchValetOrder({
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'squad_members',
           docId: targetPhone,
@@ -1272,7 +1272,7 @@ export default function MobileDispatchValetOrder({
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'driver_users',
           docId: targetPhone,
@@ -1317,7 +1317,7 @@ export default function MobileDispatchValetOrder({
           for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'driver_users']) {
             fetch(`${baseUrl}/api/db/set`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({ collection: colName, docId: targetPhone, data: qrPayload })
             }).catch(() => {});
           }
@@ -1408,7 +1408,7 @@ export default function MobileDispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'squad_applications',
           docId: targetPhone,
@@ -1619,7 +1619,7 @@ export default function MobileDispatchValetOrder({
       }
       fetch(`${baseUrl}/api/order/cancel`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           orderId: targetDocId,
           orderNo: targetOrderNo,
@@ -1649,12 +1649,12 @@ export default function MobileDispatchValetOrder({
       try {
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'passenger_links', docId: cleanDriverPhone, data: cancelPayload })
         }).catch(() => {});
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'active_orders', docId: cleanDriverPhone, data: cancelPayload })
         }).catch(() => {});
       } catch (_) {}
@@ -2079,13 +2079,13 @@ export default function MobileDispatchValetOrder({
 
         fetch(`${baseUrl}/api/admin/update-driver-role`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: targetPhone, role: newRole })
         }).catch(() => {});
 
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'squad_members',
             docId: targetPhone,
@@ -2095,7 +2095,7 @@ export default function MobileDispatchValetOrder({
 
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'driver_users',
             docId: targetPhone,
@@ -2108,7 +2108,7 @@ export default function MobileDispatchValetOrder({
 
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'squad_applications',
             docId: targetPhone,
@@ -2621,12 +2621,12 @@ export default function MobileDispatchValetOrder({
         const baseUrl = getBaseApiUrl();
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: locData, merge: true })
         }).catch(() => {});
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'squad_members',
             docId: userPhone,
@@ -3227,7 +3227,7 @@ export default function MobileDispatchValetOrder({
           // Save to Baota Node DB for Mainland China server
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               col: 'web_valet_qrs',
               id: activePhone,
@@ -3243,7 +3243,7 @@ export default function MobileDispatchValetOrder({
 
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               col: 'dispatch_qrs_web',
               id: activePhone,
@@ -3307,7 +3307,7 @@ export default function MobileDispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           col: 'web_valet_qrs',
           id: activePhone,
@@ -3897,7 +3897,7 @@ export default function MobileDispatchValetOrder({
         try {
           const resp = await fetch(`${baseUrl}/api/dispatch/nearest`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               orderData: {
                 ...completeOrderData,
@@ -5704,44 +5704,44 @@ export default function MobileDispatchValetOrder({
                                   if (targetPhone && targetPhone !== '15509601222') {
                                     fetch(`${baseUrl}/api/db/set`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'driver_users', id: targetPhone, data: resetRoleData, collection: 'driver_users', docId: targetPhone, merge: true })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'squad_members', id: targetPhone, collection: 'squad_members', docId: targetPhone })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'squad_applications', id: targetPhone, collection: 'squad_applications', docId: targetPhone })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'driver_locations', id: targetPhone, collection: 'driver_locations', docId: targetPhone })
                                     }).catch(() => {});
                                   }
                                   if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
                                     fetch(`${baseUrl}/api/db/set`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'driver_users', id: targetId, data: resetRoleData, collection: 'driver_users', docId: targetId, merge: true })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'squad_members', id: targetId, collection: 'squad_members', docId: targetId })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'squad_applications', id: targetId, collection: 'squad_applications', docId: targetId })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'driver_locations', id: targetId, collection: 'driver_locations', docId: targetId })
                                     }).catch(() => {});
                                   }
@@ -5785,7 +5785,7 @@ export default function MobileDispatchValetOrder({
                                   }
                                   fetch(`${baseUrl}/api/db/set`, {
                                     method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
+                                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                     body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
                                   }).catch(() => {});
 

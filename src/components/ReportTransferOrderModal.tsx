@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, MapPin, Phone, Info, CheckCircle2 } from 'lucide-react';
-import { db, doc, setDoc, getDocs, collection, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, setDoc, getDocs, collection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { geocodeAddress, calculateHaversineDistanceKm, formatDistance, DEFAULT_YINCHUAN_COORDS, isValidCoords } from '../utils/geocoding';
 import { speakText } from '../utils/speech';
 
@@ -59,8 +59,11 @@ export default function ReportTransferOrderModal({
         reporterLng = Number(sLng);
       } else if (currentPickup && currentPickup.trim()) {
         const pickupCoords = geocodeAddress(currentPickup);
-        reporterLat = pickupCoords.lat;
-        reporterLng = pickupCoords.lng;
+        // H9修复：geocodeAddress可能返回null
+        if (pickupCoords && isValidCoords(pickupCoords.lat, pickupCoords.lng)) {
+          reporterLat = pickupCoords.lat;
+          reporterLng = pickupCoords.lng;
+        }
       }
 
       // Passenger start coords for order display
@@ -68,8 +71,11 @@ export default function ReportTransferOrderModal({
       let pLng = reporterLng;
       if (currentPickup && currentPickup.trim()) {
         const pickupCoords = geocodeAddress(currentPickup, hasDriverCoords ? { lat: reporterLat, lng: reporterLng } : undefined);
-        pLat = pickupCoords.lat;
-        pLng = pickupCoords.lng;
+        // H9修复：geocodeAddress可能返回null
+        if (pickupCoords && isValidCoords(pickupCoords.lat, pickupCoords.lng)) {
+          pLat = pickupCoords.lat;
+          pLng = pickupCoords.lng;
+        }
       }
 
       // 2. Fetch candidate drivers from all sources
@@ -277,7 +283,7 @@ export default function ReportTransferOrderModal({
       try {
         const dispatchResp = await fetch(`${baseUrl}/api/dispatch/nearest`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             orderData: {
               id: orderId,
@@ -444,7 +450,7 @@ export default function ReportTransferOrderModal({
         }
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: hallOrderPayload })
         }).catch(() => {});
 

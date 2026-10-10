@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl } from '../lib/dbProxy';
+import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { geocodeAddress, geocodeAddressViaServer, isValidCoords, calculateOrderDriverDistance, calculateHaversineDistanceKm, formatDistance } from '../utils/geocoding';
 import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
@@ -551,7 +551,7 @@ export default function DispatchValetOrder({
     try {
       await fetch(`${baseUrl}/api/orders/clear-all`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }
       });
     } catch (_) {}
 
@@ -936,7 +936,7 @@ export default function DispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: updated } })
       }).catch(() => {});
       return updated;
@@ -1059,7 +1059,7 @@ export default function DispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'squad_applications',
           docId: targetPhone,
@@ -1073,7 +1073,7 @@ export default function DispatchValetOrder({
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'squad_members',
           docId: targetPhone,
@@ -1091,7 +1091,7 @@ export default function DispatchValetOrder({
       }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'driver_users',
           docId: targetPhone,
@@ -1119,10 +1119,9 @@ export default function DispatchValetOrder({
           appQr = (parsed?.wechatQrCode || parsed?.alipayQrCode || '').trim();
         }
         if (!appQr) {
+          // M6修复：只读per-phone key，删除共享key回退，防止跨账号串码
           appQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) ||
-                   localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`) ||
-                   localStorage.getItem('dd_user_wechat_qr') ||
-                   localStorage.getItem('dd_dispatch_wechat_qr') || '').trim();
+                   localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`) || '').trim();
         }
 
         if (appQr) {
@@ -1136,7 +1135,7 @@ export default function DispatchValetOrder({
           for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'driver_users']) {
             fetch(`${baseUrl}/api/db/set`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({ collection: colName, docId: targetPhone, data: qrPayload })
             }).catch(() => {});
           }
@@ -1227,7 +1226,7 @@ export default function DispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           collection: 'squad_applications',
           docId: targetPhone,
@@ -1438,7 +1437,7 @@ export default function DispatchValetOrder({
       }
       fetch(`${baseUrl}/api/order/cancel`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           orderId: targetDocId,
           orderNo: targetOrderNo,
@@ -1468,12 +1467,12 @@ export default function DispatchValetOrder({
       try {
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'passenger_links', docId: cleanDriverPhone, data: cancelPayload })
         }).catch(() => {});
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'active_orders', docId: cleanDriverPhone, data: cancelPayload })
         }).catch(() => {});
       } catch (_) {}
@@ -1961,13 +1960,13 @@ export default function DispatchValetOrder({
 
         fetch(`${baseUrl}/api/admin/update-driver-role`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: targetPhone, role: newRole })
         }).catch(() => {});
 
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'squad_members',
             docId: targetPhone,
@@ -1977,7 +1976,7 @@ export default function DispatchValetOrder({
 
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'driver_users',
             docId: targetPhone,
@@ -1990,7 +1989,7 @@ export default function DispatchValetOrder({
 
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'squad_applications',
             docId: targetPhone,
@@ -2070,11 +2069,13 @@ export default function DispatchValetOrder({
             }
 
             const isCancelled = data.status === 'cancelled' || data.statusCategory === '已取消' || data.statusCategory === '订单已取消';
+            // M7修复：'等待接单'视为'呼叫中'别名，确保Tab过滤可见
+            const rawCat = data.statusCategory === '等待接单' ? '呼叫中' : data.statusCategory;
             list.push({
               id: docSnap.id,
               orderId: docSnap.id,
               ...data,
-              statusCategory: isCancelled ? '已取消' : (data.statusCategory || (data.status === 'hall' ? '呼叫中' : data.status === 'completed' ? '已完成' : '服务中'))
+              statusCategory: isCancelled ? '已取消' : (rawCat || (data.status === 'hall' ? '呼叫中' : data.status === 'completed' ? '已完成' : '服务中'))
             });
           }
         });
@@ -2422,12 +2423,12 @@ export default function DispatchValetOrder({
         const baseUrl = getBaseApiUrl();
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: locData, merge: true })
         }).catch(() => {});
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             collection: 'squad_members',
             docId: userPhone,
@@ -2908,7 +2909,7 @@ export default function DispatchValetOrder({
 
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               col: 'dispatch_qrs',
               id: activePhone,
@@ -2922,7 +2923,7 @@ export default function DispatchValetOrder({
 
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               col: 'dispatch_qrcodes',
               id: activePhone,
@@ -2961,7 +2962,7 @@ export default function DispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           col: 'dispatch_qrs',
           id: activePhone,
@@ -2975,7 +2976,7 @@ export default function DispatchValetOrder({
 
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           col: 'dispatch_qrcodes',
           id: activePhone,
@@ -3391,7 +3392,8 @@ export default function DispatchValetOrder({
             if (localQ) return localQ;
           }
         } catch (_) {}
-        return localStorage.getItem('dd_user_wechat_qr') || localStorage.getItem('dd_dispatch_wechat_qr') || '';
+        // M6修复：只读per-phone key，删除共享key回退
+        return '';
       })();
 
       const effectiveQr = settingsQr || wechatQrUrl || '';
@@ -3551,7 +3553,7 @@ export default function DispatchValetOrder({
         try {
           const resp = await fetch(`${baseUrl}/api/dispatch/nearest`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({
               orderData: {
                 ...completeOrderData,
@@ -5292,27 +5294,27 @@ export default function DispatchValetOrder({
                                   if (cleanTargetPhone && cleanTargetPhone !== '15509601222') {
                                     fetch(`${baseUrl}/api/db/set`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'driver_users', id: cleanTargetPhone, data: resetRoleData, collection: 'driver_users', docId: cleanTargetPhone, merge: true })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'squad_members', id: cleanTargetPhone, collection: 'squad_members', docId: cleanTargetPhone })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'squad_applications', id: cleanTargetPhone, collection: 'squad_applications', docId: cleanTargetPhone })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/delete`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'driver_locations', id: cleanTargetPhone, collection: 'driver_locations', docId: cleanTargetPhone })
                                     }).catch(() => {});
                                     fetch(`${baseUrl}/api/db/set`, {
                                       method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                       body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
                                     }).catch(() => {});
                                   }

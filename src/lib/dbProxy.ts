@@ -4,7 +4,7 @@ import { scheduleResumeTask } from '../utils/resumeCoordinator';
 
 // 缓存版本：每次发版递增，自动隔离旧缓存，防止预览显示过期数据
 // 中国大陆项目：数据直连阿里云，禁用被墙服务
-const DB_CACHE_VERSION = 'v20261010e';
+const DB_CACHE_VERSION = 'v20261011a';
 
 // DB reference object for Mainland China Aliyun Baota MySQL REST API interface compatibility
 const dbPlaceholder = { _isProxy: true };
@@ -70,6 +70,24 @@ export function getAuthHeaders(): Record<string, string> {
     }
   } catch (_) {}
   return {};
+}
+
+/**
+ * M8修复：区分鉴权失败与网络错误
+ * 401/403 → 清除本地token并抛出错误（调用方需处理重登录）
+ * 网络错误 → 返回true保持乐观（本地已写）
+ */
+function isAuthError(err: any): boolean {
+  const msg = String(err?.message || '');
+  const status = (err as any)?.status;
+  return status === 401 || status === 403 || msg.includes('401') || msg.includes('403');
+}
+
+function clearAuthTokenOn401(): void {
+  try {
+    localStorage.removeItem('dd_auth_token');
+    window.dispatchEvent(new CustomEvent('auth_token_expired'));
+  } catch (_) {}
 }
 
 export function getBaseApiUrl(): string {
@@ -196,7 +214,7 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
   const url = `${baseUrl}/api/db/get?col=${encodeURIComponent(docRef.collectionName)}&id=${encodeURIComponent(cleanId)}&_t=${Date.now()}`;
   
   try {
-    const res = await safeFetchWithTimeout(url, { cache: 'no-store' });
+    const res = await safeFetchWithTimeout(url, { cache: 'no-store', headers: { ...getAuthHeaders() } });
     if (!res.ok) {
       throw new Error(`DB Fetch failed with status: ${res.status}`);
     }
@@ -260,10 +278,15 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
       })
     });
     if (!res.ok) {
-      throw new Error(`DB Set failed: ${res.statusText}`);
+      const setErr: any = new Error(`DB Set failed: ${res.status} ${res.statusText}`); setErr.status = res.status; throw setErr;
     }
     return true;
   } catch (err) {
+    // M8修复：401/403清token并抛出，网络错误返回true保持乐观
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+      throw err;
+    }
     return true;
   }
 }
@@ -300,10 +323,15 @@ export async function updateDoc(docRef: any, data: any) {
       })
     });
     if (!res.ok) {
-      throw new Error(`DB Update failed: ${res.statusText}`);
+      const updErr: any = new Error(`DB Update failed: ${res.status} ${res.statusText}`); updErr.status = res.status; throw updErr;
     }
     return true;
   } catch (err) {
+    // M8修复：401/403清token并抛出，网络错误返回true保持乐观
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+      throw err;
+    }
     return true;
   }
 }
@@ -328,10 +356,15 @@ export async function deleteDoc(docRef: any) {
       })
     });
     if (!res.ok) {
-      throw new Error(`DB Delete failed: ${res.statusText}`);
+      const delErr: any = new Error(`DB Delete failed: ${res.status} ${res.statusText}`); delErr.status = res.status; throw delErr;
     }
     return true;
   } catch (err) {
+    // M8修复：401/403清token并抛出，网络错误返回true保持乐观
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+      throw err;
+    }
     return true;
   }
 }
@@ -356,7 +389,7 @@ export async function addDoc(collectionRef: any, data: any) {
       })
     });
     if (!res.ok) {
-      throw new Error(`DB Add failed: ${res.statusText}`);
+      const addErr: any = new Error(`DB Add failed: ${res.status} ${res.statusText}`); addErr.status = res.status; throw addErr;
     }
     const result = await res.json();
     const finalId = result.id || randomId;
@@ -369,7 +402,11 @@ export async function addDoc(collectionRef: any, data: any) {
 
     return { id: finalId };
   } catch (err) {
-    return { id: randomId };
+    // M8修复：addDoc失败直接抛出，不再返回假id
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+    }
+    throw err;
   }
 }
 
@@ -384,7 +421,7 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
   }
 
   try {
-    const res = await safeFetchWithTimeout(url);
+    const res = await safeFetchWithTimeout(url, { headers: { ...getAuthHeaders() } });
     if (!res.ok) {
       throw new Error(`DB Query failed: ${res.statusText}`);
     }
@@ -598,10 +635,15 @@ export async function clearCollection(colName: string) {
       body: JSON.stringify({ col: colName })
     });
     if (!res.ok) {
-      throw new Error(`DB Clear Collection failed: ${res.statusText}`);
+      const clrErr: any = new Error(`DB Clear Collection failed: ${res.status} ${res.statusText}`); clrErr.status = res.status; throw clrErr;
     }
     return true;
   } catch (err) {
+    // M8修复：401/403清token并抛出
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+      throw err;
+    }
     console.warn("Proxy DB Clear Collection fell back to local storage:", err);
     return true;
   }

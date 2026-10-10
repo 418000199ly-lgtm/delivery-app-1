@@ -1,5 +1,5 @@
 import { db, collection, getDocs, doc, setDoc } from '../lib/dbProxy';
-import { getBaseApiUrl } from '../lib/dbProxy';
+import { getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 
 /**
  * Common 2-character Chinese compound surnames (复姓)
@@ -318,7 +318,7 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
     const baseUrl = getBaseApiUrl();
     fetch(`${baseUrl}/api/driver/name`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ phone: cleanPhone, name: finalName })
     }).catch(() => {});
   } catch (_) {}
@@ -370,12 +370,12 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
         const baseUrl = getBaseApiUrl();
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'squad_members', docId: cleanPhone, data: updatePayload })
         }).catch(() => {});
         fetch(`${baseUrl}/api/db/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'squad_applications', docId: cleanPhone, data: updatePayload })
         }).catch(() => {});
       } catch (_) {}

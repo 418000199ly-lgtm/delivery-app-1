@@ -1,4 +1,4 @@
-import { getBaseApiUrl } from '../lib/dbProxy';
+import { getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 
 /**
  * Utility for geocoding and distance calculation across the application.
@@ -239,15 +239,11 @@ export function isValidCoords(lat: any, lng: any): boolean {
 
 /**
  * Geocode an address string to latitude/longitude coordinates.
- * Always returns a valid Coords object inside the city bounds.
+ * H9修复：POI查不到时返回null（不再回退银川市中心假坐标），调用方需处理null显示"位置未知"
  */
-export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): Coords {
-  const baseCenter = fallbackCenter && isValidCoords(fallbackCenter.lat, fallbackCenter.lng)
-    ? fallbackCenter
-    : DEFAULT_YINCHUAN_COORDS;
-
+export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): Coords | null {
   if (!addressName || typeof addressName !== 'string' || !addressName.trim() || addressName.includes('****') || addressName.trim() === '起点') {
-    return baseCenter;
+    return null;
   }
 
   // Clean out common prefixes like "代驾商家起点为", "代驾商家起点：", "代驾商家起点", "商家起点：", "起点为", "起点："
@@ -278,7 +274,8 @@ export function geocodeAddress(addressName?: string, fallbackCenter?: Coords): C
     }
   }
 
-  return baseCenter;
+  // H9修复：POI查不到时返回null，不再回退市中心假坐标
+  return null;
 }
 
 /**
@@ -302,7 +299,8 @@ export function calculateHaversineDistanceKm(lat1: number, lng1: number, lat2: n
  * - 1公里外显示公里数保留2位小数 (例如 "1.01公里", "2.35公里")
  */
 export function formatDistance(distInKm: number): string {
-  if (isNaN(distInKm) || distInKm < 0) return '850米';
+  // H9修复：NaN/负数返回"距离未知"，不再返回假的"850米"
+  if (isNaN(distInKm) || distInKm < 0) return '距离未知';
   if (distInKm < 1.0) {
     const meters = Math.max(50, Math.round(distInKm * 1000));
     return `${meters}米`;
@@ -363,8 +361,11 @@ export function calculateOrderDriverDistance(
   if (!isValidCoords(oLat, oLng) || isDefaultCityCoords) {
     if (orderStartLocation && typeof orderStartLocation === 'string' && orderStartLocation.trim()) {
       const geocodedPOI = geocodeAddress(orderStartLocation, { lat: dLat, lng: dLng });
-      oLat = geocodedPOI.lat;
-      oLng = geocodedPOI.lng;
+      // H9修复：geocodeAddress可能返回null，需判空
+      if (geocodedPOI && isValidCoords(geocodedPOI.lat, geocodedPOI.lng)) {
+        oLat = geocodedPOI.lat;
+        oLng = geocodedPOI.lng;
+      }
     } else {
       oLat = dLat;
       oLng = dLng;
@@ -408,7 +409,9 @@ export async function geocodeAddressViaServer(
     params.set('lat', String(fallback.lat));
     params.set('lng', String(fallback.lng));
 
-    const res = await fetch(`${baseUrl}/api/geocode?${params.toString()}`);
+    const res = await fetch(`${baseUrl}/api/geocode?${params.toString()}`, {
+      headers: { ...getAuthHeaders() }
+    });
     if (res.ok) {
       const json = await res.json();
       if (json && json.success && isValidCoords(json.lat, json.lng)) {
@@ -417,5 +420,6 @@ export async function geocodeAddressViaServer(
     }
   } catch (_) {}
 
-  return geocodeAddress(addressName, fallback);
+  // H9修复：geocodeAddress可能返回null，用fallback兜底（保持Promise<Coords>签名）
+  return geocodeAddress(addressName, fallback) || fallback;
 }

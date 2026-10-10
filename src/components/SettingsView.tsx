@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Volume2, Download, AlertCircle } from 'lucide-react';
 import { ChauffeurSettings, checkVipActive } from '../types';
-import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
@@ -510,7 +510,7 @@ export default function SettingsView({
           const baseUrl = getBaseApiUrl();
           fetch(`${baseUrl}/api/upload-wechat-qr`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
           }).catch(err => console.error('Upload QR to server error:', err));
         }
@@ -555,7 +555,7 @@ export default function SettingsView({
           const baseUrl = getBaseApiUrl();
           fetch(`${baseUrl}/api/upload-alipay-qr`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
           }).catch(err => console.error('Upload Alipay QR to server error:', err));
         }
@@ -1008,7 +1008,7 @@ export default function SettingsView({
                       if (currentPhone) {
                         fetch(`${baseUrl}/api/delete-wechat-qr`, {
                           method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
+                          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                           body: JSON.stringify({ phone: currentPhone })
                         }).catch(() => {});
                       }
@@ -1269,7 +1269,7 @@ export default function SettingsView({
                               const baseUrl = getBaseApiUrl();
                               fetch(`${baseUrl}/api/upload-wechat-qr`, {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
+                                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                 body: JSON.stringify({ phone: targetPhone, imageBase64: selectedImgUrl })
                               }).catch(() => {});
                             }
