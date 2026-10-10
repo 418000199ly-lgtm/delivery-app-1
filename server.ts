@@ -426,7 +426,11 @@ async function startServer() {
     'http://localhost:3000',
     'http://localhost:5173',
     'http://127.0.0.1:3000',
-    'http://127.0.0.1:5173'
+    'http://127.0.0.1:5173',
+    // Capacitor 原生 App 的 Origin（iOS/Android）
+    'capacitor://heiwan.daijia',
+    'https://heiwan.daijia',
+    'http://heiwan.daijia'
   ];
   app.use((req, res, next) => {
     const origin = req.headers.origin;
