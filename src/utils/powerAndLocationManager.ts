@@ -404,6 +404,38 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
             const lng = result.position.lng;
             uploadCoordinates(lat, lng, 'AMap Adaptive GPS');
             scheduleNext(getNextIntervalMs(lat, lng));
+          } else {
+            // 高精度失败 → 尝试低精度网络定位（室内WiFi/基站，2026-10-11用户要求：在家也要能定位上报）
+            tryLowAccuracyAmap();
+          }
+        });
+        return;
+      } catch (_) {}
+    }
+
+    fallbackHtml5();
+  };
+
+  // 低精度网络定位兜底（室内）：不要求GPS卫星，用WiFi/基站/IP定位
+  const tryLowAccuracyAmap = () => {
+    if (isDisposed) return;
+    const AMap = (window as any).AMap;
+    if (AMap && typeof AMap.Geolocation === 'function') {
+      try {
+        const geolocation = new AMap.Geolocation({
+          enableHighAccuracy: false, // 允许网络定位
+          timeout: 10000,
+          noIpLocate: 0,
+          noGeoLocation: 0,
+        });
+        geolocation.getCurrentPosition((status: string, result: any) => {
+          if (isDisposed) return;
+          if (status === 'complete' && result.position) {
+            const lat = result.position.lat;
+            const lng = result.position.lng;
+            const accuracy = Number(result.accuracy) || 0;
+            uploadCoordinates(lat, lng, `AMap Network(${accuracy}米)`);
+            scheduleNext(getNextIntervalMs(lat, lng));
           } else if (navigator.geolocation) {
             fallbackHtml5();
           } else {
@@ -413,8 +445,11 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
         return;
       } catch (_) {}
     }
-
-    fallbackHtml5();
+    if (navigator.geolocation) {
+      fallbackHtml5();
+    } else {
+      scheduleNext(getNextIntervalMs());
+    }
   };
 
   const fallbackHtml5 = () => {
@@ -429,25 +464,27 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
           scheduleNext(getNextIntervalMs(converted.lat, converted.lng));
         },
         () => {
-          // 开发者测试位置兜底（室内无GPS时）
-          const devLoc = getDevTestLocation();
-          if (devLoc && userPhone === '15509601222') {
-            uploadCoordinates(devLoc.lat, devLoc.lng, 'DevTestLocation');
-            scheduleNext(getNextIntervalMs(devLoc.lat, devLoc.lng));
-          } else {
-            scheduleNext(getNextIntervalMs());
-          }
+          // 高精度失败 → 尝试低精度（室内WiFi/基站）
+          navigator.geolocation.getCurrentPosition(
+            (pos2) => {
+              if (isDisposed) return;
+              const rawLat = pos2.coords.latitude;
+              const rawLng = pos2.coords.longitude;
+              const converted = wgs84ToGcj02(rawLng, rawLat);
+              const acc = Math.round(pos2.coords.accuracy || 0);
+              uploadCoordinates(converted.lat, converted.lng, `HTML5 Network(${acc}米)`);
+              scheduleNext(getNextIntervalMs(converted.lat, converted.lng));
+            },
+            () => {
+              scheduleNext(getNextIntervalMs());
+            },
+            { enableHighAccuracy: false, timeout: 10000, maximumAge: 30000 }
+          );
         },
         { enableHighAccuracy: true, timeout: 7000, maximumAge: 10000 }
       );
     } else {
-      const devLoc = getDevTestLocation();
-      if (devLoc && userPhone === '15509601222') {
-        uploadCoordinates(devLoc.lat, devLoc.lng, 'DevTestLocation');
-        scheduleNext(getNextIntervalMs(devLoc.lat, devLoc.lng));
-      } else {
-        scheduleNext(getNextIntervalMs());
-      }
+      scheduleNext(getNextIntervalMs());
     }
   };
 
