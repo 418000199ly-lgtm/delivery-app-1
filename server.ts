@@ -103,11 +103,9 @@ try {
 } catch (e: any) {
   console.error('[Auth] 加载 token 文件失败:', e?.message);
 }
-// token 持久化（节流：最多每10秒写一次）
-let _authTokensDirty = false;
-setInterval(() => {
-  if (!_authTokensDirty) return;
-  _authTokensDirty = false;
+// token 持久化：立即同步写盘（修复 a5：10秒批量导致重启丢 token，抢单 401）
+// 登录/登出是低频操作，直接同步写盘比批量更可靠
+function persistAuthTokensSync() {
   try {
     const obj: Record<string, any> = {};
     for (const [k, v] of authTokens) obj[k] = v;
@@ -117,6 +115,13 @@ setInterval(() => {
   } catch (e: any) {
     console.error('[Auth] 持久化 token 失败:', e?.message);
   }
+}
+// 保留10秒批量作为兜底（防止极端情况下的脏标记遗漏）
+let _authTokensDirty = false;
+setInterval(() => {
+  if (!_authTokensDirty) return;
+  _authTokensDirty = false;
+  persistAuthTokensSync();
 }, 10000);
 const DEVELOPER_PHONE_SERVER = '15509601222';
 
@@ -4955,10 +4960,25 @@ async function startServer() {
       if (token && authTokens.has(token)) {
         authTokens.delete(token);
         _authTokensDirty = true;
+        persistAuthTokensSync(); // a5修复：登出立即写盘
       }
       return res.json({ success: true });
     } catch (e: any) {
       return res.json({ success: true });
+    }
+  });
+
+  // a5修复：token 有效性校验接口——App 启动时调用，提前发现过期
+  app.get('/api/auth/validate', async (req, res) => {
+    try {
+      const token = String(req.headers['x-auth-token'] || req.query?.token || '').trim();
+      const info = token ? authTokens.get(token) : null;
+      if (info) {
+        return res.json({ success: true, valid: true, phone: info.phone, scope: info.scope });
+      }
+      return res.json({ success: true, valid: false });
+    } catch (e: any) {
+      return res.json({ success: true, valid: false });
     }
   });
 
@@ -5118,6 +5138,7 @@ async function startServer() {
         createdAt: Date.now()
       });
       _authTokensDirty = true; // M1: 标记持久化
+      persistAuthTokensSync(); // a5修复：登录成功立即写盘，重启不丢 token
       // M1修复：删除7天过期清理（用户铁律：手动登出前永不过期）；仅做容量保护
       if (authTokens.size > 50000) {
         console.warn('[Auth] token 数量超过5万，仅记录告警，不自动清理');
