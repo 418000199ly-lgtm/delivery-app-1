@@ -59,7 +59,7 @@ import {
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified } from '../utils/nameResolver';
 import { DEVELOPER_PHONE } from '../utils/constants';
 
 function calculateExpiryFromDays(days: string): string {
@@ -1374,7 +1374,7 @@ export default function AdminPanel({
         if (isSubscribed) {
           setDriverDoc(normalizedData);
           if (!isUserEditingDateRef.current && !isSavingExpiryRef.current) {
-            setTempExpiry(resolvedVip);
+            setTempExpiry(normalizeExpiryForDisplay(resolvedVip));
           }
           if (!isUserEditingDaysRef.current && !isSavingExpiryRef.current) {
             setTempDays(calculateDaysFromExpiry(resolvedVip));
@@ -1403,7 +1403,7 @@ export default function AdminPanel({
         };
         setDriverDoc(devData);
         if (!isUserEditingDateRef.current) {
-          setTempExpiry(cVip);
+          setTempExpiry(normalizeExpiryForDisplay(cVip));
         }
         if (!isUserEditingDaysRef.current) {
           setTempDays(calculateDaysFromExpiry(cVip));
@@ -1784,6 +1784,27 @@ export default function AdminPanel({
       } catch (_) {}
       return updated;
     });
+
+    // 同步更新源列表，防止 useEffect 用旧数据重建 allDrivers 时覆盖乐观更新
+    // （修复右侧表格"锁死"在旧有效期的问题）
+    const updateSourceList = (setter: React.Dispatch<React.SetStateAction<any[]>>) => {
+      setter(prev => {
+        if (!Array.isArray(prev)) return prev;
+        let changed = false;
+        const updated = prev.map((d: any) => {
+          const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
+          if (p === cleanPhone && d.vipExpiry !== finalExpiry) {
+            changed = true;
+            return { ...d, vipExpiry: finalExpiry };
+          }
+          return d;
+        });
+        return changed ? updated : prev;
+      });
+    };
+    updateSourceList(setSquadMembersList);
+    updateSourceList(setDriverUsersList);
+    updateSourceList(setSquadAppsList);
 
     // 2. Immediately update local storage caches for instantaneous sub-millisecond local reads
     try {
@@ -5049,7 +5070,7 @@ export default function AdminPanel({
                                   )}
                                 </td>
                                 <td className="py-2.5 px-2 font-mono text-amber-500/90 font-bold">
-                                  {drv.vipExpiry || (
+                                  {drv.vipExpiry ? normalizeExpiryForDisplay(drv.vipExpiry) : (
                                     <span className="text-slate-600 text-[10px] italic">无有效期/非会员</span>
                                   )}
                                 </td>

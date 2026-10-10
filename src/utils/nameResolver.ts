@@ -794,6 +794,23 @@ export function pickAuthoritativeVipExpiry(...expiries: (string | undefined | nu
 }
 
 /**
+ * 将会员有效期标准化为显示值：2099年及以后的日期统一转为"永久有效"，
+ * 避免界面出现 2099-12-31 / 26745天 这类不一致显示。
+ */
+export function normalizeExpiryForDisplay(expiry?: string | null): string {
+  if (!expiry) return '待开通';
+  const trimmed = String(expiry).trim();
+  if (trimmed === '永久有效' || trimmed === '永久' || trimmed === 'permanent' || trimmed === '终身') {
+    return '永久有效';
+  }
+  const match = trimmed.match(/^(\d{4})[-/]\d{1,2}[-/]\d{1,2}/);
+  if (match && parseInt(match[1], 10) >= 2099) {
+    return '永久有效';
+  }
+  return trimmed;
+}
+
+/**
  * Standardized VIP remaining days calculation.
  * Ensures 100% mathematical & timezone consistency across Admin Panel, Driver App, and Backend.
  */
