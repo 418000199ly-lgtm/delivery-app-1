@@ -321,8 +321,10 @@ export function calculateOrderDriverDistance(
   orderLng?: number | null,
   driverCoords?: { lat: number; lng: number } | null,
   coordsUnknown?: boolean
-): { distKm: number; displayDistText: string; resolvedLat: number; resolvedLng: number } {
+): { distKm: number; displayDistText: string; resolvedLat: number; resolvedLng: number; isUnknown: boolean } {
   // 1. Resolve Driver Coords
+  // w51/w53修复：司机GPS无效时不再回退到银川市中心（违反"未知坐标铁律"，曾致4.70km误算），
+  // 直接标记距离未知
   let dLat = driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng) ? Number(driverCoords.lat) : 0;
   let dLng = driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng) ? Number(driverCoords.lng) : 0;
 
@@ -335,9 +337,17 @@ export function calculateOrderDriverDistance(
     }
   }
 
+  // 司机坐标无效：不回退市中心，直接返回未知
   if (!isValidCoords(dLat, dLng)) {
-    dLat = DEFAULT_YINCHUAN_COORDS.lat;
-    dLng = DEFAULT_YINCHUAN_COORDS.lng;
+    let oLat = Number(orderLat);
+    let oLng = Number(orderLng);
+    return {
+      distKm: -1,
+      displayDistText: '距离未知',
+      resolvedLat: isValidCoords(oLat, oLng) ? oLat : 0,
+      resolvedLng: isValidCoords(oLat, oLng) ? oLng : 0,
+      isUnknown: true
+    };
   }
 
   // 2. Resolve Order Coords
@@ -369,7 +379,8 @@ export function calculateOrderDriverDistance(
     distKm: distKm < 0.05 ? 0 : distKm,
     displayDistText,
     resolvedLat: oLat,
-    resolvedLng: oLng
+    resolvedLng: oLng,
+    isUnknown: false
   };
 }
 
