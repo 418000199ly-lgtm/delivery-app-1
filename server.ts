@@ -1136,7 +1136,7 @@ async function startServer() {
 
   // Health check endpoint
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'healthy', timestamp: Date.now() });
+    res.json({ status: 'healthy', timestamp: Date.now(), version: 'f2e8722', hmac: true });
   });
 
   // High-reliability Chinese Text-To-Speech (TTS) Proxy Endpoint
