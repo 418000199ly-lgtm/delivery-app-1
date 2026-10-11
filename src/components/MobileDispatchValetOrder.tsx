@@ -52,6 +52,24 @@ import { DRIVER_AVATAR_BASE64, DRIVER_MASCOT_BASE64 } from '../assets/images/dri
 import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, formatDriverMaskedName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
+// 2026-10-11晚：从高德逆地理结果提取详细地址（如"北京东路465号"），用于起点下方小字展示
+function extractDetailAddressFromRegeocode(regeocode: any, locationName: string): string {
+  if (!regeocode) return '';
+  try {
+    const comp = regeocode.addressComponent || {};
+    const street = String(comp.street || '').trim();
+    const streetNumber = String(comp.streetNumber || '').trim();
+    let detail = (street + streetNumber).trim();
+    if (!detail) {
+      const formatted = String(regeocode.formattedAddress || '');
+      const m = formatted.match(/([\u4e00-\u9fa5]+(?:路|街|巷|道)\d+号)/);
+      if (m) detail = m[1];
+    }
+    if (detail && locationName && detail === locationName.trim()) return '';
+    return detail;
+  } catch (_) { return ''; }
+}
+
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371; // Earth radius in km
@@ -2859,6 +2877,11 @@ export default function MobileDispatchValetOrder({
                 const finalAddr = highPrecisionName || '银川市运祥小区';
                 setPassengerAddress(finalAddr);
                 try { localStorage.setItem('dd_bg_driver_coords_name', finalAddr); } catch (_) {}
+                // 2026-10-11晚：GPS逆地理时同步提取详细地址，起点下方小字即时显示
+                const detailAddr = extractDetailAddressFromRegeocode(geoResult.regeocode, finalAddr);
+                setPassengerAddressDetail(detailAddr);
+                try { localStorage.setItem('dd_bg_driver_coords_detail', detailAddr); } catch (_) {}
+                setAddressFromSuggestion(true);
                 if (!silent) {
                   onShowToast(`📍 定位成功：${finalAddr}`);
                 }

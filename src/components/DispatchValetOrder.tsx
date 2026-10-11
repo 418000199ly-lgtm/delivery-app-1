@@ -51,6 +51,27 @@ import { DRIVER_AVATAR_BASE64 } from '../assets/images/driverImageConstants';
 import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
+// 2026-10-11晚：从高德逆地理结果提取详细地址（如"北京东路465号"），用于起点下方小字展示
+function extractDetailAddressFromRegeocode(regeocode: any, locationName: string): string {
+  if (!regeocode) return '';
+  try {
+    const comp = regeocode.addressComponent || {};
+    const street = String(comp.street || '').trim();
+    const streetNumber = String(comp.streetNumber || '').trim();
+    let detail = (street + streetNumber).trim();
+    // 如果名称里已经包含详细地址（如"北京东路465号兴庆区政府住宅区"），从 formattedAddress 里截取门牌号部分
+    if (!detail) {
+      const formatted = String(regeocode.formattedAddress || '');
+      // 尝试匹配 "XX路XX号" 或 "XX街XX号" 模式
+      const m = formatted.match(/([\u4e00-\u9fa5]+(?:路|街|巷|道)\d+号)/);
+      if (m) detail = m[1];
+    }
+    // 避免详细地址和地点名完全重复
+    if (detail && locationName && detail === locationName.trim()) return '';
+    return detail;
+  } catch (_) { return ''; }
+}
+
 // Haversine Distance Formula (直线距离计算)
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371; // Earth radius in km
@@ -334,6 +355,12 @@ export default function DispatchValetOrder({
                 const finalAddr = highPrecisionName || '银川市运祥小区';
                 setPassengerAddress(finalAddr);
                 try { localStorage.setItem('dd_bg_driver_coords_name', finalAddr); } catch (_) {}
+                // 2026-10-11晚：GPS逆地理时同步提取详细地址（如"北京东路465号"），起点下方小字即时显示
+                const detailAddr = extractDetailAddressFromRegeocode(geoResult.regeocode, finalAddr);
+                setPassengerAddressDetail(detailAddr);
+                try { localStorage.setItem('dd_bg_driver_coords_detail', detailAddr); } catch (_) {}
+                // GPS定位的坐标可信，标记为来自可信源，下单时可直接用
+                setAddressFromSuggestion(true);
                 if (!silent) {
                   onShowToast(`📍 定位成功：${finalAddr}`);
                 }
