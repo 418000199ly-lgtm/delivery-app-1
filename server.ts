@@ -1148,8 +1148,11 @@ async function startServer() {
   consolidateAllDriversOnStartup().catch(() => {});
 
   // Health check endpoint
+  // SERVER_VERSION 由 create_deploy_zip.py 在打部署包时替换为真实 git 短 SHA；
+  // 未经打包直接运行时显示 dev，避免写死旧版本号误导“版本对不对得上”的核对。
+  const SERVER_VERSION: string = '__SERVER_VERSION__';
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'healthy', timestamp: Date.now(), version: 'f2e8722', hmac: true });
+    res.json({ status: 'healthy', timestamp: Date.now(), version: SERVER_VERSION.startsWith('__') ? 'dev' : SERVER_VERSION, hmac: true });
   });
 
   // High-reliability Chinese Text-To-Speech (TTS) Proxy Endpoint
@@ -3336,7 +3339,11 @@ async function startServer() {
   if (!process.env.AMAP_KEY_SERVER) {
     console.warn('[Config] AMAP_KEY_SERVER 未配置环境变量，使用内置值；请尽快在高德控制台轮换该 Key 并配置环境变量');
   }
-  async function geocodeServerPoiAsync(startLoc?: string, fallbackLat?: number, fallbackLng?: number): Promise<{ lat: number; lng: number; reliable: boolean }> {
+  // 2026-10-11 全面修复：高德地理编码必须带城市限制 + 结果城市校验
+  // 根因：之前不带 city 参数做全国搜索，外地同名店被误解析，导致 1695.84km / 517.82km
+  // 注意："(建设中)"等可能是高德官方POI名的一部分（来自搜索建议），不能无条件剥离；
+  // 采用两阶段：先用全名+城市搜，失败再用剥离备注后的名字重试
+  async function geocodeServerPoiAsync(startLoc?: string, fallbackLat?: number, fallbackLng?: number, city?: string): Promise<{ lat: number; lng: number; reliable: boolean }> {
     // H13修复：失败时返回 NaN 而非市中心占位符，调用方根据 reliable=false 标记 coordsUnknown
     const failResult = { lat: NaN, lng: NaN, reliable: false };
 
@@ -3353,6 +3360,10 @@ async function startServer() {
       .replace(/^起点[为：:\s]*/g, '')
       .trim() || startLoc.trim();
 
+    // 2026-10-11：城市归一化（"银川" -> "银川市"），用于传给高德 city 参数和结果校验
+    const normCity = (city || '').trim().replace(/市$/, '') + '';
+    const cityForApi = normCity ? (normCity.endsWith('市') ? normCity : normCity + '市') : '';
+
     // 1. 本地银川 POI 优先（快）
     for (const poi of YINCHUAN_SERVER_POIS) {
       if (poi.keywords.some(kw => clean.includes(kw) || kw.includes(clean))) {
@@ -3360,27 +3371,66 @@ async function startServer() {
       }
     }
 
-    // 2. 高德地图全国地理编码（中国大陆服务）
-    try {
-      const url = `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(clean)}&key=${AMAP_KEY_SERVER}`;
-      const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
-      const data: any = await resp.json();
-      if (data.status === '1' && data.geocodes?.length > 0) {
-        const loc = String(data.geocodes[0].location || '').split(',');
-        const lng = Number(loc[0]), lat = Number(loc[1]);
-        if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
-          console.log(`[Geocode] 高德解析成功: ${clean} -> ${lat},${lng}`);
-          return { lat, lng, reliable: true };
+    // 2. 高德地图地理编码（中国大陆服务），2026-10-11：必须带城市限制 + 结果城市校验
+    const queryAmap = async (addr: string): Promise<{ lat: number; lng: number; reliable: boolean } | null> => {
+      try {
+        let url = `https://restapi.amap.com/v3/geocode/geo?address=${encodeURIComponent(addr)}&key=${AMAP_KEY_SERVER}`;
+        if (cityForApi) {
+          url += `&city=${encodeURIComponent(cityForApi)}`;
         }
+        const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        const data: any = await resp.json();
+        if (data.status === '1' && data.geocodes?.length > 0) {
+          // 2026-10-11：不再盲取 geocodes[0]。有城市要求时，只接受城市匹配的结果；
+          // 无城市要求时取第一条（保持旧行为）
+          const candidates = data.geocodes as any[];
+          let picked: any = null;
+          if (cityForApi && normCity) {
+            const cityCore = normCity.replace(/市$/, '');
+            picked = candidates.find(g => {
+              const gCity = String(g.city || '');
+              const gProv = String(g.province || '');
+              return gCity.includes(cityCore) || cityCore.includes(gCity.replace(/市$/, '')) || gProv.includes(cityCore);
+            }) || null;
+            if (!picked) {
+              console.warn(`[Geocode] 城市校验失败: address=${addr}, 期望城市=${cityForApi}, 高德返回均为外地: ${candidates.slice(0, 3).map(g => `${g.province}${g.city}`).join(' / ')}`);
+              return null;
+            }
+          } else {
+            picked = candidates[0];
+          }
+          const loc = String(picked.location || '').split(',');
+          const lng = Number(loc[0]), lat = Number(loc[1]);
+          if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
+            console.log(`[Geocode] 高德解析成功: ${addr} -> ${lat},${lng} (${picked.province}${picked.city}${picked.district})`);
+            return { lat, lng, reliable: true };
+          }
+        }
+        // 详细记录失败原因，便于排查 Key 限制问题
+        // 常见 infocode: 10009=USERKEY_PLAT_NOMATCH(Key平台限制), 10008=USERKEY_ILLEGAL(Key非法), 20001=INSUFFICIENT_PRIVILEGES(权限不足)
+        console.warn(`[Geocode] 高德解析失败: address=${addr}, status=${data.status}, info=${data.info}, infocode=${data.infocode}`);
+        if (data.infocode === '10009') {
+          console.warn(`[Geocode] Key平台限制(USERKEY_PLAT_NOMATCH): 请在高德控制台检查Key的"服务平台"设置，服务端调用需要"Web服务"类型Key或IP白名单包含本服务器IP`);
+        }
+      } catch (e: any) {
+        console.warn('[Geocode] 高德 API 异常:', e?.message);
       }
-      // 详细记录失败原因，便于排查 Key 限制问题
-      // 常见 infocode: 10009=USERKEY_PLAT_NOMATCH(Key平台限制), 10008=USERKEY_ILLEGAL(Key非法), 20001=INSUFFICIENT_PRIVILEGES(权限不足)
-      console.warn(`[Geocode] 高德解析失败: address=${clean}, status=${data.status}, info=${data.info}, infocode=${data.infocode}`);
-      if (data.infocode === '10009') {
-        console.warn(`[Geocode] Key平台限制(USERKEY_PLAT_NOMATCH): 请在高德控制台检查Key的"服务平台"设置，服务端调用需要"Web服务"类型Key或IP白名单包含本服务器IP`);
-      }
-    } catch (e: any) {
-      console.warn('[Geocode] 高德 API 异常:', e?.message);
+      return null;
+    };
+
+    // 阶段1：全名 + 城市限制（官方POI名含"建设中"等后缀时能直接命中）
+    const stage1 = await queryAmap(clean);
+    if (stage1) return stage1;
+
+    // 阶段2：剥离可能的商户手写备注后缀后重试（如"(建设中)"是手写而非官方名时）
+    const stripped = clean
+      .replace(/[(（](建设中|装修中|筹备中|试营业|试运营|已闭店|已关闭|暂停营业|装修升级中|内部装修)[)）]\s*$/g, '')
+      .replace(/[(（](建设中|装修中|筹备中|试营业|试运营|已闭店|已关闭|暂停营业|装修升级中|内部装修)[)）]/g, '')
+      .trim();
+    if (stripped && stripped !== clean) {
+      console.log(`[Geocode] 阶段1失败，剥离备注后缀后重试: ${clean} -> ${stripped}`);
+      const stage2 = await queryAmap(stripped);
+      if (stage2) return stage2;
     }
 
     // 3. 全部失败：标记为不可靠，调用方不得用此坐标做距离判断
@@ -3396,12 +3446,14 @@ async function startServer() {
   app.get(['/api/geocode', '/api/geo/locate'], requireDbAuth, async (req, res) => {
     try {
       const address = String(req.query.address || req.query.name || req.query.keyword || '').trim();
+      const city = String(req.query.city || '').trim(); // 2026-10-11：城市限制，防跨城误解析
       const fallbackLat = Number(req.query.lat || req.query.fallbackLat || 38.4830);
       const fallbackLng = Number(req.query.lng || req.query.fallbackLng || 106.2350);
-      const poi = await geocodeServerPoiAsync(address, fallbackLat, fallbackLng);
+      const poi = await geocodeServerPoiAsync(address, fallbackLat, fallbackLng, city);
       return res.json({
         success: true,
         address,
+        city,
         lat: poi.lat,
         lng: poi.lng,
         reliable: poi.reliable
@@ -3474,7 +3526,9 @@ async function startServer() {
         (orderData as any).coordsUnknown = true;
       } else if (isDefaultCentroid || isNaN(pLat) || isNaN(pLng)) {
         // 高德解析与3秒超时竞速：3秒内没返回就用现有坐标（标记未知）
-        const geocodePromise = geocodeServerPoiAsync(startLocName, pLat, pLng);
+        // 2026-10-11：传入订单城市做地理编码城市限制，防"绿树电竞"类跨城误解析（曾致1695.84km）
+        const orderCity = String(orderData.city || (req.body as any)?.city || '').trim();
+        const geocodePromise = geocodeServerPoiAsync(startLocName, pLat, pLng, orderCity);
         const timeoutPromise = new Promise<{ lat: number; lng: number; reliable: boolean; timedOut: boolean }>(
           resolve => setTimeout(() => resolve({ lat: pLat, lng: pLng, reliable: false, timedOut: true }), PREPARE_TIMEOUT_MS)
         );
@@ -5609,6 +5663,68 @@ async function startServer() {
     } catch (err: any) {
       console.error('[Server Proxy] submit proxy error:', err);
       res.status(500).json({ success: false, error: err.message || 'Submit Proxy Error' });
+    }
+  });
+
+  // 2026-10-11 二维码创单新流程：乘客扫码只传手机号给司机，不建单、不派单、不做地理编码
+  // 司机收到后在创建订单页看到提示+语音播报，手动创建订单
+  app.post('/api/qr-phone-notify', async (req, res) => {
+    try {
+      // IP限流：与 /api/submit 同级，防批量骚扰
+      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+      const now = Date.now();
+      if (!(global as any).__qrPhoneLogs) (global as any).__qrPhoneLogs = new Map();
+      const qrPhoneLogs: Map<string, number[]> = (global as any).__qrPhoneLogs;
+      const logs = (qrPhoneLogs.get(clientIp) || []).filter(t => now - t < 60000);
+      if (logs.length >= 3) {
+        return res.status(429).json({ success: false, error: '操作过于频繁，请稍后再试' });
+      }
+      logs.push(now);
+      qrPhoneLogs.set(clientIp, logs);
+
+      const { driverPhone, passengerPhone, startLocation } = req.body || {};
+      if (!driverPhone || !passengerPhone) {
+        return res.status(400).json({ success: false, error: '缺少必填参数' });
+      }
+
+      const cleanDriverPhone = String(driverPhone).replace(/\D/g, '').trim();
+      const cleanPassengerPhone = String(passengerPhone).replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(cleanDriverPhone) || !/^1[3-9]\d{9}$/.test(cleanPassengerPhone)) {
+        return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      // 出发地仅作文本参考透传，服务端绝不做地理编码（用户2026-10-11明确要求）
+      const refStartLocation = String(startLocation || '').trim().slice(0, 100);
+
+      const payloadData = {
+        type: 'qr_phone_notify', // 区别于完整订单，司机端据此走轻量通知流程
+        driverPhone: cleanDriverPhone,
+        passengerPhone: cleanPassengerPhone,
+        startLocation: refStartLocation,
+        status: 'submitted',
+        timestamp: Date.now(),
+        updatedAt: Date.now()
+      };
+
+      if (isMySQLEnabled && mysqlPool) {
+        const dataStr = JSON.stringify(payloadData);
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['passenger_links', cleanDriverPhone, dataStr]
+        );
+        // 注意：不写入 merchant_orders，不建单、不派单
+        return res.json({ success: true, timestamp: Date.now() });
+      }
+
+      const dbData = readLocalJsonDb();
+      if (!dbData.passenger_links) dbData.passenger_links = {};
+      dbData.passenger_links[cleanDriverPhone] = payloadData;
+      writeLocalJsonDb(dbData);
+
+      res.json({ success: true, timestamp: Date.now() });
+    } catch (err: any) {
+      console.error('[QR Phone Notify] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'QR Phone Notify Error' });
     }
   });
 

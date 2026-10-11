@@ -1476,6 +1476,8 @@ export default function CreateOrderView({
   const [qrUpdateCount, setQrUpdateCount] = useState(1);
   const [qrTimestamp, setQrTimestamp] = useState<number>(() => Date.now());
   const [scanSuccessMsg, setScanSuccessMsg] = useState(false);
+  // 2026-10-11 二维码传手机号新流程：记录收到的乘客手机号，用于横幅提示
+  const [qrNotifyPhone, setQrNotifyPhone] = useState('');
   const [scanBannerDismissed, setScanBannerDismissed] = useState(false);
   const [showSimulatedScanner, setShowSimulatedScanner] = useState(false);
 
@@ -1509,6 +1511,28 @@ export default function CreateOrderView({
         const data = docSnap.data();
         // Check if the submission occurred within the last 5 minutes to avoid stale entries
         if (data && data.status === 'submitted' && data.timestamp > Date.now() - 300000) {
+          // 2026-10-11 二维码创单新流程：乘客只传手机号，不建单、不派单、不弹新来单页
+          // 司机端：自动关闭二维码弹窗 → 创建订单页弹提示 → 中文语音播报 → 手机号填入表单
+          if (data.type === 'qr_phone_notify') {
+            if (data.passengerPhone) {
+              setPhoneNumber(data.passengerPhone);
+              setQrNotifyPhone(data.passengerPhone);
+            }
+            setShowQrModal(false);
+            setScanSuccessMsg(true);
+            setScanBannerDismissed(false);
+            // 中文语音播报
+            if (settings?.voiceBroadcast === '开单语音播报') {
+              speakText('乘客扫码成功，手机号已接收，请创建订单！');
+            }
+            if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+              try { navigator.vibrate([100, 50, 100, 50, 100]); } catch(e){}
+            }
+            // Clear the processed link to prevent infinite populating loops
+            deleteDoc(docRef).catch(err => console.error('Error clearing passenger link document:', err));
+            return;
+          }
+
           const isValet = data.isValetOrder || data.isPlatformDispatch || data.orderRemark === '商户代叫';
 
           if (data.passengerPhone) setPhoneNumber(data.passengerPhone);
@@ -2032,10 +2056,12 @@ export default function CreateOrderView({
               </div>
               <div className="flex flex-col min-w-0 flex-1 overflow-hidden">
                 <span className="text-sm font-black text-[#1a1c1c] leading-snug truncate">
-                  扫码成功并安全连线!
+                  {qrNotifyPhone ? '乘客扫码成功，手机号已填入!' : '扫码成功并安全连线!'}
                 </span>
                 <span className="text-xs text-[#059669] font-medium leading-tight mt-0.5 truncate">
-                  已接收乘客下单地址，点击下方「创建订单」即开启行驶计费
+                  {qrNotifyPhone
+                    ? `乘客 ${qrNotifyPhone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')} 已扫码，请核对后点击下方「创建订单」`
+                    : '已接收乘客下单地址，点击下方「创建订单」即开启行驶计费'}
                 </span>
               </div>
             </div>
@@ -2044,6 +2070,7 @@ export default function CreateOrderView({
               onClick={() => {
                 setScanBannerDismissed(true);
                 setScanSuccessMsg(false);
+                setQrNotifyPhone('');
               }}
               className="text-gray-700 hover:text-black text-xs font-bold px-2.5 sm:px-3 py-1.5 bg-white rounded-xl border border-gray-200/80 shadow-xs shrink-0 active:scale-95 transition-transform cursor-pointer whitespace-nowrap"
             >

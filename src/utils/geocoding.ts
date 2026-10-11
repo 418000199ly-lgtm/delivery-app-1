@@ -383,7 +383,8 @@ export function calculateOrderDriverDistance(
  */
 export async function geocodeAddressViaServer(
   addressName?: string,
-  fallbackCoords?: Coords | null
+  fallbackCoords?: Coords | null,
+  city?: string // 2026-10-11：城市限制，防跨城误解析
 ): Promise<Coords> {
   const fallback = (fallbackCoords && isValidCoords(fallbackCoords.lat, fallbackCoords.lng))
     ? fallbackCoords
@@ -400,6 +401,9 @@ export async function geocodeAddressViaServer(
     params.set('address', cleanAddr);
     params.set('lat', String(fallback.lat));
     params.set('lng', String(fallback.lng));
+    if (city && city.trim()) {
+      params.set('city', city.trim());
+    }
 
     const res = await fetch(`${baseUrl}/api/geocode?${params.toString()}`, {
       headers: { ...getAuthHeaders() }

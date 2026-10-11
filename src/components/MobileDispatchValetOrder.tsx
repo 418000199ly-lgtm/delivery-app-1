@@ -3117,8 +3117,8 @@ export default function MobileDispatchValetOrder({
     const timer = setTimeout(() => {
       AMap.plugin('AMap.AutoComplete', () => {
         const auto = new AMap.AutoComplete({
-          city: userTeamCity || '银川市',
-          citylimit: false
+          city: userTeamCity || currentCity || '银川市',
+          citylimit: true // 2026-10-11：强制本市范围，防外地同名店混入（曾致1695km误解析）
         });
         auto.search(originSearchText, (status: string, result: any) => {
           if (status === 'complete' && result.tips) {
@@ -3909,7 +3909,8 @@ export default function MobileDispatchValetOrder({
               excludePhone: isTransferOrder ? (activePhone || userPhone || '') : '',
               pickupLat: finalLat,
               pickupLng: finalLng,
-              radiusKm: 3.0
+              radiusKm: 3.0,
+              city: currentCity || '银川市' // 2026-10-11：地理编码城市限制，防跨城误解析
             })
           });
           if (resp.ok) {
