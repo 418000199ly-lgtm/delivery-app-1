@@ -462,7 +462,12 @@ export default function DispatchValetOrder({
   const [orderRemark, setOrderRemark] = useState('');
   // 2026-10-11: 起点详细地址（如"北京中路48号大世界商务广场"），从搜索建议的 tip.address 捕获，
   // 展示在起点下方小字，并随订单提交给服务端辅助地理编码，避免跨城误解析
-  const [passengerAddressDetail, setPassengerAddressDetail] = useState('');
+  // 2026-10-11晚：初始化时从缓存读详细地址，解决a7页面刚打开不显示小字的问题
+  const [passengerAddressDetail, setPassengerAddressDetail] = useState(() => {
+    try {
+      return localStorage.getItem('dd_bg_driver_coords_detail') || '';
+    } catch (_) { return ''; }
+  });
   // 2026-10-11: 起点坐标是否来自搜索建议选中（高德已给准坐标），是则下单时直接用，不再二次解析
   const [addressFromSuggestion, setAddressFromSuggestion] = useState(false);
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
@@ -3933,6 +3938,7 @@ export default function DispatchValetOrder({
                       e.stopPropagation();
                       setPassengerAddress('');
                       setPassengerAddressDetail('');
+                      try { localStorage.removeItem('dd_bg_driver_coords_detail'); } catch (_) {}
                       setAddressFromSuggestion(false);
                       setSuggestions([]);
                     }}
@@ -5821,7 +5827,10 @@ export default function DispatchValetOrder({
                       onClick={() => {
                         setPassengerAddress(tip.name);
                         // 2026-10-11: 捕获详细地址 + 标记来自建议选中（坐标可信，下单时直接用）
-                        setPassengerAddressDetail(tip.address || tip.district || '');
+                        // 2026-10-11晚：详细地址存缓存，下次打开页面直接显示小字（修a7问题）
+                        const detail = tip.address || tip.district || '';
+                        setPassengerAddressDetail(detail);
+                        try { localStorage.setItem('dd_bg_driver_coords_detail', detail); } catch (_) {}
                         setAddressFromSuggestion(true);
                         if (tip.location) {
                           setPassengerCoords({
@@ -5857,6 +5866,7 @@ export default function DispatchValetOrder({
                         setPassengerAddress(originSearchText.trim());
                         // 2026-10-11: 手动输入无建议坐标，清空详细地址并取消"来自建议"标记
                         setPassengerAddressDetail('');
+                        try { localStorage.removeItem('dd_bg_driver_coords_detail'); } catch (_) {}
                         setAddressFromSuggestion(false);
                         setShowStartLocationSearch(false);
                       }}

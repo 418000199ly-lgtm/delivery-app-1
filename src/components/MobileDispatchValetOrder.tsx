@@ -344,7 +344,11 @@ export default function MobileDispatchValetOrder({
   const [passengerPhone, setPassengerPhone] = useState('');
   const [orderRemark, setOrderRemark] = useState('');
   // 2026-10-11: 起点详细地址 + 是否来自建议选中（同 DispatchValetOrder）
-  const [passengerAddressDetail, setPassengerAddressDetail] = useState('');
+  const [passengerAddressDetail, setPassengerAddressDetail] = useState(() => {
+    try {
+      return localStorage.getItem('dd_bg_driver_coords_detail') || '';
+    } catch (_) { return ''; }
+  });
   const [addressFromSuggestion, setAddressFromSuggestion] = useState(false);
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
   const [needScooter, setNeedScooter] = useState(true);
@@ -6294,7 +6298,10 @@ export default function MobileDispatchValetOrder({
                       onClick={() => {
                         setPassengerAddress(tip.name);
                         // 2026-10-11: 捕获详细地址 + 标记来自建议选中
-                        setPassengerAddressDetail(tip.address || tip.district || '');
+                        // 2026-10-11晚：详细地址存缓存，下次打开页面直接显示小字（修a7问题）
+                        const detail = tip.address || tip.district || '';
+                        setPassengerAddressDetail(detail);
+                        try { localStorage.setItem('dd_bg_driver_coords_detail', detail); } catch (_) {}
                         setAddressFromSuggestion(true);
                         let finalLat = tip.location?.lat;
                         let finalLng = tip.location?.lng;
