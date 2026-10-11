@@ -4660,12 +4660,6 @@ export default function HomeView({
               }`}>
                 {isOnline ? '正在听单' : '离线状态'}
               </span>
-              {/* a1-a5修复：GPS 上报异常警告（服务端120秒无GPS会踢下线） */}
-              {isOnline && gpsUnhealthy && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-red-500 text-white animate-pulse" title="GPS 定位上报异常，服务端可能已将您踢下线">
-                  ⚠️ GPS异常
-                </span>
-              )}
 
             </div>
             {/* VIP/membership status banner is hidden per user request */}
