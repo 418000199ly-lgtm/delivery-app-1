@@ -557,7 +557,9 @@ export default function HomeView({
     const inList = squadList.some((m: any) => {
       const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
       const st = String(m?.status || m?.approvalStatus || '').trim();
-      return p === phone && (!st || ['已通过', 'approved', '通过'].includes(st));
+      // 2026-10-12修复：状态为空不再算在小队，必须有明确的"已通过"状态
+      // 之前 (!st || ...) 导致无状态的脏数据被误判为成员，造成选单大厅来回跳
+      return p === phone && ['已通过', 'approved', '通过'].includes(st);
     });
     if (inList) return true;
 
@@ -567,7 +569,8 @@ export default function HomeView({
       const inSaved = savedM.some((m: any) => {
         const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
         const st = String(m?.status || m?.approvalStatus || '').trim();
-        return p === phone && (!st || ['已通过', 'approved', '通过'].includes(st));
+        // 2026-10-12修复：同上，空状态不算通过
+        return p === phone && ['已通过', 'approved', '通过'].includes(st);
       });
       if (inSaved) return true;
     } catch (_) {}
@@ -1526,7 +1529,9 @@ export default function HomeView({
   const [showApplySquadModal, setShowApplySquadModal] = useState(false);
   const [showAdminDispatchView, setShowAdminDispatchView] = useState(false);
   const initialDriverName = (settings as any)?.driverName || (settings as any)?.name || '';
-  const [applyName, setApplyName] = useState(initialDriverName === '张三' ? '' : initialDriverName);
+  // 2026-10-12修复：申请人真实姓名永不显示"司机XXXX"这类默认值，必须让用户手动输入真实姓名
+  const isDefaultDriverName = /^司机\d{4}$/.test(initialDriverName.trim());
+  const [applyName, setApplyName] = useState(initialDriverName === '张三' || isDefaultDriverName ? '' : initialDriverName);
   const [applyPhone, setApplyPhone] = useState(() => getCurrentPhone() || '');
   const [applyRemarks, setApplyRemarks] = useState('');
   const [isSubmittingApply, setIsSubmittingApply] = useState(false);

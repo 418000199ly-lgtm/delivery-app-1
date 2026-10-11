@@ -144,9 +144,11 @@ function isApprovedSquadMember(m: any) {
   if (['已拒绝', 'rejected', '拒绝', '待审核'].includes(status)) {
     return false;
   }
-  const mgmtRoles = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者', '小队长', '队员', '普通司机'];
-  if (mgmtRoles.includes(role)) return true;
-  return ['已通过', 'approved', '通过'].includes(status);
+  // 2026-10-12修复：角色不再直接判定为通过，必须有明确的"已通过"状态
+  // 之前 mgmtRoles.includes(role) 直接返回 true，导致 role='普通司机' 但未审核的也被误判为成员，造成报单转单按钮来回跳
+  const isApprovedStatus = ['已通过', 'approved', '通过'].includes(status);
+  if (!isApprovedStatus) return false;
+  return true;
 }
 
 function getDriverGpsName(): string {
