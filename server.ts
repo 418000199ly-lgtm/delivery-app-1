@@ -5782,6 +5782,133 @@ async function startServer() {
     }
   });
 
+  // 2026-10-12 兑换码专用查询通道：不走 /api/db/get 的严格鉴权，司机可直接验证
+  app.get('/api/vip-code-check', async (req, res) => {
+    try {
+      const code = String(req.query.code || '').trim().toUpperCase();
+      if (!code) {
+        return res.status(400).json({ success: false, error: '缺少兑换码' });
+      }
+      let foundData: any = null;
+      if (isMySQLEnabled && mysqlPool) {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['vip_codes', code]
+        );
+        if (rows && rows.length > 0) {
+          const raw = rows[0].data;
+          foundData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        foundData = dbData?.vip_codes?.[code] || null;
+      }
+      if (foundData) {
+        return res.json({ success: true, exists: true, data: foundData });
+      }
+      return res.json({ success: true, exists: false });
+    } catch (err: any) {
+      console.error('[VIP Code Check] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'VIP Code Check Error' });
+    }
+  });
+
+  // 2026-10-12 兑换码核销专用通道
+  app.post('/api/vip-code-redeem', async (req, res) => {
+    try {
+      const { code, redeemedBy } = req.body || {};
+      const cleanCode = String(code || '').trim().toUpperCase();
+      if (!cleanCode) {
+        return res.status(400).json({ success: false, error: '缺少兑换码' });
+      }
+      let foundData: any = null;
+      if (isMySQLEnabled && mysqlPool) {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['vip_codes', cleanCode]
+        );
+        if (rows && rows.length > 0) {
+          const raw = rows[0].data;
+          foundData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        foundData = dbData?.vip_codes?.[cleanCode] || null;
+      }
+      if (!foundData) {
+        return res.status(404).json({ success: false, error: '兑换码不存在' });
+      }
+      if (foundData.isRedeemed) {
+        return res.status(400).json({ success: false, error: '该兑换码已被使用' });
+      }
+      foundData.isRedeemed = true;
+      foundData.redeemedAt = new Date().toISOString();
+      foundData.redeemedBy = String(redeemedBy || '').slice(0, 50);
+      const dataStr = JSON.stringify(foundData);
+      if (isMySQLEnabled && mysqlPool) {
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['vip_codes', cleanCode, dataStr]
+        );
+      } else {
+        const dbData = readLocalJsonDb();
+        if (!dbData.vip_codes) dbData.vip_codes = {};
+        dbData.vip_codes[cleanCode] = foundData;
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[VIP Code Redeem] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'VIP Code Redeem Error' });
+    }
+  });
+
+  // 2026-10-12 小队申请专用提交通道：司机提交自己的申请，不走 /api/db/set 的严格权限
+  app.post('/api/squad-apply', async (req, res) => {
+    try {
+      const { phone, name, note, city } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      const cleanName = String(name || '').trim().slice(0, 8);
+      if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+        return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      if (!cleanName) {
+        return res.status(400).json({ success: false, error: '请填写真实姓名' });
+      }
+      const appPayload = {
+        id: `app-${Date.now()}`,
+        name: cleanName,
+        phone: cleanPhone,
+        status: '待审核',
+        note: String(note || '').slice(0, 200),
+        city: String(city || '银川市').slice(0, 20),
+        createdAt: new Date().toLocaleString(),
+        timestamp: Date.now(),
+        approvedBy: '',
+        approvedRole: '',
+        approvalTime: '',
+      };
+      const dataStr = JSON.stringify(appPayload);
+      if (isMySQLEnabled && mysqlPool) {
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['squad_applications', cleanPhone, dataStr]
+        );
+      } else {
+        const dbData = readLocalJsonDb();
+        if (!dbData.squad_applications) dbData.squad_applications = {};
+        dbData.squad_applications[cleanPhone] = appPayload;
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Squad Apply] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Squad Apply Error' });
+    }
+  });
+
   // Upload WeChat QR Code directly to server filesystem (Baota panel)
   const qrsDir = path.join(process.cwd(), 'uploads', 'qrs');
   const qrcodesDir = path.join(process.cwd(), 'uploads', 'qrcodes');

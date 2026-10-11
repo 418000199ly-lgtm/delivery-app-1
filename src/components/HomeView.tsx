@@ -1665,17 +1665,21 @@ export default function HomeView({
       };
 
       const baseUrl = getBaseApiUrl();
-      const writeResults = await Promise.allSettled([
-        db ? setDoc(doc(db, 'squad_applications', currentPhone), appPayload).then(() => 'db-ok') : Promise.reject('no-db'),
-        fetch(`${baseUrl}/api/db/set`, {
+      // 2026-10-12改用专用通道，不走 /api/db/set 的严格权限
+      let serverOk = false;
+      try {
+        const applyRes = await fetch(`${baseUrl}/api/squad-apply`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_applications', docId: currentPhone, data: appPayload })
-        }).then(r => { if (!r.ok) throw new Error(`http-${r.status}`); return 'fetch-ok'; }),
-      ]);
-      const allFailed = writeResults.every(r => r.status === 'rejected');
-      if (allFailed) {
-        // 全部写入失败：回滚本地，提示用户
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: currentPhone, name: freshName, note: noteText, city: effectiveCity || '银川市' })
+        });
+        const applyJson = await applyRes.json().catch(() => null);
+        serverOk = !!(applyRes.ok && applyJson && applyJson.success);
+      } catch (_) {
+        serverOk = false;
+      }
+      if (!serverOk) {
+        // 服务端写入失败：回滚本地，提示用户
         try {
           localStorage.setItem('dd_applicants_v2', JSON.stringify(existingApps));
           localStorage.setItem('dd_squad_members_v2', JSON.stringify(existingMembers));
@@ -4462,10 +4466,13 @@ export default function HomeView({
     setModalMessage(null);
     
     try {
-      const docRef = doc(db, 'vip_codes', codeValue);
-      const docSnap = await getDoc(docRef);
+      // 2026-10-12改用专用通道，不走 /api/db/get 的严格鉴权
+      const baseUrl = getBaseApiUrl();
+      const checkRes = await fetch(`${baseUrl}/api/vip-code-check?code=${encodeURIComponent(codeValue)}&_t=${Date.now()}`, { cache: 'no-store' });
+      const checkJson = await checkRes.json().catch(() => null);
+      const codeData = (checkJson && checkJson.success && checkJson.exists) ? checkJson.data : null;
 
-      if (!docSnap.exists()) {
+      if (!codeData) {
         setModalMessage({ 
           type: 'error', 
           text: '❌ 匹配失败：该兑换码/充值卡密不存在或已被撤销。请从右侧决策管理后台「一键极速批产」生成真实卡密粘贴至此处！' 
@@ -4474,7 +4481,6 @@ export default function HomeView({
         return;
       }
 
-      const codeData = docSnap.data();
       if (codeData.isRedeemed) {
         setModalMessage({ 
           type: 'error', 
@@ -4508,12 +4514,18 @@ export default function HomeView({
         finalExpiryStr = `${yyyy}-${mm}-${dd}`;
       }
 
-      // Update Firestore document to mark as redeemed
-      await updateDoc(docRef, {
-        isRedeemed: true,
-        redeemedAt: new Date().toISOString(),
-        redeemedBy: localStorage.getItem('dd_user_phone') || settings.customAppName?.trim() || '手机APP司机端'
-      });
+      // Update server: mark as redeemed via dedicated channel
+      try {
+        const baseUrl2 = getBaseApiUrl();
+        await fetch(`${baseUrl2}/api/vip-code-redeem`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code: codeValue,
+            redeemedBy: localStorage.getItem('dd_user_phone') || settings.customAppName?.trim() || '手机APP司机端'
+          })
+        });
+      } catch (_) {}
 
       // Update settings locally
       onUpdateSettings({
