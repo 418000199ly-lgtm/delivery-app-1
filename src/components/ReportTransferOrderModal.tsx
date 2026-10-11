@@ -13,6 +13,7 @@ interface ReportTransferOrderModalProps {
   onClose: () => void;
   userPhone?: string | null;
   defaultPickup?: string;
+  defaultPickupDetail?: string;
   driverCoords?: { lat: number; lng: number } | null;
 }
 
@@ -21,9 +22,17 @@ export default function ReportTransferOrderModal({
   onClose,
   userPhone,
   defaultPickup = '运祥小区',
+  defaultPickupDetail,
   driverCoords
 }: ReportTransferOrderModalProps) {
   const currentPickup = defaultPickup || '运祥小区';
+  // 2026-10-11晚：位置下方小字详细地址，优先用 prop，其次读缓存
+  const pickupDetail = (() => {
+    if (defaultPickupDetail && defaultPickupDetail.trim()) return defaultPickupDetail.trim();
+    try {
+      return localStorage.getItem('dd_bg_driver_coords_detail') || '';
+    } catch (_) { return ''; }
+  })();
   const [passengerPhone, setPassengerPhone] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
@@ -606,6 +615,12 @@ export default function ReportTransferOrderModal({
               />
               <span className="text-[10px] text-gray-400 shrink-0 ml-1 bg-gray-200/80 px-1.5 py-0.5 rounded font-medium">不可更改</span>
             </div>
+            {/* 2026-10-11晚：位置下方小字详细地址 */}
+            {pickupDetail ? (
+              <p className="text-[10px] text-[#8b7263] truncate px-1 -mt-1">
+                {pickupDetail}
+              </p>
+            ) : null}
 
             {/* Phone Input */}
             <div className="relative flex items-center bg-[#f9f9f9] rounded-lg border border-[#e2e2e2] focus-within:border-[#ff7d00] focus-within:ring-1 focus-within:ring-[#ff7d00] transition-all px-2.5 py-0.5">
