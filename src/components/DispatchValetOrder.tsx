@@ -652,11 +652,12 @@ export default function DispatchValetOrder({
           key.startsWith('mock_db_valet_orders_') ||
           key.startsWith('mock_db_orders_') ||
           key.startsWith('dd_merchant_order') ||
-          key.startsWith('dd_driver_orders') ||
           key.startsWith('valet_order') ||
           key.startsWith('mock_db_passenger_links_') ||
           key.startsWith('mock_db_active_orders_')
         )) {
+          // 2026-10-11晚：不再删除 dd_driver_orders*（订单中心数据），
+          // 商户代叫订单中心的清空只清商户单+服务器单，不动订单中心
           localStorage.removeItem(key);
         }
       }

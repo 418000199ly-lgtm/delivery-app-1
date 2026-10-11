@@ -820,11 +820,11 @@ export default function MobileDispatchValetOrder({
           key.startsWith('mock_db_valet_orders_') ||
           key.startsWith('mock_db_orders_') ||
           key.startsWith('dd_merchant_order') ||
-          key.startsWith('dd_driver_orders') ||
           key.startsWith('valet_order') ||
           key.startsWith('mock_db_passenger_links_') ||
           key.startsWith('mock_db_active_orders_')
         )) {
+          // 2026-10-11晚：不再删除 dd_driver_orders*（订单中心数据）
           localStorage.removeItem(key);
         }
       }

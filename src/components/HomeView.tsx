@@ -3362,10 +3362,12 @@ export default function HomeView({
       }
     });
 
-    const rawTotal = Math.max(totalCount, stats?.myPoints || 0);
-    const rawToday = Math.max(todayCount, stats?.todayOrders || 0);
-    const rawIncome = todayCount > 0 ? todayIncome : (stats?.todayIncome || 0);
-    const rawMonthly = Math.max(monthlyCount, rawToday);
+    // 2026-10-11晚：总成单量只统计本地订单中心（driverOrders），不经过服务器。
+    // 之前 Math.max(totalCount, stats.myPoints) 导致服务器旧值覆盖本地，重装后显示16而非0、17跳回16。
+    const rawTotal = totalCount;
+    const rawToday = todayCount;
+    const rawIncome = todayIncome;
+    const rawMonthly = monthlyCount;
 
     // 当全部单数到达9999时，自动归0，同时软件app自动删除订单中心容器里的所有订单信息
     if (rawTotal >= 9999) {

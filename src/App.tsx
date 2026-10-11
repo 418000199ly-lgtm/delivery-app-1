@@ -1652,10 +1652,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               nextStats.todayIncome = Number(data.todayIncome);
               changed = true;
             }
-            if (data.myPoints !== undefined && prev.myPoints !== data.myPoints) {
-              nextStats.myPoints = Number(data.myPoints);
-              changed = true;
-            }
+            // 2026-10-11晚：不再从服务器同步 myPoints（总成单量只算本地订单中心），
+            // 否则重装后服务器旧值16会覆盖本地0
+            // if (data.myPoints !== undefined && prev.myPoints !== data.myPoints) {
+            //   nextStats.myPoints = Number(data.myPoints);
+            //   changed = true;
+            // }
             if (data.lastResetDate !== undefined && prev.lastResetDate !== data.lastResetDate) {
               nextStats.lastResetDate = data.lastResetDate;
               changed = true;
