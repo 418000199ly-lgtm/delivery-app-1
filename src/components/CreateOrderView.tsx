@@ -1503,7 +1503,10 @@ export default function CreateOrderView({
 
   // Real-time synchronization for passenger self-service QR code scans
   useEffect(() => {
-    const driverPhoneNum = (userPhone || '18609518888').replace(/\s+/g, '').trim();
+    // 2026-10-12修复：userPhone 为空时不订阅，避免用硬编码 fallback 监听错误文档导致收不到通知
+    const cleanPhone = (userPhone || '').replace(/\s+/g, '').trim();
+    if (!cleanPhone) return;
+    const driverPhoneNum = cleanPhone;
 
     const docRef = doc(db, 'passenger_links', driverPhoneNum);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
@@ -1564,7 +1567,10 @@ export default function CreateOrderView({
 
   // Synchronous Firestore persist for passenger scan access so they get the driver's latest active location
   useEffect(() => {
-    const driverPhoneNum = (userPhone || '18609518888').replace(/\s+/g, '').trim();
+    // 2026-10-12修复：userPhone 为空时不写入，避免污染错误文档
+    const cleanPhone = (userPhone || '').replace(/\s+/g, '').trim();
+    if (!cleanPhone) return;
+    const driverPhoneNum = cleanPhone;
     const docRef = doc(db, 'passenger_links', driverPhoneNum);
     const effectiveBrandName = (settings?.customAppName?.trim() && settings.customAppName.trim() !== 'XX代驾') 
       ? settings.customAppName.trim() 
