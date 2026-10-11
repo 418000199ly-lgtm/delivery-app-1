@@ -460,6 +460,11 @@ export default function DispatchValetOrder({
   });
   const [passengerPhone, setPassengerPhone] = useState('');
   const [orderRemark, setOrderRemark] = useState('');
+  // 2026-10-11: 起点详细地址（如"北京中路48号大世界商务广场"），从搜索建议的 tip.address 捕获，
+  // 展示在起点下方小字，并随订单提交给服务端辅助地理编码，避免跨城误解析
+  const [passengerAddressDetail, setPassengerAddressDetail] = useState('');
+  // 2026-10-11: 起点坐标是否来自搜索建议选中（高德已给准坐标），是则下单时直接用，不再二次解析
+  const [addressFromSuggestion, setAddressFromSuggestion] = useState(false);
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
   const [needScooter, setNeedScooter] = useState(true);
   const [wechatQrUrl, setWechatQrUrl] = useState<string>('');
@@ -3283,8 +3288,19 @@ export default function DispatchValetOrder({
         return true;
       };
 
-      // 1. 通过阿里云服务器解析代驾商家起点名字的真实坐标
-      const geocodedStart = await geocodeAddressViaServer(passengerAddress, passengerCoords);
+      // 1. 解析代驾商家起点坐标
+      // 2026-10-11: 若起点来自搜索建议选中（高德已返回可信坐标），直接用建议坐标，
+      // 不再拿名字去服务端二次解析——二次解析是 1695km 跨城误解析的根因。
+      // 只有手动输入（无建议坐标）时才走服务端地理编码，此时把详细地址一并提交辅助定位。
+      let geocodedStart: { lat: number; lng: number };
+      if (addressFromSuggestion && isValidCoords(passengerCoords.lat, passengerCoords.lng)) {
+        geocodedStart = { lat: passengerCoords.lat, lng: passengerCoords.lng };
+      } else {
+        const addrForGeocode = passengerAddressDetail
+          ? `${passengerAddress} ${passengerAddressDetail}`
+          : passengerAddress;
+        geocodedStart = await geocodeAddressViaServer(addrForGeocode, passengerCoords);
+      }
       const finalLat = geocodedStart.lat;
       const finalLng = geocodedStart.lng;
 
@@ -3404,6 +3420,8 @@ export default function DispatchValetOrder({
         seqNumber: seq,
         passengerPhone: finalPhone,
         startLocation: passengerAddress,
+        // 2026-10-11: 起点详细地址（如"北京中路48号大世界商务广场"），供服务端/大厅展示与辅助定位
+        startLocationDetail: passengerAddressDetail || '',
         passengerLat: finalLat,
         passengerLng: finalLng,
         approxPrice: '未知',
@@ -3914,6 +3932,8 @@ export default function DispatchValetOrder({
                     onClick={(e) => {
                       e.stopPropagation();
                       setPassengerAddress('');
+                      setPassengerAddressDetail('');
+                      setAddressFromSuggestion(false);
                       setSuggestions([]);
                     }}
                     className="px-2.5 py-1 text-xs font-bold text-[#8b7263] hover:text-[#984800] bg-white hover:bg-white/90 rounded-lg border border-[#dfc0af] shadow-xs transition-colors ml-2 shrink-0"
@@ -3924,6 +3944,13 @@ export default function DispatchValetOrder({
                   <Search className="w-4 h-4 text-[#8b7263] shrink-0 ml-2 group-hover:text-[#ff7d00] transition-colors" />
                 )}
               </div>
+
+              {/* 2026-10-11: 起点详细地址小字展示（如"北京中路48号大世界商务广场"） */}
+              {passengerAddressDetail ? (
+                <p className="text-[10px] text-[#8b7263] truncate px-1 -mt-1 mb-1">
+                  {passengerAddressDetail}
+                </p>
+              ) : null}
 
               {/* Headless Background 高德地图 (AMap) Instance */}
               <div className="hidden" aria-hidden="true">
@@ -5793,6 +5820,9 @@ export default function DispatchValetOrder({
                       type="button"
                       onClick={() => {
                         setPassengerAddress(tip.name);
+                        // 2026-10-11: 捕获详细地址 + 标记来自建议选中（坐标可信，下单时直接用）
+                        setPassengerAddressDetail(tip.address || tip.district || '');
+                        setAddressFromSuggestion(true);
                         if (tip.location) {
                           setPassengerCoords({
                             lat: tip.location.lat,
@@ -5825,6 +5855,9 @@ export default function DispatchValetOrder({
                       type="button"
                       onClick={() => {
                         setPassengerAddress(originSearchText.trim());
+                        // 2026-10-11: 手动输入无建议坐标，清空详细地址并取消"来自建议"标记
+                        setPassengerAddressDetail('');
+                        setAddressFromSuggestion(false);
                         setShowStartLocationSearch(false);
                       }}
                       className="w-full py-2 bg-[#984800] text-white text-xs font-bold rounded-lg hover:opacity-90 active:scale-95 transition-all shadow-sm"

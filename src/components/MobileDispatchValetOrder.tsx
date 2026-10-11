@@ -343,6 +343,9 @@ export default function MobileDispatchValetOrder({
   });
   const [passengerPhone, setPassengerPhone] = useState('');
   const [orderRemark, setOrderRemark] = useState('');
+  // 2026-10-11: 起点详细地址 + 是否来自建议选中（同 DispatchValetOrder）
+  const [passengerAddressDetail, setPassengerAddressDetail] = useState('');
+  const [addressFromSuggestion, setAddressFromSuggestion] = useState(false);
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
   const [needScooter, setNeedScooter] = useState(true);
   const [wechatQrUrl, setWechatQrUrl] = useState<string>('');
@@ -3616,8 +3619,18 @@ export default function MobileDispatchValetOrder({
         return true;
       };
 
-      // 1. 通过阿里云服务器解析代驾商家起点名字的真实坐标
-      const geocodedStart = await geocodeAddressViaServer(passengerAddress, passengerCoords);
+      // 1. 解析代驾商家起点坐标
+      // 2026-10-11: 建议选中的直接用建议坐标，不再二次解析（防1695km跨城误解析）；
+      // 手动输入时把详细地址一并提交辅助定位
+      let geocodedStart: { lat: number; lng: number };
+      if (addressFromSuggestion && isValidCoords(passengerCoords.lat, passengerCoords.lng)) {
+        geocodedStart = { lat: passengerCoords.lat, lng: passengerCoords.lng };
+      } else {
+        const addrForGeocode = passengerAddressDetail
+          ? `${passengerAddress} ${passengerAddressDetail}`
+          : passengerAddress;
+        geocodedStart = await geocodeAddressViaServer(addrForGeocode, passengerCoords);
+      }
       const finalLat = geocodedStart.lat;
       const finalLng = geocodedStart.lng;
 
@@ -3748,6 +3761,8 @@ export default function MobileDispatchValetOrder({
         seqNumber: seq,
         passengerPhone: finalPhone,
         startLocation: passengerAddress,
+        // 2026-10-11: 起点详细地址
+        startLocationDetail: passengerAddressDetail || '',
         passengerLat: finalLat,
         passengerLng: finalLng,
         approxPrice: '未知',
@@ -6278,6 +6293,9 @@ export default function MobileDispatchValetOrder({
                       type="button"
                       onClick={() => {
                         setPassengerAddress(tip.name);
+                        // 2026-10-11: 捕获详细地址 + 标记来自建议选中
+                        setPassengerAddressDetail(tip.address || tip.district || '');
+                        setAddressFromSuggestion(true);
                         let finalLat = tip.location?.lat;
                         let finalLng = tip.location?.lng;
                         const gc = geocodeAddress(tip.name);
