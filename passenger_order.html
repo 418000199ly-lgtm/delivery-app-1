@@ -1182,35 +1182,19 @@
           throw new Error(errMsg);
         }
       } catch (err) {
-        console.warn('API submit failed, falling back to instant local persistence for Baota static deployment:', err);
+        console.warn('API submit failed:', err);
+        // 2026-10-11晚修复：服务端调用失败时绝不谎报成功！
+        // 之前 fallback 写乘客自己手机 localStorage 并显示"已发送"，司机永远收不到，造成"司机端没反应"的假象。
+        // 现在直接报错，让乘客打电话联系司机，避免误导。
         try {
-          // 2026-10-11 新流程：只传手机号，不建单
-          const fallbackPayload = {
-            type: 'qr_phone_notify',
-            passengerPhone: passengerPhone,
-            startLocation: startLocation,
-            status: 'submitted',
-            timestamp: Date.now()
-          };
-          localStorage.setItem(`mock_db_passenger_links_${driverPhone}`, JSON.stringify(fallbackPayload));
+          const errDetail = (err && err.message) ? String(err.message).substring(0, 120) : '网络异常';
+          alert('发送失败：无法连接到司机服务器（' + errDetail + '）。\n\n请直接拨打司机电话联系，不要重复提交。');
         } catch (e) {}
-
-        // 渲染并保存最终行程单同步卡片
-        document.getElementById('summary-phone').innerText = passengerPhone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2');
-        document.getElementById('summary-start').innerText = startLocation;
-        document.getElementById('summary-driver').innerText = maskedPhone;
-        
-        if (destination) {
-          document.getElementById('summary-dest').innerText = destination;
-          document.getElementById('summary-dest-wrapper').style.display = 'flex';
-        } else {
-          document.getElementById('summary-dest-wrapper').style.display = 'none';
-        }
-
-        // 完美切换面板
-        formContainer.style.display = 'none';
-        successContainer.classList.remove('hidden');
-        successContainer.style.display = 'block';
+        // 恢复按钮可点，允许重试
+        try {
+          const btn = document.getElementById('submit-btn');
+          if (btn) { btn.disabled = false; btn.innerText = '点击立即下单'; }
+        } catch (e) {}
       }
     });
 
