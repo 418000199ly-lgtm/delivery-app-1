@@ -1501,6 +1501,55 @@ export default function CreateOrderView({
     return () => clearInterval(interval);
   }, [showQrModal]);
 
+  // 2026-10-12 二维码特殊通道：弹窗打开时每2秒直接轮询专用接口
+  // 不依赖 passenger_links 文档的 onSnapshot 轮询，忙碌状态也不阻断
+  // 只有扫3分钟倒计时二维码的通知走这里
+  useEffect(() => {
+    if (!showQrModal) return;
+    const cleanPhone = (userPhone || '').replace(/\s+/g, '').trim();
+    if (!cleanPhone) return;
+
+    let stopped = false;
+    const checkQrNotify = async () => {
+      if (stopped) return;
+      try {
+        const baseUrl = getBaseApiUrl();
+        const url = `${baseUrl}/api/qr-notify-check?driverPhone=${encodeURIComponent(cleanPhone)}&_t=${Date.now()}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (json && json.success && json.hasNotify && json.data) {
+          const data = json.data;
+          stopped = true; // 收到后停止轮询
+          if (data.passengerPhone) {
+            setPhoneNumber(data.passengerPhone);
+            setQrNotifyPhone(data.passengerPhone);
+          }
+          setShowQrModal(false);
+          setScanSuccessMsg(true);
+          setScanBannerDismissed(false);
+          // 中文语音播报
+          if (settings?.voiceBroadcast === '开单语音播报') {
+            speakText('乘客扫码成功，手机号已接收，请创建订单！');
+          }
+          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+            try { navigator.vibrate([100, 50, 100, 50, 100]); } catch(e){}
+          }
+        }
+      } catch (_) {
+        // 网络异常时静默，下次轮询继续
+      }
+    };
+
+    // 立即查一次，然后每2秒轮询
+    checkQrNotify();
+    const pollId = setInterval(checkQrNotify, 2000);
+    return () => {
+      stopped = true;
+      clearInterval(pollId);
+    };
+  }, [showQrModal, userPhone]);
+
   // Real-time synchronization for passenger self-service QR code scans
   useEffect(() => {
     // 2026-10-12修复：userPhone 为空时不订阅，避免用硬编码 fallback 监听错误文档导致收不到通知

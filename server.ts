@@ -5728,6 +5728,60 @@ async function startServer() {
     }
   });
 
+  // 2026-10-12 二维码特殊通道：司机端开二维码弹窗时直接轮询此接口，不依赖 passenger_links 文档轮询
+  // 只有扫3分钟倒计时二维码的通知走这里，司机忙碌状态也不阻断
+  app.get('/api/qr-notify-check', async (req, res) => {
+    try {
+      const driverPhone = String(req.query.driverPhone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(driverPhone)) {
+        return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+
+      let payloadData: any = null;
+
+      if (isMySQLEnabled && mysqlPool) {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['passenger_links', driverPhone]
+        );
+        if (rows && rows.length > 0) {
+          const raw = rows[0].data;
+          payloadData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        payloadData = dbData?.passenger_links?.[driverPhone] || null;
+      }
+
+      // 只返回有效的二维码通知：type=qr_phone_notify, status=submitted, 5分钟内
+      if (payloadData && payloadData.type === 'qr_phone_notify' &&
+          payloadData.status === 'submitted' &&
+          payloadData.timestamp > Date.now() - 300000) {
+        // 取走后立即删除，防止重复投递
+        try {
+          if (isMySQLEnabled && mysqlPool) {
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['passenger_links', driverPhone]
+            );
+          } else {
+            const dbData = readLocalJsonDb();
+            if (dbData?.passenger_links?.[driverPhone]) {
+              delete dbData.passenger_links[driverPhone];
+              writeLocalJsonDb(dbData);
+            }
+          }
+        } catch (_) {}
+        return res.json({ success: true, hasNotify: true, data: payloadData });
+      }
+
+      return res.json({ success: true, hasNotify: false });
+    } catch (err: any) {
+      console.error('[QR Notify Check] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'QR Notify Check Error' });
+    }
+  });
+
   // Upload WeChat QR Code directly to server filesystem (Baota panel)
   const qrsDir = path.join(process.cwd(), 'uploads', 'qrs');
   const qrcodesDir = path.join(process.cwd(), 'uploads', 'qrcodes');
