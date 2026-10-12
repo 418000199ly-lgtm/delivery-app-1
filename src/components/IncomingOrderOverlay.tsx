@@ -94,6 +94,16 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // -1 表示尚未从服务器拿到数字，显示"…"占位，避免假60误导。
   // orderRef 已在下方声明（用于语音播报），此处复用；onDecline 用 ref 避免 effect 反复重建。
   const [timeLeft, setTimeLeft] = useState<number>(-1);
+
+  // 2026-10-12修复：订单切换时重置倒计时，防止旧订单的0覆盖新订单的秒数
+  // 解决倒计时乱跳（0→33）的根本原因
+  const prevOrderIdRef = React.useRef<string>('');
+  useEffect(() => {
+    if (targetOrderId && targetOrderId !== prevOrderIdRef.current) {
+      prevOrderIdRef.current = targetOrderId;
+      setTimeLeft(-1);
+    }
+  }, [targetOrderId]);
   const onDeclineRef = React.useRef(onDecline);
   onDeclineRef.current = onDecline;
 
