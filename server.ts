@@ -4438,7 +4438,45 @@ async function startServer() {
       }
 
       const dispatchedTime = Number(targetOrder.dispatchedAt || targetOrder.timestamp || now);
-      const exp = Number(targetOrder.dispatchExpiresAt || (dispatchedTime + 60000));
+      let exp = Number(targetOrder.dispatchExpiresAt || (dispatchedTime + 60000));
+
+      // 2026-10-12修复：客户端首次轮询时对齐60秒。
+      // 服务器从派单就开始计时，但客户端弹出可能有延迟（后台/网络），导致用户实际看到不足60秒。
+      // 首次轮询时若发现已过去超过5秒，重置为完整的60秒，确保用户从看到弹窗起有足额时间。
+      // 只执行一次（clientFirstSeenAt标记），避免重复重置。
+      if (!targetOrder.clientFirstSeenAt && targetOrder.status === 'dispatched') {
+        const elapsedMs = now - dispatchedTime;
+        if (elapsedMs > 5000) {
+          // 延迟超过5秒，重置为完整60秒
+          exp = now + 60000;
+          targetOrder.clientFirstSeenAt = now;
+          targetOrder.dispatchedAt = now;
+          targetOrder.dispatchExpiresAt = exp;
+          // 写回数据库（merchant_orders和passenger_links都要更新）
+          try {
+            const dbDataWrite = readLocalJsonDb();
+            const orderKey = Object.keys(dbDataWrite['merchant_orders'] || {}).find(k => {
+              const v = dbDataWrite['merchant_orders'][k];
+              return v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId);
+            });
+            if (orderKey) {
+              dbDataWrite['merchant_orders'][orderKey].clientFirstSeenAt = now;
+              dbDataWrite['merchant_orders'][orderKey].dispatchedAt = now;
+              dbDataWrite['merchant_orders'][orderKey].dispatchExpiresAt = exp;
+            }
+            if (driverPhone && dbDataWrite['passenger_links']?.[driverPhone]) {
+              dbDataWrite['passenger_links'][driverPhone].clientFirstSeenAt = now;
+              dbDataWrite['passenger_links'][driverPhone].dispatchedAt = now;
+              dbDataWrite['passenger_links'][driverPhone].dispatchExpiresAt = exp;
+            }
+            writeLocalJsonDb(dbDataWrite);
+          } catch (_) {}
+        } else {
+          // 5秒内，标记已见，不重置
+          targetOrder.clientFirstSeenAt = now;
+        }
+      }
+
       const remainingSec = Math.max(0, Math.ceil((exp - now) / 1000));
 
       return res.json({
