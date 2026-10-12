@@ -4442,11 +4442,11 @@ async function startServer() {
 
       // 2026-10-12修复：客户端首次轮询时对齐60秒。
       // 服务器从派单就开始计时，但客户端弹出可能有延迟（后台/网络），导致用户实际看到不足60秒。
-      // 首次轮询时若发现已过去超过5秒，重置为完整的60秒，确保用户从看到弹窗起有足额时间。
+      // 首次轮询时若发现已过去超过10秒，重置为完整的60秒，确保用户从看到弹窗起有足额时间。
       // 只执行一次（clientFirstSeenAt标记），避免重复重置。
       if (!targetOrder.clientFirstSeenAt && targetOrder.status === 'dispatched') {
         const elapsedMs = now - dispatchedTime;
-        if (elapsedMs > 5000) {
+        if (elapsedMs > 10000) {
           // 延迟超过5秒，重置为完整60秒
           exp = now + 60000;
           targetOrder.clientFirstSeenAt = now;
