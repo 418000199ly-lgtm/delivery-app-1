@@ -2679,23 +2679,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       };
 
       if (orderId) {
-        if (db) {
-          setDoc(doc(db, 'merchant_orders', orderId), updateData, { merge: true }).catch(err => {
-            console.error("Error updating merchant_orders status to hall:", err);
-          });
-        }
         const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/order/decline`, {
+        // 2026-10-12改用专用通道：秒级进选单大厅，不走鉴权
+        fetch(`${baseUrl}/api/order/to-hall`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ orderId, driverPhone: cleanUserPhone })
-        }).catch(() => {
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: updateData })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-        });
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId, driverPhone: cleanUserPhone, reason: 'decline_or_timeout' })
+        }).catch(() => {});
       }
 
       try {

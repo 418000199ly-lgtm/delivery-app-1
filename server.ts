@@ -5864,6 +5864,139 @@ async function startServer() {
     }
   });
 
+  // 2026-10-12 新来单超时/拒收转大厅专用通道：不走鉴权，秒级进厅
+  app.post('/api/order/to-hall', async (req, res) => {
+    try {
+      const { orderId, driverPhone, reason } = req.body || {};
+      const cleanOrderId = String(orderId || '').trim();
+      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      if (!cleanOrderId) {
+        return res.status(400).json({ success: false, error: '缺少 orderId' });
+      }
+      const now = Date.now();
+      const applyToOrder = (targetOrder: any) => {
+        const existingDeclined = Array.isArray(targetOrder?.declinedDriverPhones) ? targetOrder.declinedDriverPhones : [];
+        const existingTimeout = Array.isArray(targetOrder?.timeoutDriverPhones) ? targetOrder.timeoutDriverPhones : [];
+        return {
+          ...(targetOrder || {}),
+          status: 'hall',
+          in_hall: true,
+          statusCategory: '呼叫中',
+          dispatchedDriverPhone: '',
+          dispatchedDriverName: '',
+          claimedDriverPhone: '',
+          claimedDriverName: '',
+          driverName: '',
+          declinedDriverPhones: Array.from(new Set([...existingDeclined, cleanDriverPhone].filter(Boolean))),
+          timeoutDriverPhones: Array.from(new Set([...existingTimeout, cleanDriverPhone].filter(Boolean))),
+          lastDeclinedAt: now,
+          hallReason: String(reason || 'timeout_or_decline').slice(0, 50),
+        };
+      };
+      if (isMySQLEnabled && mysqlPool) {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['merchant_orders', cleanOrderId]
+        );
+        let targetOrder: any = {};
+        if (rows && rows.length > 0) {
+          const raw = rows[0].data;
+          targetOrder = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+        const updated = applyToOrder(targetOrder);
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['merchant_orders', cleanOrderId, JSON.stringify(updated)]
+        );
+        // 清掉该司机的 passenger_links，避免重复弹窗
+        if (cleanDriverPhone) {
+          await mysqlPool.query(
+            'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            ['passenger_links', cleanDriverPhone]
+          ).catch(() => {});
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+        const targetOrder = dbData['merchant_orders'][cleanOrderId] || {};
+        dbData['merchant_orders'][cleanOrderId] = applyToOrder(targetOrder);
+        if (cleanDriverPhone && dbData['passenger_links'] && dbData['passenger_links'][cleanDriverPhone]) {
+          delete dbData['passenger_links'][cleanDriverPhone];
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Order To Hall] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Order To Hall Error' });
+    }
+  });
+
+  // 2026-10-12 行程中司机确认取消专用通道：真取消，不进大厅，不再弹窗
+  app.post('/api/order/true-cancel', async (req, res) => {
+    try {
+      const { orderId, driverPhone, reason } = req.body || {};
+      const cleanOrderId = String(orderId || '').trim();
+      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      if (!cleanOrderId) {
+        return res.status(400).json({ success: false, error: '缺少 orderId' });
+      }
+      const now = Date.now();
+      const cancelPayload = {
+        status: 'cancelled',
+        statusCategory: '已取消',
+        in_hall: false,
+        isCancelled: true,
+        cancelledAt: now,
+        cancelledBy: 'driver',
+        cancelledByRole: 'driver',
+        cancelledDriverPhone: cleanDriverPhone,
+        cancelReason: String(reason || '司机已取消订单').slice(0, 100),
+      };
+      const applyCancel = (targetOrder: any) => ({ ...(targetOrder || {}), ...cancelPayload });
+      if (isMySQLEnabled && mysqlPool) {
+        for (const col of ['merchant_orders', 'valet_orders']) {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            [col, cleanOrderId]
+          ).catch(() => [[]]);
+          let targetOrder: any = {};
+          if (rows && rows.length > 0) {
+            const raw = rows[0].data;
+            targetOrder = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          }
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            [col, cleanOrderId, JSON.stringify(applyCancel(targetOrder))]
+          ).catch(() => {});
+        }
+        if (cleanDriverPhone) {
+          await mysqlPool.query(
+            'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            ['passenger_links', cleanDriverPhone]
+          ).catch(() => {});
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        for (const col of ['merchant_orders', 'valet_orders']) {
+          if (!dbData[col]) dbData[col] = {};
+          const targetOrder = dbData[col][cleanOrderId] || {};
+          dbData[col][cleanOrderId] = applyCancel(targetOrder);
+        }
+        if (cleanDriverPhone && dbData['passenger_links'] && dbData['passenger_links'][cleanDriverPhone]) {
+          delete dbData['passenger_links'][cleanDriverPhone];
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Order True Cancel] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Order True Cancel Error' });
+    }
+  });
+
   // 2026-10-12 小队申请专用提交通道：司机提交自己的申请，不走 /api/db/set 的严格权限
   app.post('/api/squad-apply', async (req, res) => {
     try {

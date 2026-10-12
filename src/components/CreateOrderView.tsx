@@ -350,28 +350,21 @@ export default function CreateOrderView({
       };
 
       if (candidateIds.length > 0) {
-        for (const targetId of candidateIds) {
-          try {
-            if (db) {
-              await setDoc(doc(db, 'merchant_orders', targetId as string), cancelPayload, { merge: true });
-            }
-          } catch (e) {
-            console.error("Error cancelling merchant order in Firestore:", e);
-          }
-          try {
-            const baseUrl = getBaseApiUrl();
-            fetch(`${baseUrl}/api/order/cancel`, {
+        // 2026-10-12改用专用通道：真取消，不进大厅，不走鉴权
+        try {
+          const baseUrl = getBaseApiUrl();
+          for (const targetId of candidateIds) {
+            fetch(`${baseUrl}/api/order/true-cancel`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 orderId: targetId,
                 driverPhone: userPhone,
-                reason: '司机已取消订单',
-                cancelledBy: 'driver'
+                reason: '司机已取消订单'
               })
             }).catch(() => {});
-          } catch (_) {}
-        }
+          }
+        } catch (_) {}
 
         try {
           const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
