@@ -6000,11 +6000,6 @@ async function startServer() {
     }
   });
 
-      console.error('[Order True Cancel] error:', err);
-      res.status(500).json({ success: false, error: err.message || 'Order True Cancel Error' });
-    }
-  });
-
   // 2026-10-12 小队申请审批通过专用通道：写入成员表，确保审批必生效。不走鉴权。
   app.post('/api/squad-member/approve', async (req, res) => {
     try {

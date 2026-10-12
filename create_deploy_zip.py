@@ -24,6 +24,23 @@ if os.path.exists("dist/server.cjs"):
         shutil.copy("dist/server.cjs.map", "server.js.map")
         shutil.copy("dist/server.cjs.map", "dist/server.js.map")
 
+# 2b. 注入真实服务端版本号：把构建产物中的 __SERVER_VERSION__ 占位符
+#     替换为当前 git 短 SHA，/api/health 据此自报版本。
+#     （此前 server.ts 写死 'f2e8722'，导致“版本对不对得上”的核对永久失效）
+try:
+    _sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+    # 2026-10-11修复：dist/server.cjs 也要注入（服务端实际运行的是它，之前漏了导致 /api/health 永远显示 dev）
+    for _p in ("server.js", os.path.join("dist", "server.js"), os.path.join("dist", "server.cjs")):
+        if os.path.exists(_p):
+            with open(_p, "r", encoding="utf-8") as _f:
+                _content = _f.read()
+            if "__SERVER_VERSION__" in _content:
+                with open(_p, "w", encoding="utf-8") as _f:
+                    _f.write(_content.replace("__SERVER_VERSION__", _sha))
+    print(f"服务端版本号已注入: {_sha}")
+except Exception as _e:
+    print(f"版本号注入跳过: {_e}")
+
 # 3. Ensure passenger_order.html and other standalone HTMLs are in dist root
 standalone_htmls = ['passenger_order.html', 'aliyun_passenger_deploy.html']
 for html in standalone_htmls:
@@ -123,12 +140,13 @@ with open('README_BAOTA.md', 'w', encoding='utf-8') as f:
     f.write(readme_content)
 
 # Define exact file & directory list for inclusion
+# 2026-10-11: local_db.json 已排除——部署包绝不能覆盖生产的 local_db.json
+# （含用户数据、城市配置、tokenSecret、token黑名单），否则会导致全员掉线
 include_items = [
     'src',
     'public',
     'dist',
     'uploads',
-    'local_db.json',
     'scripts',
     'server.js',
     'server.js.map',
