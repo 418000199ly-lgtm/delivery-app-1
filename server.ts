@@ -3649,8 +3649,9 @@ async function startServer() {
         }
 
         // 1. Approval status check
-        const st = String(data.status || data.approvalStatus || '已通过').trim();
-        if (['已拒绝', 'rejected', '拒绝', '待审核', '未加入小队'].includes(st)) {
+        // 2026-10-12修复：必须明确已通过，缺失状态不再默认通过（铁律）
+        const st = String(data.status || data.approvalStatus || '').trim();
+        if (!['已通过', 'approved', '通过'].includes(st)) {
           return;
         }
 
@@ -3667,13 +3668,15 @@ async function startServer() {
           }
         }
 
-        // 3. Online & not busy check (严格要求：必须在线且空闲，当前正在弹出此订单新来单界面的司机不算做忙碌)
+        // 3. Online & not busy check
+        // 2026-10-12修复：必须明确 isOnline === true，字符串'false'不再算在线；恢复忙碌检查
         const loc = locationMap[cleanPhone] || {};
-        const isOnline = Boolean(loc.isOnline ?? data.isOnline ?? (cleanPhone === '15509601222'));
+        const isOnline = loc.isOnline === true || loc.isOnline === 'true' || (cleanPhone === '15509601222' && loc.isOnline !== false);
         if (!isOnline) return;
 
-        // M5修复：删除忙碌死过滤（hasActiveOrder/activeOrderId/currentStatus 全仓库零写入点，三子句恒为假；
-        // 行程忙碌状态由客户端 TripState 管理，服务端不做此判断）
+        // 2026-10-12修复：忙碌司机不派单（行程中）
+        const isBusy = loc.isBusy === true || loc.isBusy === 'true';
+        if (isBusy) return;
 
         // H-G2修复：明确标记无GPS的上线司机直接跳过（滑动上线即上报功能：无GPS时只传时间戳不传坐标，
         // 旧坐标残留+新鲜时间戳会导致按几小时前位置误派单）。gpsValid 为 undefined 的老数据按有GPS兼容处理。
@@ -6516,7 +6519,8 @@ async function startServer() {
           const lo = Number(loc.lng ?? loc.longitude);
           if (isNaN(la) || isNaN(lo) || la === 0 || lo === 0) continue;
           const updTs = Number(loc.timestamp || loc.updatedAt || loc.lastUpdate || 0);
-          if (updTs && nowTs - updTs > 120000) continue; // GPS超120秒不派
+          // 2026-10-12修复：无时间戳按过期处理（M2规则），不再放行幽灵司机
+          if (!updTs || nowTs - updTs > 120000) continue; // GPS超120秒或无时间戳不派
           // 2026-10-12修复：必须明确 isOnline === true，undefined 不算在线
           const isOnline = loc.isOnline === true || loc.isOnline === 'true';
           const isBusy = loc.isBusy === true || loc.isBusy === 'true';
