@@ -89,39 +89,41 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     order.isPlatformDispatch
   );
 
-  const [timeLeft, setTimeLeft] = useState<number>(() => {
-    if (typeof (order as any)?.serverCountdown === 'number') {
-      return Math.max(0, Math.min(60, (order as any).serverCountdown));
-    }
-    if (typeof (order as any)?.dispatchCountdown === 'number') {
-      return Math.max(0, Math.min(60, (order as any).dispatchCountdown));
-    }
-    const now = Date.now();
-    const exp = Number((order as any)?.dispatchExpiresAt || ((order as any)?.dispatchedAt ? Number((order as any).dispatchedAt) + 60000 : now + 60000));
-    const remainingSecs = Math.max(0, Math.ceil((exp - now) / 1000));
-    return Math.max(0, Math.min(60, remainingSecs > 0 ? remainingSecs : 60));
-  });
+  // 2026-10-12重构：倒计时唯一真理是中国大陆阿里云服务器。
+  // 客户端不做本地递减、不预设60，只显示服务器 /api/dispatch/countdown 返回的数字。
+  // -1 表示尚未从服务器拿到数字，显示"…"占位，避免假60误导。
+  // orderRef 已在下方声明（用于语音播报），此处复用；onDecline 用 ref 避免 effect 反复重建。
+  const [timeLeft, setTimeLeft] = useState<number>(-1);
+  const onDeclineRef = React.useRef(onDecline);
+  onDeclineRef.current = onDecline;
 
-  // 监听 props 中实时下发的服务器秒数
+  // 2026-10-12：props 下发的 serverCountdown 仅作为兜底参考，仍以轮询接口为准，
+  // 且只允许单调递减（服务器数字只会减少，不会凭空变大），防止旧数据覆盖新数字导致上跳。
   useEffect(() => {
-    if (typeof (order as any)?.serverCountdown === 'number') {
-      const sSec = (order as any).serverCountdown;
-      setTimeLeft(Math.max(0, Math.min(60, sSec)));
-      if (sSec <= 0) {
-        const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+    const sSec = (order as any)?.serverCountdown;
+    if (typeof sSec === 'number') {
+      const v = Math.max(0, Math.min(60, sSec));
+      setTimeLeft(prev => (prev < 0 || v < prev ? v : prev));
+      if (v <= 0) {
+        const curOrder = orderRef.current as any;
+        const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
         if (orderAgeMs > 25000) {
-          onDecline();
+          onDeclineRef.current();
         }
       }
     }
-  }, [(order as any)?.serverCountdown, onDecline, order]);
+  }, [(order as any)?.serverCountdown]);
 
   // 倒计时核心引擎：每秒主动对齐中国大陆阿里云服务器 /api/dispatch/countdown 权威秒数
   useEffect(() => {
     let isMounted = true;
     const baseUrl = getBaseApiUrl();
 
+    // 2026-10-12重构：每秒只从服务器取数，不做本地递减。
+    // 用递增序号丢弃乱序到达的旧响应，杜绝 33→41 这类上跳。
+    let seq = 0;
     const syncWithServerCountdown = async () => {
+      const mySeq = ++seq;
       try {
         const queryParams = new URLSearchParams();
         if (targetOrderId) queryParams.set('orderId', targetOrderId);
@@ -132,57 +134,58 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           cache: 'no-store'
         });
 
-        if (resp.ok && isMounted) {
+        if (resp.ok && isMounted && mySeq === seq) {
           const data = await resp.json();
+          const curOrder: any = orderRef.current;
           if (data && data.success) {
             // 服务器判定超时、倒计时<=0 或已转入选单大厅 (且非本司机直接抢单的订单)
             if (
-              !order?.isDirectClaim &&
+              !curOrder?.isDirectClaim &&
               (data.isExpired || data.inHall || (typeof data.serverCountdown === 'number' && data.serverCountdown <= 0))
             ) {
-              const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+              const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
               // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
               if (orderAgeMs > 25000) {
                 setTimeLeft(0);
-                onDecline();
+                onDeclineRef.current();
                 return;
               }
             }
 
             if (typeof data.serverCountdown === 'number') {
-              // 严格锁定显示服务器的秒数 (例如60秒、31秒等)
-              setTimeLeft(Math.max(0, Math.min(60, data.serverCountdown)));
+              // 只显示服务器的秒数，且只允许单调递减（防旧响应/脏数据导致上跳）
+              const v = Math.max(0, Math.min(60, data.serverCountdown));
+              setTimeLeft(prev => {
+                if (prev < 0) return v;
+                if (v <= 0) {
+                  const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                  if (orderAgeMs > 25000) {
+                    // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
+                    setTimeout(() => onDeclineRef.current(), 0);
+                  }
+                  return 0;
+                }
+                return v < prev ? v : prev;
+              });
             }
           }
         }
       } catch (_) {
-        // 网络微弱时客户端本地平滑递减兜底
+        // 网络异常时保持上次服务器数字，不本地递减造假
       }
     };
 
     // 立即执行首次服务器对齐
     syncWithServerCountdown();
 
-    // 每秒与阿里云服务器心跳同步，确保秒数100%由服务器掌控
-    const timer = setInterval(() => {
-      setTimeLeft(prev => {
-        const next = Math.max(0, prev - 1);
-        if (next <= 0) {
-          const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
-          if (orderAgeMs > 25000) {
-            onDecline();
-          }
-        }
-        return next;
-      });
-      syncWithServerCountdown();
-    }, 1000);
+    // 每秒与阿里云服务器心跳同步，秒数100%由服务器掌控
+    const timer = setInterval(syncWithServerCountdown, 1000);
 
     return () => {
       isMounted = false;
       clearInterval(timer);
     };
-  }, [targetOrderId, cleanDriverPhone, onDecline, order]);
+  }, [targetOrderId, cleanDriverPhone]);
 
   // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
   useEffect(() => {
@@ -715,7 +718,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         {/* Countdown message (Image q3) */}
         <div className="w-full flex justify-center items-center py-1 text-center">
           <span className="text-xs sm:text-sm font-bold text-[#e61a1a] animate-pulse">
-            (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{timeLeft}</span> 秒内确认接单)
+            (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{timeLeft < 0 ? '…' : timeLeft}</span> 秒内确认接单)
           </span>
         </div>
         
