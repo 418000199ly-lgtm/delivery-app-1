@@ -1426,6 +1426,10 @@ export default function HomeView({
             driverName: currentDriverName
           })
         });
+        if (claimRes.status === 403) {
+          alert('⚠️ 仅小队正式成员可抢单，请先申请加入小队并通过审核！');
+          return;
+        }
         if (claimRes.status === 409) {
           alert('⚠️ 该订单已被其他小队司机抢走！');
           // 刷新大厅列表，移除已抢单

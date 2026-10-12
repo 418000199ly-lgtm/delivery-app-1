@@ -2586,6 +2586,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const claimJson = await claimResp.json().catch(() => null);
         if (!claimResp.ok || !claimJson?.success) {
           const msg = String(claimJson?.error || '');
+          if (claimResp.status === 403) {
+            setIncomingOrder(null);
+            triggerToast('⚠️ 仅小队正式成员可接单，请先申请加入小队并通过审核！');
+            return;
+          }
           if (claimResp.status === 409 || /已被/.test(msg)) {
             setIncomingOrder(null);
             triggerToast('⚠️ 该订单已被其他司机接单！');

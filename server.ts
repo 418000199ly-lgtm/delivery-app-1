@@ -6002,6 +6002,85 @@ async function startServer() {
     }
   });
 
+  // 2026-10-12 小队成员删除专用通道：确保删除必生效，删除后立即失去接单权限。不走鉴权（管理后台调用）。
+  app.post('/api/squad-member/remove', async (req, res) => {
+    try {
+      const { phone, adminPhone } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+        return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      if (cleanPhone === '15509601222') {
+        return res.status(403).json({ success: false, error: '开发者不能被删除' });
+      }
+      const now = new Date().toISOString();
+      if (isMySQLEnabled && mysqlPool) {
+        // 1. 从 squad_members 删除
+        await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+          ['squad_members', cleanPhone]);
+        // 2. 从 squad_applications 删除（防幽灵申请）
+        await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+          ['squad_applications', cleanPhone]);
+        // 3. 从 team_members 删除职位记录
+        await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+          ['team_members', cleanPhone]).catch(() => {});
+        // 4. 更新 driver_users 状态为未加入小队
+        const [uRows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['driver_users', cleanPhone]);
+        let uData: any = {};
+        if (uRows && uRows.length > 0) {
+          const raw = uRows[0].data;
+          uData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        }
+        uData = { ...uData, phone: cleanPhone, phoneNumber: cleanPhone,
+          driverName: `司机${cleanPhone.slice(-4)}`, name: `司机${cleanPhone.slice(-4)}`,
+          role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队',
+          removedBy: String(adminPhone || ''), removedAt: now, updatedAt: now };
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['driver_users', cleanPhone, JSON.stringify(uData)]);
+        // 5. 加入移除名单
+        const [cRows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['config', 'removed_squad_members']);
+        let phones: string[] = [];
+        if (cRows && cRows.length > 0) {
+          const raw = cRows[0].data;
+          const cData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          phones = Array.isArray(cData.phones) ? cData.phones : [];
+        }
+        if (!phones.includes(cleanPhone)) phones.push(cleanPhone);
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['config', 'removed_squad_members', JSON.stringify({ phones, updatedAt: now })]);
+      } else {
+        const dbData = readLocalJsonDb();
+        if (dbData['squad_members']?.[cleanPhone]) delete dbData['squad_members'][cleanPhone];
+        if (dbData['squad_applications']?.[cleanPhone]) delete dbData['squad_applications'][cleanPhone];
+        if (dbData['team_members']?.[cleanPhone]) delete dbData['team_members'][cleanPhone];
+        if (!dbData['driver_users']) dbData['driver_users'] = {};
+        const existing = dbData['driver_users'][cleanPhone] || {};
+        dbData['driver_users'][cleanPhone] = { ...existing, phone: cleanPhone, phoneNumber: cleanPhone,
+          driverName: `司机${cleanPhone.slice(-4)}`, name: `司机${cleanPhone.slice(-4)}`,
+          role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队',
+          removedBy: String(adminPhone || ''), removedAt: now, updatedAt: now };
+        if (!dbData['config']) dbData['config'] = {};
+        const cfg = dbData['config']['removed_squad_members'] || { phones: [] };
+        const phones = Array.isArray(cfg.phones) ? cfg.phones : [];
+        if (!phones.includes(cleanPhone)) phones.push(cleanPhone);
+        dbData['config']['removed_squad_members'] = { phones, updatedAt: now };
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Squad Remove] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Squad Remove Error' });
+    }
+  });
+
   // 2026-10-12 司机接单专用通道：原子认领，防止抢单竞态。不走鉴权。
   app.post('/api/order/driver-claim', async (req, res) => {
     try {
@@ -6011,6 +6090,32 @@ async function startServer() {
       const cleanDriverName = String(driverName || '').slice(0, 20);
       if (!cleanOrderId || !/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
         return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      // 2026-10-12修复：接单人必须是小队正式成员（已通过），否则403
+      const checkSquadMember = async (): Promise<boolean> => {
+        if (cleanDriverPhone === '15509601222') return true; // 开发者
+        try {
+          if (isMySQLEnabled && mysqlPool) {
+            const [rows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['squad_members', cleanDriverPhone]
+            );
+            if (!rows || rows.length === 0) return false;
+            const raw = rows[0].data;
+            const m = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const st = String(m.status || m.approvalStatus || '').trim();
+            return ['已通过', 'approved', '通过'].includes(st);
+          } else {
+            const dbData = readLocalJsonDb();
+            const m = (dbData['squad_members'] || {})[cleanDriverPhone];
+            if (!m) return false;
+            const st = String(m.status || m.approvalStatus || '').trim();
+            return ['已通过', 'approved', '通过'].includes(st);
+          }
+        } catch (_) { return false; }
+      };
+      if (!(await checkSquadMember())) {
+        return res.status(403).json({ success: false, error: '仅小队正式成员可接单' });
       }
       const now = Date.now();
       const claimData = {

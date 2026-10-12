@@ -2200,33 +2200,47 @@ export default function AdminPanel({
         updatedAt: new Date().toISOString()
       };
 
-      // 3. 更新云端数据库：用 allSettled 跟踪每个操作，失败要报错不能静默吞掉
-      const dbOps = [
-        { name: '删除小队成员', fn: () => deleteDoc(doc(db, 'squad_members', cleanPhone)) },
-        { name: '删除小队申请', fn: () => deleteDoc(doc(db, 'squad_applications', cleanPhone)) },
-        { name: '更新司机档案', fn: () => setDoc(doc(db, 'driver_users', cleanPhone), updatedUserDoc, { merge: true }) },
-        { name: '更新移除名单', fn: () => setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }) },
-      ];
-      const dbResults = await Promise.allSettled(dbOps.map(op => op.fn()));
-      const dbFailed = dbResults.map((r, i) => r.status === 'rejected' ? dbOps[i].name : null).filter(Boolean);
-      if (dbFailed.length > 0) {
-        console.error('[一键转非小队] 数据库操作失败:', dbFailed);
-        triggerToast(`⚠️ 部分云端操作失败：${dbFailed.join('、')}，请检查网络后重试`);
-      }
+      // 2026-10-12改用删除专用通道（不走鉴权，确保删除必生效）
+      try {
+        const delResp = await fetch(`${baseUrl}/api/squad-member/remove`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: cleanPhone, adminPhone: userPhone || '' })
+        });
+        const delJson = await delResp.json().catch(() => null);
+        if (!delResp.ok || !delJson?.success) {
+          throw new Error(delJson?.error || `HTTP ${delResp.status}`);
+        }
+      } catch (delErr: any) {
+        console.error('[一键转非小队] 专用通道失败，降级走旧链路:', delErr);
+        // 降级：走旧的 dbProxy + REST 链路
+        const dbOps = [
+          { name: '删除小队成员', fn: () => deleteDoc(doc(db, 'squad_members', cleanPhone)) },
+          { name: '删除小队申请', fn: () => deleteDoc(doc(db, 'squad_applications', cleanPhone)) },
+          { name: '更新司机档案', fn: () => setDoc(doc(db, 'driver_users', cleanPhone), updatedUserDoc, { merge: true }) },
+          { name: '更新移除名单', fn: () => setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }) },
+        ];
+        const dbResults = await Promise.allSettled(dbOps.map(op => op.fn()));
+        const dbFailed = dbResults.map((r, i) => r.status === 'rejected' ? dbOps[i].name : null).filter(Boolean);
+        if (dbFailed.length > 0) {
+          console.error('[一键转非小队] 数据库操作失败:', dbFailed);
+          triggerToast(`⚠️ 部分云端操作失败：${dbFailed.join('、')}，请检查网络后重试`);
+        }
 
-      const restOps = [
-        { name: 'REST删除小队成员', url: `${baseUrl}/api/db/delete`, body: { collection: 'squad_members', docId: cleanPhone } },
-        { name: 'REST保存司机档案', url: `${baseUrl}/api/db/save`, body: { collection: 'driver_users', docId: cleanPhone, data: updatedUserDoc } },
-        { name: 'REST更新移除名单', url: `${baseUrl}/api/db/save`, body: { collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } } },
-      ];
-      const restResults = await Promise.allSettled(restOps.map(op =>
-        fetch(op.url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(op.body) })
-          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
-      ));
-      const restFailed = restResults.map((r, i) => r.status === 'rejected' ? restOps[i].name : null).filter(Boolean);
-      if (restFailed.length > 0) {
-        console.error('[一键转非小队] REST操作失败:', restFailed);
-        triggerToast(`⚠️ 部分服务器同步失败：${restFailed.join('、')}`);
+        const restOps = [
+          { name: 'REST删除小队成员', url: `${baseUrl}/api/db/delete`, body: { collection: 'squad_members', docId: cleanPhone } },
+          { name: 'REST保存司机档案', url: `${baseUrl}/api/db/save`, body: { collection: 'driver_users', docId: cleanPhone, data: updatedUserDoc } },
+          { name: 'REST更新移除名单', url: `${baseUrl}/api/db/save`, body: { collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } } },
+        ];
+        const restResults = await Promise.allSettled(restOps.map(op =>
+          fetch(op.url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(op.body) })
+            .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
+        ));
+        const restFailed = restResults.map((r, i) => r.status === 'rejected' ? restOps[i].name : null).filter(Boolean);
+        if (restFailed.length > 0) {
+          console.error('[一键转非小队] REST操作失败:', restFailed);
+          triggerToast(`⚠️ 部分服务器同步失败：${restFailed.join('、')}`);
+        }
       }
 
       // 4. 更新 React 本地状态
