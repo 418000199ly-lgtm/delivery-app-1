@@ -53,9 +53,13 @@ export function getAllowedAssignableRoles(operatorRole: string, operatorPhone: s
   const targetPhone = String(targetMember.phone || targetMember.id || '').replace(/\D/g, '').trim();
   if (targetPhone === '15509601222') return []; // 任何人都不能修改开发者司机的角色
 
-  const isDevOp = operatorPhone === '15509601222' || operatorRole === '开发者司机' || operatorRole === '开发者' || operatorRole === '最高开发者' || operatorRole === '总指挥官';
+  const cleanOpPhone = String(operatorPhone || '').replace(/\D/g, '').trim();
+  // 2026-10-12修复：任何人都不能调整自己的职位（包括开发者司机）
+  if (cleanOpPhone && targetPhone && cleanOpPhone === targetPhone) return [];
+
+  const isDevOp = cleanOpPhone === '15509601222' || operatorRole === '开发者司机' || operatorRole === '开发者' || operatorRole === '最高开发者' || operatorRole === '总指挥官';
   if (isDevOp) {
-    // 开发者司机可以设置城市老板司机、城市管理司机、城市派单员司机、普通司机
+    // 开发者司机可以设置城市老板司机、城市管理司机、城市派单员司机、普通司机（不能调自己）
     return ['城市老板司机', '城市管理司机', '城市派单员司机', '普通司机'];
   }
 
@@ -73,9 +77,7 @@ export function getAllowedAssignableRoles(operatorRole: string, operatorPhone: s
   if (opLevel === 3) { // 城市管理司机
     return ['城市派单员司机', '普通司机'];
   }
-  if (opLevel === 2) { // 城市派单员司机
-    return ['普通司机'];
-  }
+  // 2026-10-12修复：城市派单员司机(2)、普通司机(1)没有任何职位调整权限
   return [];
 }
 

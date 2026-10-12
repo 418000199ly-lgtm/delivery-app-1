@@ -892,7 +892,10 @@ export default function AdminPanel({
           list.push({ id: doc.id, ...data });
         }
       });
-      setDriverUsersList(list);
+      // 2026-10-12修复：保存会员有效期期间不覆盖本地乐观更新，防止轮询用旧数据(2026-11-20)覆盖新值
+      if (!isSavingExpiryRef.current) {
+        setDriverUsersList(list);
+      }
     }, (err) => {
       console.error("Error subscribing to driver_users in admin panel:", err);
     });
@@ -903,7 +906,10 @@ export default function AdminPanel({
       snapshot.forEach((doc) => {
         list.push({ id: doc.id, ...doc.data() });
       });
-      setSquadMembersList(list);
+      // 2026-10-12修复：保存会员有效期期间不覆盖本地乐观更新
+      if (!isSavingExpiryRef.current) {
+        setSquadMembersList(list);
+      }
     }, (err) => {
       console.error("Error subscribing to squad_members in admin panel:", err);
     });
@@ -914,7 +920,10 @@ export default function AdminPanel({
       snapshot.forEach((doc) => {
         list.push({ id: doc.id, ...doc.data() });
       });
-      setSquadAppsList(list);
+      // 2026-10-12修复：保存会员有效期期间不覆盖本地乐观更新
+      if (!isSavingExpiryRef.current) {
+        setSquadAppsList(list);
+      }
     }, (err) => {
       console.error("Error subscribing to squad_applications in admin panel:", err);
     });
