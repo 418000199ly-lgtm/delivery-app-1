@@ -2570,28 +2570,40 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
 
     // Update database & server claim endpoint immediately to prevent 30s timeout reset
+    // 2026-10-12改用接单专用通道（不走鉴权，原子防重）
     if (orderIdToClaim) {
       const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/order/claim`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          orderId: orderIdToClaim,
-          orderNo: orderNoToClaim,
-          driverPhone: cleanUserPhone,
-          driverName: currentDriverName,
-          orderPayload: { ...(incomingOrder || {}), ...trip, ...claimUpdateData }
-        })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-
-      if (db) {
-        setDoc(doc(db, 'merchant_orders', orderIdToClaim), claimUpdateData, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+      try {
+        const claimResp = await fetch(`${baseUrl}/api/order/driver-claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            orderId: orderIdToClaim,
+            driverPhone: cleanUserPhone,
+            driverName: currentDriverName
+          })
+        });
+        const claimJson = await claimResp.json().catch(() => null);
+        if (!claimResp.ok || !claimJson?.success) {
+          const msg = String(claimJson?.error || '');
+          if (claimResp.status === 409 || /已被/.test(msg)) {
+            setIncomingOrder(null);
+            triggerToast('⚠️ 该订单已被其他司机接单！');
+            return;
+          }
+          if (claimResp.status === 410 || /取消/.test(msg)) {
+            setIncomingOrder(null);
+            triggerToast('⚠️ 该订单已取消，无法接单！');
+            return;
+          }
+          // 其他失败也提示，避免静默假接单
+          triggerToast('⚠️ 接单未成功，请重试：' + (msg || claimResp.status));
+          return;
+        }
+      } catch (e) {
+        triggerToast('⚠️ 网络异常，接单未成功，请重试');
+        return;
       }
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'merchant_orders', docId: orderIdToClaim, data: claimUpdateData })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
 
     // Update active_orders collection to reflect claimed state and wipe old cancellation

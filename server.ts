@@ -6002,6 +6002,95 @@ async function startServer() {
     }
   });
 
+  // 2026-10-12 司机接单专用通道：原子认领，防止抢单竞态。不走鉴权。
+  app.post('/api/order/driver-claim', async (req, res) => {
+    try {
+      const { orderId, driverPhone, driverName } = req.body || {};
+      const cleanOrderId = String(orderId || '').trim();
+      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      const cleanDriverName = String(driverName || '').slice(0, 20);
+      if (!cleanOrderId || !/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
+        return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      const now = Date.now();
+      const claimData = {
+        status: 'claimed',
+        statusCategory: '已接单',
+        in_hall: false,
+        dispatchedDriverPhone: cleanDriverPhone,
+        dispatchedDriverName: cleanDriverName,
+        claimedDriverPhone: cleanDriverPhone,
+        claimedDriverName: cleanDriverName,
+        driverName: cleanDriverName,
+        claimedAt: now,
+      };
+      const doClaim = async () => {
+        if (isMySQLEnabled && mysqlPool) {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['merchant_orders', cleanOrderId]
+          );
+          let target: any = {};
+          if (rows && rows.length > 0) {
+            const raw = rows[0].data;
+            target = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          }
+          // 原子检查：已被他人认领则拒绝（409）
+          const claimedBy = String(target.claimedDriverPhone || target.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+          const st = String(target.status || '');
+          if ((st === 'claimed' || st === '已接单') && claimedBy && claimedBy !== cleanDriverPhone) {
+            return { ok: false, code: 409, error: '该订单已被其他司机接单' };
+          }
+          if (st === 'cancelled' || st === '已取消' || target.isCancelled) {
+            return { ok: false, code: 410, error: '该订单已取消' };
+          }
+          const updated = { ...target, ...claimData };
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['merchant_orders', cleanOrderId, JSON.stringify(updated)]
+          );
+          // 清掉所有相关的 passenger_links（防重复弹窗）
+          await mysqlPool.query(
+            "DELETE FROM `daijia_documents` WHERE `collection` = 'passenger_links' AND `data` LIKE ?",
+            [`%${cleanOrderId}%`]
+          ).catch(() => {});
+          return { ok: true };
+        } else {
+          const dbData = readLocalJsonDb();
+          if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+          const target = dbData['merchant_orders'][cleanOrderId] || {};
+          const claimedBy = String(target.claimedDriverPhone || target.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+          const st = String(target.status || '');
+          if ((st === 'claimed' || st === '已接单') && claimedBy && claimedBy !== cleanDriverPhone) {
+            return { ok: false, code: 409, error: '该订单已被其他司机接单' };
+          }
+          if (st === 'cancelled' || st === '已取消' || target.isCancelled) {
+            return { ok: false, code: 410, error: '该订单已取消' };
+          }
+          dbData['merchant_orders'][cleanOrderId] = { ...target, ...claimData };
+          // 清掉相关的 passenger_links
+          if (dbData['passenger_links']) {
+            for (const [k, v] of Object.entries<any>(dbData['passenger_links'])) {
+              const vid = String(v?.id || v?.orderId || v?.orderNo || '');
+              if (vid === cleanOrderId) delete dbData['passenger_links'][k];
+            }
+          }
+          writeLocalJsonDb(dbData);
+          return { ok: true };
+        }
+      };
+      const result: any = await doClaim();
+      if (!result.ok) {
+        return res.status(result.code).json({ success: false, error: result.error });
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Order Driver Claim] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Driver Claim Error' });
+    }
+  });
+
   // 2026-10-12 报单转单专用派单通道：以报单人位置为圆心，3公里内找最近的上线空闲小队司机；
   // 无人则转入选单大厅。不走鉴权。
   app.post('/api/report-transfer/dispatch', async (req, res) => {
@@ -6116,6 +6205,12 @@ async function startServer() {
         const st = String(d?.status || d?.approvalStatus || '').trim();
         return ['已通过', 'approved', '通过'].includes(st);
       };
+      // 2026-10-12修复：报单人必须是小队正式成员，否则拒绝（防外部直接调接口）
+      const reporterEntry = squadList.find(m => m.phone === cleanReporter);
+      const isReporterApproved = reporterEntry ? isApproved(reporterEntry.data) : cleanReporter === '15509601222';
+      if (!isReporterApproved) {
+        return res.status(403).json({ success: false, error: '仅小队正式成员可使用报单转单' });
+      }
       const candidates: any[] = [];
       const coordsValid = !isNaN(pLat) && !isNaN(pLng) && pLat !== 0 && pLng !== 0;
       if (coordsValid) {
@@ -6130,8 +6225,9 @@ async function startServer() {
           if (isNaN(la) || isNaN(lo) || la === 0 || lo === 0) continue;
           const updTs = Number(loc.timestamp || loc.updatedAt || loc.lastUpdate || 0);
           if (updTs && nowTs - updTs > 120000) continue; // GPS超120秒不派
-          const isOnline = loc.isOnline !== false;
-          const isBusy = loc.isBusy === true;
+          // 2026-10-12修复：必须明确 isOnline === true，undefined 不算在线
+          const isOnline = loc.isOnline === true || loc.isOnline === 'true';
+          const isBusy = loc.isBusy === true || loc.isBusy === 'true';
           if (!isOnline || isBusy) continue;
           const distKm = haversineKm(pLat, pLng, la, lo);
           if (distKm <= 3) candidates.push({ phone, name: m.data?.name || m.data?.driverName || `司机${phone.slice(-4)}`, distKm });

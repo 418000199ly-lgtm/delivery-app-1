@@ -1415,16 +1415,15 @@ export default function HomeView({
       const baseUrl = getBaseApiUrl();
 
       // Atomic grab attempt via server API（服务端原子校验，防撞单）
+      // 2026-10-12改用接单专用通道（不走鉴权）
       try {
-        const authHeaders = (() => { try { const t = localStorage.getItem('dd_auth_token'); return t ? { 'X-Auth-Token': t } : {}; } catch (_) { return {}; } })();
-        const claimRes = await fetch(`${baseUrl}/api/order/claim`, {
+        const claimRes = await fetch(`${baseUrl}/api/order/driver-claim`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             orderId: ord.id || ord.orderId || ord.orderNo,
             driverPhone: userPhone,
-            driverName: currentDriverName,
-            orderPayload
+            driverName: currentDriverName
           })
         });
         if (claimRes.status === 409) {
@@ -1436,8 +1435,12 @@ export default function HomeView({
           }));
           return;
         }
-        if (claimRes.status === 401) {
-          alert('⚠️ 登录已过期，请重新短信登录后再抢单！');
+        if (claimRes.status === 410) {
+          alert('⚠️ 该订单已取消！');
+          setHallOrders(prev => prev.filter(o => {
+            const k = String(o.id || o.orderId || o.orderNo || '').trim();
+            return k !== String(ord.id || ord.orderId || ord.orderNo || '').trim();
+          }));
           return;
         }
         if (!claimRes.ok) {
