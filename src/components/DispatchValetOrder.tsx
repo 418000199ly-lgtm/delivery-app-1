@@ -1857,8 +1857,11 @@ export default function DispatchValetOrder({
     const opLevel = getRoleLevel(currentRole);
     if (cleanUserPhone === '15509601222' || opLevel >= 5) return true;
 
-    // 自己可以修改自己的名字
-    if (cleanUserPhone && targetPhone && cleanUserPhone === targetPhone) return true;
+    // 2026-10-12修复：自己改自己名字也需要权限（仅开发者/城市老板/城市管理，等级>=3）
+    // 城市派单员司机、普通司机严禁自己改名字
+    if (cleanUserPhone && targetPhone && cleanUserPhone === targetPhone) {
+      return opLevel >= 3;
+    }
 
     const targetRole = String(targetMember.role || targetMember.userRole || '普通司机').trim();
     const targetLevel = getRoleLevel(targetRole);
