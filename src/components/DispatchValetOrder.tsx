@@ -5448,13 +5448,24 @@ export default function DispatchValetOrder({
               </button>
               <h1 className="text-lg font-bold text-[#984800]">订单详情</h1>
             </div>
-            <button 
-              type="button" 
-              onClick={() => setShowCancelDispatchModal(true)}
-              className="px-2.5 py-1 text-xs sm:text-sm font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 active:scale-95 transition-all cursor-pointer"
-            >
-              取消派单
-            </button>
+            {(() => {
+              const sc = selectedOrderDetail?.statusCategory || '';
+              const st = selectedOrderDetail?.status || '';
+              const isCancelled = sc === '已取消' || sc === '订单已取消' || st === 'cancelled' || (selectedOrderDetail as any)?.isCancelled;
+              const isCompleted = sc === '已完成' || st === 'completed' || st === 'finished';
+              const isTerminal = isCancelled || isCompleted;
+              // 2026-10-12修复：已取消/已完成的订单不显示取消派单按钮
+              if (isTerminal) return null;
+              return (
+                <button 
+                  type="button" 
+                  onClick={() => setShowCancelDispatchModal(true)}
+                  className="px-2.5 py-1 text-xs sm:text-sm font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 active:scale-95 transition-all cursor-pointer"
+                >
+                  取消派单
+                </button>
+              );
+            })()}
           </header>
 
           {/* 取消派单确认弹窗 */}
@@ -5715,6 +5726,9 @@ export default function DispatchValetOrder({
 
               if (isHall) {
                 resolvedDriverName = '选单大厅（开放抢单）';
+              } else if (!rawDriverPhone) {
+                // 2026-10-12修复：无接单司机时直接显示"暂无"，不尝试解析名字
+                resolvedDriverName = '暂无';
               } else {
                 // 1. Look up in active squadMembers state
                 const matchedMember = squadMembers.find(
