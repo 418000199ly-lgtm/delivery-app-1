@@ -287,51 +287,21 @@ export default function ReportTransferOrderModal({
 
       let chosenDriver: any = null;
 
-      // 呼叫中国大陆阿里云服务器宝塔面板派单逻辑系统（3秒考虑时间、坐标解析、3公里内寻找最近空闲小队司机，绝不派单给自己）
+      // 2026-10-12改用报单转单专用派单通道（不走鉴权）：以报单人位置为圆心3公里找最近上线空闲小队司机，无人则进大厅
       let serverResult: any = null;
       try {
-        const dispatchResp = await fetch(`${baseUrl}/api/dispatch/nearest`, {
+        const dispatchResp = await fetch(`${baseUrl}/api/report-transfer/dispatch`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            orderData: {
-              id: orderId,
-              orderId: orderId,
-              passengerPhone: cleanPhone,
-              startLocation: currentPickup,
-              destination: '',
-              status: 'submitted',
-              timestamp: Date.now(),
-              dispatchedAt: Date.now(),
-              dispatchCountdown: 60,
-              dispatchExpiresAt: Date.now() + 60000,
-              isValetOrder: true,
-              isPlatformDispatch: true,
-              orderRemark: '报单转单',
-              orderType: '报单转单',
-              type: '报单转单',
-              passengerLat: originLat,
-              passengerLng: originLng,
-              lat: originLat,
-              lng: originLng,
-              startLat: originLat,
-              startLng: originLng,
-              approxPrice: '未知',
-              scheduledTime: '现在出发',
-              needScooter: false,
-              merchantPhone: cleanUserPhone,
-              reporterPhone: cleanUserPhone,
-              dispatchedByPhone: cleanUserPhone,
-              dispatchedBy: cleanUserPhone,
-              paymentQrCode: myQrCode,
-              merchantPaymentQrCode: myQrCode,
-              merchantName: '报单转单'
-            },
+            orderId: orderId,
             reporterPhone: cleanUserPhone,
-            excludePhone: cleanUserPhone,
+            passengerPhone: cleanPhone,
+            pickupName: currentPickup,
+            pickupDetail: pickupDetail,
             pickupLat: originLat,
             pickupLng: originLng,
-            radiusKm: 3.0
+            paymentQrCode: myQrCode
           })
         });
 
@@ -339,7 +309,7 @@ export default function ReportTransferOrderModal({
           serverResult = await dispatchResp.json();
         }
       } catch (e) {
-        console.warn('[ReportTransfer] Server nearest dispatch fallback to local:', e);
+        console.warn('[ReportTransfer] Server dispatch fallback to local:', e);
       }
 
       const isServerHandled = serverResult && serverResult.success;

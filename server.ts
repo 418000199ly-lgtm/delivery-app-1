@@ -5997,6 +5997,213 @@ async function startServer() {
     }
   });
 
+      console.error('[Order True Cancel] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Order True Cancel Error' });
+    }
+  });
+
+  // 2026-10-12 报单转单专用派单通道：以报单人位置为圆心，3公里内找最近的上线空闲小队司机；
+  // 无人则转入选单大厅。不走鉴权。
+  app.post('/api/report-transfer/dispatch', async (req, res) => {
+    try {
+      const {
+        orderId, reporterPhone, passengerPhone, pickupName, pickupDetail,
+        pickupLat, pickupLng, paymentQrCode,
+      } = req.body || {};
+      const cleanReporter = String(reporterPhone || '').replace(/\D/g, '').trim();
+      const cleanPassenger = String(passengerPhone || '').replace(/\D/g, '').trim();
+      const cleanOrderId = String(orderId || `rt_${Date.now()}`).trim();
+      if (!cleanReporter || !/^1[3-9]\d{9}$/.test(cleanPassenger)) {
+        return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      let pLat = Number(pickupLat);
+      let pLng = Number(pickupLng);
+      const badCoords = isNaN(pLat) || isNaN(pLng) || pLat === 0 || pLng === 0;
+      // 坐标无效时尝试服务端高德解析一次（不阻塞太久）
+      if (badCoords && pickupName) {
+        try {
+          const poi: any = await Promise.race([
+            geocodeServerPoiAsync(String(pickupName), 0, 0, ''),
+            new Promise(resolve => setTimeout(() => resolve(null), 3000)),
+          ]);
+          if (poi && poi.lat && poi.lng) { pLat = poi.lat; pLng = poi.lng; }
+        } catch (_) {}
+      }
+
+      const nowTs = Date.now();
+      const baseOrder: any = {
+        id: cleanOrderId,
+        orderId: cleanOrderId,
+        passengerPhone: cleanPassenger,
+        startLocation: String(pickupName || ''),
+        startDetail: String(pickupDetail || ''),
+        destination: '',
+        status: 'submitted',
+        timestamp: nowTs,
+        dispatchedAt: nowTs,
+        dispatchCountdown: 60,
+        serverCountdown: 60,
+        dispatchExpiresAt: nowTs + 60000,
+        isValetOrder: true,
+        isPlatformDispatch: true,
+        orderRemark: '报单转单',
+        orderType: '报单转单',
+        type: '报单转单',
+        passengerLat: pLat,
+        passengerLng: pLng,
+        lat: pLat,
+        lng: pLng,
+        startLat: pLat,
+        startLng: pLng,
+        approxPrice: '未知',
+        scheduledTime: '现在出发',
+        needScooter: false,
+        merchantPhone: cleanReporter,
+        reporterPhone: cleanReporter,
+        dispatchedByPhone: cleanReporter,
+        dispatchedBy: cleanReporter,
+        paymentQrCode: paymentQrCode || '',
+        merchantPaymentQrCode: paymentQrCode || '',
+        merchantName: '报单转单',
+      };
+
+      const haversineKm = (la1: number, lo1: number, la2: number, lo2: number) => {
+        const R = 6371;
+        const dLa = (la2 - la1) * Math.PI / 180;
+        const dLo = (lo2 - lo1) * Math.PI / 180;
+        const a = Math.sin(dLa / 2) * Math.sin(dLa / 2) +
+          Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) *
+          Math.sin(dLo / 2) * Math.sin(dLo / 2);
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      };
+
+      // 拉取小队成员与司机位置
+      let squadList: any[] = [];
+      let locationMap: Record<string, any> = {};
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [squadRows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['squad_members']);
+          squadList = (squadRows || []).map((r: any) => {
+            const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            return { phone: String(r.doc_id || d?.phone || '').replace(/\D/g, '').trim(), data: d };
+          });
+          const [locRows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['driver_locations']);
+          (locRows || []).forEach((r: any) => {
+            const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            const p = String(r.doc_id || d?.phone || '').replace(/\D/g, '').trim();
+            if (p) locationMap[p] = d;
+          });
+        } catch (_) {}
+      }
+      if (squadList.length === 0) {
+        try {
+          const dbData = readLocalJsonDb();
+          const colData = dbData['squad_members'] || {};
+          squadList = Object.keys(colData).map(k => ({
+            phone: String(k).replace(/\D/g, '').trim(), data: colData[k],
+          }));
+          const localLocations = dbData['driver_locations'] || {};
+          Object.keys(localLocations).forEach(k => {
+            const p = String(k).replace(/\D/g, '').trim();
+            if (p && !locationMap[p]) locationMap[p] = localLocations[k];
+          });
+        } catch (_) {}
+      }
+
+      const isApproved = (d: any) => {
+        const st = String(d?.status || d?.approvalStatus || '').trim();
+        return ['已通过', 'approved', '通过'].includes(st);
+      };
+      const candidates: any[] = [];
+      const coordsValid = !isNaN(pLat) && !isNaN(pLng) && pLat !== 0 && pLng !== 0;
+      if (coordsValid) {
+        for (const m of squadList) {
+          const phone = m.phone;
+          if (!phone || phone === cleanReporter) continue; // 绝不派给自己
+          if (!isApproved(m.data)) continue;
+          const loc = locationMap[phone];
+          if (!loc) continue;
+          const la = Number(loc.lat ?? loc.latitude);
+          const lo = Number(loc.lng ?? loc.longitude);
+          if (isNaN(la) || isNaN(lo) || la === 0 || lo === 0) continue;
+          const updTs = Number(loc.timestamp || loc.updatedAt || loc.lastUpdate || 0);
+          if (updTs && nowTs - updTs > 120000) continue; // GPS超120秒不派
+          const isOnline = loc.isOnline !== false;
+          const isBusy = loc.isBusy === true;
+          if (!isOnline || isBusy) continue;
+          const distKm = haversineKm(pLat, pLng, la, lo);
+          if (distKm <= 3) candidates.push({ phone, name: m.data?.name || m.data?.driverName || `司机${phone.slice(-4)}`, distKm });
+        }
+      }
+      candidates.sort((a, b) => a.distKm - b.distKm);
+
+      const writeOrder = async (col: string, docId: string, data: any) => {
+        const dataStr = JSON.stringify(data);
+        if (isMySQLEnabled && mysqlPool) {
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', [col, docId, dataStr]);
+        } else {
+          const dbData = readLocalJsonDb();
+          if (!dbData[col]) dbData[col] = {};
+          dbData[col][docId] = data;
+          writeLocalJsonDb(dbData);
+        }
+      };
+      const deleteLink = async (phone: string) => {
+        if (!phone) return;
+        if (isMySQLEnabled && mysqlPool) {
+          await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            ['passenger_links', phone]).catch(() => {});
+        } else {
+          try {
+            const dbData = readLocalJsonDb();
+            if (dbData['passenger_links']?.[phone]) {
+              delete dbData['passenger_links'][phone];
+              writeLocalJsonDb(dbData);
+            }
+          } catch (_) {}
+        }
+      };
+
+      if (candidates.length > 0) {
+        const chosen = candidates[0];
+        const dispatchedPayload = {
+          ...baseOrder,
+          status: 'dispatched',
+          statusCategory: '已指派',
+          dispatchedDriverPhone: chosen.phone,
+          dispatchedDriverName: chosen.name,
+          distKm: chosen.distKm,
+        };
+        await writeOrder('passenger_links', chosen.phone, dispatchedPayload);
+        await writeOrder('merchant_orders', cleanOrderId, dispatchedPayload);
+        return res.json({
+          success: true, isHall: false,
+          dispatchedDriverPhone: chosen.phone,
+          dispatchedDriverName: chosen.name,
+          distKm: chosen.distKm,
+        });
+      }
+
+      // 3公里内无上线空闲司机 → 转入选单大厅
+      const hallPayload = {
+        ...baseOrder,
+        status: 'hall',
+        statusCategory: '等待接单',
+        in_hall: true,
+        coordsUnknown: !coordsValid,
+      };
+      await writeOrder('merchant_orders', cleanOrderId, hallPayload);
+      return res.json({ success: true, isHall: true });
+    } catch (err: any) {
+      console.error('[Report Transfer Dispatch] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Report Transfer Dispatch Error' });
+    }
+  });
+
   // 2026-10-12 小队申请专用提交通道：司机提交自己的申请，不走 /api/db/set 的严格权限
   app.post('/api/squad-apply', async (req, res) => {
     try {
