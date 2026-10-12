@@ -16,181 +16,9 @@ export const DEFAULT_YINCHUAN_COORDS: Coords = {
   lng: 106.2350
 };
 
-// Known POI dictionary for Yinchuan and major regional landmarks
-const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [
-  {
-    keywords: ['银川市第二中学', '银川第二中学', '银川二中', '第二中学', '二中', '英才巷', '英才路'],
-    coords: { lat: 38.4908, lng: 106.2485 } // 兴庆区英才巷/民族北街 银川二中
-  },
-  {
-    keywords: ['良益轩泡馍', '良益轩', '泡馍店', '羊肉泡馍'],
-    coords: { lat: 38.4845, lng: 106.2380 } // 兴庆区新华东街/中山街 良益轩泡馍
-  },
-  {
-    keywords: ['华江大肉夹馍', '华江肉夹馍', '大肉夹馍'],
-    coords: { lat: 38.4812, lng: 106.2348 }
-  },
-  {
-    keywords: ['光大国旅中山街营业部', '光大国旅中山街', '光大国旅', '中山街营业部'],
-    coords: { lat: 38.4855, lng: 106.2410 }
-  },
-  {
-    keywords: ['德隆楼德鼎逸品(北京路店)', '德隆楼德鼎逸品', '德隆楼(北京东路店)', '德隆楼', '德鼎逸品'],
-    coords: { lat: 38.4875, lng: 106.2620 }
-  },
-  {
-    keywords: ['人社服务窗口（阳澄社区）', '人社服务窗口', '阳澄社区', '阳澄'],
-    coords: { lat: 38.4920, lng: 106.2550 }
-  },
-  {
-    keywords: ['西桥巷粉条大盘鸡', '粉条大盘鸡', '西桥巷'],
-    coords: { lat: 38.4873, lng: 106.2625 }
-  },
-  {
-    keywords: ['运祥小区', '运祥', '运祥小区南门', '运祥小区北门'],
-    coords: DEFAULT_YINCHUAN_COORDS
-  },
-  {
-    keywords: ['金凤万达', '金凤万达广场', '银川金凤万达广场', '金凤区万达', '万达广场'],
-    coords: { lat: 38.5085, lng: 106.2160 } // 金凤区亲水北大街/万达广场 ~ 2.7 - 3.2km from city center
-  },
-  {
-    keywords: ['西夏万达', '西夏区万达', '西夏万达广场', '宁大万达'],
-    coords: { lat: 38.4985, lng: 106.1485 } // 西夏区 ~ 7.3km
-  },
-  {
-    keywords: ['怀远夜市', '怀远路', '怀远市场', '八一车场'],
-    coords: { lat: 38.4950, lng: 106.1550 } // 怀远夜市 ~ 6.7km
-  },
-  {
-    keywords: ['建发大阅城', '大阅城', '音乐餐吧'],
-    coords: { lat: 38.5255, lng: 106.2205 } // 大阅城 ~ 4.8km
-  },
-  {
-    keywords: ['阅海湾', '阅海中央商务区', '阅海大酒店'],
-    coords: { lat: 38.5450, lng: 106.2150 } // 阅海湾 ~ 6.6km
-  },
-  {
-    keywords: ['眉山川菜（北门店）', '眉山川菜(北门店)', '眉山川菜北门店', '眉山川菜', '北关清真寺', '北塔东路'],
-    coords: { lat: 38.4988, lng: 106.2815 } // 兴庆区北塔东路与中山北街交汇处向北100米 眉山川菜（北门店）
-  },
-  {
-    keywords: ['正源北街', '悦海新天地'],
-    coords: { lat: 38.5120, lng: 106.2180 } // 悦海新天地 ~ 3.3km
-  },
-  {
-    keywords: ['德隆楼德鼎逸品(北京路店)', '德隆楼德鼎逸品', '德隆楼(北京东路店)', '德隆楼', '德鼎逸品'],
-    coords: { lat: 38.4875, lng: 106.2620 } // 兴庆区北京东路与西桥巷交汇处 德隆楼德鼎逸品
-  },
-  {
-    keywords: ['蕴辉商店', '南京包子铺'],
-    coords: { lat: 38.4878, lng: 106.2622 } // 西桥巷 蕴辉商店
-  },
-  {
-    keywords: ['同乡斋羊羔肉', '同乡斋', '马小军过油肉拌面'],
-    coords: { lat: 38.4873, lng: 106.2629 } // 北京东路 同乡斋羊羔肉
-  },
-  {
-    keywords: ['迎春苑1号楼'],
-    coords: { lat: 38.4880, lng: 106.2618 }
-  },
-  {
-    keywords: ['迎春苑2号楼'],
-    coords: { lat: 38.4883, lng: 106.2615 }
-  },
-  {
-    keywords: ['迎春苑'],
-    coords: { lat: 38.4882, lng: 106.2616 }
-  },
-  {
-    keywords: ['海宝苑', '海宝苑小区'],
-    coords: { lat: 38.4886, lng: 106.2625 }
-  },
-  {
-    keywords: ['宁祥园', '宁祥园小区'],
-    coords: { lat: 38.4866, lng: 106.2635 }
-  },
-  {
-    keywords: ['过油肉总店'],
-    coords: { lat: 38.4871, lng: 106.2628 }
-  },
-  {
-    keywords: ['德隆楼(森林公园店)', '德隆楼(北京中路店)', '北京中路德隆楼', '森林公园德隆楼'],
-    coords: { lat: 38.4965, lng: 106.2110 } // 金凤区北京中路德隆楼德鼎逸品
-  },
-  {
-    keywords: ['铂金大厦', '长相忆宾馆'],
-    coords: { lat: 38.4825, lng: 106.2315 } // ~ 0.5km
-  },
-  {
-    keywords: ['太阳神大酒店', '和平巷', '二哥辣炒小公鸡', '颐和家园', '和枫颐景'],
-    coords: { lat: 38.4830, lng: 106.2350 }
-  },
-  {
-    keywords: ['鼓楼', '新华百货', '解放东街', '兴庆区鼓楼'],
-    coords: { lat: 38.4815, lng: 106.2355 } // ~ 0.7km
-  },
-  {
-    keywords: ['玉皇阁', '唐徕', '唐徕花园'],
-    coords: { lat: 38.4835, lng: 106.2325 } // ~ 0.4km
-  },
-  {
-    keywords: ['宁夏医科大学总医院', '医大总院', '胜利街'],
-    coords: { lat: 38.4485, lng: 106.2345 } // ~ 4.3km
-  },
-  {
-    keywords: ['火车站', '银川火车站', '银川站'],
-    coords: { lat: 38.4680, lng: 106.1820 } // ~ 4.8km
-  },
-  {
-    keywords: ['宁夏大学', '宁大', '贺兰山路'],
-    coords: { lat: 38.5020, lng: 106.1380 } // ~ 8.1km
-  },
-  {
-    keywords: ['悠阅城', '建发悠阅城'],
-    coords: { lat: 38.4250, lng: 106.2280 } // ~ 7.0km
-  },
-  {
-    keywords: ['中山公园', '公园街'],
-    coords: { lat: 38.4855, lng: 106.2225 } // ~ 0.8km
-  },
-  {
-    keywords: ['市政府', '北京中路', '凯宾斯基'],
-    coords: { lat: 38.4908, lng: 106.2123 } // ~ 1.8km
-  },
-  {
-    keywords: ['黄河龙大厦', '黄河龙', '上海东路中山北街', '上海东路与中山北街', '百通苑', '华苑小区'],
-    coords: { lat: 38.4892, lng: 106.2435 }
-  },
-  {
-    keywords: ['五宝苑', '北关清真寺'],
-    coords: { lat: 38.4828, lng: 106.2415 }
-  },
-  {
-    keywords: ['游乐小区', '阳光巷游乐小区', '阳光花园'],
-    coords: { lat: 38.4872, lng: 106.2309 }
-  },
-  {
-    keywords: ['温州商城'],
-    coords: { lat: 38.4750, lng: 106.2380 } // ~ 1.5km
-  },
-  {
-    keywords: ['兴庆区政府住宅区'],
-    coords: { lat: 38.4830, lng: 106.2350 }
-  },
-  {
-    keywords: ['宝湖公园', '宝湖路'],
-    coords: { lat: 38.4480, lng: 106.2200 } // ~ 4.5km
-  },
-  {
-    keywords: ['望远人家A区', '望远人家B区', '望远人家', '望远镇', '双庆路', '四季鲜'],
-    coords: { lat: 38.3880, lng: 106.2580 } // 永宁县望远镇/望远人家 ~ 10.8km south
-  },
-  {
-    keywords: ['机场', '河东机场', '银川机场'],
-    coords: { lat: 38.3220, lng: 106.3920 } // ~ 23km
-  }
-];
+// 2026-10-12：本地POI已全部删除（用户铁律：纯服务端高德实时解析）
+// 本地不再存储任何POI坐标，未知位置显示"位置未知"，绝不用假坐标冒充
+const YINCHUAN_POI_MAP: Array<{ keywords: string[]; coords: Coords }> = [];
 
 /**
  * Finds the nearest known POI landmark from coordinates if within maxDistKm (default 0.01 km = 10m)
@@ -358,10 +186,23 @@ export function calculateOrderDriverDistance(
         oLat = geocodedPOI.lat;
         oLng = geocodedPOI.lng;
       }
+      // 2026-10-12：如果POI查不到，保持无效，后面统一返回"距离未知"
     } else {
-      oLat = dLat;
-      oLng = dLng;
+      // 2026-10-12修复：订单名为空且坐标无效时，不再用司机坐标冒充（会导致距离=0误判），保持无效走"距离未知"
+      oLat = NaN;
+      oLng = NaN;
     }
+  }
+
+  // 2026-10-12修复：坐标仍无效时直接返回"距离未知"，绝不用无效坐标算出上万公里（铁律）
+  if (!isValidCoords(oLat, oLng)) {
+    return {
+      distKm: -1,
+      displayDistText: '距离未知',
+      resolvedLat: 0,
+      resolvedLng: 0,
+      isUnknown: true
+    };
   }
 
   // 3. Calculate exact straight line Haversine distance between real driver GPS and real order GPS

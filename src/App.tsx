@@ -3045,16 +3045,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             if (!finalEndLoc || isUnsetDestination(finalEndLoc) || finalEndLoc === '目的地定位中...') {
               if (currentTrip.currentDistance <= 0.05 && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation)) {
                 finalEndLoc = currentTrip.startLocation;
-              } else if (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑') && Math.abs(currentTrip.currentDistance - 0.71) < 0.2) {
-                finalEndLoc = '黄河龙大厦';
               } else {
-                finalEndLoc = '黄河龙大厦';
+                // 2026-10-12修复：非原地订单终点未知时显示"位置未知"，删除"黄河龙大厦"硬编码（铁律）
+                finalEndLoc = '位置未知';
               }
             }
           }
         }
         if (finalEndLoc.includes('宁夏博物馆')) {
-          finalEndLoc = '黄河龙大厦';
+          // 2026-10-12修复：删除"黄河龙大厦"硬编码，显示"位置未知"（铁律）
+          finalEndLoc = '位置未知';
         }
 
         let finalStartLoc = currentTrip.startLocation || '未定位起点';
