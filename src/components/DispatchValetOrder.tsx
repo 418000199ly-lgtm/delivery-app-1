@@ -1646,7 +1646,12 @@ export default function DispatchValetOrder({
     try {
       const saved = localStorage.getItem('dd_merchant_users_v2');
       if (saved) {
-        return JSON.parse(saved).filter((m: any) => String(m.phone || m.id || '').toUpperCase().endsWith('A'));
+        // 2026-10-12修复：phone和id都要检查A后缀，防止phone无A但id有A时被误过滤
+        return JSON.parse(saved).filter((m: any) => {
+          const p = String(m.phone || '').toUpperCase();
+          const id = String(m.id || '').toUpperCase();
+          return p.endsWith('A') || id.endsWith('A');
+        });
       }
     } catch (_) {}
     return [];
@@ -1688,7 +1693,10 @@ export default function DispatchValetOrder({
           deleteDoc(doc(db, 'merchant_accounts', d.id)).catch(() => {});
           return;
         }
-        if (p.toUpperCase().endsWith('A')) {
+        // 2026-10-12修复：phone和id都要检查A后缀
+        const pUpper = p.toUpperCase();
+        const idUpper = String(d.id || '').toUpperCase();
+        if (pUpper.endsWith('A') || idUpper.endsWith('A')) {
           list.push({ id: d.id, ...data });
         }
       });
@@ -4688,13 +4696,16 @@ export default function DispatchValetOrder({
         // 4. 遍历 merchantUsers (仅限通过【商户代叫（手机网页版）】注册登录生成的隐形/显式 'A' 结尾账号，如 15509601222A)
         merchantUsers.forEach((mu, idx) => {
           const rawP = String(mu?.phone || mu?.id || '').trim();
+          const rawId = String(mu?.id || '').trim();
           const cleanP = rawP.replace(/\D/g, '').trim();
 
           // 彻底取消 18695161718A / 18695161718 显示
           if (cleanP === '18695161718' || rawP.includes('18695161718')) return;
 
           // 必须是以 'A' 结尾的隐形/显式商户账号！纯数字手机号（如 18695161718、15509601222）在 App 点击商户代叫组件绝不作为商户账号！
-          if (!rawP || !rawP.toUpperCase().endsWith('A') || isRemovedItem(mu)) return;
+          // 2026-10-12修复：phone和id都要检查A后缀
+          const hasASuffix = rawP.toUpperCase().endsWith('A') || rawId.toUpperCase().endsWith('A');
+          if (!rawP || !hasASuffix || isRemovedItem(mu)) return;
 
           const displayName = mu.name && mu.name !== '商户、商家' ? mu.name : `商户${rawP}`;
           membersMap.set(rawP, {
