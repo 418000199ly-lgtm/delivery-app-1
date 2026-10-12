@@ -530,14 +530,15 @@ export async function autoUpdateOrderDestinationIfUnset(
   }
 
   // If still unresolved:
+  // 2026-10-12修复：非原地订单GPS解析失败时显示"位置未知"，绝不用起点冒充终点（铁律）
   if (!resolvedName) {
-    if (trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
+    const isInPlace = (trip.currentDistance !== undefined && trip.currentDistance <= 0.25);
+    if (isInPlace && trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
+      // 原地结束订单：终点=起点（司机没动，这是对的）
       resolvedName = trip.startLocation;
-    } else if (trip.startLocation && trip.startLocation.includes('五宝苑') && Math.abs(trip.currentDistance - 0.71) < 0.2) {
-      // Specifically for 0.71km trips from 五宝苑 to 黄河龙大厦
-      resolvedName = '黄河龙大厦';
     } else {
-      resolvedName = '德隆楼德鼎逸品';
+      // 非原地订单但GPS解析失败：显示"位置未知"，不用假坐标冒充
+      resolvedName = '位置未知';
     }
   }
 
