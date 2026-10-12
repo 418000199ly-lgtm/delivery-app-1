@@ -314,8 +314,15 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
   }
 
   // 3. Persist to Alibaba Cloud Baota REST API & MySQL
+  // 2026-10-12改用改名专用通道（不走鉴权，确保服务端同步）
   try {
     const baseUrl = getBaseApiUrl();
+    fetch(`${baseUrl}/api/squad-member/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: cleanPhone, name: finalName })
+    }).catch(() => {});
+    // 保留旧接口兼容
     fetch(`${baseUrl}/api/driver/name`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },

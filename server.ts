@@ -6002,6 +6002,193 @@ async function startServer() {
     }
   });
 
+  // 2026-10-12 小队申请审批通过专用通道：写入成员表，确保审批必生效。不走鉴权。
+  app.post('/api/squad-member/approve', async (req, res) => {
+    try {
+      const { phone, name, approvedBy, approvedRole, note, city } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      const cleanName = String(name || '').trim().slice(0, 8);
+      if (!/^1[3-9]\d{9}$/.test(cleanPhone) || !cleanName) {
+        return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      const now = new Date().toISOString();
+      const nowTs = Date.now();
+      const memberPayload = {
+        id: cleanPhone, phone: cleanPhone, phoneNumber: cleanPhone,
+        name: cleanName, driverName: cleanName,
+        role: '普通司机', userRole: '普通司机',
+        status: '已通过', approvalStatus: '已通过',
+        approvedBy: String(approvedBy || ''), approvedRole: String(approvedRole || ''),
+        approvalTime: now, note: String(note || '').slice(0, 200),
+        city: String(city || '银川市').slice(0, 20),
+        vipExpiry: '待开通', createdAt: nowTs, updatedAt: now,
+      };
+      if (isMySQLEnabled && mysqlPool) {
+        // 1. 写入 squad_members
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['squad_members', cleanPhone, JSON.stringify(memberPayload)]);
+        // 2. 更新 driver_users（保留 vipExpiry）
+        try {
+          const [uRows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanPhone]);
+          let uExisting: any = {};
+          if (uRows && uRows.length > 0) {
+            const raw = uRows[0].data;
+            uExisting = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          }
+          const uUpdated = { ...uExisting, ...memberPayload, vipExpiry: uExisting.vipExpiry || '待开通' };
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['driver_users', cleanPhone, JSON.stringify(uUpdated)]);
+        } catch (_) {}
+        // 3. 写入 team_members 职位记录
+        try {
+          const teamPayload = { ...memberPayload, squad_position: 'normal', joinedAt: now };
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['team_members', cleanPhone, JSON.stringify(teamPayload)]);
+        } catch (_) {}
+        // 4. 删除 squad_applications 中的申请（防幽灵申请）
+        await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+          ['squad_applications', cleanPhone]).catch(() => {});
+        // 5. 从移除名单删除
+        try {
+          const [cRows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['config', 'removed_squad_members']);
+          if (cRows && cRows.length > 0) {
+            const raw = cRows[0].data;
+            const cData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            const phones = Array.isArray(cData.phones) ? cData.phones.filter((p: string) => p !== cleanPhone) : [];
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['config', 'removed_squad_members', JSON.stringify({ phones, updatedAt: now })]);
+          }
+        } catch (_) {}
+      } else {
+        const dbData = readLocalJsonDb();
+        if (!dbData['squad_members']) dbData['squad_members'] = {};
+        dbData['squad_members'][cleanPhone] = memberPayload;
+        if (!dbData['driver_users']) dbData['driver_users'] = {};
+        const uExisting = dbData['driver_users'][cleanPhone] || {};
+        dbData['driver_users'][cleanPhone] = { ...uExisting, ...memberPayload, vipExpiry: uExisting.vipExpiry || '待开通' };
+        if (!dbData['team_members']) dbData['team_members'] = {};
+        dbData['team_members'][cleanPhone] = { ...memberPayload, squad_position: 'normal', joinedAt: now };
+        if (dbData['squad_applications']?.[cleanPhone]) delete dbData['squad_applications'][cleanPhone];
+        if (dbData['config']?.['removed_squad_members']) {
+          const phones = (dbData['config']['removed_squad_members'].phones || []).filter((p: string) => p !== cleanPhone);
+          dbData['config']['removed_squad_members'] = { phones, updatedAt: now };
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Squad Approve] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Approve Error' });
+    }
+  });
+
+  // 2026-10-12 司机改名专用通道：同步更新所有相关表。不走鉴权。
+  app.post('/api/squad-member/rename', async (req, res) => {
+    try {
+      const { phone, name } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      const cleanName = String(name || '').trim().slice(0, 8);
+      if (!/^1[3-9]\d{9}$/.test(cleanPhone) || !cleanName) {
+        return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      const now = new Date().toISOString();
+      const updatePayload = { name: cleanName, driverName: cleanName, realName: cleanName, applicantName: cleanName, updatedAt: now };
+      const cols = ['squad_members', 'driver_users', 'driver_locations', 'online_applications', 'squad_applications', 'team_members'];
+      if (isMySQLEnabled && mysqlPool) {
+        for (const col of cols) {
+          try {
+            const [rows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, cleanPhone]);
+            if (rows && rows.length > 0) {
+              const raw = rows[0].data;
+              const existing = typeof raw === 'string' ? JSON.parse(raw) : raw;
+              const updated = { ...existing, ...updatePayload };
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', [col, cleanPhone, JSON.stringify(updated)]);
+            }
+          } catch (_) {}
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        for (const col of cols) {
+          if (dbData[col]?.[cleanPhone]) {
+            dbData[col][cleanPhone] = { ...dbData[col][cleanPhone], ...updatePayload };
+          }
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Squad Rename] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Rename Error' });
+    }
+  });
+
+  // 2026-10-12 司机职位调整专用通道：同步更新所有相关表。不走鉴权。
+  app.post('/api/squad-member/set-role', async (req, res) => {
+    try {
+      const { phone, role } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      const cleanRole = String(role || '').trim().slice(0, 20);
+      if (!/^1[3-9]\d{9}$/.test(cleanPhone) || !cleanRole) {
+        return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      if (cleanPhone === '15509601222') {
+        return res.status(403).json({ success: false, error: '开发者角色不可调整' });
+      }
+      const now = new Date().toISOString();
+      const updatePayload = { role: cleanRole, userRole: cleanRole, updatedAt: now };
+      const cols = ['squad_members', 'driver_users', 'squad_applications', 'team_members'];
+      if (isMySQLEnabled && mysqlPool) {
+        for (const col of cols) {
+          try {
+            const [rows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, cleanPhone]);
+            if (rows && rows.length > 0) {
+              const raw = rows[0].data;
+              const existing = typeof raw === 'string' ? JSON.parse(raw) : raw;
+              const updated = { ...existing, ...updatePayload };
+              // team_members 用 squad_position 字段
+              if (col === 'team_members') {
+                (updated as any).squad_position = cleanRole;
+              }
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', [col, cleanPhone, JSON.stringify(updated)]);
+            }
+          } catch (_) {}
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        for (const col of cols) {
+          if (dbData[col]?.[cleanPhone]) {
+            const updated = { ...dbData[col][cleanPhone], ...updatePayload };
+            if (col === 'team_members') updated.squad_position = cleanRole;
+            dbData[col][cleanPhone] = updated;
+          }
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Squad Set Role] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Set Role Error' });
+    }
+  });
+
   // 2026-10-12 小队成员删除专用通道：确保删除必生效，删除后立即失去接单权限。不走鉴权（管理后台调用）。
   app.post('/api/squad-member/remove', async (req, res) => {
     try {

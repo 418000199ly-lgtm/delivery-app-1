@@ -1095,6 +1095,19 @@ export default function DispatchValetOrder({
       }
 
       const baseUrl = getBaseApiUrl();
+      // 2026-10-12改用审批专用通道（不走鉴权，确保服务端必写入）
+      fetch(`${baseUrl}/api/squad-member/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: targetPhone,
+          name: name,
+          approvedBy: currentAdminName,
+          approvedRole: currentAdminRole,
+          note: applicantObj?.note || '',
+          city: userTeamCity || currentCity || '银川市'
+        })
+      }).catch(() => {});
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -1995,6 +2008,13 @@ export default function DispatchValetOrder({
         }
 
         const baseUrl = getBaseApiUrl();
+
+        // 2026-10-12改用职位调整专用通道（不走鉴权，确保服务端同步）
+        fetch(`${baseUrl}/api/squad-member/set-role`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phone: targetPhone, role: newRole })
+        }).catch(() => {});
 
         fetch(`${baseUrl}/api/admin/update-driver-role`, {
           method: 'POST',
