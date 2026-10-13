@@ -4270,16 +4270,21 @@ async function startServer() {
           const remainingSec = Math.max(0, Math.ceil((expiresAt - now) / 1000));
           const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, '').trim();
 
-          // 1. 每秒刷新订单在阿里云服务器上的权威倒计时
+          // 1. 计算订单在阿里云服务器上的权威倒计时（仅内存计算，不持久化）
           // 2026-10-13修复：定时器只更新显示用的倒计时数字，绝不回写 dispatchExpiresAt。
           // dispatchExpiresAt 的权威写入者只有两处：派单时的初始设置，和 /api/dispatch/countdown 的延迟重置。
           // 定时器若回写自己读到的旧值，会覆盖倒计时接口刚持久化的重置值，导致 60→0 跳变。
+          // 2026-10-13补充修复：定时器不再持久化 serverCountdown/dispatchCountdown 显示字段。
+          // 原因：定时器每10秒读整个DB、改两个字段、写回整个DB，会覆盖倒计时接口在两次定时器运行之间
+          // 对 dispatchExpiresAt 的更新（read-modify-write 竞态）。显示字段由 /api/dispatch/countdown
+          // 实时计算返回，无需DB缓存；只有转大厅才需要持久化。
           if (order.serverCountdown !== remainingSec || order.dispatchCountdown !== remainingSec) {
             order.serverCountdown = remainingSec;
             order.dispatchCountdown = remainingSec;
-            hasChanges = true;
+            // 注意：此处故意不设置 hasChanges = true，避免写回整个DB覆盖其他接口的更新。
+            // 转大厅逻辑在下方单独设置 hasChanges。
 
-            // 同步实时写入给司机的 passenger_links 通道，确保司机屏幕严格显示服务器倒计时
+            // 同步更新内存中的 passenger_links（不持久化，由倒计时接口实时返回权威值）
             if (timedOutDriverPhone && dbData['passenger_links']?.[timedOutDriverPhone]) {
               dbData['passenger_links'][timedOutDriverPhone].serverCountdown = remainingSec;
               dbData['passenger_links'][timedOutDriverPhone].dispatchCountdown = remainingSec;
