@@ -152,7 +152,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const url = `${getBaseApiUrl()}/api/dispatch/page-heartbeat`;
         fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ orderId: targetOrderId, driverPhone }),
         }).catch(() => {});
       } catch (_) {}
@@ -570,6 +570,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             orderId: rawOrderId,
             orderNo: orderNumber,
             driverPhone: cleanUserPhone,
+            isDispatchedClaim: true,
             orderPayload: { ...order, ...trip }
           })
         });

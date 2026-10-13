@@ -3938,6 +3938,20 @@ async function startServer() {
         if (isClaimedByOther || isCancelled) {
           return res.status(409).json({ success: false, error: '⚠️ 该订单已被其他小队司机抢走或已取消！' });
         }
+        // P0-3修复(2026-10-13)：派单接单必须验证订单仍派单给本人。
+        // 若订单已超时进大厅(dispatchedDriverPhone被清空)，新来单页的延迟接单不能静默复活，
+        // 必须提示去大厅抢单，避免与其他司机看到的"大厅有单"状态错乱。
+        const isDispatchedClaim = !!(req.body as any).isDispatchedClaim;
+        if (isDispatchedClaim) {
+          const dispatchedTo = String(targetOrder.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+          const tStatus = String(targetOrder.status || '');
+          if (tStatus === 'hall' || targetOrder.in_hall === true || !dispatchedTo) {
+            return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
+          }
+          if (dispatchedTo !== cleanDriverPhone) {
+            return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
+          }
+        }
       }
 
       const now = Date.now();
@@ -4026,6 +4040,19 @@ async function startServer() {
       const dbData = readLocalJsonDb();
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
       const targetOrder = dbData['merchant_orders'][cleanOrderId];
+
+      // P0-2修复(2026-10-13)：拒单前校验订单仍派单给本人且未被接单。
+      // 否则延迟的拒单会把已进大厅被他人抢走的订单偷回大厅（B已接单，A的旧页面点拒单把B的单清空）。
+      if (targetOrder) {
+        const dispatchedTo = String(targetOrder.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+        const tStatus = String(targetOrder.status || '');
+        if (tStatus === 'claimed' || tStatus === 'serving' || tStatus === 'completed' || tStatus === 'cancelled') {
+          return res.status(409).json({ success: false, error: '订单已被接单，无法拒单' });
+        }
+        if (dispatchedTo && dispatchedTo !== cleanDriverPhone) {
+          return res.status(409).json({ success: false, error: '订单已不在派单中' });
+        }
+      }
 
       const existingDeclined = Array.isArray(targetOrder?.declinedDriverPhones) ? targetOrder.declinedDriverPhones : [];
       const existingTimeout = Array.isArray(targetOrder?.timeoutDriverPhones) ? targetOrder.timeoutDriverPhones : [];
@@ -4354,7 +4381,7 @@ async function startServer() {
               timeoutDriverPhones: Array.from(new Set([...existingTimeout, timedOutDriverPhone].filter(Boolean))),
               lastTimeoutAt: now,
               autoHallAt: now,
-              autoHallReason: '60秒倒计时结束，中国大陆阿里云服务器自动将订单转入选单大厅'
+              autoHallReason: order.autoHallReason || '60秒倒计时结束，中国大陆阿里云服务器自动将订单转入选单大厅'
             };
 
             merchantOrders[orderId] = updatedOrder;
@@ -4421,7 +4448,7 @@ async function startServer() {
   // 5.3.0 滴滴式"新来单页上屏"心跳接口 (2026-10-13新增)
   // App新来单页面显示时每2秒发送一次，证明页面正在屏幕上显示。
   // 服务端定时器检查：派单后5秒内无心跳 → 判定页面未上屏(App被杀/未点通知)，立即转大厅，不等60秒。
-  app.post('/api/dispatch/page-heartbeat', async (req, res) => {
+  app.post('/api/dispatch/page-heartbeat', requireDbAuth, async (req, res) => {
     try {
       const orderId = String(req.body?.orderId || req.body?.id || '').trim();
       const driverPhone = String(req.body?.driverPhone || req.body?.phone || '').replace(/\D/g, '').trim();
