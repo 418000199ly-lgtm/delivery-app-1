@@ -4271,17 +4271,18 @@ async function startServer() {
           const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, '').trim();
 
           // 1. 每秒刷新订单在阿里云服务器上的权威倒计时
+          // 2026-10-13修复：定时器只更新显示用的倒计时数字，绝不回写 dispatchExpiresAt。
+          // dispatchExpiresAt 的权威写入者只有两处：派单时的初始设置，和 /api/dispatch/countdown 的延迟重置。
+          // 定时器若回写自己读到的旧值，会覆盖倒计时接口刚持久化的重置值，导致 60→0 跳变。
           if (order.serverCountdown !== remainingSec || order.dispatchCountdown !== remainingSec) {
             order.serverCountdown = remainingSec;
             order.dispatchCountdown = remainingSec;
-            order.dispatchExpiresAt = expiresAt;
             hasChanges = true;
 
             // 同步实时写入给司机的 passenger_links 通道，确保司机屏幕严格显示服务器倒计时
             if (timedOutDriverPhone && dbData['passenger_links']?.[timedOutDriverPhone]) {
               dbData['passenger_links'][timedOutDriverPhone].serverCountdown = remainingSec;
               dbData['passenger_links'][timedOutDriverPhone].dispatchCountdown = remainingSec;
-              dbData['passenger_links'][timedOutDriverPhone].dispatchExpiresAt = expiresAt;
             }
           }
 
