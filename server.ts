@@ -4380,12 +4380,16 @@ async function startServer() {
       const merchantOrders = dbData['merchant_orders'] || {};
       
       let targetOrder: any = null;
+      let targetMerchantKey: string | null = null;
       if (orderId) {
         targetOrder = merchantOrders[orderId];
-        if (!targetOrder) {
+        if (targetOrder) {
+          targetMerchantKey = orderId;
+        } else {
           for (const [k, v] of Object.entries<any>(merchantOrders)) {
             if (v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId)) {
               targetOrder = v;
+              targetMerchantKey = k;
               break;
             }
           }
@@ -4397,6 +4401,23 @@ async function startServer() {
           const lId = String(linkOrder.id || linkOrder.orderId || linkOrder.orderNo || '').trim();
           if (!orderId || (lId && lId === orderId)) {
             targetOrder = linkOrder;
+            // 反查 merchant_orders 中的 key，确保即使本次没带 orderId 也能更新主订单
+            if (!targetMerchantKey) {
+              for (const [k, v] of Object.entries<any>(merchantOrders)) {
+                if (v === linkOrder) {
+                  targetMerchantKey = k;
+                  break;
+                }
+              }
+              if (!targetMerchantKey && lId) {
+                for (const [k, v] of Object.entries<any>(merchantOrders)) {
+                  if (v && (v.id === lId || v.orderId === lId || v.orderNo === lId || k === lId)) {
+                    targetMerchantKey = k;
+                    break;
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -4451,9 +4472,13 @@ async function startServer() {
       const persistClientFirstSeen = (extra: Record<string, any>) => {
         try {
           const dbDataWrite = readLocalJsonDb();
-          const orderKey = Object.keys(dbDataWrite['merchant_orders'] || {}).find(k => {
+          // 2026-10-13修复：用查找到的 targetMerchantKey 直接更新，不再用 orderId 重新查找。
+          // App 前几次轮询可能没带 orderId（只带 driverPhone），此时 orderId 为空字符串，
+          // 重新查找会失败，导致 merchant_orders 主订单没更新，只有 passenger_links 更新了，
+          // 下次带 orderId 轮询时读到旧数据，误判为"首次看到"再次重置（实测 33→22→60 跳变）。
+          const orderKey = targetMerchantKey || Object.keys(dbDataWrite['merchant_orders'] || {}).find(k => {
             const v = dbDataWrite['merchant_orders'][k];
-            return v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId);
+            return v && orderId && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId);
           });
           if (orderKey) Object.assign(dbDataWrite['merchant_orders'][orderKey], extra);
           if (driverPhone && dbDataWrite['passenger_links']?.[driverPhone]) {
