@@ -4523,7 +4523,10 @@ async function startServer() {
         serverCountdown: remainingSec,
         dispatchCountdown: remainingSec,
         isExpired: remainingSec <= 0,
-        inHall: remainingSec <= 0,
+        // 2026-10-13修复：inHall 必须反映订单真实状态，不能从 remainingSec 推导。
+        // 倒计时到0不代表已进大厅（定时器每10秒才跑一次，可能还没搬）。
+        // 此前写成 inHall: remainingSec<=0，导致前端看到假"已进大厅"直接拒单，出现 33→0 跳变。
+        inHall: targetOrder.in_hall === true || targetOrder.status === 'hall',
         status: targetOrder.status,
         dispatchedDriverPhone: targetOrder.dispatchedDriverPhone,
         serverTime: now,
