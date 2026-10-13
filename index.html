@@ -1,130 +1,263 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, shrink-to-fit=no, viewport-fit=cover" />
-    <meta name="format-detection" content="telephone=no" />
-    <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0b0f19" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <link rel="icon" type="image/png" href="./hwdjtb.png" />
-    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-    <link rel="manifest" href="./manifest.json" />
-    <title>黑湾代驾MAX</title>
-    <meta name="description" content="专为代驾司机设计的高效在线行程、动态计费及收款管理系统。支持里程计费自定义、多时段价格配比、行程路费垫付及自动结算生成收款码等功能。" />
-    <meta property="og:title" content="黑湾代驾MAX" />
-    <meta property="og:description" content="专为代驾司机设计的高效在线行程、动态计费及收款管理系统。支持里程计费自定义、多时段价格配比、行程路费垫付及自动结算生成收款码等功能。" />
-    <!-- Gaode AMap JS API v2.0 Pre-configuration (Must precede AMap scripts) -->
-    <script type="text/javascript">
-      window._AMapSecurityConfig = {
-        securityJsCode: '0aa3912e6a88fe59f9e5f0275524feba'
-      };
-    </script>
-    <script id="amap-js-api-v2" type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=4143e567d55bbc1855231f9637efd6b0&plugin=AMap.Geocoder,AMap.Geolocation,AMap.Driving,AMap.AutoComplete,AMap.PlaceSearch,AMap.CitySearch,AMap.GeometryUtil"></script>
-    <script>
-      // Android System Font Size & Display Zoom Immunity Engine (Neutralizes system font/display scaling)
-      (function() {
-        if (typeof window === 'undefined') return;
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>黑湾代驾MAX · 云端实时预览</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: #070b16; color: #e8edf7; min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid #1b2440;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: #0a0f1f;
+  }
+  header h1 { font-size: 18px; font-weight: 800; letter-spacing: .5px; }
+  header h1 span { color: #2dd4bf; }
+  .live-badge {
+    font-size: 12px; font-weight: 700; color: #34d399;
+    border: 1px solid #34d399; border-radius: 999px; padding: 4px 12px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .live-badge i { width: 8px; height: 8px; border-radius: 50%; background: #34d399;
+    box-shadow: 0 0 8px #34d399; animation: blink 1.6s infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  header .sub { font-size: 12px; color: #8b96b8; width: 100%; }
+  nav.tabs {
+    display: flex; gap: 10px; padding: 14px 24px; overflow-x: auto;
+    background: #0a0f1f; border-bottom: 1px solid #1b2440;
+  }
+  nav.tabs button {
+    border: 1px solid #2a3350; background: #111832; color: #9aa6c7;
+    border-radius: 999px; padding: 9px 18px; font-size: 13px; cursor: pointer;
+    white-space: nowrap; transition: all .18s ease;
+  }
+  nav.tabs button:hover { color: #fff; border-color: #2dd4bf; }
+  nav.tabs button.active {
+    background: linear-gradient(135deg, #0d9488, #10b981); color: #fff;
+    border-color: transparent; font-weight: 700;
+    box-shadow: 0 4px 16px rgba(16,185,129,.4);
+  }
+  nav.tabs button.dl-tab { border-style: dashed; }
+  .toolbar {
+    display: flex; gap: 10px; align-items: center; padding: 10px 24px;
+    background: #0a0f1f; border-bottom: 1px solid #1b2440; flex-wrap: wrap;
+  }
+  .urlbar {
+    flex: 1; min-width: 200px; font-size: 12px; color: #8b96b8;
+    background: #0d1428; border: 1px solid #1b2440; border-radius: 8px;
+    padding: 8px 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .toolbar button, .toolbar a.btn {
+    border: 1px solid #2a3350; background: #111832; color: #dbe3f5;
+    border-radius: 10px; padding: 8px 16px; font-size: 12px; cursor: pointer;
+    text-decoration: none; transition: all .18s ease;
+  }
+  .toolbar button:hover, .toolbar a.btn:hover { border-color: #2dd4bf; color: #2dd4bf; }
+  main.stage {
+    flex: 1; display: flex; justify-content: center; align-items: flex-start;
+    padding: 28px 16px 40px; background:
+    radial-gradient(1200px 500px at 50% -10%, #10203c 0%, #070b16 60%);
+  }
+  .phone {
+    width: 402px; max-width: 100%; height: 860px; background: #000;
+    border-radius: 56px; padding: 14px; position: relative;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55), inset 0 0 0 2px #2a3350;
+  }
+  .phone::before {
+    content: ""; position: absolute; top: 28px; left: 50%; transform: translateX(-50%);
+    width: 122px; height: 28px; background: #000; border-radius: 999px; z-index: 2;
+  }
+  .phone iframe { width: 100%; height: 100%; border: 0; border-radius: 42px; background: #fff; display: block; }
+  .desktop { width: min(1280px, 100%); display: flex; flex-direction: column; }
+  .desktop .chrome {
+    background: #111832; border: 1px solid #1b2440; border-bottom: none;
+    border-radius: 14px 14px 0 0; padding: 10px 16px;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .chrome .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .desktop iframe {
+    width: 100%; height: 76vh; min-height: 560px; border: 1px solid #1b2440;
+    border-top: none; border-radius: 0 0 14px 14px; background: #fff; display: block;
+  }
+  .dl-panel {
+    width: min(720px, 100%); background: #0d1428; border: 1px solid #1b2440;
+    border-radius: 16px; padding: 28px; text-align: center;
+  }
+  .dl-panel h2 { font-size: 18px; margin-bottom: 8px; }
+  .dl-panel p { font-size: 13px; color: #8b96b8; line-height: 1.8; margin-bottom: 20px; }
+  .dl-panel a.dl-btn {
+    display: inline-flex; align-items: center; gap: 8px; margin: 8px;
+    background: linear-gradient(135deg, #0d9488, #10b981); color: #fff;
+    border-radius: 12px; padding: 14px 26px; font-size: 14px; font-weight: 700;
+    text-decoration: none; box-shadow: 0 6px 20px rgba(16,185,129,.35);
+    transition: transform .15s ease;
+  }
+  .dl-panel a.dl-btn:hover { transform: translateY(-2px); }
+  .dl-panel a.dl-btn.alt { background: #1b2440; box-shadow: none; border: 1px solid #2a3350; }
+  .dl-panel .note { margin-top: 18px; font-size: 12px; color: #6b7694; }
+  footer {
+    padding: 12px 24px; font-size: 12px; line-height: 1.8; color: #8b96b8;
+    border-top: 1px solid #1b2440; background: #0a0f1f;
+  }
+  footer b { color: #2dd4bf; }
+  .new-tag {
+    font-size: 10px; background: #f59e0b; color: #000; border-radius: 6px;
+    padding: 1px 6px; margin-left: 6px; font-weight: 800; vertical-align: 2px;
+  }
+</style>
+</head>
+<body>
 
-        // 1. WeChat / QQ Browser / Android WebView Font Size Lock
-        function lockWeChatFontSize() {
-          if (typeof WeixinJSBridge === 'object' && typeof WeixinJSBridge.invoke === 'function') {
-            WeixinJSBridge.invoke('setFontSizeCallback', { fontSize: 0 });
-            WeixinJSBridge.on('menu:setfont', function() {
-              WeixinJSBridge.invoke('setFontSizeCallback', { fontSize: 0 });
-            });
-          }
-        }
-        if (typeof WeixinJSBridge === 'object') {
-          lockWeChatFontSize();
-        } else if (document.addEventListener) {
-          document.addEventListener('WeixinJSBridgeReady', lockWeChatFontSize, false);
-        }
+<header>
+  <h1>黑湾代驾MAX <span>· 云端实时预览</span></h1>
+  <div class="live-badge"><i></i>直连阿里云服务器 · 数据实时同步</div>
+  <div class="sub">📱 <b>手机端(司机)</b> 加载同目录 <b>driver-app.html</b>（GitHub 最新代码构建，打开即司机App）；<b>两个文件放同一文件夹</b>；其余标签直连阿里云服务器实时数据</div>
+</header>
 
-        // 2. Android WebView / Browser System Font Scaling Normalization
-        function normalizeSystemFontScale() {
-          try {
-            var docEl = document.documentElement;
-            // Measure real computed font size compared to target 16px
-            var dummy = document.createElement('div');
-            dummy.style.cssText = 'font-size:16px!important;width:1rem!important;height:1px!important;position:absolute!important;left:-9999px!important;top:-9999px!important;visibility:hidden!important;pointer-events:none!important;';
-            (document.body || docEl).appendChild(dummy);
-            var computedSize = parseFloat(window.getComputedStyle(dummy).fontSize || '16');
-            if (dummy.parentNode) dummy.parentNode.removeChild(dummy);
+<nav class="tabs" id="tabs"></nav>
 
-            if (computedSize && !isNaN(computedSize) && isFinite(computedSize) && computedSize > 5 && computedSize < 40 && Math.abs(computedSize - 16) > 0.05) {
-              var scaleFactor = 16 / computedSize;
-              if (isFinite(scaleFactor) && scaleFactor >= 0.5 && scaleFactor <= 2.0) {
-                docEl.style.setProperty('font-size', (16 * scaleFactor) + 'px', 'important');
-                docEl.style.setProperty('--system-font-scale', scaleFactor, 'important');
-                return;
-              }
-            }
-            docEl.style.setProperty('font-size', '16px', 'important');
-            docEl.style.setProperty('--system-font-scale', '1', 'important');
-          } catch (e) {
-            try {
-              document.documentElement.style.setProperty('font-size', '16px', 'important');
-              document.documentElement.style.setProperty('--system-font-scale', '1', 'important');
-            } catch (_) {}
-          }
-        }
+<div class="toolbar" id="toolbar">
+  <div class="urlbar" id="urlbar"></div>
+  <button id="btnRefresh">↻ 刷新</button>
+  <button id="btnFrame">切换整页 / 手机框</button>
+  <a class="btn" id="btnOpen" href="#" target="_blank" rel="noopener">⧉ 新窗口打开</a>
+</div>
 
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', normalizeSystemFontScale);
-        } else {
-          normalizeSystemFontScale();
-        }
-        window.addEventListener('resize', normalizeSystemFontScale);
-        window.addEventListener('pageshow', normalizeSystemFontScale);
+<main class="stage" id="stage">
+  <div class="phone" id="device">
+    <iframe id="frame" title="黑湾代驾MAX实时预览"></iframe>
+  </div>
+</main>
 
-        // 3. Android System Navigation Bar & Status Bar Auto-Adapter Engine (Clean 0px default, let env(safe-area-inset-*) handle native notches)
-        function updateAndroidNavInsets() {
-          try {
-            var docEl = document.documentElement;
-            docEl.style.setProperty('--android-nav-bar-height', '0px');
-          } catch (e) {}
-        }
+<footer>
+  • 预览显示的是<b>阿里云服务器上已部署的版本</b>，订单、司机、配置均为真实数据。<br>
+  • <b>📱 手机端(司机)</b> 加载同目录的 <b>driver-app.html</b>（GitHub 最新代码构建，打开即司机端；数据直连阿里云服务器实时同步），两个文件需放在同一文件夹。<br>
+  • 带 <span class="new-tag">新</span> 标记的另外两个视图（3分钟超时、非微信拦截）用了新增的 <b>?view=</b> 直达参数，需重新部署后生效；生效前点进去会显示商户代叫页，可用页面内顶部的标签栏手动切换。<br>
+  • 以后我改完代码并重新部署到服务器后，点「↻ 刷新」即可看到最新效果。
+</footer>
 
-        function updateAndroidStatusBarInsets() {
-          try {
-            var docEl = document.documentElement;
-            docEl.style.setProperty('--android-status-bar-height', '0px');
-            docEl.style.setProperty('--status-bar-height', '0px');
-          } catch (e) {}
-        }
+<script>
+(function () {
+  var BASE = 'https://api.lyheiwandaijiamax.com';
+  var TABS = [
+    { label: '📱 手机端(司机)',            url: 'driver-app.html?v=20261013a&view=app', mode: 'phone', isNew: true },
+    { label: '🏪 商户代叫(手机网页版)',    url: 'driver-app.html?v=20261013a&view=dispatch_valet', mode: 'phone' },
+    { label: '🧾 乘客自助端(代开单)',      url: 'driver-app.html?v=20261013a&view=passenger',       mode: 'phone' },
+    { label: '⏱️ 3分钟超时(二维码失效)',   url: 'driver-app.html?v=20261013a&view=qr_expired',     mode: 'phone',   isNew: true },
+    { label: '🚫 非微信支付宝/未开会员拦截', url: 'driver-app.html?v=20261013a&view=vip_blocked',   mode: 'phone',   isNew: true },
+    { label: '💬 微信小程序下单',           url: 'driver-app.html?v=20261013a&view=wechat_mini',    mode: 'phone' },
+    { label: '💰 支付宝小程序(VIP收银台)',  url: 'driver-app.html?v=20261013a&view=alipay_mini',    mode: 'phone' },
+    { label: '🖥️ 管理后台',                url: 'driver-app.html?v=20261013a&view=admin', mode: 'desktop' },
+    { label: '📦 一键下载部署包',           url: '',                              mode: 'download' }
+  ];
 
-        function updateAllInsets() {
-          updateAndroidNavInsets();
-          updateAndroidStatusBarInsets();
-        }
+  
+  var DL_LINKS = [
+    { name: '⬇ 黑湾代驾MAX 部署包', file: 'daijia_deploy.zip', url: BASE + '/daijia_deploy.zip', primary: true },
+    { name: '⬇ 宝塔部署包',         file: 'baota_deploy.zip',  url: BASE + '/baota_deploy.zip',  primary: false },
+    { name: '⬇ 快捷下载',           file: 'deploy.zip',        url: BASE + '/deploy.zip',        primary: false }
+  ];
 
-        if (document.readyState === 'loading') {
-          document.addEventListener('DOMContentLoaded', updateAllInsets);
-        } else {
-          updateAllInsets();
-        }
-        window.addEventListener('resize', updateAllInsets);
-        window.addEventListener('pageshow', updateAllInsets);
-        window.addEventListener('orientationchange', updateAllInsets);
+  var tabsEl = document.getElementById('tabs');
+  var urlbar = document.getElementById('urlbar');
+  var btnOpen = document.getElementById('btnOpen');
+  var device = document.getElementById('device');
+  var toolbar = document.getElementById('toolbar');
+  var current = -1;
 
-        // 4. Disable multi-touch gesture zoom & double-tap zoom
-        document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false });
-        document.addEventListener('gesturechange', function(e) { e.preventDefault(); }, { passive: false });
-        document.addEventListener('gestureend', function(e) { e.preventDefault(); }, { passive: false });
-      })();
-    </script>
-    <script type="module"  src="./assets/index-DRuPikSp.js"></script>
-    <link rel="stylesheet"  href="./assets/index-C1EnBAr-.css">
-    <script type="module">import.meta.url;import("_").catch(()=>1);(async function*(){})().next();if(location.protocol!="file:"){window.__vite_is_modern_browser=true}</script>
-    <script type="module">!function(){if(window.__vite_is_modern_browser)return;console.warn("vite: loading legacy chunks, syntax error above and the same error below should be ignored");var e=document.getElementById("vite-legacy-polyfill"),n=document.createElement("script");n.src=e.src,n.onload=function(){System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))},document.body.appendChild(n)}();</script>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script nomodule>!function(){var e=document,t=e.createElement("script");if(!("noModule"in t)&&"onbeforeload"in t){var n=!1;e.addEventListener("beforeload",(function(e){if(e.target===t)n=!0;else if(!e.target.hasAttribute("nomodule")||!n)return;e.preventDefault()}),!0),t.type="module",t.src=".",e.head.appendChild(t),t.remove()}}();</script>
-    <script nomodule  id="vite-legacy-polyfill" src="./assets/polyfills-legacy-CruEyEtI.js"></script>
-    <script nomodule  id="vite-legacy-entry" data-src="./assets/index-legacy-BllED3nD.js">System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))</script>
-  </body>
+  TABS.forEach(function (t, i) {
+    var b = document.createElement('button');
+    b.innerHTML = t.label + (t.isNew ? '<span class="new-tag">新</span>' : '');
+    if (t.mode === 'download') b.className = 'dl-tab';
+    b.addEventListener('click', function () { select(i); });
+    tabsEl.appendChild(b);
+  });
+  var tabBtns = tabsEl.querySelectorAll('button');
+
+  function getFrame() { return document.getElementById('frame'); }
+
+  function setDevice(mode, url) {
+    if (mode === 'desktop') {
+      device.className = 'desktop';
+      device.innerHTML = '<div class="chrome">'
+        + '<span class="dot" style="background:#f87171"></span>'
+        + '<span class="dot" style="background:#fbbf24"></span>'
+        + '<span class="dot" style="background:#34d399"></span></div>'
+        + '<iframe id="frame" title="黑湾代驾MAX实时预览"></iframe>';
+    } else {
+      device.className = 'phone';
+      device.innerHTML = '<iframe id="frame" title="黑湾代驾MAX实时预览"></iframe>';
+    }
+    if (url) getFrame().src = url;
+  }
+
+  function showDownload() {
+    device.className = '';
+    device.style.width = '100%';
+    device.style.background = 'none';
+    device.style.boxShadow = 'none';
+    device.style.padding = '0';
+    device.style.height = 'auto';
+    device.style.borderRadius = '0';
+    var html = '<div class="dl-panel"><h2>📦 一键下载部署包</h2>'
+      + '<p>从你阿里云服务器直接下载部署包，下载好后你自己部署到服务器。<br>（服务器会自动打包当前已部署的版本）</p>';
+    DL_LINKS.forEach(function (l) {
+      html += '<a class="dl-btn' + (l.primary ? '' : ' alt') + '" href="' + l.url + '">' + l.name + '<br><span style="font-size:11px;font-weight:400;opacity:.8">' + l.file + '</span></a>';
+    });
+    html += '<div class="note">如点击后提示下载失败（500），说明服务器上的打包脚本出了点问题，<br>去宝塔看下 Node 项目日志，或跟我说，我来修。</div></div>';
+    device.innerHTML = html;
+  }
+
+  function resetDeviceStyle() {
+    device.style.width = '';
+    device.style.background = '';
+    device.style.boxShadow = '';
+    device.style.padding = '';
+    device.style.height = '';
+    device.style.borderRadius = '';
+  }
+
+  function select(i) {
+    current = i;
+    for (var j = 0; j < tabBtns.length; j++) tabBtns[j].classList.remove('active');
+    tabBtns[i].classList.add('active');
+    var t = TABS[i];
+    toolbar.style.display = '';
+    if (t.mode === 'download') {
+      urlbar.textContent = '下载部署包（直接从阿里云服务器获取）';
+      btnOpen.style.display = 'none';
+      showDownload();
+      return;
+    }
+    btnOpen.style.display = '';
+    resetDeviceStyle();
+    urlbar.textContent = t.url;
+    btnOpen.href = t.url;
+    setDevice(t.mode, t.url);
+  }
+
+  document.getElementById('btnRefresh').addEventListener('click', function () {
+    var f = getFrame();
+    if (!f || !f.src) return;
+    var s = f.src;
+    f.src = 'about:blank';
+    setTimeout(function () { f.src = s; }, 80);
+  });
+
+  document.getElementById('btnFrame').addEventListener('click', function () {
+    var t = TABS[current];
+    if (!t || t.mode === 'download') return;
+    setDevice(device.className === 'desktop' ? 'phone' : 'desktop', t.url);
+  });
+
+  select(0);
+})();
+</script>
+
+</body>
 </html>
-
