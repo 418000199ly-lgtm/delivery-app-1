@@ -4349,12 +4349,15 @@ async function startServer() {
           // 1.5 滴滴式"上屏检测" (2026-10-13新增)：派单后若无页面心跳，判定新来单页未上屏
           // (App被杀/用户未点通知/页面崩溃)，不等60秒，立即转大厅让其他司机抢。
           // 心跳由App新来单页面每2秒发送一次。
-          // 注意：定时器每10秒运行，快照数据最多10秒旧，故阈值设为15秒（10秒快照延迟+5秒宽限），
-          // 避免用旧快照误判。实际检测延迟约10-15秒，仍远快于60秒超时。
+          // P0-3修复(2026-10-13)：区分"从未上屏"vs"曾经上屏后切后台"。
+          // - 从未收到心跳(pageHeartbeatAt=0)：App被杀，页面从未显示，15秒转大厅。
+          // - 曾经收到心跳：用户切后台/锁屏(Web后台setInterval被节流)，宽限走完60秒，
+          //   保证"后台10秒后点通知回来显示50秒"的滴滴体验。
+          // 注意：定时器每10秒运行，快照数据最多10秒旧，故"从未上屏"阈值设为15秒。
           const pageHeartbeatAt = Number(order.pageHeartbeatAt || 0);
           const sinceDispatched = now - dispatchedTime;
-          const sinceHeartbeat = pageHeartbeatAt > 0 ? (now - pageHeartbeatAt) : 999999;
-          const pageNotOnScreen = sinceDispatched > 15000 && sinceHeartbeat > 15000;
+          const neverHadHeartbeat = pageHeartbeatAt === 0;
+          const pageNotOnScreen = neverHadHeartbeat && sinceDispatched > 15000;
           if (pageNotOnScreen && remainingSec > 0) {
             console.log(`[上屏检测] 订单 ${orderId} 派单${Math.round(sinceDispatched/1000)}秒无页面心跳，判定未上屏，立即转大厅！`);
             // 复用下方的转大厅逻辑：设置 remainingSec=0 触发转大厅

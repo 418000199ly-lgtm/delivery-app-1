@@ -101,11 +101,22 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 解决倒计时乱跳（0→33）的根本原因
   // 2026-10-13更新：初始值改为60（配合开屏即显60秒优化）
   const prevOrderIdRef = React.useRef<string>('');
+  // P1-6修复(2026-10-13)：onDecline幂等，多路径(轮询/取消监听/手动)只执行一次
+  const declinedRef = React.useRef<boolean>(false);
+  const safeDecline = React.useCallback(() => {
+    if (declinedRef.current) return;
+    declinedRef.current = true;
+    onDeclineRef.current();
+  }, []);
   useEffect(() => {
     if (targetOrderId && targetOrderId !== prevOrderIdRef.current) {
       prevOrderIdRef.current = targetOrderId;
       setTimeLeft(60);
       lastServerSyncRef.current = Date.now();
+      // P1-8修复(2026-10-13)：订单切换时重置接单锁和decline幂等，否则新订单按钮被旧锁卡死
+      isAcceptingRef.current = false;
+      setIsAccepting(false);
+      declinedRef.current = false;
     }
   }, [targetOrderId]);
   const onDeclineRef = React.useRef(onDecline);
@@ -191,6 +202,13 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               !curOrder?.isDirectClaim &&
               (data.isExpired || data.inHall || (typeof data.serverCountdown === 'number' && data.serverCountdown <= 0))
             ) {
+              // P0-2修复(2026-10-13)：服务端明确inHall时直接放行，不受25秒guard拦截。
+              // 心跳转大厅(约派单后15秒)时orderAgeMs<25秒，旧guard会卡死页面。
+              if (data.inHall) {
+                setTimeLeft(0);
+                onDeclineRef.current();
+                return;
+              }
               const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
               // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
               if (orderAgeMs > 25000) {
@@ -254,15 +272,22 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   }, [targetOrderId, cleanDriverPhone]);
 
   // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
+  // P1-7修复(2026-10-13)：卸载时恢复空闲，否则司机永久"忙碌"接不到单
   useEffect(() => {
     const phone = userPhone || localStorage.getItem('dd_user_phone') || '';
     if (phone) {
       reportDriverBusyStatus(phone, true, { currentView: 'incoming_overlay', isBusy: true });
     }
+    return () => {
+      const p = userPhone || localStorage.getItem('dd_user_phone') || '';
+      if (p) {
+        try { reportDriverBusyStatus(p, false, { currentView: 'incoming_overlay', isBusy: false }); } catch (_) {}
+      }
+    };
   }, [userPhone]);
 
   // Parse details with fallbacks
-  const startLocation = order.startLocation || '运祥小区(北寺巷)';
+  const startLocation = order.startLocation || '位置未知';
   // 所有商户代叫订单，新来单页面里的目的地，由司机根据现场口头协商规划行程，取消显示，目的地为空
   const isDestinationEmpty = isMerchantValet || !order.destination || order.destination.trim() === '';
   const destination = isMerchantValet ? '' : (isDestinationEmpty ? '未知' : order.destination);
@@ -405,8 +430,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           const pId = String(parsed.orderId || '').trim();
           const pNo = String(parsed.orderNo || '').trim();
           if ((pId && validCandidateIds.includes(pId)) || (pNo && validCandidateIds.includes(pNo))) {
+            if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
             stopSpeaking();
-            onDecline();
+            safeDecline();
             return;
           }
         }
@@ -417,8 +443,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           return (oId && validCandidateIds.includes(oId)) || (oNo && validCandidateIds.includes(oNo));
         });
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
+          if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
           stopSpeaking();
-          onDecline();
+          safeDecline();
         }
       } catch (_) {}
     };
@@ -429,8 +456,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const dId = String(d.orderId || '').trim();
         const dNo = String(d.orderNo || '').trim();
         if ((dId && validCandidateIds.includes(dId)) || (dNo && validCandidateIds.includes(dNo))) {
+          if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
           stopSpeaking();
-          onDecline();
+          safeDecline();
         }
       }
     };
@@ -511,7 +539,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       e.preventDefault();
       e.stopPropagation();
     }
-    if (isAccepting) return;
+    if (isAccepting || isAcceptingRef.current) return; // P2-1:用ref防双击缝隙
     setIsAccepting(true);
     isAcceptingRef.current = true;
 
@@ -530,7 +558,6 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         return;
       }
 
-      speakText('接单成功，请前往接驾地点');
       const orderNumber = (order as any)?.orderNo || (order as any)?.orderId || (order as any)?.id || ('YC' + Date.now());
       const rawOrderId = String((order as any)?.id || (order as any)?.orderId || orderNumber).trim();
       const cleanUserPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
@@ -594,32 +621,13 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         return;
       }
 
+      speakText('接单成功，请前往接驾地点'); // P1-4:移到服务端确认成功后
       onAccept(trip);
     } catch (err) {
       console.error('Confirm order execution error:', err);
-      // Fallback direct accept on error
-      onAccept({
-        id: 'DD' + Date.now(),
-        orderNumber: 'DD' + Date.now(),
-        passengerName: order.isValetOrder ? '商户代叫乘客' : '线上自助预约乘客',
-        passengerPhone: passengerPhone,
-        startLocation: startLocation,
-        endLocation: isMerchantValet ? '' : destination,
-        startTimestamp: orderTimeMs,
-        currentDistance: 0.0,
-        currentWaitingTime: 0,
-        currentStatus: 'serving',
-        extraBridgeFee: 0,
-        extraParkingFee: 0,
-        extraOtherFee: 0,
-        calculatedBaseFee: startPrice,
-        calculatedTotalFee: startPrice,
-        isOnlineOrder: true,
-        orderType: (order.orderType === '报单转单' || order.orderRemark === '报单转单' || order.type === '报单转单')
-          ? '报单转单'
-          : (order.isValetOrder ? '商户代叫' : '二维码开单'),
-        orderRemark: order.orderRemark || ((order.orderType === '报单转单' || order.type === '报单转单') ? '报单转单' : (order.isValetOrder ? '商户代叫' : '')),
-      });
+      // P1-3修复(2026-10-13)：异常时绝不伪造接单，改为拒单+报错，避免幽灵行程
+      speakText('接单异常，请重试');
+      safeDecline();
     } finally {
       setIsAccepting(false);
       isAcceptingRef.current = false;
