@@ -3779,7 +3779,10 @@ async function startServer() {
           serverCountdown: 60,
           dispatchedAt: nowTs,
           dispatchExpiresAt: nowTs + 60000,
-          timestamp: nowTs
+          timestamp: nowTs,
+          // 2026-10-13修复：记录对应的 merchant_orders key，
+          // 倒计时接口没带 orderId 时可直接定位主订单，避免反查失败导致重复重置
+          _merchantKey: orderId
         };
 
         // Write directly to passenger_links[selected.phone]
@@ -4413,11 +4416,17 @@ async function startServer() {
           if (!orderId || (lId && lId === orderId)) {
             targetOrder = linkOrder;
             // 反查 merchant_orders 中的 key，确保即使本次没带 orderId 也能更新主订单
+            // 2026-10-13修复：优先用 _merchantKey（派单时写入），v===linkOrder 永远为false（拷贝非引用）
             if (!targetMerchantKey) {
-              for (const [k, v] of Object.entries<any>(merchantOrders)) {
-                if (v === linkOrder) {
-                  targetMerchantKey = k;
-                  break;
+              const mk = String((linkOrder as any)?._merchantKey || '').trim();
+              if (mk && merchantOrders[mk]) {
+                targetMerchantKey = mk;
+              } else {
+                for (const [k, v] of Object.entries<any>(merchantOrders)) {
+                  if (v === linkOrder) {
+                    targetMerchantKey = k;
+                    break;
+                  }
                 }
               }
               if (!targetMerchantKey && lId) {
