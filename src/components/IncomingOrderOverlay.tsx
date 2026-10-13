@@ -99,11 +99,13 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
   // 2026-10-12修复：订单切换时重置倒计时，防止旧订单的0覆盖新订单的秒数
   // 解决倒计时乱跳（0→33）的根本原因
+  // 2026-10-13更新：初始值改为60（配合开屏即显60秒优化）
   const prevOrderIdRef = React.useRef<string>('');
   useEffect(() => {
     if (targetOrderId && targetOrderId !== prevOrderIdRef.current) {
       prevOrderIdRef.current = targetOrderId;
-      setTimeLeft(-1);
+      setTimeLeft(60);
+      lastServerSyncRef.current = Date.now();
     }
   }, [targetOrderId]);
   const onDeclineRef = React.useRef(onDecline);

@@ -4267,16 +4267,29 @@ async function startServer() {
         ) && !order.claimedAt && order.status !== 'claimed' && order.status !== 'serving' && order.status !== 'completed' && order.status !== 'cancelled' && order.in_hall !== true;
 
         if (isDispatched && order.dispatchedDriverPhone) {
-          // 2026-10-13根治：转大厅判定前重读最新 dispatchExpiresAt。
-          // 定时器每10秒读一次整个DB，如果倒计时接口在定时器读DB之后更新了 dispatchExpiresAt
-          // （例如客户端延迟首次看到触发的60秒重置），定时器用旧快照算出的 remainingSec 会偏小，
-          // 导致提前把订单送进大厅（实测 56→0 跳变）。此处用 freshDbData 重读，确保判定依据最新值。
-          const freshDbData = readLocalJsonDb();
-          const freshOrder = freshDbData['merchant_orders']?.[orderId] || order;
-          const dispatchedTime = Number(freshOrder.dispatchedAt || freshOrder.timestamp || now);
-          const expiresAt = Number(freshOrder.dispatchExpiresAt || (dispatchedTime + 60000));
+          const dispatchedTime = Number(order.dispatchedAt || order.timestamp || now);
+          const expiresAt = Number(order.dispatchExpiresAt || (dispatchedTime + 60000));
           // 核心：由阿里云服务器计算精确剩余秒数 (60秒 -> 59秒 -> ... -> 31秒 -> ... -> 0秒)
-          const remainingSec = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+          let remainingSec = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+          // 2026-10-13根治+优化：仅当疑似超时(remainingSec<=0)时，重读最新 dispatchExpiresAt 确认。
+          // 原因：定时器每10秒读一次整个DB，如果倒计时接口在定时器读DB之后更新了 dispatchExpiresAt
+          // （例如客户端延迟首次看到触发的60秒重置），用旧快照会误判超时（实测 56→0 跳变）。
+          // 为避免给每个订单都重读整个DB（性能差），仅在可能超时时才重读确认。
+          if (remainingSec <= 0) {
+            try {
+              const freshDbData = readLocalJsonDb();
+              const freshOrder = freshDbData['merchant_orders']?.[orderId] || order;
+              const freshDispatchedTime = Number(freshOrder.dispatchedAt || freshOrder.timestamp || now);
+              const freshExpiresAt = Number(freshOrder.dispatchExpiresAt || (freshDispatchedTime + 60000));
+              remainingSec = Math.max(0, Math.ceil((freshExpiresAt - now) / 1000));
+              // 用最新数据替换，供后续转大厅逻辑使用
+              if (remainingSec > 0) {
+                // 实际未超时，更新内存中的order避免误操作（不写DB）
+                order.dispatchExpiresAt = freshOrder.dispatchExpiresAt;
+                order.dispatchedAt = freshOrder.dispatchedAt;
+              }
+            } catch (_) {}
+          }
           const timedOutDriverPhone = String(order.dispatchedDriverPhone).replace(/\D/g, '').trim();
 
           // 1. 计算订单在阿里云服务器上的权威倒计时（仅内存计算，不持久化）
@@ -4303,11 +4316,11 @@ async function startServer() {
           // 2. 倒计时结束 (0秒)：防止司机大退、断网或关机造成假死，服务器立即自动将订单转入选单大厅
           if (remainingSec <= 0) {
             console.log(`[阿里云服务器倒计时结束] 订单 ${orderId} 派单给司机 ${timedOutDriverPhone} 60秒超时未确认，服务器自动转入选单大厅！`);
-            const existingDeclined = Array.isArray(freshOrder.declinedDriverPhones) ? freshOrder.declinedDriverPhones : [];
-            const existingTimeout = Array.isArray(freshOrder.timeoutDriverPhones) ? freshOrder.timeoutDriverPhones : [];
+            const existingDeclined = Array.isArray(order.declinedDriverPhones) ? order.declinedDriverPhones : [];
+            const existingTimeout = Array.isArray(order.timeoutDriverPhones) ? order.timeoutDriverPhones : [];
 
             const updatedOrder = {
-              ...freshOrder,
+              ...order,
               status: 'hall',
               in_hall: true,
               statusCategory: '呼叫中',
