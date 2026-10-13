@@ -92,8 +92,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 2026-10-12重构：倒计时唯一真理是中国大陆阿里云服务器。
   // 客户端不做本地递减、不预设60，只显示服务器 /api/dispatch/countdown 返回的数字。
   // -1 表示尚未从服务器拿到数字，显示"…"占位，避免假60误导。
+  // 2026-10-13优化：初始直接显示60（静态占位，不递减），服务端数字1秒内覆盖。
+  // 不违反"无本地倒计时"铁律：仅初始显示值，无setInterval递减逻辑。
   // orderRef 已在下方声明（用于语音播报），此处复用；onDecline 用 ref 避免 effect 反复重建。
-  const [timeLeft, setTimeLeft] = useState<number>(-1);
+  const [timeLeft, setTimeLeft] = useState<number>(60);
 
   // 2026-10-12修复：订单切换时重置倒计时，防止旧订单的0覆盖新订单的秒数
   // 解决倒计时乱跳（0→33）的根本原因
@@ -107,15 +109,21 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   const onDeclineRef = React.useRef(onDecline);
   onDeclineRef.current = onDecline;
 
-  // 2026-10-13修复：props 下发的 serverCountdown 仅在“尚未从服务器 API 拿到数字”时作为初值。
+  // 2026-10-13新增：接单原子锁。司机点击"确认接单"后，阻断超时拒单逻辑，
+  // 避免接单请求与超时判定并发时误拒单。
+  const isAcceptingRef = React.useRef(false);
+
+  // 2026-10-13修复：props 下发的 serverCountdown 仅在"尚未从服务器 API 拿到数字"时作为初值。
   // 收到 API 数字后一律采用按序到达的服务器数字，不再做单调递减过滤——
   // 否则服务端合法的 33→60 重置会被当作脏数据丢弃，迟弹窗场景看不到完整 60 秒。
+  // 2026-10-13优化：初始已为60，此处仅当prop值与当前差异显著时才同步，避免闪烁。
   useEffect(() => {
     const sSec = (order as any)?.serverCountdown;
     if (typeof sSec === 'number') {
       const v = Math.max(0, Math.min(60, sSec));
-      setTimeLeft(prev => (prev < 0 ? v : prev));
-      if (v <= 0) {
+      // 仅当差异超过2秒时同步，避免API即将覆盖前的无谓闪烁
+      setTimeLeft(prev => (Math.abs(prev - v) > 2 ? v : prev));
+      if (v <= 0 && !isAcceptingRef.current) {
         const curOrder = orderRef.current as any;
         const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
         if (orderAgeMs > 25000) {
@@ -150,7 +158,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           const curOrder: any = orderRef.current;
           if (data && data.success) {
             // 服务器判定超时、倒计时<=0 或已转入选单大厅 (且非本司机直接抢单的订单)
+            // 2026-10-13新增：接单中(isAcceptingRef)时阻断超时拒单，防并发误拒
             if (
+              !isAcceptingRef.current &&
               !curOrder?.isDirectClaim &&
               (data.isExpired || data.inHall || (typeof data.serverCountdown === 'number' && data.serverCountdown <= 0))
             ) {
@@ -169,7 +179,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               // 旧逻辑会把服务端合法重置当脏数据吞掉，导致迟弹窗看不到完整 60 秒。
               const v = Math.max(0, Math.min(60, data.serverCountdown));
               setTimeLeft(v);
-              if (v <= 0) {
+              if (v <= 0 && !isAcceptingRef.current) {
                 const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
                 if (orderAgeMs > 25000) {
                   // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
@@ -456,6 +466,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     }
     if (isAccepting) return;
     setIsAccepting(true);
+    isAcceptingRef.current = true;
 
     try {
       stopSpeaking();
@@ -543,6 +554,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       });
     } finally {
       setIsAccepting(false);
+      isAcceptingRef.current = false;
     }
   };
 
@@ -727,7 +739,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         {/* Countdown message (Image q3) */}
         <div className="w-full flex justify-center items-center py-1 text-center">
           <span className="text-xs sm:text-sm font-bold text-[#e61a1a] animate-pulse">
-            (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{timeLeft < 0 ? '…' : timeLeft}</span> 秒内确认接单)
+            (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{timeLeft}</span> 秒内确认接单)
           </span>
         </div>
         
