@@ -559,9 +559,11 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       };
 
       // Atomic claim call to server to lock in 'claimed' / 'serving' status and avoid 30s timeout reset
+      // P0修复(2026-10-13)：必须await等待服务端确认！此前fire-and-forget直接onAccept，
+      // 若服务端返回409(已被他人抢走)用户仍会进服务页，形成幽灵单。
       try {
         const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/order/claim`, {
+        const claimResp = await fetch(`${baseUrl}/api/order/claim`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
@@ -570,8 +572,26 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             driverPhone: cleanUserPhone,
             orderPayload: { ...order, ...trip }
           })
-        }).catch(() => {});
-      } catch (_) {}
+        });
+        const claimData = await claimResp.json().catch(() => ({}));
+        if (!claimResp.ok || claimData.success === false) {
+          // 接单失败：已被抢/订单不存在/网络错误，绝不进服务页
+          const msg = String(claimData.message || claimData.error || '');
+          if (claimResp.status === 409 || /已被|已接单|不存在/.test(msg)) {
+            speakText('该订单已被其他司机接走');
+          } else {
+            speakText('接单失败，请重试');
+          }
+          isAcceptingRef.current = false;
+          onDecline();
+          return;
+        }
+      } catch (_) {
+        // 网络异常：不进服务页，避免幽灵单
+        speakText('网络异常，接单失败');
+        isAcceptingRef.current = false;
+        return;
+      }
 
       onAccept(trip);
     } catch (err) {
