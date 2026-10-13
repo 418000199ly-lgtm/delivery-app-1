@@ -5981,7 +5981,7 @@ async function startServer() {
   });
 
   // 2026-10-12 新来单超时/拒收转大厅专用通道：不走鉴权，秒级进厅
-  app.post('/api/order/to-hall', async (req, res) => {
+  app.post('/api/order/to-hall', requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverPhone, reason } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();
@@ -6050,7 +6050,7 @@ async function startServer() {
   });
 
   // 2026-10-12 行程中司机确认取消专用通道：真取消，不进大厅，不再弹窗
-  app.post('/api/order/true-cancel', async (req, res) => {
+  app.post('/api/order/true-cancel', requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverPhone, reason } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();
@@ -6114,7 +6114,7 @@ async function startServer() {
   });
 
   // 2026-10-12 小队申请审批通过专用通道：写入成员表，确保审批必生效。不走鉴权。
-  app.post('/api/squad-member/approve', async (req, res) => {
+  app.post('/api/squad-member/approve', requireDbAuth, async (req, res) => {
     try {
       const { phone, name, approvedBy, approvedRole, note, city } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
@@ -6206,7 +6206,7 @@ async function startServer() {
   });
 
   // 2026-10-12 司机改名专用通道：同步更新所有相关表。不走鉴权。
-  app.post('/api/squad-member/rename', async (req, res) => {
+  app.post('/api/squad-member/rename', requireDbAuth, async (req, res) => {
     try {
       const { phone, name } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
@@ -6249,7 +6249,7 @@ async function startServer() {
   });
 
   // 2026-10-12 司机职位调整专用通道：同步更新所有相关表。不走鉴权。
-  app.post('/api/squad-member/set-role', async (req, res) => {
+  app.post('/api/squad-member/set-role', requireDbAuth, async (req, res) => {
     try {
       const { phone, role } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
@@ -6301,7 +6301,7 @@ async function startServer() {
   });
 
   // 2026-10-12 小队成员删除专用通道：确保删除必生效，删除后立即失去接单权限。不走鉴权（管理后台调用）。
-  app.post('/api/squad-member/remove', async (req, res) => {
+  app.post('/api/squad-member/remove', requireDbAuth, async (req, res) => {
     try {
       const { phone, adminPhone } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
@@ -6380,7 +6380,7 @@ async function startServer() {
   });
 
   // 2026-10-12 司机接单专用通道：原子认领，防止抢单竞态。不走鉴权。
-  app.post('/api/order/driver-claim', async (req, res) => {
+  app.post('/api/order/driver-claim', requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverPhone, driverName } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();
@@ -6496,7 +6496,7 @@ async function startServer() {
 
   // 2026-10-12 报单转单专用派单通道：以报单人位置为圆心，3公里内找最近的上线空闲小队司机；
   // 无人则转入选单大厅。不走鉴权。
-  app.post('/api/report-transfer/dispatch', async (req, res) => {
+  app.post('/api/report-transfer/dispatch', requireDbAuth, async (req, res) => {
     try {
       const {
         orderId, reporterPhone, passengerPhone, pickupName, pickupDetail,
