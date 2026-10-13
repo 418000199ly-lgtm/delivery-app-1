@@ -4313,6 +4313,20 @@ async function startServer() {
             }
           }
 
+          // 1.5 滴滴式"上屏检测" (2026-10-13新增)：派单5秒后若无页面心跳，判定新来单页未上屏
+          // (App被杀/用户未点通知/页面崩溃)，不等60秒，立即转大厅让其他司机抢。
+          // 心跳由App新来单页面每2秒发送一次。
+          const pageHeartbeatAt = Number(order.pageHeartbeatAt || 0);
+          const sinceDispatched = now - dispatchedTime;
+          const sinceHeartbeat = pageHeartbeatAt > 0 ? (now - pageHeartbeatAt) : 999999;
+          const pageNotOnScreen = sinceDispatched > 5000 && sinceHeartbeat > 5000;
+          if (pageNotOnScreen && remainingSec > 0) {
+            console.log(`[上屏检测] 订单 ${orderId} 派单${Math.round(sinceDispatched/1000)}秒无页面心跳，判定未上屏，立即转大厅！`);
+            // 复用下方的转大厅逻辑：设置 remainingSec=0 触发转大厅
+            remainingSec = 0;
+            order.autoHallReason = '新来单页面5秒无心跳，判定未上屏，服务器提前转入选单大厅';
+          }
+
           // 2. 倒计时结束 (0秒)：防止司机大退、断网或关机造成假死，服务器立即自动将订单转入选单大厅
           if (remainingSec <= 0) {
             console.log(`[阿里云服务器倒计时结束] 订单 ${orderId} 派单给司机 ${timedOutDriverPhone} 60秒超时未确认，服务器自动转入选单大厅！`);
@@ -4395,6 +4409,43 @@ async function startServer() {
       // Ignore background interval errors
     }
   }, 10000); // P0-3优化：从1秒改为10秒（60秒超时用10秒粒度足够），降低90% CPU
+
+  // 5.3.0 滴滴式"新来单页上屏"心跳接口 (2026-10-13新增)
+  // App新来单页面显示时每2秒发送一次，证明页面正在屏幕上显示。
+  // 服务端定时器检查：派单后5秒内无心跳 → 判定页面未上屏(App被杀/未点通知)，立即转大厅，不等60秒。
+  app.post('/api/dispatch/page-heartbeat', async (req, res) => {
+    try {
+      const orderId = String(req.body?.orderId || req.body?.id || '').trim();
+      const driverPhone = String(req.body?.driverPhone || req.body?.phone || '').replace(/\D/g, '').trim();
+      if (!orderId && !driverPhone) {
+        return res.json({ success: false, message: '缺少orderId或driverPhone' });
+      }
+      const now = Date.now();
+      const dbData = readLocalJsonDb();
+      let updated = false;
+      // 更新 merchant_orders
+      if (orderId && dbData['merchant_orders']) {
+        for (const [k, v] of Object.entries<any>(dbData['merchant_orders'])) {
+          if (v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId)) {
+            v.pageHeartbeatAt = now;
+            updated = true;
+            break;
+          }
+        }
+      }
+      // 更新 passenger_links
+      if (driverPhone && dbData['passenger_links']?.[driverPhone]) {
+        dbData['passenger_links'][driverPhone].pageHeartbeatAt = now;
+        updated = true;
+      }
+      if (updated) {
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true, heartbeatAt: now });
+    } catch (e: any) {
+      return res.json({ success: false, message: String(e?.message || e) });
+    }
+  });
 
   // 5.3.1 阿里云服务器权威倒计时查询与同步接口 (专供司机接单新来单页面实时对齐服务器秒数)
   app.get(['/api/dispatch/countdown', '/api/order/countdown'], async (req, res) => {
@@ -4495,48 +4546,9 @@ async function startServer() {
       const dispatchedTime = Number(targetOrder.dispatchedAt || targetOrder.timestamp || now);
       let exp = Number(targetOrder.dispatchExpiresAt || (dispatchedTime + 60000));
 
-      // 2026-10-12修复：客户端首次轮询时对齐60秒。
-      // 服务器从派单就开始计时，但客户端弹出可能有延迟（后台/网络），导致用户实际看到不足60秒。
-      // 首次轮询时若发现已过去超过10秒，重置为完整的60秒，确保用户从看到弹窗起有足额时间。
-      // 只执行一次（clientFirstSeenAt标记），避免重复重置。
-      // 2026-10-13修复：clientFirstSeenAt 标记必须持久化到磁盘。
-      // 此前“10秒内不重置”分支只写内存对象，磁盘无标记；下次请求从磁盘重读时标记丢失，
-      // 持续轮询超过10秒会误触发重置（实测 58→56→54→52→60 跳变）。
-      const persistClientFirstSeen = (extra: Record<string, any>) => {
-        try {
-          const dbDataWrite = readLocalJsonDb();
-          // 2026-10-13修复：用查找到的 targetMerchantKey 直接更新，不再用 orderId 重新查找。
-          // App 前几次轮询可能没带 orderId（只带 driverPhone），此时 orderId 为空字符串，
-          // 重新查找会失败，导致 merchant_orders 主订单没更新，只有 passenger_links 更新了，
-          // 下次带 orderId 轮询时读到旧数据，误判为"首次看到"再次重置（实测 33→22→60 跳变）。
-          const orderKey = targetMerchantKey || Object.keys(dbDataWrite['merchant_orders'] || {}).find(k => {
-            const v = dbDataWrite['merchant_orders'][k];
-            return v && orderId && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId);
-          });
-          if (orderKey) Object.assign(dbDataWrite['merchant_orders'][orderKey], extra);
-          if (driverPhone && dbDataWrite['passenger_links']?.[driverPhone]) {
-            Object.assign(dbDataWrite['passenger_links'][driverPhone], extra);
-          }
-          writeLocalJsonDb(dbDataWrite);
-        } catch (_) {}
-      };
-      if (!targetOrder.clientFirstSeenAt && targetOrder.status === 'dispatched') {
-        const elapsedMs = now - dispatchedTime;
-        if (elapsedMs > 10000) {
-          // 延迟超过10秒，重置为完整60秒
-          exp = now + 60000;
-          targetOrder.clientFirstSeenAt = now;
-          targetOrder.dispatchedAt = now;
-          targetOrder.dispatchExpiresAt = exp;
-          // 写回数据库（merchant_orders和passenger_links都要更新）
-          persistClientFirstSeen({ clientFirstSeenAt: now, dispatchedAt: now, dispatchExpiresAt: exp });
-        } else {
-          // 10秒内，标记已见，不重置（标记同样持久化，防止后续轮询误重置）
-          targetOrder.clientFirstSeenAt = now;
-          persistClientFirstSeen({ clientFirstSeenAt: now });
-        }
-      }
-
+      // 2026-10-13按滴滴设计：删除 clientFirstSeenAt 重置逻辑。
+      // 滴滴做法：60秒从派单时刻算起，不补时。用户晚10秒看到就显示50秒，显示真实剩余时间。
+      // 此前"延迟10秒重置为60秒"的逻辑已删除。
       const remainingSec = Math.max(0, Math.ceil((exp - now) / 1000));
 
       return res.json({

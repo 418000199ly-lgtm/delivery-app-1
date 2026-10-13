@@ -138,6 +138,29 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 倒计时核心引擎：每秒主动对齐中国大陆阿里云服务器 /api/dispatch/countdown 权威秒数
   // 2026-10-13双轨：显示轨本地500ms平滑（弱网不断显），决策轨100%服务端（超时/进大厅/拒单只用服务端返回值）
   const lastServerSyncRef = React.useRef<number>(Date.now());
+  // 2026-10-13滴滴式"上屏心跳"：新来单页显示时每2秒告诉服务端"我在屏幕上"，服务端5秒收不到则判定未上屏转大厅
+  useEffect(() => {
+    if (!targetOrderId) return;
+    const driverPhone = (() => {
+      try {
+        const p = localStorage.getItem('dd_driver_phone') || localStorage.getItem('driverPhone') || '';
+        return String(p).replace(/\D/g, '');
+      } catch (_) { return ''; }
+    })();
+    const sendHeartbeat = () => {
+      try {
+        const url = `${getBaseApiUrl()}/api/dispatch/page-heartbeat`;
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: targetOrderId, driverPhone }),
+        }).catch(() => {});
+      } catch (_) {}
+    };
+    sendHeartbeat(); // 立即发一次
+    const hbTimer = setInterval(sendHeartbeat, 2000); // 每2秒一次
+    return () => clearInterval(hbTimer);
+  }, [targetOrderId]);
   useEffect(() => {
     let isMounted = true;
     const baseUrl = getBaseApiUrl();
