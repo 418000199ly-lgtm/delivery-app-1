@@ -2029,6 +2029,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           triggerToast('⚠️ 该订单已完结或已被接单，无需重复查看');
           return;
         }
+        // 2026-10-13修复：后台通知通道补"已拒收不再重弹"检查。
+        // 延迟到达的后台通知会把已拒收/已超时的旧单重新弹出来，随后轮询发现过期又自动关闭，
+        // 外观正是"自动弹出→自动关闭"。与 processIncomingData 的检查保持一致。
+        const bgOrderKey = String(order.orderId || order.id || order.orderNo || '').trim();
+        if (bgOrderKey && dismissedIncomingOrderKeysRef.current.has(bgOrderKey)) {
+          setIncomingOrder(null);
+          return;
+        }
         setIncomingOrder(order);
       }
     });

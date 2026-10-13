@@ -107,13 +107,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   const onDeclineRef = React.useRef(onDecline);
   onDeclineRef.current = onDecline;
 
-  // 2026-10-12：props 下发的 serverCountdown 仅作为兜底参考，仍以轮询接口为准，
-  // 且只允许单调递减（服务器数字只会减少，不会凭空变大），防止旧数据覆盖新数字导致上跳。
+  // 2026-10-13修复：props 下发的 serverCountdown 仅在“尚未从服务器 API 拿到数字”时作为初值。
+  // 收到 API 数字后一律采用按序到达的服务器数字，不再做单调递减过滤——
+  // 否则服务端合法的 33→60 重置会被当作脏数据丢弃，迟弹窗场景看不到完整 60 秒。
   useEffect(() => {
     const sSec = (order as any)?.serverCountdown;
     if (typeof sSec === 'number') {
       const v = Math.max(0, Math.min(60, sSec));
-      setTimeLeft(prev => (prev < 0 || v < prev ? v : prev));
+      setTimeLeft(prev => (prev < 0 ? v : prev));
       if (v <= 0) {
         const curOrder = orderRef.current as any;
         const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
@@ -163,20 +164,18 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             }
 
             if (typeof data.serverCountdown === 'number') {
-              // 只显示服务器的秒数，且只允许单调递减（防旧响应/脏数据导致上跳）
+              // 2026-10-13修复：按序到达的服务器数字直接采用（含服务端合法的 33→60 重置）。
+              // 乱序旧响应已由上方 mySeq===seq 丢弃，此处不再做单调递减过滤——
+              // 旧逻辑会把服务端合法重置当脏数据吞掉，导致迟弹窗看不到完整 60 秒。
               const v = Math.max(0, Math.min(60, data.serverCountdown));
-              setTimeLeft(prev => {
-                if (prev < 0) return v;
-                if (v <= 0) {
-                  const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
-                  if (orderAgeMs > 25000) {
-                    // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
-                    setTimeout(() => onDeclineRef.current(), 0);
-                  }
-                  return 0;
+              setTimeLeft(v);
+              if (v <= 0) {
+                const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                if (orderAgeMs > 25000) {
+                  // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
+                  setTimeout(() => onDeclineRef.current(), 0);
                 }
-                return v < prev ? v : prev;
-              });
+              }
             }
           }
         }

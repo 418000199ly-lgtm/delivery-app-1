@@ -4444,36 +4444,37 @@ async function startServer() {
       // 服务器从派单就开始计时，但客户端弹出可能有延迟（后台/网络），导致用户实际看到不足60秒。
       // 首次轮询时若发现已过去超过10秒，重置为完整的60秒，确保用户从看到弹窗起有足额时间。
       // 只执行一次（clientFirstSeenAt标记），避免重复重置。
+      // 2026-10-13修复：clientFirstSeenAt 标记必须持久化到磁盘。
+      // 此前“10秒内不重置”分支只写内存对象，磁盘无标记；下次请求从磁盘重读时标记丢失，
+      // 持续轮询超过10秒会误触发重置（实测 58→56→54→52→60 跳变）。
+      const persistClientFirstSeen = (extra: Record<string, any>) => {
+        try {
+          const dbDataWrite = readLocalJsonDb();
+          const orderKey = Object.keys(dbDataWrite['merchant_orders'] || {}).find(k => {
+            const v = dbDataWrite['merchant_orders'][k];
+            return v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId);
+          });
+          if (orderKey) Object.assign(dbDataWrite['merchant_orders'][orderKey], extra);
+          if (driverPhone && dbDataWrite['passenger_links']?.[driverPhone]) {
+            Object.assign(dbDataWrite['passenger_links'][driverPhone], extra);
+          }
+          writeLocalJsonDb(dbDataWrite);
+        } catch (_) {}
+      };
       if (!targetOrder.clientFirstSeenAt && targetOrder.status === 'dispatched') {
         const elapsedMs = now - dispatchedTime;
         if (elapsedMs > 10000) {
-          // 延迟超过5秒，重置为完整60秒
+          // 延迟超过10秒，重置为完整60秒
           exp = now + 60000;
           targetOrder.clientFirstSeenAt = now;
           targetOrder.dispatchedAt = now;
           targetOrder.dispatchExpiresAt = exp;
           // 写回数据库（merchant_orders和passenger_links都要更新）
-          try {
-            const dbDataWrite = readLocalJsonDb();
-            const orderKey = Object.keys(dbDataWrite['merchant_orders'] || {}).find(k => {
-              const v = dbDataWrite['merchant_orders'][k];
-              return v && (v.id === orderId || v.orderId === orderId || v.orderNo === orderId || k === orderId);
-            });
-            if (orderKey) {
-              dbDataWrite['merchant_orders'][orderKey].clientFirstSeenAt = now;
-              dbDataWrite['merchant_orders'][orderKey].dispatchedAt = now;
-              dbDataWrite['merchant_orders'][orderKey].dispatchExpiresAt = exp;
-            }
-            if (driverPhone && dbDataWrite['passenger_links']?.[driverPhone]) {
-              dbDataWrite['passenger_links'][driverPhone].clientFirstSeenAt = now;
-              dbDataWrite['passenger_links'][driverPhone].dispatchedAt = now;
-              dbDataWrite['passenger_links'][driverPhone].dispatchExpiresAt = exp;
-            }
-            writeLocalJsonDb(dbDataWrite);
-          } catch (_) {}
+          persistClientFirstSeen({ clientFirstSeenAt: now, dispatchedAt: now, dispatchExpiresAt: exp });
         } else {
-          // 5秒内，标记已见，不重置
+          // 10秒内，标记已见，不重置（标记同样持久化，防止后续轮询误重置）
           targetOrder.clientFirstSeenAt = now;
+          persistClientFirstSeen({ clientFirstSeenAt: now });
         }
       }
 
