@@ -134,6 +134,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   }, [(order as any)?.serverCountdown]);
 
   // 倒计时核心引擎：每秒主动对齐中国大陆阿里云服务器 /api/dispatch/countdown 权威秒数
+  // 2026-10-13双轨：显示轨本地500ms平滑（弱网不断显），决策轨100%服务端（超时/进大厅/拒单只用服务端返回值）
+  const lastServerSyncRef = React.useRef<number>(Date.now());
   useEffect(() => {
     let isMounted = true;
     const baseUrl = getBaseApiUrl();
@@ -179,6 +181,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               // 旧逻辑会把服务端合法重置当脏数据吞掉，导致迟弹窗看不到完整 60 秒。
               const v = Math.max(0, Math.min(60, data.serverCountdown));
               setTimeLeft(v);
+              // 双轨：记录服务端同步时间
+              lastServerSyncRef.current = Date.now();
               if (v <= 0 && !isAcceptingRef.current) {
                 const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
                 if (orderAgeMs > 25000) {
@@ -200,9 +204,27 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     // 每秒与阿里云服务器心跳同步，秒数100%由服务器掌控
     const timer = setInterval(syncWithServerCountdown, 1000);
 
+    // 双轨显示：本地500ms平滑插值（弱网/断网时显示不冻结）。
+    // 仅用于显示，决策（超时/进大厅/拒单）100%用服务端返回值，绝不用本地值。
+    // 服务端1.5秒内有响应则不插值，直接显示服务端数字。
+    const smoothTimer = setInterval(() => {
+      if (!isMounted || isAcceptingRef.current) return;
+      const silentMs = Date.now() - lastServerSyncRef.current;
+      if (silentMs > 1500) {
+        // 服务端超过1.5秒无响应，本地平滑递减0.5秒（500ms间隔）
+        setTimeLeft(prev => {
+          if (typeof prev !== 'number' || prev <= 0) return prev;
+          // 保留一位小数用于平滑，显示时取整
+          const next = Math.max(0, prev - 0.5);
+          return next;
+        });
+      }
+    }, 500);
+
     return () => {
       isMounted = false;
       clearInterval(timer);
+      clearInterval(smoothTimer);
     };
   }, [targetOrderId, cleanDriverPhone]);
 
@@ -739,7 +761,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         {/* Countdown message (Image q3) */}
         <div className="w-full flex justify-center items-center py-1 text-center">
           <span className="text-xs sm:text-sm font-bold text-[#e61a1a] animate-pulse">
-            (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{timeLeft}</span> 秒内确认接单)
+            (请在 <span className="text-sm sm:text-base font-black px-1 font-mono">{Math.ceil(timeLeft)}</span> 秒内确认接单)
           </span>
         </div>
         
