@@ -4279,6 +4279,12 @@ async function startServer() {
             try {
               const freshDbData = readLocalJsonDb();
               const freshOrder = freshDbData['merchant_orders']?.[orderId] || order;
+              // P0修复：重读后必须检查订单状态！如果已被接单/服务中/完成/取消/已在大厅，直接跳过，绝不能搬进大厅。
+              // 否则10秒快照是dispatched、但重读时已claimed的订单会被错误转大厅，导致订单丢失。
+              const freshStatus = String(freshOrder.status || '');
+              if (freshStatus === 'claimed' || freshStatus === 'serving' || freshStatus === 'completed' || freshStatus === 'cancelled' || freshOrder.in_hall === true || freshOrder.claimedAt) {
+                continue; // 已处理，跳过此订单
+              }
               const freshDispatchedTime = Number(freshOrder.dispatchedAt || freshOrder.timestamp || now);
               const freshExpiresAt = Number(freshOrder.dispatchExpiresAt || (freshDispatchedTime + 60000));
               remainingSec = Math.max(0, Math.ceil((freshExpiresAt - now) / 1000));
@@ -4313,13 +4319,15 @@ async function startServer() {
             }
           }
 
-          // 1.5 滴滴式"上屏检测" (2026-10-13新增)：派单5秒后若无页面心跳，判定新来单页未上屏
+          // 1.5 滴滴式"上屏检测" (2026-10-13新增)：派单后若无页面心跳，判定新来单页未上屏
           // (App被杀/用户未点通知/页面崩溃)，不等60秒，立即转大厅让其他司机抢。
           // 心跳由App新来单页面每2秒发送一次。
+          // 注意：定时器每10秒运行，快照数据最多10秒旧，故阈值设为15秒（10秒快照延迟+5秒宽限），
+          // 避免用旧快照误判。实际检测延迟约10-15秒，仍远快于60秒超时。
           const pageHeartbeatAt = Number(order.pageHeartbeatAt || 0);
           const sinceDispatched = now - dispatchedTime;
           const sinceHeartbeat = pageHeartbeatAt > 0 ? (now - pageHeartbeatAt) : 999999;
-          const pageNotOnScreen = sinceDispatched > 5000 && sinceHeartbeat > 5000;
+          const pageNotOnScreen = sinceDispatched > 15000 && sinceHeartbeat > 15000;
           if (pageNotOnScreen && remainingSec > 0) {
             console.log(`[上屏检测] 订单 ${orderId} 派单${Math.round(sinceDispatched/1000)}秒无页面心跳，判定未上屏，立即转大厅！`);
             // 复用下方的转大厅逻辑：设置 remainingSec=0 触发转大厅
