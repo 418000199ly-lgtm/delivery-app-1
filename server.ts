@@ -7083,12 +7083,30 @@ function getClientIp(req: any): string {
   // M12修复：IP频率限制（防枚举手机号注册状态），60秒最多20次
   app.get('/api/get-wechat-qr', requireDbAuth, async (req, res) => {
     try {
-      // P0-4修复(2026-10-14)：只能查自己的微信收款码，账号隔离
+      // P0-4修复(2026-10-14)：账号隔离 + 订单关联授权
+      // 业务规则：谁下的单显示谁的微信码（从服务器拉取）
+      // 允许：①查自己的码 ②开发者查任意 ③订单的执行司机/下单人查该订单下单人的码（需传 orderId 验证关联）
       const requester = String((req as any).authPhone || '').replace(/\D/g, '');
       const queryPhone = String(req.query.phone || '').replace(/\D/g, '');
+      const orderId = String(req.query.orderId || '').trim();
       const isDev = (req as any).isAdmin;
-      if (!isDev && queryPhone !== requester) {
-        return res.status(403).json({ success: false, error: '只能查询自己的收款码' });
+      let authorized = isDev || queryPhone === requester;
+      if (!authorized && orderId) {
+        try {
+          const dbData = readLocalJsonDb();
+          const order = dbData.merchant_orders?.[orderId] || dbData.valet_orders?.[orderId];
+          if (order) {
+            const ordererPhone = String(order.merchantPhone || order.driverPhone || order.ordererPhone || '').replace(/\D/g, '');
+            const assignedDriver = String(order.dispatchedDriverPhone || order.claimedDriverPhone || '').replace(/\D/g, '');
+            // 下单人的码：订单的执行司机或下单人本人可以查
+            if (queryPhone === ordererPhone && (requester === assignedDriver || requester === ordererPhone)) {
+              authorized = true;
+            }
+          }
+        } catch (_) {}
+      }
+      if (!authorized) {
+        return res.status(403).json({ success: false, error: '无权查询该收款码' });
       }
       const clientIp = getClientIp(req);
       const now = Date.now();

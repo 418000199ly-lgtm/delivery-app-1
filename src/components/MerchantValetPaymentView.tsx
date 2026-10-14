@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, ShieldCheck, Info, QrCode, Car } from 'lucide-react';
 import { TripState, ChauffeurSettings } from '../types';
-import { db, doc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
 
 interface MerchantValetPaymentViewProps {
@@ -121,7 +121,9 @@ export default function MerchantValetPaymentView({
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
-        const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetMerchantPhone)}&channel=${isWebChannel ? 'web' : 'app'}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+        // P0修复(2026-10-14)：传 orderId 以便服务端验证订单关联授权（司机查下单人的码）
+        const orderIdParam = orderId ? `&orderId=${encodeURIComponent(String(orderId))}` : '';
+        const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetMerchantPhone)}&channel=${isWebChannel ? 'web' : 'app'}${orderIdParam}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
         clearTimeout(timeoutId);
         if (res.ok) {
           const json = await res.json();
