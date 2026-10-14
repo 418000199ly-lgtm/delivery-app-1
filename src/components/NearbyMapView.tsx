@@ -804,7 +804,9 @@ export default function NearbyMapView({
       }
 
       const rawName = resolveDriverRealName(driver.phone, driver.name);
-      const displayName = hubbleFilters.showFullName ? rawName : formatDriverMaskedName(rawName);
+      // P0(2026-10-14): 显示真名必须同时满足：有哈勃权限 AND 开启了显示全名开关
+      // 否则权限被开发者收回后，本地残留的 showFullName=true 会导致继续泄露所有人真名
+      const displayName = (hasHubblePermission && hubbleFilters.showFullName) ? rawName : formatDriverMaskedName(rawName);
 
       currentRenderedDrivers.push({
         phone: driver.phone,
