@@ -3757,6 +3757,35 @@ async function startServer() {
           ? `${Math.max(50, Math.round(selected.distKm * 1000))}米` 
           : `${selected.distKm.toFixed(2)}公里`;
         const nowTs = Date.now();
+        // 2026-10-14修复：一个司机同时只能有一单在派。如果该司机已有未处理的派单（dispatched状态），
+        // 旧单直接转大厅，避免两单并存导致倒计时API在两者间串值、定时器误判。
+        // 用户17:20和17:23连下两单，旧单未进大厅导致新单倒计时50→30跳变。
+        {
+          const preDb = readLocalJsonDb();
+          const mo = preDb?.['merchant_orders'] || {};
+          for (const k of Object.keys(mo)) {
+            const o = mo[k];
+            if (String(o?.dispatchedDriverPhone || '').trim() === String(selected.phone).trim()
+              && (o?.status === 'dispatched' || o?.status === 'submitted')
+              && !o?.claimedDriverPhone && !o?.in_hall) {
+              console.log(`[Dispatch] 司机 ${selected.phone} 已有未处理派单 ${k}，旧单转大厅`);
+              o.status = 'hall';
+              o.in_hall = true;
+              o.hallReason = 'superseded_by_new_dispatch';
+              o.hallAt = nowTs;
+            }
+          }
+          // 同步清理 passenger_links（如果指向的是旧单）
+          const pl = preDb?.['passenger_links']?.[selected.phone];
+          if (pl && String((pl as any)?._merchantKey || '').trim()) {
+            const mk = String((pl as any)._merchantKey).trim();
+            const oldMo = mo[mk];
+            if (oldMo && (oldMo.status === 'hall')) {
+              // passenger_links 会在下面被新单覆盖，这里不需要额外处理
+            }
+          }
+          writeLocalJsonDb(preDb);
+        }
         const driverQrUrl = `/uploads/qrcodes/${selected.phone}.png`;
         const dispatchedPayload = {
           ...orderData,
@@ -4588,6 +4617,12 @@ async function startServer() {
       // 滴滴做法：60秒从派单时刻算起，不补时。用户晚10秒看到就显示50秒，显示真实剩余时间。
       // 此前"延迟10秒重置为60秒"的逻辑已删除。
       const remainingSec = Math.max(0, Math.ceil((exp - now) / 1000));
+
+      // 2026-10-14诊断：记录每次倒计时返回，用于定位跳变问题
+      // 如果看到同一 orderId 的 remainingSec 非单调递减，说明 exp 在变或找错了单
+      if (process.env.COUNTDOWN_DEBUG === '1') {
+        console.log(`[Countdown] orderId=${targetOrder.id || orderId} driver=${driverPhone} exp=${exp} now=${now} remaining=${remainingSec} status=${targetOrder.status}`);
+      }
 
       return res.json({
         success: true,
