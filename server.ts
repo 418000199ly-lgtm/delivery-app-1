@@ -1268,6 +1268,17 @@ async function startServer() {
     }
     // M10：城市老板/城市管理可写成员集合（审批/删除等管理操作）；派单员可写订单集合
     const MEMBER_COLS = ['squad_members', 'driver_users', 'driver_locations', 'squad_applications', 'online_applications', 'team_members'];
+    // P0(2026-10-14): hubble_authorized_drivers 只允许开发者写，防止普通用户通过 db API 给自己授权
+    // 必须放在"普通用户可写自己手机号文档"的通用逻辑之前
+    if (colName === 'hubble_authorized_drivers') {
+      const isDev = infoPhoneNorm === devPhoneNorm || infoPhoneNorm === devPhoneNorm + 'A';
+      if (!isDev) {
+        return res.status(403).json({ success: false, error: '仅开发者可管理哈勃权限' });
+      }
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = true;
+      return next();
+    }
     const ORDER_COLS = ['merchant_orders', 'valet_orders'];
     if ((req as any).isManager && (MEMBER_COLS.includes(colName) || ORDER_COLS.includes(colName))) {
       (req as any).authPhone = info.phone;
@@ -4511,6 +4522,74 @@ async function startServer() {
       return res.json({ success: true, heartbeatAt: now });
     } catch (e: any) {
       return res.json({ success: false, message: String(e?.message || e) });
+    }
+  });
+
+  // 5.2.9 哈勃权限管理 API (2026-10-14新增)
+  // 只有开发者 15509601222 可以授权/取消授权，其他人只能查询
+  app.get('/api/hubble/authorized_drivers', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const dbData = readLocalJsonDb();
+      const col = dbData['hubble_authorized_drivers'] || {};
+      const list = Object.entries(col).map(([phone, v]: [string, any]) => ({
+        phone,
+        name: v?.name || `司机${phone.slice(-4)}`,
+        addedAt: v?.addedAt || Date.now(),
+        addedBy: v?.addedBy || '开发者'
+      }));
+      return res.json({ success: true, list });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: String(e?.message || e) });
+    }
+  });
+
+  app.post('/api/hubble/authorize', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const requester = String((req as any).authPhone || '').replace(/\D/g, '');
+      // P0: 只有开发者可以授权
+      if (requester !== '15509601222') {
+        return res.status(403).json({ success: false, message: '仅开发者可授权哈勃权限' });
+      }
+      const phone = String(req.body?.phone || '').replace(/\D/g, '').trim();
+      const name = String(req.body?.name || '').trim() || `司机${phone.slice(-4)}`;
+      if (!phone || phone.length !== 11) {
+        return res.status(400).json({ success: false, message: '请输入11位手机号' });
+      }
+      if (phone === '15509601222') {
+        return res.status(400).json({ success: false, message: '开发者默认拥有权限，无需授权' });
+      }
+      const dbData = readLocalJsonDb();
+      if (!dbData['hubble_authorized_drivers']) dbData['hubble_authorized_drivers'] = {};
+      // P0: 禁止给自己授权（防止普通用户通过 API 给自己加权限）
+      // 只有开发者能调到这里，所以 requester 一定是开发者，这行是纵深防御
+      dbData['hubble_authorized_drivers'][phone] = {
+        phone, name, addedAt: Date.now(), addedBy: requester
+      };
+      writeLocalJsonDb(dbData);
+      return res.json({ success: true });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: String(e?.message || e) });
+    }
+  });
+
+  app.post('/api/hubble/revoke', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const requester = String((req as any).authPhone || '').replace(/\D/g, '');
+      if (requester !== '15509601222') {
+        return res.status(403).json({ success: false, message: '仅开发者可取消哈勃权限' });
+      }
+      const phone = String(req.body?.phone || '').replace(/\D/g, '').trim();
+      if (!phone) {
+        return res.status(400).json({ success: false, message: '缺少手机号' });
+      }
+      const dbData = readLocalJsonDb();
+      if (dbData['hubble_authorized_drivers']?.[phone]) {
+        delete dbData['hubble_authorized_drivers'][phone];
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, message: String(e?.message || e) });
     }
   });
 

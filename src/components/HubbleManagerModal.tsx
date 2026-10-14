@@ -14,7 +14,7 @@ import {
   Search,
   ExternalLink
 } from 'lucide-react';
-import { db, collection, doc, setDoc, deleteDoc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
+import { db, collection, doc, setDoc, deleteDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { safeSetItem } from '../utils/safeStorage';
 
 interface HubbleManagerModalProps {
@@ -89,7 +89,9 @@ export default function HubbleManagerModal({
     const fetchBaota = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/hubble/authorized_drivers`);
+        const res = await fetch(`${baseUrl}/api/hubble/authorized_drivers`, {
+          headers: { ...getAuthHeaders() }
+        });
         if (res.ok) {
           const json = await res.json();
           if (json && Array.isArray(json.list)) {
@@ -114,8 +116,8 @@ export default function HubbleManagerModal({
   const handleAddDriver = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanPhone = newPhone.replace(/\D/g, '').trim();
-    if (!cleanPhone || cleanPhone.length < 7) {
-      showToast('请输入有效的司机手机号');
+    if (!cleanPhone || cleanPhone.length !== 11) {
+      showToast('请输入11位司机手机号');
       return;
     }
 
@@ -146,7 +148,7 @@ export default function HubbleManagerModal({
         const baseUrl = getBaseApiUrl();
         await fetch(`${baseUrl}/api/hubble/authorize`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify(newEntry)
         });
       } catch (_) {}
@@ -192,7 +194,7 @@ export default function HubbleManagerModal({
         const baseUrl = getBaseApiUrl();
         await fetch(`${baseUrl}/api/hubble/revoke`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone })
         });
       } catch (_) {}
@@ -425,20 +427,7 @@ export default function HubbleManagerModal({
               </div>
             </div>
           </div>
-        ) : (
-          /* Non-developer authorized driver view */
-          <div className="bg-white p-6 rounded-2xl border border-slate-200 text-center space-y-3">
-            <div className="w-14 h-14 mx-auto rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center">
-              <ShieldCheck className="w-7 h-7" />
-            </div>
-            <div>
-              <h4 className="text-sm font-bold text-slate-800">您已获得哈勃功能使用权限</h4>
-              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-                开发者已为您开通哈勃专属功能，您可以点击上方按钮进入哈勃设置。
-              </p>
-            </div>
-          </div>
-        )}
+        ) : null}
       </main>
 
       {/* In-app safe confirmation modal for revoking driver Hubble permission */}
