@@ -6328,6 +6328,11 @@ function getClientIp(req: any): string {
   // 2026-10-12 小队申请审批通过专用通道：写入成员表，确保审批必生效。不走鉴权。
   app.post('/api/squad-member/approve', requireDbAuth, async (req, res) => {
     try {
+      // P0修复(2026-10-14)：只有管理员/管理人员可以审批，防普通司机自批入队
+      const isApproverAdmin = (req as any).isAdmin || (req as any).isManager;
+      if (!isApproverAdmin) {
+        return res.status(403).json({ success: false, error: '仅管理人员可以审批' });
+      }
       const { phone, name, approvedBy, approvedRole, note, city } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
       const cleanName = String(name || '').trim().slice(0, 8);
