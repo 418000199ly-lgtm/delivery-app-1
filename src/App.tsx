@@ -2584,7 +2584,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       try {
         const claimResp = await fetch(`${baseUrl}/api/order/driver-claim`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             orderId: orderIdToClaim,
             driverPhone: cleanUserPhone,

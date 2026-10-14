@@ -1420,7 +1420,7 @@ export default function HomeView({
       try {
         const claimRes = await fetch(`${baseUrl}/api/order/driver-claim`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             orderId: ord.id || ord.orderId || ord.orderNo,
             driverPhone: userPhone,
