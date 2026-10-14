@@ -553,12 +553,7 @@ export default function SettingsView({
             localStorage.setItem('dd_user_alipay_qr', cleanQr);
           } catch (_) {}
 
-          const baseUrl = getBaseApiUrl();
-          fetch(`${baseUrl}/api/upload-alipay-qr`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
-          }).catch(err => console.error('Upload Alipay QR to server error:', err));
+          // P1-3修复(2026-10-14)：支付宝码绝不上传服务器（铁律），服务端接口已410，此处直接删除
         }
       } catch (err) {
         console.error('Process Alipay QR error:', err);
@@ -1018,6 +1013,13 @@ export default function SettingsView({
                     alert('已成功清空微信收款二维码');
                   } else {
                     onUpdateSettings({ ...settings, alipayQrCode: '' });
+                    // P1-6修复(2026-10-14)：删除时同时清理本地存储，防止删完仍显示旧码
+                    try {
+                      const p = String((settings as any)?.phone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '');
+                      localStorage.removeItem(`dd_dispatch_alipay_qr_${p}`);
+                      localStorage.removeItem(`dd_user_alipay_qr_${p}`);
+                      localStorage.removeItem('dd_user_alipay_qr');
+                    } catch (_) {}
                     alert('已成功清空当前通道的收款二维码');
                   }
                 }

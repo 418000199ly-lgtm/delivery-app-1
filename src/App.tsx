@@ -1439,6 +1439,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }, [userPhone]);
 
   const handleLogout = () => {
+    // P1-2修复(2026-10-14)：登出时通知服务端拉黑 token，防止泄露后登出无法止损
+    try {
+      const token = localStorage.getItem('dd_auth_token');
+      if (token) {
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/auth/logout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Auth-Token': token },
+        }).catch(() => {});
+      }
+    } catch (_) {}
     if (userPhone) {
       clearDeviceSession(userPhone);
       const offlinePayload = {
@@ -1530,6 +1541,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setCurrentView('home');
     triggerToast('您的司机端安全会话已安全退出断开！');
   };
+
+  // P1-1修复(2026-10-14)：监听 401 token 失效事件，强制清理登录态并提示重登，防"幽灵登录"（看起来已登录、实际写不进去）
+  useEffect(() => {
+    const handleTokenExpired = () => {
+      try {
+        localStorage.removeItem('dd_auth_token');
+        localStorage.removeItem('dd_user_phone');
+      } catch (_) {}
+      setUserPhone(null);
+      setCurrentView('login');
+      triggerToast('登录已失效，请重新短信登录');
+    };
+    window.addEventListener('auth_token_expired', handleTokenExpired);
+    return () => window.removeEventListener('auth_token_expired', handleTokenExpired);
+  }, []);
 
   // Periodically check if another device logged in with SMS code on the same phone number
   useEffect(() => {
