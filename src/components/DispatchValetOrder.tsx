@@ -1167,7 +1167,8 @@ export default function DispatchValetOrder({
         const userSettingsStr = localStorage.getItem(`dd_settings_${targetPhone}`);
         if (userSettingsStr) {
           const parsed = JSON.parse(userSettingsStr);
-          appQr = (parsed?.wechatQrCode || parsed?.alipayQrCode || '').trim();
+          appQr = (parsed?.wechatQrCode || '').trim();
+          // P0-6修复(2026-10-14)：只取微信码，支付宝码绝不上传/不展示为微信码（铁律）
         }
         if (!appQr) {
           // M6修复：只读per-phone key，删除共享key回退，防止跨账号串码

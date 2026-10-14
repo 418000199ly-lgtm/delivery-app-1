@@ -62,6 +62,22 @@ export default function SquadDriverList({
     '15509601222'
   ).trim();
 
+  // P0-9修复(2026-10-14)：哈勃权限检查，真名显示必须同时有权限+开关打开
+  const hasHubblePermission = (() => {
+    try {
+      const cleanPhone = effectiveMyPhone.replace(/\D/g, '').trim();
+      if (cleanPhone === '15509601222') return true; // 开发者
+      const cached = localStorage.getItem('hubble_authorized_list_cache');
+      if (cached) {
+        const list = JSON.parse(cached);
+        if (Array.isArray(list)) {
+          return list.some((item: any) => String(item.phone || '').replace(/\D/g, '') === cleanPhone);
+        }
+      }
+    } catch (_) {}
+    return false;
+  })();
+
   // Full name preference from Hubble settings
   const [showFullName, setShowFullName] = useState<boolean>(() => {
     if (typeof propShowFullName === 'boolean') return propShowFullName;
@@ -484,7 +500,7 @@ export default function SquadDriverList({
         const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
         const displayName = isMe
           ? currentDriverFullName
-          : (showFullName ? rawRealName : formatDriverMaskedName(rawRealName));
+          : ((hasHubblePermission && showFullName) ? rawRealName : formatDriverMaskedName(rawRealName));
 
         if (!isMe && !sessionRandomSeedMap.current.has(cleanP)) {
           sessionRandomSeedMap.current.set(cleanP, Math.random());
@@ -681,9 +697,10 @@ export default function SquadDriverList({
       }
       const randomSortKey = sessionRandomSeedMap.current.get(driver.phone) || Math.random();
 
-      // Masked name or Full name depending on Hubble showFullName setting
+      // Masked name or Full name depending on Hubble permission + showFullName setting
+      // P0-9修复(2026-10-14)：必须有哈勃权限才显示真名
       const rawRealName = resolveDriverRealName(driver.phone, driver.rawRealName || driver.name);
-      const displayName = showFullName ? rawRealName : formatDriverMaskedName(rawRealName);
+      const displayName = (hasHubblePermission && showFullName) ? rawRealName : formatDriverMaskedName(rawRealName);
 
       otherOnlineDrivers.push({
         phone: driver.phone,

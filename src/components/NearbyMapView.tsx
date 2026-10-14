@@ -537,8 +537,9 @@ export default function NearbyMapView({
         mapInstanceRef.current = null;
       }
 
-      const centerLng = gpsLocation.lng || 106.2350;
-      const centerLat = gpsLocation.lat || 38.4830;
+      // P0-8修复(2026-10-14)：无GPS时地图中心不使用硬编码，用0表示未知由地图组件处理
+      const centerLng = gpsLocation.lng || 0;
+      const centerLat = gpsLocation.lat || 0;
 
       let map: any = null;
       try {
@@ -680,8 +681,10 @@ export default function NearbyMapView({
 
     // 1. 当前司机本人 "我" (15509601222 或 登录司机)
     // 规则：地图上始终显示自己；上线显示绿色(或忙碌红色)，下线显示灰色的下线状态自己
-    const myLat = (gpsLocation && gpsLocation.lat) ? gpsLocation.lat : (driverCoords?.lat || 38.487167);
-    const myLng = (gpsLocation && gpsLocation.lng) ? gpsLocation.lng : (driverCoords?.lng || 106.23091);
+    // P0-8修复(2026-10-14)：无GPS时自己标记为位置未知，不用硬编码坐标冒充（铁律）
+    const myLat = (gpsLocation && gpsLocation.lat) ? gpsLocation.lat : (driverCoords?.lat || 0);
+    const myLng = (gpsLocation && gpsLocation.lng) ? gpsLocation.lng : (driverCoords?.lng || 0);
+    const hasMyGps = myLat !== 0 && myLng !== 0;
     currentRenderedDrivers.push({
       phone: effectiveMyPhone,
       name: currentDriverName,
@@ -706,17 +709,6 @@ export default function NearbyMapView({
       todayOrders: number;
     }>();
 
-    const getYinchuanDriverCoords = (phone: string) => {
-      const baseLat = 38.4830;
-      const baseLng = 106.2350;
-      const num = parseInt(phone.slice(-4) || '0', 10) || 1234;
-      const latOff = (((num * 17) % 100) - 50) * 0.0006;
-      const lngOff = (((num * 31) % 100) - 50) * 0.0008;
-      return {
-        lat: Number((baseLat + latOff).toFixed(6)),
-        lng: Number((baseLng + lngOff).toFixed(6))
-      };
-    };
 
     // 收集小队成员 (squadList)
     squadList.forEach((member) => {
@@ -727,9 +719,11 @@ export default function NearbyMapView({
       const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
       const rawOnline = member.isOnline === undefined ? true : Boolean(member.isOnline === true || member.isOnline === 'true');
 
-      const fallbackCoord = getYinchuanDriverCoords(phone);
-      const lat = (member.lat !== undefined && Number(member.lat) !== 0) ? Number(member.lat) : fallbackCoord.lat;
-      const lng = (member.lng !== undefined && Number(member.lng) !== 0) ? Number(member.lng) : fallbackCoord.lng;
+      // P0-7修复(2026-10-14)：无真实GPS时标记为位置未知，绝不用假坐标冒充（铁律）
+      const hasRealGps = member.lat !== undefined && Number(member.lat) !== 0 && member.lng !== undefined && Number(member.lng) !== 0;
+      if (!hasRealGps) return; // 无GPS的司机不在地图上显示假位置
+      const lat = Number(member.lat);
+      const lng = Number(member.lng);
 
       candidateDriversMap.set(phone, {
         phone,
@@ -752,9 +746,13 @@ export default function NearbyMapView({
       if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || isGenericDriverName(name, phone)) return;
 
       const existing = candidateDriversMap.get(phone);
-      const fallbackCoord = getYinchuanDriverCoords(phone);
-      const lat = (liveLoc.lat !== undefined && Number(liveLoc.lat) !== 0) ? Number(liveLoc.lat) : (existing?.lat || fallbackCoord.lat);
-      const lng = (liveLoc.lng !== undefined && Number(liveLoc.lng) !== 0) ? Number(liveLoc.lng) : (existing?.lng || fallbackCoord.lng);
+      // P0-7修复(2026-10-14)：无真实GPS时用已有的真实坐标，没有则跳过，绝不用假坐标（铁律）
+      const liveLat = Number(liveLoc.lat);
+      const liveLng = Number(liveLoc.lng);
+      const hasLiveGps = liveLoc.lat !== undefined && liveLat !== 0 && liveLoc.lng !== undefined && liveLng !== 0;
+      if (!hasLiveGps && !existing) return; // 无任何真实坐标则跳过
+      const lat = hasLiveGps ? liveLat : existing!.lat;
+      const lng = hasLiveGps ? liveLng : existing!.lng;
       const uploadTime = liveLoc.lastLocationTime 
         ? Number(liveLoc.lastLocationTime)
         : (liveLoc.timestamp

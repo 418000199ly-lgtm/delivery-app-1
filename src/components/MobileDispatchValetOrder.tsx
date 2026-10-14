@@ -1322,7 +1322,8 @@ export default function MobileDispatchValetOrder({
         const userSettingsStr = localStorage.getItem(`dd_settings_${targetPhone}`);
         if (userSettingsStr) {
           const parsed = JSON.parse(userSettingsStr);
-          appQr = (parsed?.wechatQrCode || parsed?.alipayQrCode || '').trim();
+          appQr = (parsed?.wechatQrCode || '').trim();
+          // P0-6修复(2026-10-14)：只取微信码，支付宝码绝不上传/不展示为微信码（铁律）
         }
         if (!appQr) {
           appQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) ||

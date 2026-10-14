@@ -1824,7 +1824,8 @@ export default function HomeView({
       const isExplicitlyDeleted = localStorage.getItem(`dd_qr_deleted_${currentPhone}`) === 'true';
       if (isExplicitlyDeleted) return;
 
-      let qrCode = (settings?.wechatQrCode || settings?.alipayQrCode || '').trim();
+      let qrCode = (settings?.wechatQrCode || '').trim();
+      // P0-6修复(2026-10-14)：只自动上传微信码，支付宝码绝不上传服务器（铁律）
       if (!qrCode) return;
 
       if (qrCode) {
