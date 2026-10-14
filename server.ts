@@ -3798,9 +3798,9 @@ function getClientIp(req: any): string {
         // 2026-10-14修复：一个司机同时只能有一单在派。如果该司机已有未处理的派单（dispatched状态），
         // 旧单直接转大厅，避免两单并存导致倒计时API在两者间串值、定时器误判。
         // 用户17:20和17:23连下两单，旧单未进大厅导致新单倒计时50→30跳变。
+        // P0修复(2026-10-14)：直接在 dbData 上操作，不做分离的 preDb 读写（分离读写会导致后面的 writeLocalJsonDb(dbData) 用 stale 引用覆盖掉转大厅的修改）
         {
-          const preDb = readLocalJsonDb();
-          const mo = preDb?.['merchant_orders'] || {};
+          const mo = dbData?.['merchant_orders'] || {};
           for (const k of Object.keys(mo)) {
             const o = mo[k];
             if (String(o?.dispatchedDriverPhone || '').trim() === String(selected.phone).trim()
@@ -3813,16 +3813,7 @@ function getClientIp(req: any): string {
               o.hallAt = nowTs;
             }
           }
-          // 同步清理 passenger_links（如果指向的是旧单）
-          const pl = preDb?.['passenger_links']?.[selected.phone];
-          if (pl && String((pl as any)?._merchantKey || '').trim()) {
-            const mk = String((pl as any)._merchantKey).trim();
-            const oldMo = mo[mk];
-            if (oldMo && (oldMo.status === 'hall')) {
-              // passenger_links 会在下面被新单覆盖，这里不需要额外处理
-            }
-          }
-          writeLocalJsonDb(preDb);
+          // passenger_links 会在下面被新单覆盖，这里不需要额外处理
         }
         const driverQrUrl = `/uploads/qrcodes/${selected.phone}.png`;
         const dispatchedPayload = {
