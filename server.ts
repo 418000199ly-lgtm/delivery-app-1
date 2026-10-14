@@ -155,7 +155,8 @@ function getTokenSecret(): string {
     }
     return secret;
   } catch (_) {
-    return 'fallback-secret-' + String(Date.now());
+    // P1-4修复(2026-10-14)：降级分支用密码学随机数，不用可预测的时间戳（防伪造token）
+    return 'fallback-secret-' + crypto.randomBytes(32).toString('hex');
   }
 }
 function createSignedToken(phone: string, scope: string, isMerchant: boolean): string {
@@ -441,7 +442,13 @@ setInterval(() => {
   fs.promises.writeFile(tmpPath, JSON.stringify(snapshot), 'utf8')
     .then(() => fs.promises.rename(tmpPath, LOCAL_JSON_DB_PATH))
     .catch((e: any) => console.error('[Local JSON DB] Async write error:', e?.message))
-    .finally(() => { _dbWriteInFlight = false; });
+    .finally(() => {
+      _dbWriteInFlight = false;
+      // P1-1修复(2026-10-14)：异步写期间若有同步写入更新了 cachedDbData，快照已过期，重打脏标下轮重写，防旧数据覆盖新数据
+      if (cachedDbData !== snapshot) {
+        _dbDirty = true;
+      }
+    });
 }, 5000);
 
 // H14修复：启动时备份 local_db.json.bak
@@ -540,6 +547,21 @@ async function startServer() {
   }, 30 * 1000);
 
   const app = express();
+// P1-5修复(2026-10-14)：信任宝塔 nginx 一层代理，Express 自动从 XFF 提取真实客户端 IP
+// 配合 getClientIp() 使用，不再各处手写 XFF 解析（防伪造 XFF 绕过限流）
+app.set('trust proxy', 1);
+
+// P1-5修复(2026-10-14)：统一客户端 IP 获取
+// Express 的 req.ip 在 trust proxy=1 时会正确解析 XFF，比手写 split 更可靠
+// 额外做格式校验，防畸形值污染限流 key
+function getClientIp(req: any): string {
+  const ip = String(req.ip || req.socket?.remoteAddress || '').trim();
+  // 简单 IPv4/IPv6 格式校验，不合法则回退
+  if (/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(ip) || /^[0-9a-fA-F:]+$/.test(ip)) {
+    return ip;
+  }
+  return 'unknown';
+}
   const PORT = 3000;
 
   // Increase payload size thresholds to avoid issues with large QR code images
@@ -1585,7 +1607,8 @@ async function startServer() {
           const isOrdersCol = ['merchant_orders', 'valet_orders', 'orders'].includes(col);
 
           // Check if requester is removed squad member or not approved for orders
-          const requesterPhone = String(req.query.userPhone || req.query.phone || req.query.driverPhone || req.headers['x-user-phone'] || '').replace(/\D/g, '').trim();
+          // P1-2修复(2026-10-14)：用 token 解析出的真实身份，不信任客户端传的手机号（可伪造/可省略绕过）
+          const requesterPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
           if (isOrdersCol && requesterPhone && requesterPhone !== '15509601222') {
             const removedArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
             if (removedArr.includes(requesterPhone)) {
@@ -4859,6 +4882,20 @@ async function startServer() {
         return res.status(400).json({ success: false, error: 'Missing col or data' });
       }
 
+      // P0-3修复(2026-10-14)：非管理员只能向白名单集合 add，防止伪造订单/污染任意集合
+      if (!(req as any).isAdmin) {
+        const ADD_WHITELIST = new Set([
+          'valet_orders', 'merchant_orders', // 订单类：走正常下单流程
+          'driver_locations', 'driver_users', // 司机自有数据
+          'squad_applications', 'online_applications', // 申请类
+          'system_messages_read', 'feedback', // 反馈/已读
+        ]);
+        if (!ADD_WHITELIST.has(col)) {
+          console.warn(`[Auth] 拒绝非白名单集合add: token手机=${(req as any).authPhone}, 集合=${col}`);
+          return res.status(403).json({ success: false, error: '无权向该集合写入' });
+        }
+      }
+
       // H8修复：与 set/update 一致，普通用户写 squad_members 时剥离敏感字段（防通过 add 自封职位提权）
       if (col === 'squad_members' && !(req as any).isAdmin && !(req as any).isManager) {
         const SENSITIVE = ['status', 'approvalStatus', 'role', 'squad_position', 'userRole', 'position'];
@@ -5264,7 +5301,7 @@ async function startServer() {
 
     // M4修复：IP+手机号限流（60秒1次 / 1小时5次），防短信轰炸
     {
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
+      const clientIp = getClientIp(req);
       const now = Date.now();
       const keyPhone = `p:${cleanPhone}`;
       const keyIp = `ip:${clientIp}`;
@@ -5303,7 +5340,7 @@ async function startServer() {
 
     // Backend 24-hour phone and IP rate limit for merchant dispatch login (dispatch_valet)
     if (scope === 'dispatch_valet' && !WHITELIST_PHONES.includes(cleanPhone)) {
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
+      const clientIp = getClientIp(req);
       const now = Date.now();
       const LIMIT_24H = 24 * 60 * 60 * 1000;
 
@@ -5562,7 +5599,7 @@ async function startServer() {
       }
     }
 
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = getClientIp(req);
     const now = Date.now();
     const LIMIT_24H = 24 * 60 * 60 * 1000;
 
@@ -5770,8 +5807,12 @@ async function startServer() {
   });
 
   // 7. FIREBASE FIRESTORE TO MYSQL AUTOMATED MIGRATION ENDPOINT
-  app.get('/api/db/migrate-from-firestore', async (req, res) => {
+  app.get('/api/db/migrate-from-firestore', requireDbAuth, async (req, res) => {
     try {
+      // P0-5修复(2026-10-14)：仅开发者可触发数据迁移
+      if (!(req as any).isAdmin) {
+        return res.status(403).json({ success: false, error: '仅开发者可执行' });
+      }
       const dbData = readLocalJsonDb();
       if (!dbData.driver_users) dbData.driver_users = {};
       if (!dbData.squad_members) dbData.squad_members = {};
@@ -5871,7 +5912,7 @@ async function startServer() {
   app.post('/api/submit', async (req, res) => {
     try {
       // N-1修复（2026-10-10复审）：IP限流，防批量伪造司机订单弹窗
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+      const clientIp = getClientIp(req);
       const now = Date.now();
       if (!(global as any).__submitLogs) (global as any).__submitLogs = new Map();
       const submitLogs: Map<string, number[]> = (global as any).__submitLogs;
@@ -5891,6 +5932,24 @@ async function startServer() {
       const cleanPassengerPhone = String(passengerPhone).replace(/\s+/g, '').trim();
       const cleanStartLocation = String(startLocation).trim();
       const cleanDestination = String(destination || '').trim();
+
+      // P1-6修复(2026-10-14)：验证 driverPhone 是真实注册司机，防针对任意手机号的伪造订单轰炸
+      if (!/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
+        return res.status(400).json({ success: false, error: '司机手机号格式不正确' });
+      }
+      try {
+        const dbData = readLocalJsonDb();
+        const isRealDriver = !!(
+          dbData.driver_users?.[cleanDriverPhone] ||
+          dbData.squad_members?.[cleanDriverPhone] ||
+          dbData.driver_users?.[cleanDriverPhone + 'A'] // 兼容商户号
+        );
+        if (!isRealDriver) {
+          return res.status(400).json({ success: false, error: '该司机不存在' });
+        }
+      } catch (_) {
+        // 查库失败时放行，避免误伤正常下单（限流仍在）
+      }
 
       const orderId = 'scan_ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
       const payloadData = {
@@ -5945,7 +6004,7 @@ async function startServer() {
   app.post('/api/qr-phone-notify', async (req, res) => {
     try {
       // IP限流：与 /api/submit 同级，防批量骚扰
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'unknown';
+      const clientIp = getClientIp(req);
       const now = Date.now();
       if (!(global as any).__qrPhoneLogs) (global as any).__qrPhoneLogs = new Map();
       const qrPhoneLogs: Map<string, number[]> = (global as any).__qrPhoneLogs;
@@ -7027,9 +7086,16 @@ async function startServer() {
 
   // Query WeChat QR code directly with disk existence checks and channel priority
   // M12修复：IP频率限制（防枚举手机号注册状态），60秒最多20次
-  app.get('/api/get-wechat-qr', async (req, res) => {
+  app.get('/api/get-wechat-qr', requireDbAuth, async (req, res) => {
     try {
-      const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.ip || req.socket.remoteAddress || '127.0.0.1';
+      // P0-4修复(2026-10-14)：只能查自己的微信收款码，账号隔离
+      const requester = String((req as any).authPhone || '').replace(/\D/g, '');
+      const queryPhone = String(req.query.phone || '').replace(/\D/g, '');
+      const isDev = (req as any).isAdmin;
+      if (!isDev && queryPhone !== requester) {
+        return res.status(403).json({ success: false, error: '只能查询自己的收款码' });
+      }
+      const clientIp = getClientIp(req);
       const now = Date.now();
       const qrKey = `qr:${clientIp}`;
       const qrLogs = (smsSendLogs.get(qrKey) || []).filter((t) => now - t < 60 * 1000);
