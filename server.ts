@@ -3370,6 +3370,10 @@ function getClientIp(req: any): string {
   // 全国地理编码：本地银川 POI 优先，失败时调高德地图 API（中国大陆服务，全国可用）
   // H7修复：Key 优先从环境变量读取（硬编码仅作回退，部署后请在宝塔环境变量中配置并轮换）
   const AMAP_KEY_SERVER = process.env.AMAP_KEY_SERVER || '0ae534670da6caccb517c02edd04e89e';
+  // P1-3提醒(2026-10-14)：生产环境请设置 AMAP_KEY_SERVER 环境变量并轮换 Key，硬编码 Key 泄露会导致配额盗刷
+  if (!process.env.AMAP_KEY_SERVER) {
+    console.warn('[Security] 警告：正在使用代码内置高德 Key，请设置 AMAP_KEY_SERVER 环境变量并轮换！');
+  }
   if (!process.env.AMAP_KEY_SERVER) {
     console.warn('[Config] AMAP_KEY_SERVER 未配置环境变量，使用内置值；请尽快在高德控制台轮换该 Key 并配置环境变量');
   }

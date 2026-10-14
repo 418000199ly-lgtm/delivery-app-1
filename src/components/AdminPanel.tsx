@@ -101,9 +101,11 @@ export default function AdminPanel({
     if (typeof window !== 'undefined') {
       // 管理后台会话：不设过期，手动登出前一直有效（用户2026-10-10要求）
       // 以服务端签发的 dd_auth_token 为准（/api/sms/verify 下发），不再信任前端生成的 admin_ 前缀（2026-10-10修复）
+      // P1-1修复(2026-10-14)：同时验证手机号是开发者，防止普通司机用自己的 token 直接看到后台界面
       try {
         const authToken = localStorage.getItem('dd_auth_token');
-        if (authToken && authToken.trim()) {
+        const userPhone = String(localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '');
+        if (authToken && authToken.trim() && userPhone === '15509601222') {
           return true;
         }
       } catch (_) {}
