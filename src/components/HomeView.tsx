@@ -839,6 +839,8 @@ export default function HomeView({
   // --- Order Selection Hall States & Real-time Subscription ---
   const [hallOrders, setHallOrders] = useState<any[]>([]);
   const prevHallOrderIdsRef = useRef<Set<string> | null>(null);
+  // P1-3修复(2026-10-14)：大厅抢单防重复点击锁
+  const hallClaimingRef = useRef(false);
   const announcedOrderIdsRef = useRef<Set<string>>(new Set());
 
   // Auto-acquire real browser GPS on HomeView mount to ensure driver distance accuracy in hall
@@ -1267,6 +1269,10 @@ export default function HomeView({
   }, []);
 
   const handleClaimHallOrder = async (ord: any) => {
+    // P1-3修复(2026-10-14)：防重复点击，正在抢单中直接返回
+    if (hallClaimingRef.current) return;
+    hallClaimingRef.current = true;
+    try {
     // 检查小队内的商户、商家不可接单（只能下单代叫，管理人员除外）
     const userRoleStr = userRole || settings?.role || '';
     const isPureMerchant = (
@@ -1530,6 +1536,9 @@ export default function HomeView({
       triggerToast('✓ 抢单成功！已自动为您规划前往接客起点的路线');
     } catch (err: any) {
       alert('接单失败：' + err.message);
+    }
+    } finally {
+      hallClaimingRef.current = false; // P1-3修复：解锁（所有return路径）
     }
   };
 

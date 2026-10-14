@@ -3988,6 +3988,19 @@ function getClientIp(req: any): string {
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
       const targetOrder = dbData['merchant_orders'][cleanOrderId];
 
+      // P1-1修复(2026-10-14)：订单不存在直接 404，不创建假订单
+      if (!targetOrder) {
+        return res.status(404).json({ success: false, error: '订单不存在' });
+      }
+
+      // P1-2修复(2026-10-14)：司机行程中（isBusy）不能再抢单，防一人同时持有两单
+      try {
+        const loc = dbData.driver_locations?.[cleanDriverPhone];
+        if (loc && (loc.isBusy === true || loc.isBusy === 'true')) {
+          return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
+        }
+      } catch (_) {}
+
       // Check if order is already claimed by ANOTHER driver or cancelled
       if (targetOrder) {
         const isClaimedByOther = (Boolean(targetOrder.claimedDriverPhone) && targetOrder.claimedDriverPhone !== cleanDriverPhone) ||
@@ -6195,12 +6208,25 @@ function getClientIp(req: any): string {
   // 2026-10-12 新来单超时/拒收转大厅专用通道：不走鉴权，秒级进厅
   app.post('/api/order/to-hall', requireDbAuth, async (req, res) => {
     try {
-      const { orderId, driverPhone, reason } = req.body || {};
+      const { orderId, reason } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();
-      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      // P0-2修复(2026-10-14)：driverPhone 取自 token 不信任请求体（防伪造别人手机号）；且必须是该订单的被派司机才能转大厅
+      const cleanDriverPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
       if (!cleanOrderId) {
         return res.status(400).json({ success: false, error: '缺少 orderId' });
       }
+      // 校验：订单存在且调用者是被派司机（或开发者）
+      try {
+        const dbData = readLocalJsonDb();
+        const order = dbData.merchant_orders?.[cleanOrderId] || dbData.valet_orders?.[cleanOrderId];
+        const isDev = (req as any).isAdmin;
+        if (!isDev && order) {
+          const assigned = String(order.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+          if (assigned && assigned !== cleanDriverPhone) {
+            return res.status(403).json({ success: false, error: '只有被派司机可以将该订单转入大厅' });
+          }
+        }
+      } catch (_) {}
       const now = Date.now();
       const applyToOrder = (targetOrder: any) => {
         const existingDeclined = Array.isArray(targetOrder?.declinedDriverPhones) ? targetOrder.declinedDriverPhones : [];
