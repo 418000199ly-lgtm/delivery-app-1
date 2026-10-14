@@ -4569,6 +4569,12 @@ async function startServer() {
                 }
               }
             }
+            // 2026-10-14根治：必须用 targetMerchantKey 重读 merchant_orders 的最新对象！
+            // passenger_links 是派单时的拷贝，之后 claim/decline/转大厅只更新 merchant_orders，
+            // 不更新 passenger_links。用旧拷贝算倒计时会导致 50→30 这类跳变。
+            if (targetMerchantKey && merchantOrders[targetMerchantKey]) {
+              targetOrder = merchantOrders[targetMerchantKey];
+            }
           }
         }
       }
