@@ -254,11 +254,9 @@ export default function MerchantValetPaymentView({
       if (q) return q;
     }
 
-    // Fallback to global web / dispatch QR cache if available
-    return localStorage.getItem('dd_web_valet_wechat_qr') ||
-           localStorage.getItem('dd_dispatch_fee_qr_global') ||
-           localStorage.getItem('dd_merchant_web_qr') ||
-           '';
+    // P1-3修复(2026-10-14)：去掉全局共享key fallback（不带手机号后缀，会串码导致钱付给错的人）
+    // 找不到下单人的码就返回空，页面显示"未设置"
+    return '';
   })();
 
   // Multi-tier fallback chain strictly isolated per order and sender phone number

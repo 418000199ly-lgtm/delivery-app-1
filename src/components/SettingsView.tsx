@@ -509,11 +509,19 @@ export default function SettingsView({
           } catch (_) {}
 
           const baseUrl = getBaseApiUrl();
+          // P1-1修复(2026-10-14)：上传加成功/失败反馈，不再静默
           fetch(`${baseUrl}/api/upload-wechat-qr`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
-          }).catch(err => console.error('Upload QR to server error:', err));
+          }).then(res => {
+            if (!res.ok) {
+              alert('⚠️ 本地已保存，服务器上传失败，请检查网络后重试');
+            }
+          }).catch(err => {
+            console.error('Upload QR to server error:', err);
+            alert('⚠️ 本地已保存，服务器上传失败，请检查网络后重试');
+          });
         }
       } catch (err) {
         console.error('Process QR error:', err);
@@ -999,16 +1007,24 @@ export default function SettingsView({
                       window.dispatchEvent(new CustomEvent('wechat_qr_deleted', { detail: { phone: currentPhone } }));
                     }
 
+                    // P1-2修复(2026-10-14)：等待服务器确认后再提示，不再"假成功"
                     try {
                       const baseUrl = getBaseApiUrl();
                       if (currentPhone) {
-                        fetch(`${baseUrl}/api/delete-wechat-qr`, {
+                        const delRes = await fetch(`${baseUrl}/api/delete-wechat-qr`, {
                           method: 'POST',
                           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                           body: JSON.stringify({ phone: currentPhone })
-                        }).catch(() => {});
+                        });
+                        if (!delRes.ok) {
+                          alert('⚠️ 本地已清空，但服务器删除失败，请检查网络后重试');
+                          return;
+                        }
                       }
-                    } catch (_) {}
+                    } catch (_) {
+                      alert('⚠️ 本地已清空，但服务器删除失败，请检查网络后重试');
+                      return;
+                    }
 
                     alert('已成功清空微信收款二维码');
                   } else {
