@@ -4942,6 +4942,26 @@ export default function AdminPanel({
                           </div>
                         </div>
 
+                        {/* 2026-10-16新增：接单授权到期日显示（只读，与 App 选单大厅同口径） */}
+                        <div className="space-y-1 pt-1">
+                          <label className="text-[10px] font-bold text-slate-500 flex justify-between items-center">
+                            <span>📜 接单授权到期日</span>
+                            <span className="text-[10px] font-black text-emerald-500">
+                              {(() => {
+                                const lic = String(driverDoc?.licenseExpiry || foundDriver?.licenseExpiry || '').trim();
+                                if (!lic || lic === '待开通') return '⚪ 未开通';
+                                if (lic === '永久有效' || lic === '永久' || lic === '终身') return '🌟 永久';
+                                if (lic === '已到期') return '🔴 已到期';
+                                const daysStr = calculateDaysFromExpiry(lic);
+                                const days = parseInt(daysStr, 10);
+                                if (daysStr === '永久') return '🌟 永久';
+                                if (!isNaN(days) && days > 0) return `约剩 ${days} 天（${lic}）`;
+                                return '🔴 已到期';
+                              })()}
+                            </span>
+                          </label>
+                        </div>
+
                         {/* 3. Preconfigured presets */}
                         <div className="space-y-1 pt-1">
                           <span className="text-[9px] text-slate-500 block font-bold">快捷时间到期预设 :</span>
@@ -5211,6 +5231,7 @@ export default function AdminPanel({
                           <th className="py-2 px-2">听单城市</th>
                           <th className="py-2 px-2">会员有效期</th>
                           <th className="py-2 px-2">会员状态</th>
+                          <th className="py-2 px-2">接单授权</th>
                           <th className="py-2 px-2 text-center">一键身份转换</th>
                           <th className="py-2 px-2 text-right">上次同步</th>
                         </tr>
@@ -5294,6 +5315,31 @@ export default function AdminPanel({
                                       普通司机
                                     </span>
                                   )}
+                                </td>
+                                {/* 2026-10-16新增：接单授权倒计时列，与 App 选单大厅同口径 */}
+                                <td className="py-2.5 px-2">
+                                  {(() => {
+                                    const lic = String(drv.licenseExpiry || '').trim();
+                                    if (!lic || lic === '待开通') {
+                                      return <span className="text-slate-500 text-[10px]">待开通</span>;
+                                    }
+                                    if (lic === '永久有效' || lic === '永久' || lic === '终身') {
+                                      return <span className="text-emerald-500 font-bold text-[10px]">永久</span>;
+                                    }
+                                    if (lic === '已到期') {
+                                      return <span className="text-red-500 font-bold text-[10px]">已到期</span>;
+                                    }
+                                    const daysStr = calculateDaysFromExpiry(lic);
+                                    const days = parseInt(daysStr, 10);
+                                    if (daysStr === '永久') {
+                                      return <span className="text-emerald-500 font-bold text-[10px]">永久</span>;
+                                    }
+                                    if (!isNaN(days) && days > 0) {
+                                      const color = days <= 7 ? 'text-amber-500' : 'text-emerald-500';
+                                      return <span className={`${color} font-bold text-[10px] font-mono`}>{days}天</span>;
+                                    }
+                                    return <span className="text-red-500 font-bold text-[10px]">已到期</span>;
+                                  })()}
                                 </td>
                                 <td className="py-2.5 px-2 text-center">
                                   {drvPhone === DEVELOPER_PHONE ? (
