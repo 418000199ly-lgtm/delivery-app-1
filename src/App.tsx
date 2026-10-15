@@ -2080,6 +2080,24 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           setIncomingOrder(null);
           return;
         }
+        // 2026-10-15接单授权前端拦截：无授权不弹窗（纵深防御，服务端也拦）
+        const licExpiry = (settings as any)?.licenseExpiry || '';
+        let hasLicense = false;
+        if (licExpiry === '永久有效') {
+          hasLicense = true;
+        } else if (licExpiry) {
+          const parsed = Date.parse(licExpiry);
+          if (!isNaN(parsed)) {
+            hasLicense = Math.ceil((parsed - Date.now()) / 86400000) > 0;
+          }
+        }
+        // 只拦截已审批入队成员；未入队的不受影响（商户等）
+        // 注意：这里用settings判断，如果settings还没加载则放行（避免误杀）
+        if (settings && (settings as any)?.licenseExpiry !== undefined && !hasLicense) {
+          console.log('[License] 无接单授权，不弹窗新来单');
+          setIncomingOrder(null);
+          return;
+        }
         setIncomingOrder(order);
       }
     });
@@ -2092,6 +2110,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
 
         dismissedIncomingOrderKeysRef.current.delete(orderKey);
+        // 2026-10-15接单授权前端拦截：无授权不弹窗
+        const licExpiry2 = (settings as any)?.licenseExpiry || '';
+        let hasLicense2 = false;
+        if (licExpiry2 === '永久有效') {
+          hasLicense2 = true;
+        } else if (licExpiry2) {
+          const parsed2 = Date.parse(licExpiry2);
+          if (!isNaN(parsed2)) {
+            hasLicense2 = Math.ceil((parsed2 - Date.now()) / 86400000) > 0;
+          }
+        }
+        if (settings && (settings as any)?.licenseExpiry !== undefined && !hasLicense2) {
+          console.log('[License] 无接单授权，不弹窗新来单(custom)');
+          return;
+        }
         // Instant synchronous render of incoming order overlay with zero delay & zero homepage flashing
         setIncomingOrder(data);
         triggerBackgroundOrderAlert(data);
