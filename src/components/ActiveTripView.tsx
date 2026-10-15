@@ -88,6 +88,8 @@ export default function ActiveTripView({
   const isEndedRef = useRef(false);
   const isMountedRef = useRef(true);
   const amapGeoInstanceRef = useRef<any>(null);
+  // 2026-10-15新增：GPS状态显示（诊断行驶距离不累积问题）
+  const [gpsStatus, setGpsStatus] = useState<{active: boolean; accuracy: number; lastUpdate: number}>({active: false, accuracy: 0, lastUpdate: 0});
 
   useEffect(() => {
     tripRef.current = safeTrip;
@@ -264,6 +266,8 @@ export default function ActiveTripView({
     if (!isMountedRef.current || isEndedRef.current) {
       return;
     }
+    // 2026-10-15：更新GPS状态显示
+    setGpsStatus({active: true, accuracy: Math.round(accuracy), lastUpdate: Date.now()});
     if (tripRef.current && tripRef.current.currentStatus && tripRef.current.currentStatus !== 'serving') {
       return;
     }
@@ -306,8 +310,10 @@ export default function ActiveTripView({
     // 2. Stationary jitter / drift-cluster filter (w16修复)
     // 室内GPS漂移特征：单次跳动 5-50 米，但来回 bouncing，不会持续朝一个方向走。
     // 策略：a) 小位移直接过滤；b) 新位置若落在历史锚点附近 → 漂移回弹，不累积
-    const JITTER_DIST_M = 8.0;   // 8米内位移视为抖动（原3米太小，室内漂移轻松穿过）
-    const JITTER_SPEED_MS = 1.0; // 1m/s ≈ 3.6km/h，人步行速度下限，低于此不可能是开车
+    // 2026-10-15修复：阈值从8米/1m/s降到3米/0.5m/s。代驾场景经常低速挪车（堵车、小区、停车场），
+    // 3.6km/h以下也是真实行驶，不能过滤。只过滤真正的静止抖动。
+    const JITTER_DIST_M = 3.0;   // 3米内位移视为抖动（原8米太大，低速行驶被误杀）
+    const JITTER_SPEED_MS = 0.5; // 0.5m/s ≈ 1.8km/h，低于此视为静止
     const DRIFT_CLUSTER_M = 25.0; // 25米半径内来回跳 = 漂移簇
     if (distanceInMeters < JITTER_DIST_M && (speed !== null ? speed < JITTER_SPEED_MS : calculatedSpeed < JITTER_SPEED_MS)) {
       lastCoordsRef.current = { lng, lat, timestamp: now };
@@ -846,6 +852,17 @@ export default function ActiveTripView({
               </div>
               <div className="text-[10px] text-gray-500 font-bold tracking-wider leading-none whitespace-nowrap uppercase">
                 已行程(公里)
+              </div>
+              {/* 2026-10-15：GPS状态指示（诊断用） */}
+              <div className="text-[9px] mt-1 font-medium whitespace-nowrap">
+                {gpsStatus.active ? (
+                  <span className={gpsStatus.accuracy <= 50 ? 'text-emerald-600' : 'text-amber-600'}>
+                    📡 GPS {gpsStatus.accuracy}m
+                    {Date.now() - gpsStatus.lastUpdate > 10000 && <span className="text-red-500"> (信号丢失)</span>}
+                  </span>
+                ) : (
+                  <span className="text-red-500">📡 GPS未定位</span>
+                )}
               </div>
             </div>
           </div>
