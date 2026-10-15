@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Volume2, Download, AlertCircle } from 'lucide-react';
 import { ChauffeurSettings, checkVipActive } from '../types';
+import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
@@ -486,7 +487,7 @@ export default function SettingsView({
             {checkVipActive(settings.vipExpiry) ? (
               <div className="flex items-center space-x-1.5 text-amber-600 font-bold text-xs bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
                 <Crown className="w-4 h-4 text-amber-500 animate-pulse" />
-                <span>已激活 VIP ({settings.vipExpiry})</span>
+                <span>已激活 VIP ({(() => { const d = calculateDaysFromExpiry(settings.vipExpiry); return d === '永久' ? '永久' : `${d}天`; })()})</span>
               </div>
             ) : (
               <div className="flex items-center space-x-1 text-slate-400 font-medium text-xs bg-slate-50 px-2.5 py-1 rounded-lg">

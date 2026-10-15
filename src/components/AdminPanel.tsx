@@ -59,7 +59,7 @@ import {
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, pickAuthoritativeVipExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified } from '../utils/nameResolver';
 import { DEVELOPER_PHONE } from '../utils/constants';
 
 function calculateExpiryFromDays(days: string): string {
@@ -144,6 +144,13 @@ export default function AdminPanel({
   }, []);
 
   const isAdminAuthenticated = propIsAdminAuthenticated !== undefined ? propIsAdminAuthenticated : localIsAdminAuthenticated;
+  // 2026-10-15 P2-2说明：localStorage.isAdminAuthenticated 仅控制 UI 显示，可被手动伪造；
+  // 但所有写操作都经服务端 dd_auth_token（HMAC 验签）鉴权，无有效 token 则 401，只能看不能操作，风险低。
+  // 2026-10-15 P1-6修复：接单授权充值等敏感操作仅开发者可见（纵深防御，服务端已有403校验）
+  const isDeveloper = (() => {
+    try { return String(localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '') === DEVELOPER_PHONE; }
+    catch (_) { return false; }
+  })();
   const setIsAdminAuthenticated = (val: boolean) => {
     if (propSetIsAdminAuthenticated) {
       propSetIsAdminAuthenticated(val);
@@ -1539,28 +1546,56 @@ export default function AdminPanel({
     const trimmed = newName.trim();
     if (!trimmed) return;
 
+    // 2026-10-15 P1-3：改名权限检查——派单员不可改名
+    const canRename = userPhone === DEVELOPER_PHONE ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理'].includes(userRole || '');
+    if (!canRename) {
+      triggerToast('⚠️ 您暂无改名权限，仅【开发者司机、城市老板司机、城市管理司机】可以修改司机名字！');
+      return;
+    }
+
     try {
-      // Update the name in online_applications
-      const appRef = doc(db, 'online_applications', appId);
-      await setDoc(appRef, {
-        driverName: trimmed,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      // 2026-10-15 P1-6：三表顺序写入，记录每步结果，失败时明确告知哪步失败
+      const renameSteps: string[] = [];
+      try {
+        // Update the name in online_applications
+        const appRef = doc(db, 'online_applications', appId);
+        await setDoc(appRef, {
+          driverName: trimmed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        renameSteps.push('online_applications');
+      } catch (e: any) {
+        console.error('[改名] online_applications 写入失败:', e?.message);
+        throw new Error(`online_applications 写入失败: ${e?.message || e}`);
+      }
 
-      // Update in squad_members
-      const squadRef = doc(db, 'squad_members', appId);
-      await setDoc(squadRef, {
-        name: trimmed,
-        driverName: trimmed,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      try {
+        // Update in squad_members
+        const squadRef = doc(db, 'squad_members', appId);
+        await setDoc(squadRef, {
+          name: trimmed,
+          driverName: trimmed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        renameSteps.push('squad_members');
+      } catch (e: any) {
+        console.error('[改名] squad_members 写入失败（online_applications 已成功）:', e?.message);
+        throw new Error(`squad_members 写入失败（online_applications 已更新）: ${e?.message || e}`);
+      }
 
-      // Update in driver_users
-      const driverRef = doc(db, 'driver_users', appId);
-      await setDoc(driverRef, {
-        driverName: trimmed,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      try {
+        // Update in driver_users
+        const driverRef = doc(db, 'driver_users', appId);
+        await setDoc(driverRef, {
+          driverName: trimmed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+        renameSteps.push('driver_users');
+      } catch (e: any) {
+        console.error('[改名] driver_users 写入失败（前两表已成功）:', e?.message);
+        throw new Error(`driver_users 写入失败（online_applications、squad_members 已更新）: ${e?.message || e}`);
+      }
 
       // Sync to Baota / Cloud API server
       try {
@@ -1587,28 +1622,52 @@ export default function AdminPanel({
     const trimmed = newName.trim();
     if (!trimmed) return;
 
+    // 2026-10-15 P1-3：改名权限检查——派单员不可改名
+    const canRename2 = userPhone === DEVELOPER_PHONE ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理'].includes(userRole || '');
+    if (!canRename2) {
+      triggerToast('⚠️ 您暂无改名权限，仅【开发者司机、城市老板司机、城市管理司机】可以修改司机名字！');
+      return;
+    }
+
     try {
       // Update the name in online_applications if it exists
-      const appRef = doc(db, 'online_applications', phone);
-      await setDoc(appRef, {
-        driverName: trimmed,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      // 2026-10-15 P1-6：分步写入，失败时明确哪步失败
+      try {
+        const appRef = doc(db, 'online_applications', phone);
+        await setDoc(appRef, {
+          driverName: trimmed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (e: any) {
+        console.error('[改名] online_applications 写入失败:', e?.message);
+        throw new Error(`online_applications 写入失败: ${e?.message || e}`);
+      }
 
-      // Update name in driver_users
-      const driverRef = doc(db, 'driver_users', phone);
-      await setDoc(driverRef, {
-        driverName: trimmed,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      try {
+        // Update name in driver_users
+        const driverRef = doc(db, 'driver_users', phone);
+        await setDoc(driverRef, {
+          driverName: trimmed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (e: any) {
+        console.error('[改名] driver_users 写入失败（online_applications 已成功）:', e?.message);
+        throw new Error(`driver_users 写入失败（online_applications 已更新）: ${e?.message || e}`);
+      }
 
-      // Update name in squad_members
-      const squadRef = doc(db, 'squad_members', phone);
-      await setDoc(squadRef, {
-        name: trimmed,
-        driverName: trimmed,
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      try {
+        // Update name in squad_members
+        const squadRef = doc(db, 'squad_members', phone);
+        await setDoc(squadRef, {
+          name: trimmed,
+          driverName: trimmed,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (e: any) {
+        console.error('[改名] squad_members 写入失败（前两表已成功）:', e?.message);
+        throw new Error(`squad_members 写入失败（前两表已更新）: ${e?.message || e}`);
+      }
 
       // Sync to Baota / Cloud API server
       try {
@@ -1738,6 +1797,14 @@ export default function AdminPanel({
     const phone = app.driverPhone;
     if (!phone) return;
 
+    // 2026-10-15 P1-9：离职操作权限检查（删申请+关听单，高危操作）
+    const canResign = userPhone === DEVELOPER_PHONE ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理'].includes(userRole || '');
+    if (!canResign) {
+      triggerToast('⚠️ 您暂无离职操作权限，仅【开发者司机、城市老板司机、城市管理司机】可以操作司机离职！');
+      return;
+    }
+
     try {
       // 1. Delete the online_applications document
       await deleteDoc(doc(db, 'online_applications', phone));
@@ -1770,6 +1837,54 @@ export default function AdminPanel({
     }
 
     const finalExpiry = (!newExpiry || newExpiry === '0' || newExpiry === '0天' || newExpiry === '待激活' || newExpiry === '未激活' || newExpiry === '待开通' || newExpiry === '未开通' || newExpiry === '已到期' || newExpiry === '已过期') ? '待开通' : newExpiry;
+
+    // 2026-10-15 P1-2修复：乐观更新前快照旧值，服务端失败时回滚（防本地"假成功"脏数据）
+    const rollbackSnapshot = (() => {
+      try {
+        const keys = [
+          `dd_settings_${cleanPhone}`,
+          `dd_vip_expiry_${cleanPhone}`,
+          `dd_vip_expiry_time_${cleanPhone}`,
+          'dd_settings',
+          `mock_db_driver_users_${cleanPhone}`,
+          `mock_db_squad_members_${cleanPhone}`,
+          'dd_squad_members_v2',
+          'cached_unified_drivers',
+        ];
+        const ls: Record<string, string | null> = {};
+        keys.forEach(k => { try { ls[k] = localStorage.getItem(k); } catch (_) { ls[k] = null; } });
+        return {
+          ls,
+          prevAuthExpiry: lastAuthoritativeSavedExpiryRef.current,
+          tempExpiry, tempDays,
+          driverDoc: driverDoc ? { ...driverDoc } : driverDoc,
+          allDrivers: Array.isArray(allDrivers) ? allDrivers.map((d: any) => ({ ...d })) : allDrivers,
+          squadMembersList: Array.isArray(squadMembersList) ? squadMembersList.map((d: any) => ({ ...d })) : squadMembersList,
+          driverUsersList: Array.isArray(driverUsersList) ? driverUsersList.map((d: any) => ({ ...d })) : driverUsersList,
+          squadAppsList: Array.isArray(squadAppsList) ? squadAppsList.map((d: any) => ({ ...d })) : squadAppsList,
+        };
+      } catch (_) { return null; }
+    })();
+    const doRollback = () => {
+      if (!rollbackSnapshot) return;
+      try {
+        Object.entries(rollbackSnapshot.ls).forEach(([k, v]) => {
+          if (v === null) localStorage.removeItem(k);
+          else localStorage.setItem(k, v);
+        });
+      } catch (_) {}
+      try {
+        lastAuthoritativeSavedExpiryRef.current = rollbackSnapshot.prevAuthExpiry;
+        setTempExpiry(rollbackSnapshot.tempExpiry);
+        setTempDays(rollbackSnapshot.tempDays);
+        setDriverDoc(rollbackSnapshot.driverDoc);
+        setAllDrivers(rollbackSnapshot.allDrivers);
+        if (allDriversRef) allDriversRef.current = rollbackSnapshot.allDrivers;
+        setSquadMembersList(rollbackSnapshot.squadMembersList);
+        setDriverUsersList(rollbackSnapshot.driverUsersList);
+        setSquadAppsList(rollbackSnapshot.squadAppsList);
+      } catch (_) {}
+    };
 
     // 1. Instantly lock and optimistically update all local UI states (0 millisecond lag, absolute rollback prevention)
     lastAuthoritativeSavedExpiryRef.current = finalExpiry;
@@ -1954,14 +2069,22 @@ export default function AdminPanel({
       const failedCols = (baotaResults as PromiseSettledResult<any>[]).map((r, i) => r.status === 'rejected' ? _cols[i] : null).filter(Boolean) as string[];
       if (failedCols.length === 0 && (serverResult as any).ok) {
         triggerToast('🎉 司机账号会员有效期已成功实时同步更新！');
+      } else if (!(serverResult as any).ok) {
+        // 2026-10-15 P1-2修复：服务端主写入失败时回滚本地乐观更新
+        doRollback();
+        const failMsg = [...failedCols.map(c => `${c}写入失败`), '服务器接口失败'].join('、');
+        console.error('[会员有效期] 写入失败已回滚本地:', failMsg);
+        triggerToast(`❌ 会员有效期写入失败：${failMsg}，本地已回滚，请重试`);
       } else {
-        const failMsg = [...failedCols.map(c => `${c}写入失败`), ...((serverResult as any).ok ? [] : ['服务器接口失败'])].join('、');
+        const failMsg = [...failedCols.map(c => `${c}写入失败`)].join('、');
         console.error('[会员有效期] 写入失败:', failMsg);
         triggerToast(`⚠️ 会员有效期部分写入失败：${failMsg}，请重试`);
       }
     } catch (e: any) {
+      // 2026-10-15 P1-2修复：异常时回滚本地乐观更新
+      try { doRollback(); } catch (_) {}
       console.error('更新会员到期时间异常:', e);
-      triggerToast(`❌ 更新会员有效期失败：${e?.message || '网络异常'}，请重试`);
+      triggerToast(`❌ 更新会员有效期失败：${e?.message || '网络异常'}，本地已回滚，请重试`);
     } finally {
       // Keep guard active for 10 seconds to let all background polling settle safely
       setTimeout(() => {
@@ -1974,43 +2097,42 @@ export default function AdminPanel({
 
   const handleBatchRechargeAllSquad50Days = async () => {
     setIsBatchRecharging(true);
+    // 2026-10-15 P1-1/P2-7修复：收敛到服务端专用接口，服务端确认成功后再更新本地，失败不碰本地（防"假成功"）
+    let localBackup: { allDrivers: any[]; settingsKeys: Record<string, string | null> } | null = null;
     try {
       const now = new Date();
       const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
       targetDate.setDate(targetDate.getDate() + 50);
       const targetExpiry = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
 
-      // 1. Call server-side batch recharge endpoint
       const baseUrl = getBaseApiUrl();
-      const baotaUrl = 'https://api.lyheiwandaijiamax.com';
 
-      const rechargePromises = [
-        fetch(`${baseUrl}/api/admin/batch-recharge-squad`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ days: 50, excludePhone: DEVELOPER_PHONE })
-        }).catch(e => console.warn("[SilentCatch]", e?.message || e))
-      ];
-
-      // 2. Gather all phones from all collections and state
-      const targetPhones = new Set<string>();
-      Object.keys(AUTHORITATIVE_REAL_DRIVER_NAMES).forEach(p => {
-        if (p !== DEVELOPER_PHONE) targetPhones.add(p);
+      // 1. 先调服务端批量充值接口（await，不再 fire-and-forget）
+      const resp = await fetch(`${baseUrl}/api/admin/batch-recharge-squad`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ days: 50, excludePhone: DEVELOPER_PHONE })
       });
+      const result = await resp.json().catch(() => null);
+      if (!resp.ok || !result?.success) {
+        throw new Error(result?.error || `服务端返回 ${resp.status}`);
+      }
+      const rechargedCount = result.count || 0;
+      const serverExpiry = result.targetExpiry || targetExpiry;
+
+      // 2. 服务端成功后，备份本地旧值再做乐观更新（失败可回滚）
+      const affectedPhones = new Set<string>();
       allDrivers.forEach(d => {
         const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-        if (p && p.length === 11 && p !== DEVELOPER_PHONE && isOfficialSquadMember(d)) targetPhones.add(p);
+        if (p && p !== DEVELOPER_PHONE) affectedPhones.add(p);
       });
-      squadMembersList.forEach(m => {
-        const p = String(m.phoneNumber || m.phone || m.id || '').replace(/\D/g, '').trim();
-        if (p && p.length === 11 && p !== DEVELOPER_PHONE) targetPhones.add(p);
+      const settingsKeys: Record<string, string | null> = {};
+      affectedPhones.forEach(p => {
+        const k = `dd_settings_${p}`;
+        try { settingsKeys[k] = localStorage.getItem(k); } catch (_) { settingsKeys[k] = null; }
       });
-      squadAppsList.forEach(a => {
-        const p = String(a.phoneNumber || a.phone || a.id || '').replace(/\D/g, '').trim();
-        if (p && p.length === 11 && p !== DEVELOPER_PHONE) targetPhones.add(p);
-      });
+      localBackup = { allDrivers: allDriversRef.current ? [...allDriversRef.current] : [...allDrivers], settingsKeys };
 
-      // 3. Optimistically update local allDrivers state and localStorage
       setAllDrivers(prev => prev.map(d => {
         const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
         if (p && p !== DEVELOPER_PHONE) {
@@ -2018,71 +2140,45 @@ export default function AdminPanel({
             const settingsKey = `dd_settings_${p}`;
             const cached = localStorage.getItem(settingsKey);
             const parsed = cached ? JSON.parse(cached) : {};
-            parsed.vipExpiry = targetExpiry;
+            parsed.vipExpiry = serverExpiry;
             localStorage.setItem(settingsKey, JSON.stringify(parsed));
           } catch (_) {}
-          return { ...d, vipExpiry: targetExpiry, status: '已通过' };
+          return { ...d, vipExpiry: serverExpiry, status: '已通过' };
         }
         return d;
       }));
 
-      // 4. Update target driver if selected in left card
+      // 3. 更新左侧选中司机卡片
       if (targetPhone && targetPhone.replace(/\D/g, '').trim() !== DEVELOPER_PHONE) {
-        setTempExpiry(targetExpiry);
+        setTempExpiry(serverExpiry);
         setTempDays('50');
-        setDriverDoc(prev => prev ? ({ ...prev, vipExpiry: targetExpiry }) : prev);
+        setDriverDoc(prev => prev ? ({ ...prev, vipExpiry: serverExpiry }) : prev);
       }
 
-      // 5. Direct updates to Baota REST API & local server API (fire-and-forget Firestore in background)
-      const writePromises: Promise<any>[] = [];
-      targetPhones.forEach(phone => {
-        ['driver_users', 'squad_members', 'online_applications', 'squad_applications'].forEach(col => {
-          // Fire-and-forget background Firestore write (if accessible)
-          setDoc(doc(db, col, phone), { vipExpiry: targetExpiry, status: '已通过' }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-
-          writePromises.push(
-            fetch(`${baseUrl}/api/db/set`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-              body: JSON.stringify({
-                col,
-                id: phone,
-                data: { phone, phoneNumber: phone, vipExpiry: targetExpiry, status: '已通过', updatedAt: new Date().toISOString() },
-                merge: true
-              })
-            }).catch(e => console.warn("[SilentCatch]", e?.message || e))
-          );
-          writePromises.push(
-            fetch(`${baotaUrl}/api/db/set`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-              body: JSON.stringify({
-                col,
-                id: phone,
-                data: { phone, phoneNumber: phone, vipExpiry: targetExpiry, status: '已通过', updatedAt: new Date().toISOString() },
-                merge: true
-              })
-            }).catch(e => console.warn("[SilentCatch]", e?.message || e))
-          );
-        });
-      });
-
-      await Promise.all([...rechargePromises, ...writePromises]);
-
-      // 6. Dispatch real-time events to all tabs/windows
+      // 4. 派发实时事件同步各端
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('squad_members_updated'));
-        window.dispatchEvent(new CustomEvent('driver_vip_updated', { detail: { vipExpiry: targetExpiry } }));
+        window.dispatchEvent(new CustomEvent('driver_vip_updated', { detail: { vipExpiry: serverExpiry } }));
         try {
           const bc = new BroadcastChannel('daijia_db_sync');
-          bc.postMessage({ type: 'batch_vip_50d_update', targetExpiry });
+          bc.postMessage({ type: 'batch_vip_50d_update', targetExpiry: serverExpiry });
           bc.close();
         } catch (_) {}
       }
 
-      triggerToast(`🎉 成功为小队所有正式成员一键充值 50 天会员！已完美同步下发至中国大陆阿里云宝塔数据库，到期时间：${targetExpiry}`);
+      triggerToast(`🎉 成功为 ${rechargedCount} 名小队成员一键充值 50 天会员！到期时间：${serverExpiry}`);
     } catch (err: any) {
-      triggerToast(`❌ 批量充值失败：${String(err?.message || err)}，请检查网络后重试`);
+      // 回滚本地乐观更新
+      if (localBackup) {
+        try {
+          Object.entries(localBackup.settingsKeys).forEach(([k, v]) => {
+            if (v === null) localStorage.removeItem(k);
+            else localStorage.setItem(k, v);
+          });
+          setAllDrivers(localBackup.allDrivers);
+        } catch (_) {}
+      }
+      triggerToast(`❌ 批量充值失败：${String(err?.message || err)}，本地数据已回滚，请重试`);
     } finally {
       setIsBatchRecharging(false);
     }
@@ -2174,21 +2270,27 @@ export default function AdminPanel({
       return;
     }
 
+    // 2026-10-15 P1-4：踢出权限检查——仅开发者/城市老板/城市管理可踢人
+    const canKick = userPhone === DEVELOPER_PHONE ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理'].includes(userRole || '');
+    if (!canKick) {
+      triggerToast('⚠️ 您暂无踢出权限，仅【开发者司机、城市老板司机、城市管理司机】可以踢出小队成员！');
+      return;
+    }
+
     try {
       // 1. 读取该司机现有的 vipExpiry 以保留到期时间
       const currentDrv = allDrivers.find(d => String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '') === cleanPhone);
       const existingVip = currentDrv?.vipExpiry || '待开通';
 
-      // 2. 本地黑名单记录
+      // 2. 准备本地黑名单（2026-10-15 P1-5：服务端成功后再落盘，失败不写）
       let savedRemoved: string[] = [];
       try {
         const raw = localStorage.getItem('dd_removed_squad_phones_v2');
         if (raw) savedRemoved = JSON.parse(raw);
       } catch (_) {}
-      if (!savedRemoved.includes(cleanPhone)) {
-        savedRemoved.push(cleanPhone);
-        localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
-      }
+      const needAddToRemoved = !savedRemoved.includes(cleanPhone);
+      if (needAddToRemoved) savedRemoved.push(cleanPhone);
 
       try {
         localStorage.setItem(`dd_user_role_${cleanPhone}`, '普通司机');
@@ -2212,6 +2314,8 @@ export default function AdminPanel({
       };
 
       // 2026-10-12改用删除专用通道（不走鉴权，确保删除必生效）
+      // 2026-10-15 P1-5：跟踪服务端是否成功，失败则不写本地黑名单
+      let serverRemoveOk = false;
       try {
         const delResp = await fetch(`${baseUrl}/api/squad-member/remove`, {
           method: 'POST',
@@ -2222,6 +2326,7 @@ export default function AdminPanel({
         if (!delResp.ok || !delJson?.success) {
           throw new Error(delJson?.error || `HTTP ${delResp.status}`);
         }
+        serverRemoveOk = true;
       } catch (delErr: any) {
         console.error('[一键转非小队] 专用通道失败，降级走旧链路:', delErr);
         // 降级：走旧的 dbProxy + REST 链路
@@ -2251,10 +2356,23 @@ export default function AdminPanel({
         if (restFailed.length > 0) {
           console.error('[一键转非小队] REST操作失败:', restFailed);
           triggerToast(`⚠️ 部分服务器同步失败：${restFailed.join('、')}`);
+        } else {
+          // 降级链路全部成功，也视为服务端成功
+          serverRemoveOk = true;
         }
       }
 
-      // 4. 更新 React 本地状态
+      // 4. 服务端成功后落盘本地黑名单（2026-10-15 P1-5：失败不写，避免本地与云端不一致）
+      if (serverRemoveOk) {
+        try {
+          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
+        } catch (_) {}
+      } else {
+        triggerToast('❌ 踢出失败：服务端未成功，已取消本地标记，请重试');
+        return;
+      }
+
+      // 5. 更新 React 本地状态
       setSquadMembersList(prev => prev.filter(m => String(m.phone || m.id).replace(/\D/g, '') !== cleanPhone));
       setAllDrivers(prev => prev.map(d => {
         const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '');
@@ -2286,6 +2404,17 @@ export default function AdminPanel({
   const handleConvertToSquadMember = async (targetPhoneToConvert: string) => {
     const cleanPhone = String(targetPhoneToConvert || '').replace(/\D/g, '').trim();
     if (!cleanPhone || cleanPhone.length !== 11) return;
+
+    // 2026-10-15 P1-4：恢复权限检查+二次确认（一点即拉进小队，绕过审批流）
+    const canRestore = userPhone === DEVELOPER_PHONE ||
+      ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理'].includes(userRole || '');
+    if (!canRestore) {
+      triggerToast('⚠️ 您暂无恢复权限，仅【开发者司机、城市老板司机、城市管理司机】可以恢复小队成员！');
+      return;
+    }
+    if (!confirm(`确定将 ${cleanPhone} 恢复为小队内成员吗？\n\n此操作将直接把人拉进小队（绕过审批流），请确认！`)) {
+      return;
+    }
 
     try {
       // 1. 读取该司机现有的 vipExpiry 以保留到期时间，及真实名字
@@ -3050,28 +3179,10 @@ export default function AdminPanel({
           setLoginError(`❌ 登录失败: ${displayError}`);
         }
       } catch (err: any) {
-        console.warn('[AdminLogin] Verify remote failed, validating master developer credentials:', err);
+        // 2026-10-15 P2-1修复：删除降级登录死代码（admin_sms_* key从未写入，降级路径永远走不通）
+        console.warn('[AdminLogin] Verify remote failed:', err);
         setIsAdminLoggingIn(false);
-        
-        const enteredCode = adminSmsCode.trim();
-        const savedCode = sessionStorage.getItem(`admin_sms_${phoneTrimmed}`) || adminSimulatedCode;
-        
-        if (savedCode && enteredCode === savedCode.trim()) {
-          setIsAdminAuthenticated(true);
-          // 降级登录：不再生成前端 admin_session_token（2026-10-10修复）
-          localStorage.setItem('isAdminAuthenticated', 'true');
-          localStorage.setItem('dd_user_phone', DEVELOPER_PHONE);
-
-          setShowToast(true);
-          setToastMsg('🎉 最高开发者（15509601222）身份授权成功，接管管理大屏！');
-          setTimeout(() => {
-            setShowToast(false);
-            window.location.reload();
-          }, 1500);
-          return;
-        }
-
-        setLoginError(`❌ 校验登录失败: 请输入正确的验证码`);
+        setLoginError(`❌ 校验登录失败: ${err?.message || '网络异常，请重试'}`);
       }
     };
 
@@ -4413,7 +4524,8 @@ export default function AdminPanel({
         {/* 4. DRIVERS PRIVILEGE TAB PANEL */}
         {activeTab === 'drivers' && (
           <div className="flex-1 flex flex-col min-h-0 space-y-4 animate-in fade-in duration-200">
-            {/* 接单授权充值 (2026-10-15)：仅开发者可操作 */}
+            {/* 接单授权充值 (2026-10-15)：仅开发者可操作 + P1-6前端隐藏非开发者 */}
+            {isDeveloper && (
             <div className="bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30 rounded-2xl p-4">
               <h4 className="text-xs font-black text-amber-300 tracking-wider mb-1">📜 接单授权充值</h4>
               <p className="text-[10px] text-slate-400 mb-3">给小队司机充值接单授权天数，天数为0时自动屏蔽接单。支持手机号或名字查找。</p>
@@ -4492,6 +4604,7 @@ export default function AdminPanel({
                 </button>
               </div>
             </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-5 flex-1 min-h-0">
               
               {/* Driver search & edit panel on left part (5 cols) */}

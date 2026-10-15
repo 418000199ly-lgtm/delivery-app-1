@@ -21,7 +21,7 @@ import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName, getHighPrecisionLocationName, calculateHaversineDistanceKm } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
 import { findNearestKnownPoi } from './utils/geocoding';
-import { resolveDriverRealName, pickAuthoritativeVipExpiry, calculateDaysFromExpiry } from './utils/nameResolver';
+import { resolveDriverRealName, calculateDaysFromExpiry, hasValidLicense } from './utils/nameResolver';
 
 import { 
   ChauffeurSettings, 
@@ -228,6 +228,9 @@ export default function App() {
     } catch (_) {}
     return { ...DEFAULT_SETTINGS };
   });
+  // 2026-10-15 P1-4：settingsRef 始终指向最新 settings，供闭包/事件监听器读取（避免拦截器冻结在登录时刻）
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
 
   const [stats, setStats] = useState<DriverStats>(() => {
     const phone = typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : null;
@@ -2081,19 +2084,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           return;
         }
         // 2026-10-15接单授权前端拦截：无授权不弹窗（纵深防御，服务端也拦）
-        const licExpiry = (settings as any)?.licenseExpiry || '';
-        let hasLicense = false;
-        if (licExpiry === '永久有效') {
-          hasLicense = true;
-        } else if (licExpiry) {
-          const parsed = Date.parse(licExpiry);
-          if (!isNaN(parsed)) {
-            hasLicense = Math.ceil((parsed - Date.now()) / 86400000) > 0;
-          }
-        }
+        // 2026-10-15 P1-3/P1-4/P1-5：用 hasValidLicense 统一口径；用 settingsRef 读最新值（避免闭包冻结）；undefined视为无授权即拦截（fail-closed）
+        const curSettings = settingsRef.current;
+        const licExpiry = (curSettings as any)?.licenseExpiry;
+        const hasLicense = hasValidLicense(licExpiry);
         // 只拦截已审批入队成员；未入队的不受影响（商户等）
         // 注意：这里用settings判断，如果settings还没加载则放行（避免误杀）
-        if (settings && (settings as any)?.licenseExpiry !== undefined && !hasLicense) {
+        if (curSettings && !hasLicense) {
           console.log('[License] 无接单授权，不弹窗新来单');
           setIncomingOrder(null);
           return;
@@ -2111,17 +2108,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
         dismissedIncomingOrderKeysRef.current.delete(orderKey);
         // 2026-10-15接单授权前端拦截：无授权不弹窗
-        const licExpiry2 = (settings as any)?.licenseExpiry || '';
-        let hasLicense2 = false;
-        if (licExpiry2 === '永久有效') {
-          hasLicense2 = true;
-        } else if (licExpiry2) {
-          const parsed2 = Date.parse(licExpiry2);
-          if (!isNaN(parsed2)) {
-            hasLicense2 = Math.ceil((parsed2 - Date.now()) / 86400000) > 0;
-          }
-        }
-        if (settings && (settings as any)?.licenseExpiry !== undefined && !hasLicense2) {
+        // 2026-10-15 P1-3/P1-4/P1-5：用 hasValidLicense 统一口径；用 settingsRef 读最新值；undefined视为无授权即拦截（fail-closed）
+        const curSettings2 = settingsRef.current;
+        const licExpiry2 = (curSettings2 as any)?.licenseExpiry;
+        const hasLicense2 = hasValidLicense(licExpiry2);
+        if (curSettings2 && !hasLicense2) {
           console.log('[License] 无接单授权，不弹窗新来单(custom)');
           return;
         }
@@ -2654,7 +2645,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
 
     // Update database & server claim endpoint immediately to prevent 30s timeout reset
-    // 2026-10-12改用接单专用通道（不走鉴权，原子防重）
+    // 2026-10-12改用接单专用通道（2026-10-15起走鉴权，原子防重）
     if (orderIdToClaim) {
       const baseUrl = getBaseApiUrl();
       try {
@@ -2672,7 +2663,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           const msg = String(claimJson?.error || '');
           if (claimResp.status === 403) {
             setIncomingOrder(null);
-            triggerToast('⚠️ 仅小队正式成员可接单，请先申请加入小队并通过审核！');
+            // 2026-10-15 P1-2：优先透出服务端error（如接单授权到期），而非写死文案
+            triggerToast('⚠️ ' + (msg || '仅小队正式成员可接单，请先申请加入小队并通过审核！'));
             return;
           }
           if (claimResp.status === 409 || /已被/.test(msg)) {

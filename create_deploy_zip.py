@@ -1,6 +1,5 @@
 import os
 import zipfile
-import tarfile
 import shutil
 import subprocess
 
@@ -11,7 +10,9 @@ try:
     print("Executing npm run build...")
     subprocess.run(["npm", "run", "build"], check=True)
 except Exception as e:
-    print(f"Build warning/note: {e}")
+    # 2026-10-15 P2-6修复：构建失败直接退出，不用旧dist打错版本的包
+    print(f"❌ 构建失败，停止打包（防止用旧dist打出版本号对、代码旧的包）: {e}")
+    raise SystemExit(1)
 
 # Ensure dist exists
 os.makedirs("dist", exist_ok=True)
@@ -114,6 +115,8 @@ readme_content = """# 🚗 黑湾代驾MAX平台 - 阿里云宝塔面板一键�
 2. **上传与解压**：
    - 进入宝塔面板【文件】-> 您的网站根目录。
    - 上传 `daijia_deploy.zip` 并在线解压（0解压错误，完美兼容 Linux unzip）。
+   - ⚠️ 重要：解压前请先备份 `local_db.json`（用户数据、token密钥）和 `uploads/`（用户微信收款二维码）；
+     部署包不含这两个内容，解压时不要删除或覆盖它们。
 
 3. **配置环境变量**：
    - 复制 `.env.example` 并重命名为 `.env`。
@@ -142,11 +145,12 @@ with open('README_BAOTA.md', 'w', encoding='utf-8') as f:
 # Define exact file & directory list for inclusion
 # 2026-10-11: local_db.json 已排除——部署包绝不能覆盖生产的 local_db.json
 # （含用户数据、城市配置、tokenSecret、token黑名单），否则会导致全员掉线
+# 2026-10-15 P1-5修复：uploads/ 已从列表移除（微信二维码每账号隔离，部署包带测试码会覆盖生产用户码）；
+# 打包时仅保留空目录结构，不带任何文件
 include_items = [
     'src',
     'public',
     'dist',
-    'uploads',
     'scripts',
     'server.js',
     'server.js.map',
@@ -172,9 +176,8 @@ include_items = [
 
 zip_filename = 'daijia_deploy.zip'
 baota_zip = 'baota_deploy.zip'
-tar_filename = 'daijia_deploy.tar.gz'
 
-for fn in [zip_filename, baota_zip, tar_filename]:
+for fn in [zip_filename, baota_zip]:
     if os.path.exists(fn):
         try: os.remove(fn)
         except: pass
@@ -217,11 +220,18 @@ with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     for file in files:
                         if file.endswith('.zip') or file.endswith('.gz'):
                             continue
+                        # 2026-10-15 P2-6修复：walk时显式排除local_db.json（防某次构建误拷入dist被带入包）
+                        if file == 'local_db.json':
+                            continue
                         file_path = os.path.join(root, file)
                         rel_path = os.path.relpath(file_path, os.getcwd())
                         add_to_zip(zipf, file_path, rel_path)
             else:
                 add_to_zip(zipf, item, item)
+    # 2026-10-15 P1-5修复：仅保留uploads/空目录结构，不带任何文件（防覆盖生产用户微信二维码）
+    _uinfo = zipfile.ZipInfo('uploads/')
+    _uinfo.external_attr = 0o755 << 16 | 0x10
+    zipf.writestr(_uinfo, '')
 
 # Also create baota_deploy.zip as exact duplicate
 shutil.copy(zip_filename, baota_zip)

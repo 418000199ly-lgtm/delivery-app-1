@@ -310,12 +310,17 @@ export default function OnlineOrderApplicationModal({
                         setLoadingApp(true);
                         // Clear application
                         const appDocRef = doc(db, 'online_applications', userPhone || '');
-                        await setDoc(appDocRef, {
+                        // 2026-10-15 P1-10：检查setDoc返回值，失败时不切UI（回滚）
+                        const ok = await setDoc(appDocRef, {
                           ...onlineApp,
                           status: 're-filling',
                           updatedAt: new Date().toISOString()
                         });
-                        setOnlineApp(null);
+                        if (ok === false) {
+                          alert("重置申请失败：网络异常，服务端未更新，请重试");
+                        } else {
+                          setOnlineApp(null);
+                        }
                       } catch(err: any) {
                         alert("重置申请出错：" + err.message);
                       } finally {

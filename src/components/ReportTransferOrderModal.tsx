@@ -3,6 +3,7 @@ import { ArrowLeft, MapPin, Phone, Info, CheckCircle2 } from 'lucide-react';
 import { db, doc, setDoc, getDocs, collection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { geocodeAddress, calculateHaversineDistanceKm, formatDistance, DEFAULT_YINCHUAN_COORDS, isValidCoords } from '../utils/geocoding';
 import { speakText } from '../utils/speech';
+import { hasValidLicense } from '../utils/nameResolver';
 
 import readyDriverImg from '../assets/images/ready_driver.jpg';
 import valetCarBannerImg from '../assets/images/valet_car_banner.jpg';
@@ -49,6 +50,17 @@ export default function ReportTransferOrderModal({
     const cleanPhone = passengerPhone.replace(/\D/g, '').trim();
     if (!cleanPhone || cleanPhone.length !== 11 || !cleanPhone.startsWith('1')) {
       alert('请输入有效的中国大陆11位手机号码！');
+      return;
+    }
+
+    // 2026-10-15 P1-4：报单转单发起人接单授权检查（与服务端一致）
+    let reporterLicense = '';
+    try {
+      const s = localStorage.getItem(`dd_settings_${userPhone}`) || localStorage.getItem('dd_settings');
+      if (s) reporterLicense = JSON.parse(s)?.licenseExpiry || '';
+    } catch (_) {}
+    if (!hasValidLicense(reporterLicense)) {
+      alert('⚠️ 您的接单授权已到期或未开通，无法发起报单转单！请联系开发者充值接单授权。');
       return;
     }
 
@@ -227,6 +239,9 @@ export default function ReportTransferOrderModal({
         const isOnline = data.isOnline === true || data.isOnline === 'true';
         if (!isOnline) return;
 
+        // 2026-10-15 P1-4：候选人必须有有效接单授权（与服务端一致）
+        if (!hasValidLicense(data.licenseExpiry)) return;
+
         // 6. 心跳活跃时间检查（Heartbeat Check）
         // 上线司机每20秒上报一次位置；如果心跳超过5分钟（300秒）未更新，判定为已离线/掉线
         const lastTime = Number(data.lastLocationTime || 0);
@@ -287,7 +302,7 @@ export default function ReportTransferOrderModal({
 
       let chosenDriver: any = null;
 
-      // 2026-10-12改用报单转单专用派单通道（不走鉴权）：以报单人位置为圆心3公里找最近上线空闲小队司机，无人则进大厅
+      // 2026-10-12改用报单转单专用派单通道（2026-10-15起走鉴权，需getAuthHeaders）：以报单人位置为圆心3公里找最近上线空闲小队司机，无人则进大厅
       let serverResult: any = null;
       let serverAuthFailed = false;
       try {

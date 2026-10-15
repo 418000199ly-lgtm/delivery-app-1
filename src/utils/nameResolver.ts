@@ -790,18 +790,6 @@ export async function resolveAndSyncDuplicateNames(): Promise<void> {
  * Picks the authoritative VIP expiry date string among candidate dates/strings in precedence order.
  * Respects the first non-empty valid expiry provided by the primary source.
  */
-export function pickAuthoritativeVipExpiry(...expiries: (string | undefined | null)[]): string {
-  for (const exp of expiries) {
-    if (exp !== undefined && exp !== null) {
-      const trimmed = String(exp).trim();
-      if (trimmed !== '') {
-        return trimmed;
-      }
-    }
-  }
-  return '待开通';
-}
-
 /**
  * 将会员有效期标准化为显示值：2099年及以后的日期统一转为"永久有效"，
  * 避免界面出现 2099-12-31 / 26745天 这类不一致显示。
@@ -868,6 +856,18 @@ export function calculateDaysFromExpiry(expiry?: string): string {
   } catch (_) {
     return '0';
   }
+}
+
+// 接单授权是否有效（2026-10-15 P1-3/P2：与服务端 getLicenseDaysRemaining 口径对齐）
+// '永久有效'/'永久'/'终身'视为有效；日期按天数>0有效；空值/待开通/非法视为无效
+export function hasValidLicense(licenseExpiry?: string): boolean {
+  if (!licenseExpiry) return false;
+  const trimmed = String(licenseExpiry).trim();
+  if (trimmed === '永久有效' || trimmed === '永久' || trimmed === '终身' || trimmed === 'permanent') return true;
+  if (!trimmed || trimmed === '待开通' || trimmed === '待激活' || trimmed === '未激活' || trimmed === '未开通' || trimmed === '0' || trimmed === '0天' || trimmed === '已到期' || trimmed === '已过期') return false;
+  const parsed = Date.parse(trimmed);
+  if (isNaN(parsed)) return false;
+  return Math.ceil((parsed - Date.now()) / 86400000) > 0;
 }
 
 // 补缺失的导出（2026-10-10修复：stash版本引用了不存在的函数）

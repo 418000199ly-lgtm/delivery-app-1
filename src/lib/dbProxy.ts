@@ -282,12 +282,14 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
     }
     return true;
   } catch (err) {
-    // M8修复：401/403清token并抛出，网络错误返回true保持乐观
+    // M8修复：401/403清token并抛出
+    // 2026-10-15 P1-7：网络错误返回false（而非true），让调用方能检测到服务端写入失败，避免"假成功"误报
     if (isAuthError(err)) {
       clearAuthTokenOn401();
       throw err;
     }
-    return true;
+    console.warn('[dbProxy.setDoc] 网络错误，服务端写入失败（本地缓存已更新）:', (err as any)?.message || err);
+    return false;
   }
 }
 
@@ -327,12 +329,14 @@ export async function updateDoc(docRef: any, data: any) {
     }
     return true;
   } catch (err) {
-    // M8修复：401/403清token并抛出，网络错误返回true保持乐观
+    // M8修复：401/403清token并抛出
+    // 2026-10-15 P1-7：网络错误返回false（而非true），让调用方能检测到服务端写入失败
     if (isAuthError(err)) {
       clearAuthTokenOn401();
       throw err;
     }
-    return true;
+    console.warn('[dbProxy.updateDoc] 网络错误，服务端写入失败（本地缓存已更新）:', (err as any)?.message || err);
+    return false;
   }
 }
 

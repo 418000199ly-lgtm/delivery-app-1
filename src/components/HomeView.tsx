@@ -62,7 +62,7 @@ import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, isOfficialSquadMember, isSquadAppPending } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
@@ -1297,6 +1297,12 @@ export default function HomeView({
       return;
     }
 
+    // 2026-10-15 P1-1：大厅抢单前端接单授权检查（与服务端一致）
+    if (!hasValidLicense((settings as any)?.licenseExpiry)) {
+      alert('⚠️ 您的接单授权已到期或未开通，无法抢单！请联系开发者充值接单授权。');
+      return;
+    }
+
     const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
     const savedLng = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lng') : null;
     // 2026-10-11修复：删除旧坐标+市中心兜底，无GPS时传null显示"距离未知"，不算假距离
@@ -1422,7 +1428,7 @@ export default function HomeView({
       const baseUrl = getBaseApiUrl();
 
       // Atomic grab attempt via server API（服务端原子校验，防撞单）
-      // 2026-10-12改用接单专用通道（不走鉴权）
+      // 2026-10-12改用接单专用通道（2026-10-15起走鉴权，需getAuthHeaders）
       try {
         const claimRes = await fetch(`${baseUrl}/api/order/driver-claim`, {
           method: 'POST',
@@ -1434,7 +1440,9 @@ export default function HomeView({
           })
         });
         if (claimRes.status === 403) {
-          alert('⚠️ 仅小队正式成员可抢单，请先申请加入小队并通过审核！');
+          // 2026-10-15 P1-1：透出服务端error（区分授权到期/无权限等），而非写死文案
+          const errJson = await claimRes.json().catch(() => null);
+          alert('⚠️ ' + (errJson?.error || '仅小队正式成员可抢单，请先申请加入小队并通过审核！'));
           return;
         }
         if (claimRes.status === 409) {
@@ -1465,15 +1473,8 @@ export default function HomeView({
         return;
       }
 
-      if (db) {
-        await setDoc(doc(db, 'merchant_orders', ord.id), claimUpdateData, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
-
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'merchant_orders', docId: ord.id, data: claimUpdateData })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+      // 2026-10-15 P1-3：去掉抢单成功后的服务端补写（主写已在 /api/order/driver-claim 内完成；
+      // 此处 docId=orderId 非本人手机号，requireDbAuth 必403）。只更新本地UI状态。
 
       try {
         const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
@@ -3976,49 +3977,6 @@ export default function HomeView({
     }
   };
 
-  const handleSearchSquadMember = async () => {
-    const phone = searchSquadPhone.trim();
-    if (!phone) {
-      alert('请输入要搜索的11位手机号码！');
-      return;
-    }
-    if (!/^1\d{10}$/.test(phone)) {
-      alert('请输入正确的11位手机号码格式！');
-      return;
-    }
-    setIsSearchingSquad(true);
-    setSearchSquadError('');
-    try {
-      // 1. Check in squad_members
-      const squadMemberSnap = await getDoc(doc(db, 'squad_members', phone));
-      
-      // 2. Check in driver_users
-      const driverUserSnap = await getDoc(doc(db, 'driver_users', phone));
-      
-      const existsInSquad = squadMemberSnap.exists();
-      const squadData = existsInSquad ? squadMemberSnap.data() : null;
-      const driverData = driverUserSnap.exists() ? driverUserSnap.data() : null;
-      
-      setSearchSquadResult({
-        exists: existsInSquad || driverUserSnap.exists(),
-        squadMember: squadData ? { id: phone, ...squadData } : null,
-        driverUser: driverData ? { id: phone, ...driverData } : null,
-        checked: true
-      });
-      
-      if (squadData) {
-        setSquadDriverName(squadData.name || '');
-      } else if (driverData) {
-        setSquadDriverName(driverData.driverName || '');
-      } else {
-        setSquadDriverName('');
-      }
-    } catch (err: any) {
-      setSearchSquadError(err.message || '搜索失败');
-    } finally {
-      setIsSearchingSquad(false);
-    }
-  };
 
   const handleAddToSquad = async () => {
     const phone = searchSquadPhone.trim();
@@ -4058,86 +4016,6 @@ export default function HomeView({
     }
   };
 
-  const handleKickFromSquad = async (phoneToKick?: string) => {
-    const phone = phoneToKick || searchSquadPhone.trim();
-    if (!phone) return;
-    
-    try {
-      await deleteDoc(doc(db, 'squad_members', phone));
-      await deleteDoc(doc(db, 'squad_applications', phone));
-      await setDoc(doc(db, 'driver_users', phone), { role: '普通司机', userRole: '普通司机' }, { merge: true });
-
-      const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'squad_members', docId: phone })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      fetch(`${baseUrl}/api/db/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'squad_applications', docId: phone })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      fetch(`${baseUrl}/api/db/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'driver_users', docId: phone, data: { role: '普通司机', userRole: '普通司机' } })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-
-      // Clean local storage & add to removed list
-      try {
-        const savedM = localStorage.getItem('dd_squad_members_v2');
-        if (savedM) {
-          const listM = JSON.parse(savedM);
-          const filteredM = listM.filter((m: any) => m.phone !== phone && m.id !== phone);
-          localStorage.setItem('dd_squad_members_v2', JSON.stringify(filteredM));
-        }
-        const savedA = localStorage.getItem('dd_applicants_v2');
-        if (savedA) {
-          const listA = JSON.parse(savedA);
-          const filteredA = listA.filter((a: any) => a.phone !== phone && a.id !== phone);
-          localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredA));
-        }
-
-        const savedRemoved = JSON.parse(localStorage.getItem('dd_removed_squad_phones_v2') || '[]');
-        if (!savedRemoved.includes(phone)) {
-          savedRemoved.push(phone);
-          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
-        }
-        setRemovedMemberPhones(savedRemoved);
-
-        // Sync removed_squad_members to cloud
-        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-        fetch(`${baseUrl}/api/db/save`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } })
-        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      } catch (_) {}
-
-      setSquadMembers(prev => prev.filter((m: any) => String(m.phone || m.id).trim() !== phone));
-      
-      if (!phoneToKick || phoneToKick === searchSquadPhone.trim()) {
-        setSearchSquadResult(prev => prev ? {
-          ...prev,
-          squadMember: null
-        } : null);
-        setSquadDriverName('');
-      }
-      
-      setSquadNotification({
-        type: 'success',
-        text: `✓ 已成功将手机号为 ${phone} 的司机从本小队中踢出。该司机已失去接收商户代叫新派单资格。`
-      });
-      setTimeout(() => setSquadNotification(null), 5000);
-    } catch (err: any) {
-      setSquadNotification({
-        type: 'error',
-        text: `踢出失败：${err.message}`
-      });
-      setTimeout(() => setSquadNotification(null), 5000);
-    }
-  };
 
   const handleSaveSquadName = async () => {
     const newName = tempSquadName.trim();
@@ -5098,20 +4976,23 @@ export default function HomeView({
               const licExpiry = settings.licenseExpiry || '';
               let licText = '接单授权（待开通）';
               let licColor = 'text-red-500';
-              if (licExpiry === '永久有效') {
+              // 2026-10-15 P1-3：与服务端 getLicenseDaysRemaining 口径对齐，'永久'/'终身'也视为永久
+              if (licExpiry === '永久有效' || licExpiry === '永久' || licExpiry === '终身') {
                 licText = '接单授权（永久）';
                 licColor = 'text-emerald-600';
               } else if (licExpiry && licExpiry !== '待开通') {
-                const parsed = Date.parse(licExpiry);
-                if (!isNaN(parsed)) {
-                  const days = Math.ceil((parsed - Date.now()) / (1000*60*60*24));
-                  if (days > 0) {
-                    licText = `接单授权（${days}天）`;
-                    // 正常绿色，7天内黄色提醒，过期红色
-                    licColor = days <= 7 ? 'text-amber-600' : 'text-emerald-600';
-                  } else {
-                    licText = '接单授权（已到期）';
-                  }
+                // 2026-10-15 P2：用 calculateDaysFromExpiry 统一口径（按自然日计算，避免Math.ceil体感偏移1天）
+                const daysStr = calculateDaysFromExpiry(licExpiry);
+                const days = parseInt(daysStr, 10);
+                if (daysStr === '永久') {
+                  licText = '接单授权（永久）';
+                  licColor = 'text-emerald-600';
+                } else if (!isNaN(days) && days > 0) {
+                  licText = `接单授权（${days}天）`;
+                  // 正常绿色，7天内黄色提醒，过期红色
+                  licColor = days <= 7 ? 'text-amber-600' : 'text-emerald-600';
+                } else {
+                  licText = '接单授权（已到期）';
                 }
               }
               return <span className={`text-[9.5px] font-bold ${licColor}`}>{licText}</span>;
@@ -6141,8 +6022,8 @@ export default function HomeView({
                     }
                   </p>
                   <p className="text-[10px] text-slate-400 mt-1">
-                    {checkVipActive(settings.vipExpiry) 
-                      ? `服务到期时间: ${settings.vipExpiry}` 
+                    {checkVipActive(settings.vipExpiry)
+                      ? `服务到期时间: ${(() => { const d = calculateDaysFromExpiry(settings.vipExpiry); return d === '永久' ? '永久' : `${d}天`; })()}`
                       : 'VIP未激活或已到期，使用兑换码激活享无限特权'
                     }
                   </p>

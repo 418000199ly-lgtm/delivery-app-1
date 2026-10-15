@@ -150,7 +150,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const curOrder = orderRef.current as any;
         const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
         if (orderAgeMs > 25000) {
-          onDeclineRef.current();
+          safeDecline();
         }
       }
     }
@@ -216,14 +216,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               // 心跳转大厅(约派单后15秒)时orderAgeMs<25秒，旧guard会卡死页面。
               if (data.inHall) {
                 setTimeLeft(0);
-                onDeclineRef.current();
+                safeDecline();
                 return;
               }
               const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
               // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
               if (orderAgeMs > 25000) {
                 setTimeLeft(0);
-                onDeclineRef.current();
+                safeDecline();
                 return;
               }
             }
@@ -241,16 +241,17 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
                 setTimeLeftSync(v);
                 // 双轨：记录服务端同步时间
                 lastServerSyncRef.current = Date.now();
+                // 2026-10-15 P1-1：拒单决策也纳入防跳变校验，脏数据不触发拒单
+                if (v <= 0 && !isAcceptingRef.current) {
+                  const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                  if (orderAgeMs > 25000) {
+                    // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
+                    setTimeout(() => safeDecline(), 0);
+                  }
+                }
               } else {
                 // 异常下跳：记录日志但保留本地平滑值，不采用脏数据
                 console.warn(`[Countdown] 阻断异常下跳: 本地${curLeft} → 服务端${v}，保留本地值`);
-              }
-              if (v <= 0 && !isAcceptingRef.current) {
-                const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
-                if (orderAgeMs > 25000) {
-                  // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
-                  setTimeout(() => onDeclineRef.current(), 0);
-                }
               }
             }
           }
@@ -573,7 +574,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
       if (ended) {
         speakText('该订单已结单，无法重复接单');
-        onDecline();
+        safeDecline();
         return;
       }
 
@@ -624,13 +625,21 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         if (!claimResp.ok || claimData.success === false) {
           // 接单失败：已被抢/订单不存在/网络错误，绝不进服务页
           const msg = String(claimData.message || claimData.error || '');
-          if (claimResp.status === 409 || /已被|已接单|不存在/.test(msg)) {
+          // 2026-10-15 P1-5：401/403区分提示（401重登录，403找开发者充值）
+          if (claimResp.status === 401) {
+            speakText('登录已过期，请重新登录');
+            alert('⚠️ 登录已过期，请重新短信登录');
+          } else if (claimResp.status === 403) {
+            const licMsg = msg || '接单授权已到期，请联系开发者充值接单授权';
+            speakText(licMsg);
+            alert('⚠️ ' + licMsg);
+          } else if (claimResp.status === 409 || /已被|已接单|不存在/.test(msg)) {
             speakText('该订单已被其他司机接走');
           } else {
             speakText('接单失败，请重试');
           }
           isAcceptingRef.current = false;
-          onDecline();
+          safeDecline();
           return;
         }
       } catch (_) {
