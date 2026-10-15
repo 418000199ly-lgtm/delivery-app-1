@@ -3585,34 +3585,11 @@ export default function DispatchValetOrder({
       };
 
       // 实时向目标小队司机的 passenger_links 写入派单数据
-      const targetPhoneToWrite = isDispatchedToDriver ? effectiveDispatchedPhone : '';
-      if (targetPhoneToWrite) {
-        try {
-          if (db) {
-            deleteDoc(doc(db, 'active_orders', targetPhoneToWrite)).catch(() => {});
-            setDoc(doc(db, 'passenger_links', targetPhoneToWrite), passengerLinkPayload).catch(() => {});
-          }
-        } catch (_) {}
-      }
-
-      // 同时实时向 merchant_orders 写入
-      try {
-        if (db) {
-          setDoc(doc(db, 'merchant_orders', orderId), {
-            ...completeOrderData,
-            dispatchCountdown: 60,
-            dispatchedAt: ts,
-            dispatchExpiresAt: ts + 60000
-          }).catch(() => {});
-        }
-      } catch (_) {}
+      // P0(2026-10-15晚)：删除前端直接写passenger_links/merchant_orders和直接触发弹窗
+      // 全部由服务端/api/dispatch/nearest统一处理，防绕过接单授权检查（与手机版同修）
 
       if (isTargetingCurrentDriver) {
-        try {
-          safeSetItem('dd_active_incoming_order', JSON.stringify(passengerLinkPayload));
-        } catch (_) {}
-        // 仅触发一次新来单弹窗，绝不重复触发避免闪退和重新弹窗
-        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: passengerLinkPayload }));
+        // 等待服务端返回，不再前端直接弹窗
         if (typeof onCloseModal === 'function') {
           onCloseModal();
         }

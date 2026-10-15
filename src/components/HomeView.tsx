@@ -3947,22 +3947,32 @@ export default function HomeView({
         approxPrice: '未知'
       };
 
-      if (db) {
-        await setDoc(doc(db, 'passenger_links', closestDriver.phone), orderPayload).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
-
+      // P0(2026-10-15晚)：一键派单改走服务端/api/dispatch/nearest，防绕过接单授权检查
+      // 之前直接写passenger_links+直接弹窗，所有服务端校验（授权、审批、距离）全部被绕过
       const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'passenger_links', docId: closestDriver.phone, data: orderPayload })
-      }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-
-      if (userPhone && String(closestDriver.phone).trim() === String(userPhone).trim()) {
-        window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: orderPayload }));
+      try {
+        const resp = await fetch(`${baseUrl}/api/dispatch/nearest`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({
+            orderData: {
+              ...orderPayload,
+              id: `ORDER_${Date.now()}`,
+              orderId: `ORDER_${Date.now()}`,
+            },
+            pickupLat: finalCoords.lat,
+            pickupLng: finalCoords.lng,
+          })
+        });
+        const result = await resp.json();
+        if (result.success && result.driver) {
+          alert(`🎉 派单成功！\n\n系统已自动为您寻找直线距离最近的司机：\n- 司机姓名: ${result.driver.name}\n- 司机手机: ${result.driver.phone}\n\n司机APP将立刻弹出语音播报及新来单界面！`);
+        } else {
+          alert(`派单结果：${result.message || result.error || '已转入选单大厅'}`);
+        }
+      } catch (e) {
+        alert('派单失败，请稍后再试');
       }
-
-      alert(`🎉 派单成功！\n\n系统已自动为您寻找直线距离最近的司机：\n- 司机姓名: ${closestDriver.name}\n- 司机手机: ${closestDriver.phone}\n- 直线距离: ${minDistance.toFixed(2)} 公里\n\n不管距离多远，司机APP将立刻弹出语音播报及新来单界面！`);
       
       setDispatchStartPlace('');
       setDispatchPhone('');
