@@ -4532,30 +4532,53 @@ export default function HomeView({
         finalExpiryStr = `${yyyy}-${mm}-${dd}`;
       }
 
-      // Update server: mark as redeemed via dedicated channel
+      // P0-4修复(2026-10-15)：服务端原子核销并写三表，前端用服务端返回的有效期，不再本地计算
+      let serverExpiry = '';
+      let serverOk = false;
+      let serverDuration = durationDays;
       try {
         const baseUrl2 = getBaseApiUrl();
-        await fetch(`${baseUrl2}/api/vip-code-redeem`, {
+        const redeemRes = await fetch(`${baseUrl2}/api/vip-code-redeem`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            code: codeValue,
-            redeemedBy: localStorage.getItem('dd_user_phone') || settings.customAppName?.trim() || '手机APP司机端'
-          })
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ code: codeValue })
         });
-      } catch (_) {}
+        const redeemJson = await redeemRes.json().catch(() => null);
+        if (redeemRes.ok && redeemJson?.success) {
+          serverOk = true;
+          serverExpiry = String(redeemJson.vipExpiry || '');
+          serverDuration = Number(redeemJson.durationDays) || durationDays;
+        } else {
+          setModalMessage({
+            type: 'error',
+            text: `❌ 兑换失败：${redeemJson?.error || '服务器错误，请重试'}`
+          });
+          setIsMatching(false);
+          return;
+        }
+      } catch (_) {
+        setModalMessage({ type: 'error', text: '❌ 兑换失败：网络错误，请重试' });
+        setIsMatching(false);
+        return;
+      }
+      if (!serverOk || !serverExpiry) {
+        setModalMessage({ type: 'error', text: '❌ 兑换失败：服务器未返回有效期' });
+        setIsMatching(false);
+        return;
+      }
 
-      // Update settings locally
+      // Update settings locally with server-returned expiry
       onUpdateSettings({
         ...settings,
-        vipExpiry: finalExpiryStr
+        vipExpiry: serverExpiry
       });
 
+      const isForeverServer = serverExpiry === '永久有效';
       setModalMessage({
         type: 'success',
-        text: isForever
+        text: isForeverServer
           ? `🎉 云端兑换成功！您的软件尊享会员已成功激活 永久有效 特权！`
-          : `🎉 云端兑换成功！您的软件尊享会员已成功续期 +${durationDays} 天！新有效期至：${finalExpiryStr}`
+          : `🎉 云端兑换成功！您的软件尊享会员已成功续期 +${serverDuration} 天！新有效期至：${serverExpiry}`
       });
       setRedeemCode('');
     } catch (e: any) {

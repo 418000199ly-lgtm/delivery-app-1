@@ -321,7 +321,7 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
     const baseUrl = getBaseApiUrl();
     fetch(`${baseUrl}/api/squad-member/rename`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
       body: JSON.stringify({ phone: cleanPhone, name: finalName })
     }).catch(() => {});
     // 保留旧接口兼容

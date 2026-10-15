@@ -69,26 +69,34 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
   const [status, setStatus] = useState<'idle' | 'success'>('idle');
   
   // VIP validation states
-  const [driverVipExpiry, setDriverVipExpiry] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const urlVip = params.get('vip');
-      if (urlVip) return decodeURIComponent(urlVip).trim();
-      const drv = params.get('driver') || driverPhone;
-      if (drv === '15509601222') return '永久有效';
-    }
-    if (driverPhone === '15509601222') return '永久有效';
-    return null;
-  });
-  const [isVipChecked, setIsVipChecked] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('vip') || params.get('driver') === '15509601222' || driverPhone === '15509601222') {
-        return true;
+  // P0-2修复(2026-10-15)：不信任URL ?vip= 参数，挂载后从服务端查司机三表真实vipExpiry（防伪造绕过会员门禁）
+  const [driverVipExpiry, setDriverVipExpiry] = useState<string | null>(null);
+  const [isVipChecked, setIsVipChecked] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const drvPhone = String(params.get('driver') || driverPhone || '').replace(/\D/g, '').trim();
+        if (!drvPhone) { setIsVipChecked(true); return; }
+        if (drvPhone === '15509601222') {
+          if (!cancelled) { setDriverVipExpiry('永久有效'); setIsVipChecked(true); }
+          return;
+        }
+        const baseUrl = getBaseApiUrl();
+        const res = await fetch(`${baseUrl}/api/driver/vip-status?phone=${encodeURIComponent(drvPhone)}`);
+        const json = await res.json().catch(() => null);
+        if (!cancelled) {
+          setDriverVipExpiry(json?.success ? String(json.vipExpiry || '') : '');
+          setIsVipChecked(true);
+        }
+      } catch (_) {
+        if (!cancelled) { setDriverVipExpiry(''); setIsVipChecked(true); }
       }
-    }
-    return false;
-  });
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 3-second fast recognition timer state
   const [threeSecondChecked, setThreeSecondChecked] = useState(false);

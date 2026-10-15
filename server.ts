@@ -182,6 +182,10 @@ function verifySignedToken(token: string): { phone: string; scope: string; isMer
       const db: any = readLocalJsonDb();
       const bl = db && db._config && db._config.tokenBlocklist;
       if (Array.isArray(bl) && bl.includes(token)) return null;
+      // P1-10(2026-10-15)：被删除司机的手机号黑名单，token直接失效
+      const rp = db && db._config && db._config.removedPhones;
+      const phoneNorm = String(payload.p || '').replace(/\D/g, '').trim();
+      if (Array.isArray(rp) && phoneNorm && rp.includes(phoneNorm)) return null;
     } catch (_) {}
     return { phone: String(payload.p), scope: String(payload.s || 'driver'), isMerchant: !!payload.m };
   } catch (_) {
@@ -3091,7 +3095,7 @@ function getClientIp(req: any): string {
         if (phone === '15509601222') return false;
         if (removedPhones.has(phone)) return true;
         if (name && (name.includes('虚拟') || name.startsWith('测试') || name.includes('test'))) return true;
-        if (['13912345678', '15509601223', '15555556666', '13895299147', '17660453634', '13812345678', '19995426058', 'm-1', 'm-2', 'm-3'].includes(phone)) return true;
+        // P2-1修复(2026-10-15)：删除硬编码测试号过滤（用户10-10已要求取消号码限制）
         if (isGenericDriverName(name || '', phone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[phone]) return true;
         return false;
       };
@@ -4553,6 +4557,33 @@ function getClientIp(req: any): string {
       return res.json({ success: true, heartbeatAt: now });
     } catch (e: any) {
       return res.json({ success: false, message: String(e?.message || e) });
+    }
+  });
+
+  // P0-2修复(2026-10-15)：乘客自助开单页查司机真实VIP有效期，不信任URL ?vip= 参数（防伪造绕过会员门禁）
+  // 公开接口（乘客未登录），只返回有效期字符串，不泄露其他信息
+  app.get('/api/driver/vip-status', async (req: any, res: any) => {
+    try {
+      const phone = String(req.query.phone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      if (phone === '15509601222') {
+        return res.json({ success: true, vipExpiry: '永久有效' });
+      }
+      const dbData = readLocalJsonDb();
+      const purePhone = phone.replace(/A$/, '');
+      const vipExpiry =
+        dbData.driver_users?.[phone]?.vipExpiry ||
+        dbData.driver_users?.[purePhone]?.vipExpiry ||
+        dbData.squad_members?.[phone]?.vipExpiry ||
+        dbData.squad_members?.[purePhone]?.vipExpiry ||
+        dbData.online_applications?.[phone]?.vipExpiry ||
+        dbData.online_applications?.[purePhone]?.vipExpiry ||
+        '';
+      return res.json({ success: true, vipExpiry });
+    } catch (e: any) {
+      return res.status(500).json({ success: false, error: String(e?.message || e) });
     }
   });
 
@@ -6124,7 +6155,8 @@ function getClientIp(req: any): string {
   });
 
   // 2026-10-12 兑换码专用查询通道：不走 /api/db/get 的严格鉴权，司机可直接验证
-  app.get('/api/vip-code-check', async (req, res) => {
+  // P1-1修复(2026-10-15)：加鉴权，返回最小化（不泄露他人手机号）
+  app.get('/api/vip-code-check', requireDbAuth, async (req, res) => {
     try {
       const code = String(req.query.code || '').trim().toUpperCase();
       if (!code) {
@@ -6145,7 +6177,8 @@ function getClientIp(req: any): string {
         foundData = dbData?.vip_codes?.[code] || null;
       }
       if (foundData) {
-        return res.json({ success: true, exists: true, data: foundData });
+        // P1-1: 只返回exists和duration，不返回redeemedBy等隐私字段
+        return res.json({ success: true, exists: true, duration: foundData.duration || 30, isRedeemed: !!foundData.isRedeemed });
       }
       return res.json({ success: true, exists: false });
     } catch (err: any) {
@@ -6155,50 +6188,124 @@ function getClientIp(req: any): string {
   });
 
   // 2026-10-12 兑换码核销专用通道
-  app.post('/api/vip-code-redeem', async (req, res) => {
+  // P0-4修复(2026-10-15)：服务端原子核销 + 写三表vipExpiry，前端只展示不再本地计算
+  // P1-2修复(2026-10-15)：加鉴权，redeemedBy取token身份
+  app.post('/api/vip-code-redeem', requireDbAuth, async (req, res) => {
     try {
-      const { code, redeemedBy } = req.body || {};
+      const { code } = req.body || {};
       const cleanCode = String(code || '').trim().toUpperCase();
+      // P1-2: redeemedBy 取token身份，不信任客户端
+      const redeemerPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
       if (!cleanCode) {
         return res.status(400).json({ success: false, error: '缺少兑换码' });
       }
-      let foundData: any = null;
+      if (!/^1[3-9]\d{9}$/.test(redeemerPhone)) {
+        return res.status(400).json({ success: false, error: '身份异常' });
+      }
+
+      // 计算新的有效期
+      const calcExpiry = (currentExpiry: string, durationDays: number): string => {
+        if (durationDays === 99999) return '永久有效';
+        let base = new Date();
+        if (currentExpiry && currentExpiry !== '永久有效' && currentExpiry !== '待开通') {
+          const parsed = Date.parse(currentExpiry);
+          if (!isNaN(parsed)) {
+            const prev = new Date(parsed);
+            if (prev.getTime() > base.getTime()) base = prev;
+          }
+        }
+        base.setDate(base.getDate() + durationDays);
+        const yyyy = base.getFullYear();
+        const mm = String(base.getMonth() + 1).padStart(2, '0');
+        const dd = String(base.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      };
+
+      let finalExpiry = '';
+      let durationDays = 30;
+
       if (isMySQLEnabled && mysqlPool) {
-        const [rows]: any = await mysqlPool.query(
-          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-          ['vip_codes', cleanCode]
-        );
-        if (rows && rows.length > 0) {
-          const raw = rows[0].data;
-          foundData = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        // MySQL: 用事务保证原子性（查+标已用+写三表）
+        const conn = await mysqlPool.getConnection();
+        try {
+          await conn.beginTransaction();
+          const [rows]: any = await conn.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? FOR UPDATE',
+            ['vip_codes', cleanCode]
+          );
+          if (!rows || rows.length === 0) {
+            await conn.rollback(); conn.release();
+            return res.status(404).json({ success: false, error: '兑换码不存在' });
+          }
+          const foundData = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+          if (foundData.isRedeemed) {
+            await conn.rollback(); conn.release();
+            return res.status(400).json({ success: false, error: '该兑换码已被使用' });
+          }
+          durationDays = Number(foundData.duration) || 30;
+          foundData.isRedeemed = true;
+          foundData.redeemedAt = new Date().toISOString();
+          foundData.redeemedBy = redeemerPhone;
+          await conn.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['vip_codes', cleanCode, JSON.stringify(foundData)]
+          );
+          // 写三表 vipExpiry（读当前值累加）
+          const purePhone = redeemerPhone.replace(/A$/, '');
+          for (const col of ['driver_users', 'squad_members', 'online_applications']) {
+            for (const p of [redeemerPhone, purePhone]) {
+              const [erows]: any = await conn.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                [col, p]
+              );
+              if (erows && erows.length > 0) {
+                const edata = typeof erows[0].data === 'string' ? JSON.parse(erows[0].data) : erows[0].data;
+                if (!finalExpiry) finalExpiry = calcExpiry(String(edata.vipExpiry || ''), durationDays);
+                edata.vipExpiry = finalExpiry;
+                edata.updatedAt = new Date().toISOString();
+                await conn.query(
+                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                  'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                  [col, p, JSON.stringify(edata)]
+                );
+              }
+            }
+          }
+          await conn.commit(); conn.release();
+        } catch (e) {
+          try { await conn.rollback(); conn.release(); } catch (_) {}
+          throw e;
         }
       } else {
+        // 本地JSON模式：单线程天然原子
         const dbData = readLocalJsonDb();
-        foundData = dbData?.vip_codes?.[cleanCode] || null;
-      }
-      if (!foundData) {
-        return res.status(404).json({ success: false, error: '兑换码不存在' });
-      }
-      if (foundData.isRedeemed) {
-        return res.status(400).json({ success: false, error: '该兑换码已被使用' });
-      }
-      foundData.isRedeemed = true;
-      foundData.redeemedAt = new Date().toISOString();
-      foundData.redeemedBy = String(redeemedBy || '').slice(0, 50);
-      const dataStr = JSON.stringify(foundData);
-      if (isMySQLEnabled && mysqlPool) {
-        await mysqlPool.query(
-          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-          ['vip_codes', cleanCode, dataStr]
-        );
-      } else {
-        const dbData = readLocalJsonDb();
+        const foundData = dbData?.vip_codes?.[cleanCode] || null;
+        if (!foundData) {
+          return res.status(404).json({ success: false, error: '兑换码不存在' });
+        }
+        if (foundData.isRedeemed) {
+          return res.status(400).json({ success: false, error: '该兑换码已被使用' });
+        }
+        durationDays = Number(foundData.duration) || 30;
+        foundData.isRedeemed = true;
+        foundData.redeemedAt = new Date().toISOString();
+        foundData.redeemedBy = redeemerPhone;
         if (!dbData.vip_codes) dbData.vip_codes = {};
         dbData.vip_codes[cleanCode] = foundData;
+        const purePhone = redeemerPhone.replace(/A$/, '');
+        for (const col of ['driver_users', 'squad_members', 'online_applications']) {
+          for (const p of [redeemerPhone, purePhone]) {
+            if (dbData[col]?.[p]) {
+              if (!finalExpiry) finalExpiry = calcExpiry(String(dbData[col][p].vipExpiry || ''), durationDays);
+              dbData[col][p].vipExpiry = finalExpiry;
+              dbData[col][p].updatedAt = new Date().toISOString();
+            }
+          }
+        }
         writeLocalJsonDb(dbData);
       }
-      return res.json({ success: true });
+      return res.json({ success: true, vipExpiry: finalExpiry, durationDays });
     } catch (err: any) {
       console.error('[VIP Code Redeem] error:', err);
       res.status(500).json({ success: false, error: err.message || 'VIP Code Redeem Error' });
@@ -6367,12 +6474,21 @@ function getClientIp(req: any): string {
       }
       const now = new Date().toISOString();
       const nowTs = Date.now();
+      // P1-4修复(2026-10-15)：approvedBy取token身份，不信任客户端自报
+      const realApprover = String((req as any).authPhone || approvedBy || '').trim();
+      // P1-6修复(2026-10-15)：已是成员则保留原角色，防重审降级
+      let keepRole = '普通司机';
+      try {
+        const dbData = readLocalJsonDb();
+        const existing = dbData.squad_members?.[cleanPhone];
+        if (existing?.role && existing.role !== '普通司机') keepRole = existing.role;
+      } catch (_) {}
       const memberPayload = {
         id: cleanPhone, phone: cleanPhone, phoneNumber: cleanPhone,
         name: cleanName, driverName: cleanName,
-        role: '普通司机', userRole: '普通司机',
+        role: keepRole, userRole: keepRole,
         status: '已通过', approvalStatus: '已通过',
-        approvedBy: String(approvedBy || ''), approvedRole: String(approvedRole || ''),
+        approvedBy: realApprover, approvedRole: String(approvedRole || ''),
         approvalTime: now, note: String(note || '').slice(0, 200),
         city: String(city || '银川市').slice(0, 20),
         vipExpiry: '待开通', createdAt: nowTs, updatedAt: now,
@@ -6451,6 +6567,10 @@ function getClientIp(req: any): string {
   // 2026-10-12 司机改名专用通道：同步更新所有相关表。不走鉴权。
   app.post('/api/squad-member/rename', requireDbAuth, async (req, res) => {
     try {
+      // P0-1修复(2026-10-15)：仅管理人员可改名，防普通司机越权
+      if (!(req as any).isAdmin && !(req as any).isManager) {
+        return res.status(403).json({ success: false, error: '仅管理人员可以改名' });
+      }
       const { phone, name } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
       const cleanName = String(name || '').trim().slice(0, 8);
@@ -6494,6 +6614,10 @@ function getClientIp(req: any): string {
   // 2026-10-12 司机职位调整专用通道：同步更新所有相关表。不走鉴权。
   app.post('/api/squad-member/set-role', requireDbAuth, async (req, res) => {
     try {
+      // P0-1修复(2026-10-15)：仅管理人员可调职位，防普通司机自封提权
+      if (!(req as any).isAdmin && !(req as any).isManager) {
+        return res.status(403).json({ success: false, error: '仅管理人员可以调整职位' });
+      }
       const { phone, role } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
       const cleanRole = String(role || '').trim().slice(0, 20);
@@ -6546,6 +6670,10 @@ function getClientIp(req: any): string {
   // 2026-10-12 小队成员删除专用通道：确保删除必生效，删除后立即失去接单权限。不走鉴权（管理后台调用）。
   app.post('/api/squad-member/remove', requireDbAuth, async (req, res) => {
     try {
+      // P0-1修复(2026-10-15)：仅管理人员可删除司机，防普通司机删光全小队
+      if (!(req as any).isAdmin && !(req as any).isManager) {
+        return res.status(403).json({ success: false, error: '仅管理人员可以删除司机' });
+      }
       const { phone, adminPhone } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
       if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
@@ -6574,10 +6702,12 @@ function getClientIp(req: any): string {
           const raw = uRows[0].data;
           uData = typeof raw === 'string' ? JSON.parse(raw) : raw;
         }
+        // P1-10修复(2026-10-15)：保留真名不洗成"司机+后四位"
+        // P1-4: removedBy取token身份
+        const realRemover = String((req as any).authPhone || adminPhone || '').trim();
         uData = { ...uData, phone: cleanPhone, phoneNumber: cleanPhone,
-          driverName: `司机${cleanPhone.slice(-4)}`, name: `司机${cleanPhone.slice(-4)}`,
           role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队',
-          removedBy: String(adminPhone || ''), removedAt: now, updatedAt: now };
+          removedBy: realRemover, removedAt: now, updatedAt: now };
         await mysqlPool.query(
           'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
           'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
@@ -6597,6 +6727,21 @@ function getClientIp(req: any): string {
           'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
           'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
           ['config', 'removed_squad_members', JSON.stringify({ phones, updatedAt: now })]);
+        // P1-10: 清GPS位置（地图不再显示被删的人）
+        await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+          ['driver_locations', cleanPhone]).catch(() => {});
+        // P1-10: 拉黑该手机号所有token（被删司机App立即掉线，需用户拍板：删除=踢出但可重申请）
+        try {
+          const dbData2 = readLocalJsonDb();
+          if (!dbData2._config) dbData2._config = {};
+          if (!Array.isArray(dbData2._config.tokenBlocklist)) dbData2._config.tokenBlocklist = [];
+          // 标记该手机号的token失效（验签时检查手机号黑名单）
+          if (!dbData2._config.removedPhones) dbData2._config.removedPhones = [];
+          if (!dbData2._config.removedPhones.includes(cleanPhone)) {
+            dbData2._config.removedPhones.push(cleanPhone);
+          }
+          writeLocalJsonDb(dbData2);
+        } catch (_) {}
       } else {
         const dbData = readLocalJsonDb();
         if (dbData['squad_members']?.[cleanPhone]) delete dbData['squad_members'][cleanPhone];
@@ -6948,13 +7093,19 @@ function getClientIp(req: any): string {
   });
 
   // 2026-10-12 小队申请专用提交通道：司机提交自己的申请，不走 /api/db/set 的严格权限
-  app.post('/api/squad-apply', async (req, res) => {
+  // P1-3修复(2026-10-15)：加鉴权，申请人手机号必须等于token身份，防冒名申请
+  app.post('/api/squad-apply', requireDbAuth, async (req, res) => {
     try {
       const { phone, name, note, city } = req.body || {};
       const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
       const cleanName = String(name || '').trim().slice(0, 8);
       if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
         return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      // P1-3: 申请人必须为本人，防冒名
+      const tokenPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      if (cleanPhone !== tokenPhone && !(req as any).isAdmin) {
+        return res.status(403).json({ success: false, error: '只能为本人提交申请' });
       }
       if (!cleanName) {
         return res.status(400).json({ success: false, error: '请填写真实姓名' });
@@ -7001,6 +7152,22 @@ function getClientIp(req: any): string {
   if (!fs.existsSync(qrcodesDir)) {
     fs.mkdirSync(qrcodesDir, { recursive: true });
   }
+  // P1-8修复(2026-10-15)：/uploads/qrcodes 不再静态裸奔，加鉴权（防猜URL下载他人收款码）
+  app.use('/uploads/qrcodes', requireDbAuth, (req: any, res: any, next: any) => {
+    // 允许：查自己的码 / 开发者 / 订单关联（通过get-wechat-qr的逻辑复用简化版：只允许自己的）
+    // 订单关联的场景走 /api/get-wechat-qr 接口，这里只做基础防护
+    const requester = String(req.authPhone || '').replace(/\D/g, '').trim();
+    const filename = String(req.path || '').split('/').pop() || '';
+    // 文件名格式: {phone}[_web|_app].png，提取手机号部分
+    const m = filename.match(/^(\d{11}A?)(?:_(?:web|app))?\.png$/i);
+    if (!m) return res.status(404).json({ success: false, error: 'Not found' });
+    const filePhone = m[1].toUpperCase();
+    const reqNorm = requester.toUpperCase();
+    if (!req.isAdmin && filePhone !== reqNorm && filePhone !== reqNorm.replace(/A$/, '')) {
+      return res.status(403).json({ success: false, error: '无权访问他人收款码' });
+    }
+    next();
+  });
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
   app.use(express.static(path.join(process.cwd(), 'public')));
 
@@ -7030,7 +7197,9 @@ function getClientIp(req: any): string {
 
       // A后缀判断必须用原始phone（strip前），否则永假
       const isWeb = channel === 'web' || channel === 'mobile_web' || rawPhone.endsWith('A');
-      const filename = isWeb ? `${cleanPhone}_web.png` : `${cleanPhone}.png`;
+      // P0-5修复(2026-10-15)：文件名保留A后缀，商户15509601222A与司机15509601222账号隔离不串码
+      const filePhone = rawPhone.endsWith('A') ? `${cleanPhone}A` : cleanPhone;
+      const filename = isWeb ? `${filePhone}_web.png` : `${filePhone}.png`;
       const filepath = path.join(qrcodesDir, filename);
       const fallbackFilepath = path.join(qrsDir, filename);
       
@@ -7042,9 +7211,9 @@ function getClientIp(req: any): string {
 
       if (!isWeb) {
         try {
-          const appFilepath = path.join(qrcodesDir, `${cleanPhone}_app.png`);
+          const appFilepath = path.join(qrcodesDir, `${filePhone}_app.png`);
           await fs.promises.writeFile(appFilepath, buffer);
-          await fs.promises.writeFile(path.join(qrsDir, `${cleanPhone}_app.png`), buffer);
+          await fs.promises.writeFile(path.join(qrsDir, `${filePhone}_app.png`), buffer);
         } catch (_) {}
       }
       
@@ -7056,8 +7225,9 @@ function getClientIp(req: any): string {
         : ['app_valet_qrs', 'dispatch_qrs', 'dispatch_qrcodes', 'driver_users', 'squad_members'];
 
       const qrPayload = {
-        id: cleanPhone,
-        phone: cleanPhone,
+        // P0-5: doc_id保留A后缀，账号隔离
+        id: filePhone,
+        phone: filePhone,
         qrCode: qrUrl,
         wechatQrCode: qrUrl,
         qrcode_url: `/uploads/qrcodes/${filename}`,
@@ -7070,7 +7240,7 @@ function getClientIp(req: any): string {
           try {
             const [rows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-              [col, cleanPhone]
+              [col, filePhone]
             );
             let merged = { ...qrPayload };
             if (rows && rows.length > 0) {
@@ -7079,7 +7249,7 @@ function getClientIp(req: any): string {
             }
             await mysqlPool.query(
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              [col, cleanPhone, JSON.stringify(merged)]
+              [col, filePhone, JSON.stringify(merged)]
             );
           } catch (_) {}
         }
@@ -7123,16 +7293,35 @@ function getClientIp(req: any): string {
       const isDev = (req as any).isAdmin;
       let authorized = isDev || queryPhone === requester;
       if (!authorized && orderId) {
+        // P0-3修复(2026-10-15)：生产服订单只在MySQL，本地JSON查不到，改走MySQL查订单
+        const checkOrderAuth = (order: any) => {
+          if (!order) return false;
+          const ordererPhone = String(order.merchantPhone || order.driverPhone || order.ordererPhone || '').replace(/\D/g, '');
+          const assignedDriver = String(order.dispatchedDriverPhone || order.claimedDriverPhone || '').replace(/\D/g, '');
+          // 下单人的码：订单的执行司机或下单人本人可以查
+          return queryPhone === ordererPhone && (requester === assignedDriver || requester === ordererPhone);
+        };
         try {
-          const dbData = readLocalJsonDb();
-          const order = dbData.merchant_orders?.[orderId] || dbData.valet_orders?.[orderId];
-          if (order) {
-            const ordererPhone = String(order.merchantPhone || order.driverPhone || order.ordererPhone || '').replace(/\D/g, '');
-            const assignedDriver = String(order.dispatchedDriverPhone || order.claimedDriverPhone || '').replace(/\D/g, '');
-            // 下单人的码：订单的执行司机或下单人本人可以查
-            if (queryPhone === ordererPhone && (requester === assignedDriver || requester === ordererPhone)) {
-              authorized = true;
+          // 先查MySQL（生产服）
+          if (isMySQLEnabled && mysqlPool) {
+            for (const col of ['merchant_orders', 'valet_orders']) {
+              try {
+                const [rows]: any = await mysqlPool.query(
+                  'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                  [col, orderId]
+                );
+                if (rows && rows.length > 0) {
+                  const data = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+                  if (checkOrderAuth(data)) { authorized = true; break; }
+                }
+              } catch (_) {}
             }
+          }
+          // 回退查本地JSON（开发/单机模式）
+          if (!authorized) {
+            const dbData = readLocalJsonDb();
+            const order = dbData.merchant_orders?.[orderId] || dbData.valet_orders?.[orderId];
+            if (checkOrderAuth(order)) authorized = true;
           }
         } catch (_) {}
       }

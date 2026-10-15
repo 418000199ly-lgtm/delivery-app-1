@@ -1095,10 +1095,10 @@ export default function DispatchValetOrder({
       }
 
       const baseUrl = getBaseApiUrl();
-      // 2026-10-12改用审批专用通道（不走鉴权，确保服务端必写入）
+      // P1-7修复(2026-10-15)：补auth头（服务端已要求鉴权）
       fetch(`${baseUrl}/api/squad-member/approve`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
           phone: targetPhone,
           name: name,
@@ -2024,7 +2024,7 @@ export default function DispatchValetOrder({
         // 2026-10-12改用职位调整专用通道（不走鉴权，确保服务端同步）
         fetch(`${baseUrl}/api/squad-member/set-role`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: targetPhone, role: newRole })
         }).catch(() => {});
 

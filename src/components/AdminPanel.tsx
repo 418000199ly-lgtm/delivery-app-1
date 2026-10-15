@@ -2215,7 +2215,7 @@ export default function AdminPanel({
       try {
         const delResp = await fetch(`${baseUrl}/api/squad-member/remove`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: cleanPhone, adminPhone: userPhone || '' })
         });
         const delJson = await delResp.json().catch(() => null);
