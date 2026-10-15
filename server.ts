@@ -3835,7 +3835,22 @@ function getClientIp(req: any): string {
 
       // Always include developer driver 15509601222 if not present in squadList
       if (!squadList.some((s) => s.phone === '15509601222')) {
-        const devDriverData = dbData['driver_users']?.['15509601222'] || {};
+        // 2026-10-15根治：MySQL模式下从MySQL读开发者数据，本地JSON是stale的会导致授权判断错误
+        let devDriverData: any = {};
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [devRows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['driver_users', '15509601222']
+            );
+            if (devRows && devRows[0]) {
+              const d = devRows[0].data;
+              devDriverData = typeof d === 'string' ? JSON.parse(d) : d;
+            }
+          } catch (_) {}
+        } else {
+          devDriverData = dbData['driver_users']?.['15509601222'] || {};
+        }
         squadList.push({
           phone: '15509601222',
           data: {
