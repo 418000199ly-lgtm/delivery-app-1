@@ -3424,6 +3424,35 @@ function getClientIp(req: any): string {
         }
       });
 
+      // P1(2026-10-15)：按哈勃权限过滤真名，无权限者只见自己真名
+      try {
+        const requesterPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+        let hasHubble = requesterPhone === '15509601222';
+        if (!hasHubble) {
+          if (isMySQLEnabled && mysqlPool) {
+            const [hrows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['hubble_authorized_drivers', requesterPhone]
+            );
+            hasHubble = !!(hrows && hrows.length > 0);
+          } else {
+            hasHubble = !!readLocalJsonDb()?.['hubble_authorized_drivers']?.[requesterPhone];
+          }
+        }
+        if (!hasHubble) {
+          for (const k of Object.keys(locations)) {
+            const itemPhone = String(locations[k]?.phone || k || '').replace(/\D/g, '').trim();
+            if (itemPhone && itemPhone !== requesterPhone) {
+              // 遮挡真名，保留位置用于地图显示
+              if (locations[k].driverName) locations[k].driverName = '某师傅';
+              if (locations[k].name) locations[k].name = '某师傅';
+              // 手机号脱敏
+              if (locations[k].phone) locations[k].phone = String(locations[k].phone).slice(0, 3) + '****' + String(locations[k].phone).slice(-4);
+            }
+          }
+        }
+      } catch (_) {}
+
       return res.json({ success: true, locations });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
@@ -8177,13 +8206,16 @@ function getClientIp(req: any): string {
       qrLogs.push(now);
       smsSendLogs.set(qrKey, qrLogs);
 
-      const phone = String(req.query.phone || '').replace(/\D/g, '').trim();
+      const rawPhoneQ = String(req.query.phone || '').trim().toUpperCase();
+      const phoneDigits = rawPhoneQ.replace(/\D/g, '').trim();
       const channel = String(req.query.channel || '').trim();
-      if (!phone) {
+      if (!phoneDigits) {
         return res.status(400).json({ success: false, error: 'Missing phone' });
       }
+      // P0(2026-10-15)：保留A后缀，防串码
+      const phone = rawPhoneQ.endsWith('A') ? `${phoneDigits}A` : phoneDigits;
 
-      const isWeb = channel === 'web' || channel === 'mobile_web' || phone.endsWith('A') || phone.endsWith('a');
+      const isWeb = channel === 'web' || channel === 'mobile_web' || phone.endsWith('A');
       const webFilename = `${phone}_web.png`;
       const appFilename = `${phone}.png`;
       const appSpecificFilename = `${phone}_app.png`;
@@ -8280,11 +8312,13 @@ function getClientIp(req: any): string {
       }
 
       // 路径遍历防护：只允许精确文件名，不做前缀匹配
+      // P0(2026-10-15)：保留A后缀，防商户删错司机的码
       const cleanPhone = rawPhone.replace(/\D/g, '').trim();
       if (!cleanPhone || cleanPhone.length !== 11) {
         return res.status(400).json({ error: '手机号格式错误' });
       }
-      const allowedFiles = new Set([`${cleanPhone}.png`, `${cleanPhone}_web.png`, `${cleanPhone}_app.png`]);
+      const filePhone = rawPhone.endsWith('A') ? `${cleanPhone}A` : cleanPhone;
+      const allowedFiles = new Set([`${filePhone}.png`, `${filePhone}_web.png`, `${filePhone}_app.png`]);
 
       // Delete disk physical files from both qrcodesDir and qrsDir
       [qrcodesDir, qrsDir].forEach(dir => {
