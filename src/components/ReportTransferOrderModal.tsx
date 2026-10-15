@@ -289,10 +289,11 @@ export default function ReportTransferOrderModal({
 
       // 2026-10-12改用报单转单专用派单通道（不走鉴权）：以报单人位置为圆心3公里找最近上线空闲小队司机，无人则进大厅
       let serverResult: any = null;
+      let serverAuthFailed = false;
       try {
         const dispatchResp = await fetch(`${baseUrl}/api/report-transfer/dispatch`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
             orderId: orderId,
             reporterPhone: cleanUserPhone,
@@ -307,9 +308,21 @@ export default function ReportTransferOrderModal({
 
         if (dispatchResp.ok) {
           serverResult = await dispatchResp.json();
+        } else if (dispatchResp.status === 401 || dispatchResp.status === 403) {
+          serverAuthFailed = true;
         }
       } catch (e) {
         console.warn('[ReportTransfer] Server dispatch fallback to local:', e);
+      }
+
+      // 2026-10-15: 服务端鉴权失败(401/403)时不走本地fallback，直接报错（防假成功）
+      if (serverAuthFailed) {
+        setDispatchResultMsg({
+          title: '报单转单失败',
+          desc: '登录已过期或无权限，请重新登录后再试。',
+          isHall: false
+        });
+        return;
       }
 
       const isServerHandled = serverResult && serverResult.success;

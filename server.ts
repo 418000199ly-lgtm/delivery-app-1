@@ -1343,6 +1343,7 @@ function getClientIp(req: any): string {
     // 注意：/api/db/set|save|update|delete|add|clear-collection 等写接口不在此列，仍走下方严格校验
     const BUSINESS_PATHS = new Set([
       '/api/order/claim',
+      '/api/order/driver-claim',
       '/api/dispatch/nearest',
       '/api/driver/location',
       '/api/driver/status',
@@ -4232,7 +4233,10 @@ function getClientIp(req: any): string {
         if (!isLicenseValid(licExpiry)) {
           return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
         }
-      } catch (_) {}
+      } catch (e) {
+        console.error('[Claim] 接单授权校验异常:', (e as any)?.message);
+        return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
+      }
       const cleanDriverName = String(driverName || `司机${cleanDriverPhone.slice(-4)}`).trim();
 
       if (!cleanOrderId || !cleanDriverPhone) {
@@ -4636,8 +4640,31 @@ function getClientIp(req: any): string {
   setInterval(async () => {
     try {
       const now = Date.now();
+      // 2026-10-15 P0修复：MySQL模式下从MySQL读订单，否则超时转大厅在生产环境完全失效
+      let merchantOrders: Record<string, any> = {};
+      let useMySQL = false;
       const dbData = readLocalJsonDb();
-      const merchantOrders = dbData['merchant_orders'] || {};
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
+            ['merchant_orders']
+          );
+          (rows || []).forEach((r: any) => {
+            try {
+              const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+              const k = String(r.doc_id || d?.id || d?.orderId || '').trim();
+              if (k) merchantOrders[k] = d;
+            } catch (_) {}
+          });
+          useMySQL = true;
+        } catch (e) {
+          console.error('[Timer] MySQL读merchant_orders失败:', (e as any)?.message);
+        }
+      }
+      if (!useMySQL) {
+        merchantOrders = dbData['merchant_orders'] || {};
+      }
       let hasChanges = false;
 
       for (const [orderId, order] of Object.entries<any>(merchantOrders)) {
@@ -4813,6 +4840,27 @@ function getClientIp(req: any): string {
         return res.json({ success: false, message: '缺少orderId或driverPhone' });
       }
       const now = Date.now();
+      // 2026-10-15 P0修复：MySQL模式下更新MySQL中的订单，否则心跳写不到真实订单
+      if (isMySQLEnabled && mysqlPool && orderId) {
+        try {
+          // 先读出当前数据，更新pageHeartbeatAt，再写回
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_EXTRACT(`data`, "$.id") = ? OR JSON_EXTRACT(`data`, "$.orderId") = ?)',
+            ['merchant_orders', orderId, orderId, orderId]
+          );
+          if (rows && rows[0]) {
+            const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+            d.pageHeartbeatAt = now;
+            await mysqlPool.query(
+              'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
+              [JSON.stringify(d), 'merchant_orders', rows[0].doc_id]
+            );
+            return res.json({ success: true, heartbeatAt: now });
+          }
+        } catch (e) {
+          console.error('[Heartbeat] MySQL更新失败:', (e as any)?.message);
+        }
+      }
       const dbData = readLocalJsonDb();
       let updated = false;
       // 更新 merchant_orders
@@ -7104,9 +7152,10 @@ function getClientIp(req: any): string {
   // 2026-10-12 司机接单专用通道：原子认领，防止抢单竞态。不走鉴权。
   app.post('/api/order/driver-claim', requireDbAuth, async (req, res) => {
     try {
-      const { orderId, driverPhone, driverName } = req.body || {};
+      const { orderId, driverName } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();
-      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      // 2026-10-15 P0修复：driverPhone强制取token本人，防冒名替他人抢单（与/api/order/claim的H11一致）
+      const cleanDriverPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
       const cleanDriverName = String(driverName || '').slice(0, 20);
       if (!cleanOrderId || !/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
         return res.status(400).json({ success: false, error: '参数错误' });
@@ -7128,7 +7177,10 @@ function getClientIp(req: any): string {
         if (!isLicenseValid(licExpiry2)) {
           return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
         }
-      } catch (_) {}
+      } catch (e) {
+        console.error('[DriverClaim] 接单授权校验异常:', (e as any)?.message);
+        return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
+      }
       // 2026-10-12修复：接单人必须是小队正式成员（已通过），否则403
       const checkSquadMember = async (): Promise<boolean> => {
         if (cleanDriverPhone === '15509601222') return true; // 开发者
@@ -7260,7 +7312,10 @@ function getClientIp(req: any): string {
         if (!isLicenseValid(repLic)) {
           return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
         }
-      } catch (_) {}
+      } catch (e) {
+        console.error('[ReportTransfer] 发起人授权校验异常:', (e as any)?.message);
+        return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
+      }
       const cleanPassenger = String(passengerPhone || '').replace(/\D/g, '').trim();
       const cleanOrderId = String(orderId || `rt_${Date.now()}`).trim();
       if (!cleanReporter || !/^1[3-9]\d{9}$/.test(cleanPassenger)) {

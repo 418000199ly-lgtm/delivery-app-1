@@ -2082,7 +2082,7 @@ export default function AdminPanel({
 
       triggerToast(`🎉 成功为小队所有正式成员一键充值 50 天会员！已完美同步下发至中国大陆阿里云宝塔数据库，到期时间：${targetExpiry}`);
     } catch (err: any) {
-      triggerToast('批量充值提示：已成功下发充值指令至中国大陆阿里云宝塔服务器！');
+      triggerToast(`❌ 批量充值失败：${String(err?.message || err)}，请检查网络后重试`);
     } finally {
       setIsBatchRecharging(false);
     }
@@ -4449,6 +4449,13 @@ export default function AdminPanel({
                     const j = await r.json().catch(() => null);
                     if (r.ok && j?.success) {
                       triggerToast(`✅ 接单授权充值成功：${j.phone} +${j.daysAdded}天，有效期至 ${j.licenseExpiry}`);
+                      // 2026-10-15 P0修复：派发事件通知App更新licenseExpiry，否则App徽章不更新
+                      // 复用 driver_vip_updated 事件，App.tsx:696 已处理 detail.licenseExpiry
+                      try {
+                        window.dispatchEvent(new CustomEvent('driver_vip_updated', {
+                          detail: { phone: j.phone, licenseExpiry: j.licenseExpiry }
+                        }));
+                      } catch (_) {}
                       inputEl.value = ''; daysEl.value = '';
                     } else {
                       triggerToast(`❌ 充值失败：${j?.error || '服务器错误'}`);
@@ -4901,7 +4908,11 @@ export default function AdminPanel({
                           {isOfficialSquadMember(driverDoc) ? (
                             <button
                               type="button"
-                              onClick={() => handleConvertToNonSquad(driverDoc.phoneNumber)}
+                              onClick={() => {
+                                if (confirm(`确定将 ${driverDoc.driverName || driverDoc.phoneNumber} 转为非小队内成员吗？\n\n此操作将：\n- 从小队成员列表移除\n- 删除入队申请记录\n- 加入移除名单\n\n请确认！`)) {
+                                  handleConvertToNonSquad(driverDoc.phoneNumber);
+                                }
+                              }}
                               className="w-full py-2 px-3 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
                             >
                               <Lock className="w-3.5 h-3.5" />
@@ -5192,7 +5203,9 @@ export default function AdminPanel({
                                       type="button"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        handleConvertToNonSquad(drvPhone);
+                                        if (confirm(`确定将 ${drvPhone} 转为非小队内成员吗？\n\n此操作将从小队移除该司机，请确认！`)) {
+                                          handleConvertToNonSquad(drvPhone);
+                                        }
                                       }}
                                       className="px-2 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 font-bold rounded-lg text-[9.5px] transition-all cursor-pointer shadow-xs"
                                       title="一键转为非小队内成员（保留会员到期天数）"

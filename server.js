@@ -1021,7 +1021,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "845e4b6b";
+  const SERVER_VERSION = "561484d2";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -3270,7 +3270,22 @@ async function startServer() {
         }
       });
       if (!squadList.some((s) => s.phone === "15509601222")) {
-        const devDriverData = dbData["driver_users"]?.["15509601222"] || {};
+        let devDriverData = {};
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [devRows] = await mysqlPool.query(
+              "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+              ["driver_users", "15509601222"]
+            );
+            if (devRows && devRows[0]) {
+              const d = devRows[0].data;
+              devDriverData = typeof d === "string" ? JSON.parse(d) : d;
+            }
+          } catch (_) {
+          }
+        } else {
+          devDriverData = dbData["driver_users"]?.["15509601222"] || {};
+        }
         squadList.push({
           phone: "15509601222",
           data: {

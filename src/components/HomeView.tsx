@@ -1687,7 +1687,7 @@ export default function HomeView({
       try {
         const applyRes = await fetch(`${baseUrl}/api/squad-apply`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: currentPhone, name: freshName, note: noteText, city: effectiveCity || '银川市' })
         });
         const applyJson = await applyRes.json().catch(() => null);
