@@ -2321,26 +2321,37 @@ function getClientIp(req: any): string {
       if (days <= 0 || days > 3650) {
         return res.status(400).json({ success: false, error: '天数必须在1-3650之间' });
       }
-      // 按手机号或名字查找司机
+      // 按手机号或名字查找司机（名字必须精确匹配唯一，多人重名时要求用手机号）
       let targetPhone = inputPhone;
       if (!targetPhone && inputName) {
+        const matches: string[] = [];
+        const collectMatches = (pid: string, d: any) => {
+          const n = String(d?.name || d?.driverName || '').trim();
+          if (n && n === inputName) {
+            const p = String(pid).replace(/\D/g, '').trim();
+            if (/^1[3-9]\d{9}$/.test(p) && !matches.includes(p)) matches.push(p);
+          }
+        };
         if (isMySQLEnabled && mysqlPool) {
           const [rows]: any = await mysqlPool.query(
-            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? LIMIT 500',
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? LIMIT 2000',
             ['squad_members']);
           for (const r of (rows || [])) {
             try {
               const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-              const n = String(d.name || d.driverName || '');
-              if (n && (n === inputName || n.includes(inputName))) { targetPhone = String(r.doc_id).replace(/\D/g, ''); break; }
+              collectMatches(String(r.doc_id), d);
             } catch (_) {}
           }
         } else {
           const dbData = readLocalJsonDb();
-          for (const [pid, d]: any of Object.entries(dbData.squad_members || {})) {
-            const n = String((d as any).name || (d as any).driverName || '');
-            if (n && (n === inputName || n.includes(inputName))) { targetPhone = String(pid).replace(/\D/g, ''); break; }
+          for (const [pid, d] of Object.entries(dbData.squad_members || {})) {
+            collectMatches(pid, d);
           }
+        }
+        if (matches.length === 1) {
+          targetPhone = matches[0];
+        } else if (matches.length > 1) {
+          return res.status(400).json({ success: false, error: `名字"${inputName}"有多人重名，请用手机号精确充值` });
         }
       }
       if (!targetPhone || !/^1[3-9]\d{9}$/.test(targetPhone)) {
@@ -4145,19 +4156,24 @@ function getClientIp(req: any): string {
       }
       const cleanDriverPhone = authPhoneRaw.replace(/\D/g, '').trim();
       // 接单授权检查 (2026-10-15)：天数为0不能抢单，无豁免
+      // 查driver_users，兜底查squad_members
       try {
         let licExpiry = '';
-        if (isMySQLEnabled && mysqlPool) {
-          const [lrows]: any = await mysqlPool.query(
-            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-            ['driver_users', cleanDriverPhone]);
-          if (lrows && lrows.length > 0) {
-            const ld = typeof lrows[0].data === 'string' ? JSON.parse(lrows[0].data) : lrows[0].data;
-            licExpiry = String(ld.licenseExpiry || '');
+        const getLic = async (col: string): Promise<string> => {
+          if (isMySQLEnabled && mysqlPool) {
+            const [lrows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              [col, cleanDriverPhone]);
+            if (lrows && lrows.length > 0) {
+              const ld = typeof lrows[0].data === 'string' ? JSON.parse(lrows[0].data) : lrows[0].data;
+              return String(ld.licenseExpiry || '');
+            }
+          } else {
+            return String(readLocalJsonDb()?.[col]?.[cleanDriverPhone]?.licenseExpiry || '');
           }
-        } else {
-          licExpiry = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.licenseExpiry || '');
-        }
+          return '';
+        };
+        licExpiry = await getLic('driver_users') || await getLic('squad_members');
         if (!isLicenseValid(licExpiry)) {
           return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
         }
