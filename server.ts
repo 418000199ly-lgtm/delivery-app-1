@@ -5742,6 +5742,16 @@ function getClientIp(req: any): string {
       const isMerchantLogin = String(scope || '').trim() === 'dispatch_valet';
       const tokenPhone = isMerchantLogin ? String(cleanPhone || '').trim().toUpperCase() + 'A' : cleanPhone;
       const authToken = createSignedToken(tokenPhone, tokenScope, isMerchantLogin);
+      // 2026-10-15：被删除司机重新短信登录成功=解封，清除删除黑名单（踢出可重申请）
+      try {
+        const dbData = readLocalJsonDb();
+        const rp = dbData?._config?.removedPhones;
+        const phoneNorm = String(cleanPhone || '').replace(/\D/g, '').trim();
+        if (Array.isArray(rp) && phoneNorm && rp.includes(phoneNorm)) {
+          dbData._config.removedPhones = rp.filter((p: string) => p !== phoneNorm);
+          writeLocalJsonDb(dbData);
+        }
+      } catch (_) {}
       // 兼容旧版：同时写入内存 Map，老 token 在过渡期内仍可用
       authTokens.set(authToken, {
         phone: tokenPhone,
