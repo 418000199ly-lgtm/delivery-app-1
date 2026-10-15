@@ -525,9 +525,12 @@ export default function DispatchValetOrder({
       const baseUrl = getBaseApiUrl();
       const timeToken = Date.now();
       const cols = ['dispatch_qrs', 'dispatch_qrcodes', 'merchant_users'];
+      // 2026-10-16修复：/api/db/get 需鉴权，补 X-Auth-Token（否则401导致收款码刷不出来）
+      const qrAuthToken = typeof window !== 'undefined' ? localStorage.getItem('dd_auth_token') : null;
+      const qrHeaders: Record<string, string> = qrAuthToken ? { 'X-Auth-Token': qrAuthToken } : {};
 
       cols.forEach(colName => {
-        fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(userPhone)}&_t=${timeToken}`, { cache: 'no-store' })
+        fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(userPhone)}&_t=${timeToken}`, { cache: 'no-store', headers: qrHeaders })
           .then(res => res.ok ? res.json() : null)
           .then(json => {
             if (isMounted && json && json.data) {

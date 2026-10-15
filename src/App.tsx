@@ -1029,11 +1029,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const checkStatusSync = async () => {
       try {
         const baseUrl = getBaseApiUrl();
+        // 2026-10-16修复：/api/db/get 已加 requireDbAuth，轮询必须带 X-Auth-Token，
+        // 否则全部401、vipExpiry/licenseExpiry/入队状态永远同步不过来（充值成功App仍显示"待开通"的根因）
+        const syncAuthToken = typeof window !== 'undefined' ? localStorage.getItem('dd_auth_token') : null;
+        const syncHeaders: Record<string, string> = syncAuthToken ? { 'X-Auth-Token': syncAuthToken } : {};
 
         // 1. Sub-second instant real-time sync for driver vipExpiry from Baota server (Always executed for all drivers)
         if (userPhone) {
           try {
-            const resUser = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
+            const resUser = await fetch(`${baseUrl}/api/db/get?col=driver_users&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store', headers: syncHeaders });
             if (resUser.ok) {
               const uJson = await resUser.json();
               if (uJson && uJson.exists && uJson.data) {
@@ -1131,7 +1135,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
           if (!isUserRemoved) {
             try {
-              const resRemoved = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+              const resRemoved = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: syncHeaders });
               if (resRemoved.ok) {
                 const rJson = await resRemoved.json();
                 const phones = rJson?.data?.phones || rJson?.phones;
@@ -1166,7 +1170,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           return;
         }
 
-        const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
+        const res = await fetch(`${baseUrl}/api/db/get?col=squad_applications&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store', headers: syncHeaders });
         if (res.ok) {
           const resJson = await res.json();
           if (resJson && resJson.exists && resJson.data) {
@@ -1184,7 +1188,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           }
         }
 
-        const resMem = await fetch(`${baseUrl}/api/db/get?col=squad_members&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store' });
+        const resMem = await fetch(`${baseUrl}/api/db/get?col=squad_members&id=${userPhone}&_t=${Date.now()}`, { cache: 'no-store', headers: syncHeaders });
         if (resMem.ok) {
           const memJson = await resMem.json();
           if (memJson && memJson.exists && memJson.data) {
@@ -2592,8 +2596,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         }
 
         const baseUrl = getBaseApiUrl();
+        // 2026-10-16修复：/api/db/get 需鉴权，补 X-Auth-Token（否则401查不到订单取消状态）
+        const cancelCheckToken = typeof window !== 'undefined' ? localStorage.getItem('dd_auth_token') : null;
+        const cancelCheckHeaders: Record<string, string> = cancelCheckToken ? { 'X-Auth-Token': cancelCheckToken } : {};
         for (const tid of validDocIds.slice(0, 2)) {
-          const res = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${tid}`);
+          const res = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${tid}`, { headers: cancelCheckHeaders });
           if (res.ok) {
             const json = await res.json();
             if (json && json.data) {
