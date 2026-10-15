@@ -2024,25 +2024,10 @@ export default function AdminPanel({
         return r.json().catch(() => ({}));
       });
 
-      // ALWAYS execute direct REST setDoc calls for ALL 3 COLLECTIONS on active server
-      const _cols = ['driver_users', 'squad_members', 'squad_applications'];
-      const baotaSetPromises = Promise.allSettled(
-        _cols.map(col =>
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({
-              col,
-              id: cleanPhone,
-              data: { phone: cleanPhone, phoneNumber: cleanPhone, vipExpiry: finalExpiry, updatedAt: new Date().toISOString() },
-              merge: true
-            })
-          }).then(r => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r;
-          })
-        )
-      );
+      // 2026-10-16修复：去掉与 update-driver-expiry 重复的 3 路并发 /api/db/set。
+      // update-driver-expiry 本来就写 driver_users/squad_members/squad_applications 三个集合，
+      // 再并发打 3 枪到 MySQL 同一行极易死锁，且服务端静默吞错导致"写成功假象、列表读旧值"。
+      // 现在 update-driver-expiry 自带重试+失败抛错，单路写入即可，不再需要冗余。
 
       // 5. Fire-and-forget Firestore write so China network blocking never delays the UI
       Promise.allSettled([
@@ -2062,23 +2047,15 @@ export default function AdminPanel({
         }, { merge: true })
       ]).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
-      const [serverResult, baotaResults] = await Promise.all([
-        serverPromise.then(() => ({ ok: true })).catch((e: any) => ({ ok: false, error: e })),
-        baotaSetPromises
-      ]);
-      const failedCols = (baotaResults as PromiseSettledResult<any>[]).map((r, i) => r.status === 'rejected' ? _cols[i] : null).filter(Boolean) as string[];
-      if (failedCols.length === 0 && (serverResult as any).ok) {
+      const serverResult = await serverPromise.then(() => ({ ok: true })).catch((e: any) => ({ ok: false, error: e }));
+      if ((serverResult as any).ok) {
         triggerToast('🎉 司机账号会员有效期已成功实时同步更新！');
-      } else if (!(serverResult as any).ok) {
+      } else {
         // 2026-10-15 P1-2修复：服务端主写入失败时回滚本地乐观更新
         doRollback();
-        const failMsg = [...failedCols.map(c => `${c}写入失败`), '服务器接口失败'].join('、');
+        const failMsg = `服务器接口失败：${(serverResult as any).error?.message || '未知错误'}`;
         console.error('[会员有效期] 写入失败已回滚本地:', failMsg);
         triggerToast(`❌ 会员有效期写入失败：${failMsg}，本地已回滚，请重试`);
-      } else {
-        const failMsg = [...failedCols.map(c => `${c}写入失败`)].join('、');
-        console.error('[会员有效期] 写入失败:', failMsg);
-        triggerToast(`⚠️ 会员有效期部分写入失败：${failMsg}，请重试`);
       }
     } catch (e: any) {
       // 2026-10-15 P1-2修复：异常时回滚本地乐观更新

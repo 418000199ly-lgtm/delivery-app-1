@@ -2553,12 +2553,28 @@ function getClientIp(req: any): string {
         };
         dbData[col][phone] = updated;
 
+        // 2026-10-16修复：MySQL 写入失败不再静默吞掉（曾导致列表读 MySQL 显示旧值、详情读 JSON 显示新值，
+        // 左右不一致）。死锁/超时时重试 3 次，仍失败则抛错让管理后台显示失败而非假成功。
         if (isMySQLEnabled && mysqlPool) {
-          await mysqlPool.query(
+          const upsertSql =
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            [col, phone, JSON.stringify(updated)]
-          ).catch(() => {});
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)';
+          const upsertArgs = [col, phone, JSON.stringify(updated)];
+          let mysqlOk = false;
+          let lastMysqlErr: any = null;
+          for (let attempt = 0; attempt < 3 && !mysqlOk; attempt++) {
+            try {
+              await mysqlPool.query(upsertSql, upsertArgs);
+              mysqlOk = true;
+            } catch (e: any) {
+              lastMysqlErr = e;
+              if (attempt < 2) await new Promise(r => setTimeout(r, 150 * (attempt + 1)));
+            }
+          }
+          if (!mysqlOk) {
+            console.error('[Admin VIP Expiry MySQL Write Failed]:', col, phone, lastMysqlErr?.message || lastMysqlErr);
+            throw new Error(`MySQL 写入失败(${col})：${lastMysqlErr?.message || lastMysqlErr}`);
+          }
         }
       }
 
@@ -2821,12 +2837,27 @@ function getClientIp(req: any): string {
         if (city) updated.city = city;
         dbData[col][phone] = updated;
 
+        // 2026-10-16修复：同 update-driver-expiry，MySQL 写入失败不再静默吞掉，重试3次仍失败则抛错
         if (isMySQLEnabled && mysqlPool) {
-          await mysqlPool.query(
+          const upsertSql2 =
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            [col, phone, JSON.stringify(updated)]
-          ).catch(() => {});
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)';
+          const upsertArgs2 = [col, phone, JSON.stringify(updated)];
+          let mysqlOk2 = false;
+          let lastMysqlErr2: any = null;
+          for (let attempt = 0; attempt < 3 && !mysqlOk2; attempt++) {
+            try {
+              await mysqlPool.query(upsertSql2, upsertArgs2);
+              mysqlOk2 = true;
+            } catch (e: any) {
+              lastMysqlErr2 = e;
+              if (attempt < 2) await new Promise(r => setTimeout(r, 150 * (attempt + 1)));
+            }
+          }
+          if (!mysqlOk2) {
+            console.error('[Admin Driver Role MySQL Write Failed]:', col, phone, lastMysqlErr2?.message || lastMysqlErr2);
+            throw new Error(`MySQL 写入失败(${col})：${lastMysqlErr2?.message || lastMysqlErr2}`);
+          }
         }
       }
 
