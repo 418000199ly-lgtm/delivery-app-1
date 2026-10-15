@@ -6818,18 +6818,66 @@ function getClientIp(req: any): string {
       if (!/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
         return res.status(400).json({ success: false, error: '司机手机号格式不正确' });
       }
+      // P0(2026-10-15)：/api/submit加VIP校验，非VIP禁止二维码创单（与/api/qr-phone-notify口径一致）
+      // 旧版乘客页(aliyun_passenger_deploy.html)仍调此接口，之前遗漏
       try {
-        const dbData = readLocalJsonDb();
-        const isRealDriver = !!(
-          dbData.driver_users?.[cleanDriverPhone] ||
-          dbData.squad_members?.[cleanDriverPhone] ||
-          dbData.driver_users?.[cleanDriverPhone + 'A'] // 兼容商户号
-        );
+        let driverVipExpiry = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanDriverPhone]
+          );
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+            driverVipExpiry = String(vd.vipExpiry || '');
+          }
+          // 兼容A后缀商户号
+          if (!driverVipExpiry) {
+            const [arows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['driver_users', cleanDriverPhone + 'A']
+            );
+            if (arows && arows.length > 0) {
+              const ad = typeof arows[0].data === 'string' ? JSON.parse(arows[0].data) : arows[0].data;
+              driverVipExpiry = String(ad.vipExpiry || '');
+            }
+          }
+        } else {
+          const dbData = readLocalJsonDb();
+          driverVipExpiry = String(
+            dbData.driver_users?.[cleanDriverPhone]?.vipExpiry ||
+            dbData.driver_users?.[cleanDriverPhone + 'A']?.vipExpiry || ''
+          );
+        }
+        if (!isVipActiveServer(driverVipExpiry)) {
+          return res.status(403).json({ success: false, error: '❌ 该司机暂未开通VIP会员，无法使用二维码创单功能' });
+        }
+      } catch (e) {
+        console.error('[Submit] VIP校验异常:', (e as any)?.message);
+        return res.status(500).json({ success: false, error: '系统繁忙，请稍后再试' });
+      }
+      try {
+        // P0(2026-10-15)：MySQL模式下从MySQL查真实司机，防本地空数据误判
+        let isRealDriver = false;
+        if (isMySQLEnabled && mysqlPool) {
+          const [drows]: any = await mysqlPool.query(
+            'SELECT 1 FROM `daijia_documents` WHERE `collection` IN (?, ?, ?) AND `doc_id` IN (?, ?) LIMIT 1',
+            ['driver_users', 'squad_members', 'driver_users', cleanDriverPhone, cleanDriverPhone + 'A']
+          );
+          isRealDriver = !!(drows && drows.length > 0);
+        } else {
+          const dbData = readLocalJsonDb();
+          isRealDriver = !!(
+            dbData.driver_users?.[cleanDriverPhone] ||
+            dbData.squad_members?.[cleanDriverPhone] ||
+            dbData.driver_users?.[cleanDriverPhone + 'A']
+          );
+        }
         if (!isRealDriver) {
           return res.status(400).json({ success: false, error: '该司机不存在' });
         }
       } catch (_) {
-        // 查库失败时放行，避免误伤正常下单（限流仍在）
+        return res.status(500).json({ success: false, error: '系统繁忙，请稍后再试' });
       }
 
       const orderId = 'scan_ord_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
