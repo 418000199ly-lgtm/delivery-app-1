@@ -1021,7 +1021,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "561484d2";
+  const SERVER_VERSION = "75cc4057";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -1147,6 +1147,7 @@ async function startServer() {
     }
     const BUSINESS_PATHS = /* @__PURE__ */ new Set([
       "/api/order/claim",
+      "/api/order/driver-claim",
       "/api/dispatch/nearest",
       "/api/driver/location",
       "/api/driver/status",
@@ -3580,7 +3581,9 @@ async function startServer() {
         if (!isLicenseValid(licExpiry)) {
           return res.status(403).json({ success: false, error: "\u63A5\u5355\u6388\u6743\u5DF2\u5230\u671F\uFF0C\u8BF7\u8054\u7CFB\u5F00\u53D1\u8005\u5145\u503C" });
         }
-      } catch (_) {
+      } catch (e) {
+        console.error("[Claim] \u63A5\u5355\u6388\u6743\u6821\u9A8C\u5F02\u5E38:", e?.message);
+        return res.status(503).json({ success: false, error: "\u6388\u6743\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
       }
       const cleanDriverName = String(driverName || `\u53F8\u673A${cleanDriverPhone.slice(-4)}`).trim();
       if (!cleanOrderId || !cleanDriverPhone) {
@@ -3923,8 +3926,31 @@ async function startServer() {
   setInterval(async () => {
     try {
       const now = Date.now();
+      let merchantOrders = {};
+      let useMySQL = false;
       const dbData = readLocalJsonDb();
-      const merchantOrders = dbData["merchant_orders"] || {};
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows] = await mysqlPool.query(
+            "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?",
+            ["merchant_orders"]
+          );
+          (rows || []).forEach((r) => {
+            try {
+              const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+              const k = String(r.doc_id || d?.id || d?.orderId || "").trim();
+              if (k) merchantOrders[k] = d;
+            } catch (_) {
+            }
+          });
+          useMySQL = true;
+        } catch (e) {
+          console.error("[Timer] MySQL\u8BFBmerchant_orders\u5931\u8D25:", e?.message);
+        }
+      }
+      if (!useMySQL) {
+        merchantOrders = dbData["merchant_orders"] || {};
+      }
       let hasChanges = false;
       for (const [orderId, order] of Object.entries(merchantOrders)) {
         if (!order) continue;
@@ -4050,6 +4076,25 @@ async function startServer() {
         return res.json({ success: false, message: "\u7F3A\u5C11orderId\u6216driverPhone" });
       }
       const now = Date.now();
+      if (isMySQLEnabled && mysqlPool && orderId) {
+        try {
+          const [rows] = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_EXTRACT(`data`, "$.id") = ? OR JSON_EXTRACT(`data`, "$.orderId") = ?)',
+            ["merchant_orders", orderId, orderId, orderId]
+          );
+          if (rows && rows[0]) {
+            const d = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
+            d.pageHeartbeatAt = now;
+            await mysqlPool.query(
+              "UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?",
+              [JSON.stringify(d), "merchant_orders", rows[0].doc_id]
+            );
+            return res.json({ success: true, heartbeatAt: now });
+          }
+        } catch (e) {
+          console.error("[Heartbeat] MySQL\u66F4\u65B0\u5931\u8D25:", e?.message);
+        }
+      }
       const dbData = readLocalJsonDb();
       let updated = false;
       if (orderId && dbData["merchant_orders"]) {
@@ -6099,9 +6144,9 @@ async function startServer() {
   });
   app.post("/api/order/driver-claim", requireDbAuth, async (req, res) => {
     try {
-      const { orderId, driverPhone, driverName } = req.body || {};
+      const { orderId, driverName } = req.body || {};
       const cleanOrderId = String(orderId || "").trim();
-      const cleanDriverPhone = String(driverPhone || "").replace(/\D/g, "").trim();
+      const cleanDriverPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
       const cleanDriverName = String(driverName || "").slice(0, 20);
       if (!cleanOrderId || !/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
         return res.status(400).json({ success: false, error: "\u53C2\u6570\u9519\u8BEF" });
@@ -6123,7 +6168,9 @@ async function startServer() {
         if (!isLicenseValid(licExpiry2)) {
           return res.status(403).json({ success: false, error: "\u63A5\u5355\u6388\u6743\u5DF2\u5230\u671F\uFF0C\u8BF7\u8054\u7CFB\u5F00\u53D1\u8005\u5145\u503C" });
         }
-      } catch (_) {
+      } catch (e) {
+        console.error("[DriverClaim] \u63A5\u5355\u6388\u6743\u6821\u9A8C\u5F02\u5E38:", e?.message);
+        return res.status(503).json({ success: false, error: "\u6388\u6743\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
       }
       const checkSquadMember = async () => {
         if (cleanDriverPhone === "15509601222") return true;
@@ -6257,7 +6304,9 @@ async function startServer() {
         if (!isLicenseValid(repLic)) {
           return res.status(403).json({ success: false, error: "\u63A5\u5355\u6388\u6743\u5DF2\u5230\u671F\uFF0C\u8BF7\u8054\u7CFB\u5F00\u53D1\u8005\u5145\u503C" });
         }
-      } catch (_) {
+      } catch (e) {
+        console.error("[ReportTransfer] \u53D1\u8D77\u4EBA\u6388\u6743\u6821\u9A8C\u5F02\u5E38:", e?.message);
+        return res.status(503).json({ success: false, error: "\u6388\u6743\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
       }
       const cleanPassenger = String(passengerPhone || "").replace(/\D/g, "").trim();
       const cleanOrderId = String(orderId || `rt_${Date.now()}`).trim();
