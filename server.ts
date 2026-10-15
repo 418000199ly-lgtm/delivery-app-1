@@ -176,6 +176,74 @@ function getLicenseDaysRemaining(expiry: any): number {
 function isLicenseValid(expiry: any): boolean {
   return getLicenseDaysRemaining(expiry) > 0;
 }
+// 服务端VIP有效性判断（2026-10-15 P0：二维码创单/纠偏服务端校验用，与前端checkVipActive同逻辑）
+function isVipActiveServer(vipExpiry: any): boolean {
+  if (!vipExpiry) return false;
+  const s = String(vipExpiry).trim();
+  if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '待开通' || s === '未开通' || s === '已到期' || s === '已过期' || s === '') {
+    return false;
+  }
+  if (s === '永久有效' || s === '永久') return true;
+  try {
+    const match = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    let expDate: Date;
+    if (match) {
+      expDate = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, parseInt(match[3], 10), 23, 59, 59, 999);
+    } else {
+      expDate = new Date(s);
+    }
+    if (isNaN(expDate.getTime())) return false;
+    return expDate.getTime() > Date.now();
+  } catch (_) {
+    return false;
+  }
+}
+// 获取北京时间今天的日期字符串（2026-10-15 P0：非VIP每日2单服务端独立计数用）
+function getBeijingTodayStr(): string {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return now.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+// 统计司机今天（北京时间）完成的订单数（2026-10-15 P0：防清localStorage绕过2单限制）
+async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
+  const todayStr = getBeijingTodayStr();
+  let count = 0;
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      const [rows]: any = await mysqlPool.query(
+        'SELECT `data` FROM `daijia_documents` WHERE `collection` = ?',
+        ['merchant_orders']
+      );
+      for (const r of (rows || [])) {
+        try {
+          const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+          const dPhone = String(d.driverPhone || d.claimedDriverPhone || d.dispatchedDriverPhone || '').replace(/\D/g, '');
+          if (dPhone !== driverPhone) continue;
+          if (d.status !== 'completed') continue;
+          // 用completedAt或updatedAt判断是否今天（北京时间）
+          const ts = d.completedAt || d.updatedAt || d.timestamp;
+          if (!ts) continue;
+          const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          if (bjt === todayStr) count++;
+        } catch (_) {}
+      }
+    } else {
+      const dbData = readLocalJsonDb();
+      const orders = dbData['merchant_orders'] || {};
+      for (const o of Object.values<any>(orders)) {
+        const dPhone = String(o.driverPhone || o.claimedDriverPhone || o.dispatchedDriverPhone || '').replace(/\D/g, '');
+        if (dPhone !== driverPhone) continue;
+        if (o.status !== 'completed') continue;
+        const ts = o.completedAt || o.updatedAt || o.timestamp;
+        if (!ts) continue;
+        const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        if (bjt === todayStr) count++;
+      }
+    }
+  } catch (e) {
+    console.error('[CountOrders] 统计失败:', (e as any)?.message);
+  }
+  return count;
+}
 function createSignedToken(phone: string, scope: string, isMerchant: boolean): string {
   const payload = JSON.stringify({ p: phone, s: scope, m: !!isMerchant, i: Date.now() });
   const pb = _b64urlEncode(payload);
@@ -1775,6 +1843,35 @@ function getClientIp(req: any): string {
 
       if (!col || !docId || data === undefined) {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
+      }
+
+      // P1修复(2026-10-15)：纠偏功能仅VIP可用，服务端强制校验（防直接调API绕过）
+      if (col === 'driver_users' && data && (data as any).deviationMitigation === true) {
+        try {
+          let vipExpiry = '';
+          const targetPhone = docId.replace(/\D/g, '').trim();
+          if (isMySQLEnabled && mysqlPool) {
+            const [vrows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['driver_users', targetPhone]);
+            if (vrows && vrows.length > 0) {
+              const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+              vipExpiry = String(vd.vipExpiry || (data as any).vipExpiry || '');
+            } else {
+              vipExpiry = String((data as any).vipExpiry || '');
+            }
+          } else {
+            const existing = readLocalJsonDb()?.driver_users?.[targetPhone];
+            vipExpiry = String((data as any).vipExpiry || existing?.vipExpiry || '');
+          }
+          // 开发者豁免
+          if (targetPhone !== '15509601222' && !isVipActiveServer(vipExpiry)) {
+            return res.status(403).json({ success: false, error: '纠偏功能为VIP专属，请先开通VIP' });
+          }
+        } catch (e) {
+          console.error('[DB Set] 纠偏VIP校验异常:', (e as any)?.message);
+          return res.status(503).json({ success: false, error: '校验失败，请重试' });
+        }
       }
 
       // M3修复：普通用户写 squad_members 时剥离敏感字段（防被开除司机自助"洗白"）
@@ -4116,6 +4213,17 @@ function getClientIp(req: any): string {
             selected = null as any;
           }
         }
+        // 2026-10-15 P0：非VIP每日2单服务端强制限制（防清localStorage绕过）
+        if (selected) {
+          const selVip = (selected as any)?.data?.vipExpiry ?? (selected as any)?.vipExpiry;
+          if (!isVipActiveServer(selVip)) {
+            const todayCount = await countTodayCompletedOrders(String(selected.phone).replace(/\D/g, ''));
+            if (todayCount >= 2) {
+              console.log(`[Dispatch] 司机 ${selected.phone} 非VIP今日已完成${todayCount}单，跳过派单：订单 ${orderId} 转入选单大厅`);
+              selected = null as any;
+            }
+          }
+        }
 
         // H6修复：写入前用库内最新状态二次校验（防并发派单双写：高德解析+3秒等待期间可能已被其他请求派单）
         // P1-4修复(2026-10-15)：MySQL模式下按orderId查MySQL，否则防并发检查在生产环境失效
@@ -4360,6 +4468,30 @@ function getClientIp(req: any): string {
       } catch (e) {
         console.error('[Claim] 接单授权校验异常:', (e as any)?.message);
         return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
+      }
+      // 2026-10-15 P0：非VIP每日2单服务端强制限制
+      try {
+        let vipExpiry = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanDriverPhone]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiry = String(vd.vipExpiry || '');
+          }
+        } else {
+          vipExpiry = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.vipExpiry || '');
+        }
+        if (!isVipActiveServer(vipExpiry)) {
+          const todayCount = await countTodayCompletedOrders(cleanDriverPhone);
+          if (todayCount >= 2) {
+            return res.status(403).json({ success: false, error: '非VIP会员每天限2单，明早6点自动恢复。如需无限接单请开通VIP' });
+          }
+        }
+      } catch (e) {
+        console.error('[Claim] VIP每日限额校验异常:', (e as any)?.message);
+        // 校验异常时不阻断（fail-open），避免误伤；派单环节已做最终拦截
       }
       const cleanDriverName = String(driverName || `司机${cleanDriverPhone.slice(-4)}`).trim();
 
@@ -6535,8 +6667,38 @@ function getClientIp(req: any): string {
 
   // 2026-10-11 二维码创单新流程：乘客扫码只传手机号给司机，不建单、不派单、不做地理编码
   // 司机收到后在创建订单页看到提示+语音播报，手动创建订单
-  app.post('/api/qr-phone-notify', async (req, res) => {
+  app.post('/api/qr-phone-notify', requireDbAuth, async (req, res) => {
     try {
+      // P0修复(2026-10-15)：二维码创单仅VIP可用，服务端强制校验（前端可被绕过）
+      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      const { driverPhone, passengerPhone, startLocation } = req.body || {};
+      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
+      // 只能为自己创单（防冒名）
+      if (authPhone && cleanDriverPhone && authPhone !== cleanDriverPhone && (req as any).authPhone !== '15509601222') {
+        return res.status(403).json({ success: false, error: '只能为自己创建二维码订单' });
+      }
+      // VIP校验
+      try {
+        let vipExpiry = '';
+        const targetPhone = cleanDriverPhone || authPhone;
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', targetPhone]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiry = String(vd.vipExpiry || '');
+          }
+        } else {
+          vipExpiry = String(readLocalJsonDb()?.driver_users?.[targetPhone]?.vipExpiry || '');
+        }
+        if (!isVipActiveServer(vipExpiry)) {
+          return res.status(403).json({ success: false, error: '二维码创单为VIP专属功能，请先开通VIP' });
+        }
+      } catch (e) {
+        console.error('[QRNotify] VIP校验异常:', (e as any)?.message);
+        return res.status(503).json({ success: false, error: '校验失败，请重试' });
+      }
       // IP限流：与 /api/submit 同级，防批量骚扰
       const clientIp = getClientIp(req);
       const now = Date.now();
@@ -6549,7 +6711,6 @@ function getClientIp(req: any): string {
       logs.push(now);
       qrPhoneLogs.set(clientIp, logs);
 
-      const { driverPhone, passengerPhone, startLocation } = req.body || {};
       if (!driverPhone || !passengerPhone) {
         return res.status(400).json({ success: false, error: '缺少必填参数' });
       }
@@ -7067,6 +7228,14 @@ function getClientIp(req: any): string {
               ['config', 'removed_squad_members', JSON.stringify({ phones, updatedAt: now })]);
           }
         } catch (_) {}
+        // P0修复(2026-10-15)：MySQL模式下也要清本地token黑名单（验签读本地JSON）
+        try {
+          const ldb = readLocalJsonDb();
+          if (ldb['_config']?.['removedPhones']) {
+            ldb['_config']['removedPhones'] = (ldb['_config']['removedPhones'] || []).filter((p: string) => String(p).trim() !== cleanPhone);
+            writeLocalJsonDb(ldb);
+          }
+        } catch (_) {}
       } else {
         const dbData = readLocalJsonDb();
         if (!dbData['squad_members']) dbData['squad_members'] = {};
@@ -7080,6 +7249,10 @@ function getClientIp(req: any): string {
         if (dbData['config']?.['removed_squad_members']) {
           const phones = (dbData['config']['removed_squad_members'].phones || []).filter((p: string) => p !== cleanPhone);
           dbData['config']['removed_squad_members'] = { phones, updatedAt: now };
+        }
+        // P0修复(2026-10-15)：审批通过时同步清除token黑名单，否则重获批司机无法登录
+        if (dbData['_config']?.['removedPhones']) {
+          dbData['_config']['removedPhones'] = (dbData['_config']['removedPhones'] || []).filter((p: string) => String(p).trim() !== cleanPhone);
         }
         writeLocalJsonDb(dbData);
       }
@@ -7335,6 +7508,29 @@ function getClientIp(req: any): string {
       } catch (e) {
         console.error('[DriverClaim] 接单授权校验异常:', (e as any)?.message);
         return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
+      }
+      // 2026-10-15 P0：非VIP每日2单服务端强制限制
+      try {
+        let vipExpiry2 = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanDriverPhone]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiry2 = String(vd.vipExpiry || '');
+          }
+        } else {
+          vipExpiry2 = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.vipExpiry || '');
+        }
+        if (!isVipActiveServer(vipExpiry2)) {
+          const todayCount = await countTodayCompletedOrders(cleanDriverPhone);
+          if (todayCount >= 2) {
+            return res.status(403).json({ success: false, error: '非VIP会员每天限2单，明早6点自动恢复。如需无限接单请开通VIP' });
+          }
+        }
+      } catch (e) {
+        console.error('[DriverClaim] VIP每日限额校验异常:', (e as any)?.message);
       }
       // 2026-10-12修复：接单人必须是小队正式成员（已通过），否则403
       const checkSquadMember = async (): Promise<boolean> => {
