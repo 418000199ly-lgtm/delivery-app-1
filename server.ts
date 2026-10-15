@@ -4705,14 +4705,16 @@ function getClientIp(req: any): string {
         // P0-3修复(2026-10-13)：派单接单必须验证订单仍派单给本人。
         // 若订单已超时进大厅(dispatchedDriverPhone被清空)，新来单页的延迟接单不能静默复活，
         // 必须提示去大厅抢单，避免与其他司机看到的"大厅有单"状态错乱。
-        const isDispatchedClaim = !!(req.body as any).isDispatchedClaim;
-        if (isDispatchedClaim) {
+        // P0(2026-10-15晚)：去掉isDispatchedClaim条件，只要订单有dispatchedDriverPhone就必须验证
+        // 防司机B不传flag直接把派单给A的订单抢走
+        {
           const dispatchedTo = String(targetOrder.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
           const tStatus = String(targetOrder.status || '');
-          if (tStatus === 'hall' || targetOrder.in_hall === true || !dispatchedTo) {
-            return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
-          }
-          if (dispatchedTo !== cleanDriverPhone) {
+          if (dispatchedTo) {
+            if (tStatus === 'hall' || targetOrder.in_hall === true) {
+              return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
+            }
+            if (dispatchedTo !== cleanDriverPhone) {
             return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
           }
         }
@@ -4775,6 +4777,30 @@ function getClientIp(req: any): string {
             ['active_orders', cleanDriverPhone, JSON.stringify(dbData['active_orders'][cleanDriverPhone])]
           );
         } catch (_) {}
+      }
+
+      // P0(2026-10-15晚)：接单成功后写busy=true，防司机同时持有多单
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
+            await mysqlPool.query(
+              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", true, "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
+              [col, cleanDriverPhone]
+            ).catch(() => {});
+          }
+        } catch (_) {}
+      } else {
+        for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
+          if (dbData[col] && dbData[col][cleanDriverPhone]) {
+            dbData[col][cleanDriverPhone] = {
+              ...dbData[col][cleanDriverPhone],
+              isBusy: true,
+              status: 'busy',
+              lastStatusUpdateTime: Date.now()
+            };
+          }
+        }
+        writeLocalJsonDb(dbData);
       }
 
       return res.json({ success: true, order: claimUpdateData, serverTime: now });
@@ -7829,6 +7855,10 @@ function getClientIp(req: any): string {
           const st = String(target.status || '');
           if ((st === 'claimed' || st === '已接单') && claimedBy && claimedBy !== cleanDriverPhone) {
             return { ok: false, code: 409, error: '该订单已被其他司机接单' };
+          }
+          // P0(2026-10-15晚)：派单中的订单不允许大厅抢单，必须等超时进大厅
+          if (st === 'dispatched' && target.dispatchedDriverPhone && !target.in_hall) {
+            return { ok: false, code: 409, error: '该订单正在派单中，请等待' };
           }
           if (st === 'cancelled' || st === '已取消' || target.isCancelled) {
             return { ok: false, code: 410, error: '该订单已取消' };

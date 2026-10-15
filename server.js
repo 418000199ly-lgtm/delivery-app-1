@@ -1153,7 +1153,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "6277c9d4";
+  const SERVER_VERSION = "475a0bc1";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
