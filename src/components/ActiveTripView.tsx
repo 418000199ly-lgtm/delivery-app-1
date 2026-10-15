@@ -88,8 +88,6 @@ export default function ActiveTripView({
   const isEndedRef = useRef(false);
   const isMountedRef = useRef(true);
   const amapGeoInstanceRef = useRef<any>(null);
-  // 2026-10-15新增：GPS状态显示（诊断行驶距离不累积问题）
-  const [gpsStatus, setGpsStatus] = useState<{active: boolean; accuracy: number; lastUpdate: number}>({active: false, accuracy: 0, lastUpdate: 0});
 
   useEffect(() => {
     tripRef.current = safeTrip;
@@ -266,8 +264,6 @@ export default function ActiveTripView({
     if (!isMountedRef.current || isEndedRef.current) {
       return;
     }
-    // 2026-10-15：更新GPS状态显示
-    setGpsStatus({active: true, accuracy: Math.round(accuracy), lastUpdate: Date.now()});
     if (tripRef.current && tripRef.current.currentStatus && tripRef.current.currentStatus !== 'serving') {
       return;
     }
@@ -852,17 +848,6 @@ export default function ActiveTripView({
               </div>
               <div className="text-[10px] text-gray-500 font-bold tracking-wider leading-none whitespace-nowrap uppercase">
                 已行程(公里)
-              </div>
-              {/* 2026-10-15：GPS状态指示（诊断用） */}
-              <div className="text-[9px] mt-1 font-medium whitespace-nowrap">
-                {gpsStatus.active ? (
-                  <span className={gpsStatus.accuracy <= 50 ? 'text-emerald-600' : 'text-amber-600'}>
-                    📡 GPS {gpsStatus.accuracy}m
-                    {Date.now() - gpsStatus.lastUpdate > 10000 && <span className="text-red-500"> (信号丢失)</span>}
-                  </span>
-                ) : (
-                  <span className="text-red-500">📡 GPS未定位</span>
-                )}
               </div>
             </div>
           </div>
