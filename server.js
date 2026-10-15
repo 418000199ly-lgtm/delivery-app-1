@@ -1071,7 +1071,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "9b71ee97";
+  const SERVER_VERSION = "196045fc";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -1228,6 +1228,13 @@ async function startServer() {
     }
     req.authPhone = info.phone;
     req.isAdmin = false;
+    next();
+  };
+  const requireV2 = (req, res, next) => {
+    const v = String(req.headers["x-client-version"] || "").trim().toUpperCase();
+    if (v === "V1.0" || v.startsWith("V1.0")) {
+      return res.status(426).json({ success: false, error: "\u7248\u672C\u8FC7\u4F4E\uFF0C\u8BF7\u5347\u7EA7\u5230V2.0", needUpgrade: true });
+    }
     next();
   };
   app.post("/api/admin/check-permission", requireDbAuth, (req, res) => {
@@ -3323,7 +3330,7 @@ async function startServer() {
       return res.json({ success: false, error: err.message, lat: NaN, lng: NaN });
     }
   });
-  app.post("/api/dispatch/nearest", requireDbAuth, async (req, res) => {
+  app.post("/api/dispatch/nearest", requireDbAuth, requireV2, async (req, res) => {
     try {
       const { orderData, reporterPhone, pickupLat, pickupLng, excludePhone } = req.body || {};
       const radiusKm = Math.min(Number(req.body?.radiusKm) || 3, 3);
@@ -3746,7 +3753,7 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message });
     }
   });
-  app.post("/api/order/claim", requireDbAuth, async (req, res) => {
+  app.post("/api/order/claim", requireDbAuth, requireV2, async (req, res) => {
     try {
       const { orderId, driverName, orderPayload } = req.body;
       const cleanOrderId = String(orderId || "").trim();
@@ -6357,6 +6364,8 @@ async function startServer() {
           userRole: "\u666E\u901A\u53F8\u673A",
           status: "\u672A\u52A0\u5165\u5C0F\u961F",
           approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F",
+          vipExpiry: "\u5F85\u5F00\u901A",
+          licenseExpiry: "\u5F85\u5F00\u901A",
           removedBy: realRemover,
           removedAt: now,
           updatedAt: now
@@ -6411,6 +6420,8 @@ async function startServer() {
           userRole: "\u666E\u901A\u53F8\u673A",
           status: "\u672A\u52A0\u5165\u5C0F\u961F",
           approvalStatus: "\u672A\u52A0\u5165\u5C0F\u961F",
+          vipExpiry: "\u5F85\u5F00\u901A",
+          licenseExpiry: "\u5F85\u5F00\u901A",
           removedBy: String(req.authPhone || adminPhone || ""),
           removedAt: now,
           updatedAt: now
@@ -6428,7 +6439,7 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message || "Squad Remove Error" });
     }
   });
-  app.post("/api/order/driver-claim", requireDbAuth, async (req, res) => {
+  app.post("/api/order/driver-claim", requireDbAuth, requireV2, async (req, res) => {
     try {
       const { orderId, driverName } = req.body || {};
       const cleanOrderId = String(orderId || "").trim();

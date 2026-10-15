@@ -1433,15 +1433,6 @@ function getClientIp(req: any): string {
     next();
   };
 
-  // P1(2026-10-15)：服务端版本号硬拦截，v1.0无法派单/抢单（防前端开关被误关）
-  const requireV2 = (req: any, res: any, next: any) => {
-    const v = String(req.headers['x-client-version'] || '').trim().toUpperCase();
-    if (v === 'V1.0' || v.startsWith('V1.0')) {
-      return res.status(426).json({ success: false, error: '版本过低，请升级到V2.0', needUpgrade: true });
-    }
-    next();
-  };
-
   // Check admin permission endpoint for https://admin.lyheiwandaijiamax.com/
   app.post('/api/admin/check-permission', requireDbAuth, (req, res) => {
     // H4修复：加鉴权+isAdmin校验
@@ -3885,7 +3876,7 @@ function getClientIp(req: any): string {
   });
 
   // 6. Server-Side Nearest Driver Dispatch Engine (阿里云高可用服务端精准距离派单)
-  app.post('/api/dispatch/nearest', requireDbAuth, requireV2, async (req, res) => {
+  app.post('/api/dispatch/nearest', requireDbAuth, async (req, res) => {
     try {
       const { orderData, reporterPhone, pickupLat, pickupLng, excludePhone } = req.body || {};
       // M7修复：radiusKm 服务端钳制，最大3公里，防客户端突破派单半径铁律
@@ -4423,7 +4414,7 @@ function getClientIp(req: any): string {
   });
 
   // 5.1 Atomic Order Grab / Claim from 选单大厅
-  app.post('/api/order/claim', requireDbAuth, requireV2, async (req, res) => {
+  app.post('/api/order/claim', requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverName, orderPayload } = req.body;
       const cleanOrderId = String(orderId || '').trim();
@@ -7409,11 +7400,9 @@ function getClientIp(req: any): string {
         }
         // P1-10修复(2026-10-15)：保留真名不洗成"司机+后四位"
         // P1-4: removedBy取token身份
-        // 2026-10-15用户拍板：删号=清零，vipExpiry/licenseExpiry重置为待开通
         const realRemover = String((req as any).authPhone || adminPhone || '').trim();
         uData = { ...uData, phone: cleanPhone, phoneNumber: cleanPhone,
           role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队',
-          vipExpiry: '待开通', licenseExpiry: '待开通',
           removedBy: realRemover, removedAt: now, updatedAt: now };
         await mysqlPool.query(
           'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
@@ -7456,10 +7445,9 @@ function getClientIp(req: any): string {
         if (dbData['team_members']?.[cleanPhone]) delete dbData['team_members'][cleanPhone];
         if (!dbData['driver_users']) dbData['driver_users'] = {};
         const existing = dbData['driver_users'][cleanPhone] || {};
-        // 2026-10-15用户拍板：删号=清零，vipExpiry/licenseExpiry重置为待开通
+        // P1-10补漏(2026-10-15)：保留真名不洗成"司机+后四位"；保留vipExpiry
         dbData['driver_users'][cleanPhone] = { ...existing, phone: cleanPhone, phoneNumber: cleanPhone,
           role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队',
-          vipExpiry: '待开通', licenseExpiry: '待开通',
           removedBy: String((req as any).authPhone || adminPhone || ''), removedAt: now, updatedAt: now };
         if (!dbData['config']) dbData['config'] = {};
         const cfg = dbData['config']['removed_squad_members'] || { phones: [] };
@@ -7476,7 +7464,7 @@ function getClientIp(req: any): string {
   });
 
   // 2026-10-12 司机接单专用通道：原子认领，防止抢单竞态。不走鉴权。
-  app.post('/api/order/driver-claim', requireDbAuth, requireV2, async (req, res) => {
+  app.post('/api/order/driver-claim', requireDbAuth, async (req, res) => {
     try {
       const { orderId, driverName } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();

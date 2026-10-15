@@ -3819,11 +3819,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             setUserPhone(cleanPhone);
             setSquadRole('普通司机');
             setIsSquadApprovedOrManagement(cleanPhone === DEVELOPER_PHONE);
-            // P1(2026-10-15)：登录时清掉旧版本缓存，防v1.0数据闪现
             const settingsKey = `dd_settings_${cleanPhone}`;
-            try { localStorage.removeItem(settingsKey); } catch (_) {}
-            try { localStorage.removeItem('dd_settings'); } catch (_) {}
-            const cachedSettings = null; // 不再信任旧缓存，等待服务端2秒轮询覆盖
+            const cachedSettings = localStorage.getItem(settingsKey);
             if (cachedSettings) {
               try {
                 const parsed = JSON.parse(cachedSettings);
