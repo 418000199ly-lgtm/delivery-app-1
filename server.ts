@@ -6160,8 +6160,11 @@ function getClientIp(req: any): string {
       return res.status(400).json({ success: false, error: '请输入正确的11位手机号码' });
     }
 
+    // 用户铁律(2026-10-15)：以下三个号码短信验证码无限制（豁免所有限流）
+    const SMS_UNLIMITED_PHONES = new Set(['15509601222', '15121904440', '18695119126']);
+    const isSmsUnlimited = SMS_UNLIMITED_PHONES.has(cleanPhone);
     // M4修复：IP+手机号限流（60秒1次 / 1小时5次），防短信轰炸
-    {
+    if (!isSmsUnlimited) {
       const clientIp = getClientIp(req);
       const now = Date.now();
       const keyPhone = `p:${cleanPhone}`;
@@ -6422,17 +6425,24 @@ function getClientIp(req: any): string {
 
     const cleanPhone = String(phone).trim();
 
+    // 用户铁律(2026-10-15)：以下三个号码豁免所有验证码限制
+    const SMS_UNLIMITED_PHONES_VERIFY = new Set(['15509601222', '15121904440', '18695119126']);
+    const isSmsUnlimitedVerify = SMS_UNLIMITED_PHONES_VERIFY.has(cleanPhone);
+
     // H1修复：检查是否被锁定（5次失败锁定30分钟）
-    const failInfo = verifyFailures.get(cleanPhone);
-    if (failInfo && Date.now() < failInfo.lockedUntil) {
-      const remainMin = Math.ceil((failInfo.lockedUntil - Date.now()) / 60000);
-      return res.status(429).json({
-        success: false,
-        error: `❌ 验证码错误次数过多，该手机号已锁定，请 ${remainMin} 分钟后再试`
-      });
+    if (!isSmsUnlimitedVerify) {
+      const failInfo = verifyFailures.get(cleanPhone);
+      if (failInfo && Date.now() < failInfo.lockedUntil) {
+        const remainMin = Math.ceil((failInfo.lockedUntil - Date.now()) / 60000);
+        return res.status(429).json({
+          success: false,
+          error: `❌ 验证码错误次数过多，该手机号已锁定，请 ${remainMin} 分钟后再试`
+        });
+      }
     }
-    // 记录失败的辅助函数（M4：5次失败销毁验证码并锁定30分钟）
+    // 记录失败的辅助函数（M4：5次失败销毁验证码并锁定30分钟；豁免号码不记录）
     const recordVerifyFailure = () => {
+      if (isSmsUnlimitedVerify) return;
       const info = verifyFailures.get(cleanPhone) || { count: 0, lockedUntil: 0 };
       info.count += 1;
       if (info.count >= 5) {

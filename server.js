@@ -284,6 +284,34 @@ function blocklistToken(token) {
   }
 }
 var DEVELOPER_PHONE_SERVER = "15509601222";
+async function logAdminOperation(opType, operatorPhone, targetPhone, details, req) {
+  try {
+    const logId = `LOG${Date.now()}${Math.floor(Math.random() * 1e3)}`;
+    const logData = {
+      id: logId,
+      opType,
+      operatorPhone,
+      targetPhone,
+      details,
+      ip: req?.ip || req?.headers?.["x-forwarded-for"] || "",
+      timestamp: Date.now(),
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?)",
+        ["admin_operation_logs", logId, JSON.stringify(logData)]
+      ).catch(() => {
+      });
+    } else {
+      const dbData = readLocalJsonDb();
+      if (!dbData["admin_operation_logs"]) dbData["admin_operation_logs"] = {};
+      dbData["admin_operation_logs"][logId] = logData;
+      writeLocalJsonDb(dbData);
+    }
+  } catch (_) {
+  }
+}
 setInterval(() => {
   const now = Date.now();
   try {
@@ -1125,7 +1153,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "f2490ae8";
+  const SERVER_VERSION = "5ca3a5a7";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -2234,6 +2262,7 @@ async function startServer() {
         }
         writeLocalJsonDb(dbData);
       }
+      await logAdminOperation("recharge-license", String(req.authPhone || ""), targetPhone, `+${days}\u5929\uFF0C\u6709\u6548\u671F\u81F3${newExpiry}`, req);
       return res.json({ success: true, phone: targetPhone, licenseExpiry: newExpiry, daysAdded: days });
     } catch (err) {
       console.error("[Recharge License Error]:", err);
