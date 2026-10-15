@@ -2204,7 +2204,7 @@ export default function AdminPanel({
         setPurgeProgress(`正在清理 ${col}...`);
         let docs: any[] = [];
         try {
-          const res = await fetch(`${baseUrl}/api/db/list?col=${col}&limit=5000&_t=${Date.now()}`, { cache: 'no-store' });
+          const res = await fetch(`${baseUrl}/api/db/list?col=${col}&limit=5000&_t=${Date.now()}`, { cache: 'no-store', headers: getAuthHeaders() });
           if (res.ok) {
             const json = await res.json();
             docs = Array.isArray(json.docs) ? json.docs : [];

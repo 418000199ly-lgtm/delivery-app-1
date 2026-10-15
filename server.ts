@@ -1864,6 +1864,15 @@ function getClientIp(req: any): string {
           }
         }
       }
+      // P1(2026-10-15)：vipExpiry/licenseExpiry仅开发者可写（与/admin接口口径一致，防"假失败"）
+      if ((col === 'driver_users' || col === 'squad_members') && !(req as any).isAdmin) {
+        for (const f of ['vipExpiry', 'licenseExpiry']) {
+          if (data && typeof data === 'object' && f in data) {
+            console.warn(`[Auth] 非开发者尝试写${f}已剥离: token手机=${(req as any).authPhone}`);
+            delete data[f];
+          }
+        }
+      }
 
       // 1. If explicitly approving or applying, automatically unblacklist the driver
       const isExplicitApproval = (data?.status === '已通过' || data?.approvalStatus === '已通过');
@@ -2137,6 +2146,15 @@ function getClientIp(req: any): string {
         for (const f of SENSITIVE) {
           if (data && typeof data === 'object' && f in data) {
             console.warn(`[Auth] 剥离敏感字段: token手机=${(req as any).authPhone}, 字段=${f}`);
+            delete data[f];
+          }
+        }
+      }
+      // P1(2026-10-15)：vipExpiry/licenseExpiry仅开发者可写
+      if ((col === 'driver_users' || col === 'squad_members') && !(req as any).isAdmin) {
+        for (const f of ['vipExpiry', 'licenseExpiry']) {
+          if (data && typeof data === 'object' && f in data) {
+            console.warn(`[Auth] 非开发者尝试写${f}已剥离: token手机=${(req as any).authPhone}`);
             delete data[f];
           }
         }
@@ -2755,7 +2773,19 @@ function getClientIp(req: any): string {
 
         for (const col of targetCols) {
           if (!dbData[col]) dbData[col] = {};
-          const existing = dbData[col][phone] || {};
+          let existing = dbData[col][phone] || {};
+          // P1(2026-10-15)：MySQL模式下从MySQL读现有值，否则累加基数错误
+          if (isMySQLEnabled && mysqlPool && !existing.vipExpiry) {
+            try {
+              const [erows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                [col, phone]
+              );
+              if (erows && erows.length > 0) {
+                existing = typeof erows[0].data === 'string' ? JSON.parse(erows[0].data) : erows[0].data;
+              }
+            } catch (_) {}
+          }
           // P0(2026-10-15)：累加而非覆盖；永久有效保持不变
           const curVip = String(existing.vipExpiry || '').trim();
           let newVip: string;
