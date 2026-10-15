@@ -7107,6 +7107,8 @@ function getClientIp(req: any): string {
       let keepRole = '普通司机';
       // 2026-10-15：审批入队必须保留司机原有VIP有效期，不硬编码'待开通'
       let keepVipExpiry = '待开通';
+      // P0(2026-10-15)：审批入队必须保留司机原有接单授权有效期，防重审清空
+      let keepLicenseExpiry = '待开通';
       try {
         if (isMySQLEnabled && mysqlPool) {
           const [duRows]: any = await mysqlPool.query(
@@ -7115,17 +7117,20 @@ function getClientIp(req: any): string {
           if (duRows && duRows.length > 0) {
             const duData = typeof duRows[0].data === 'string' ? JSON.parse(duRows[0].data) : duRows[0].data;
             if (duData?.vipExpiry) keepVipExpiry = duData.vipExpiry;
+            if (duData?.licenseExpiry) keepLicenseExpiry = duData.licenseExpiry;
           }
         } else {
           const dbData = readLocalJsonDb();
           const duExisting = dbData.driver_users?.[cleanPhone];
           if (duExisting?.vipExpiry) keepVipExpiry = duExisting.vipExpiry;
+          if (duExisting?.licenseExpiry) keepLicenseExpiry = duExisting.licenseExpiry;
         }
         // 角色保留仍走本地（P1-6原逻辑）
         const dbData2 = readLocalJsonDb();
         const existing = dbData2.squad_members?.[cleanPhone];
         if (existing?.role && existing.role !== '普通司机') keepRole = existing.role;
         if (keepVipExpiry === '待开通' && existing?.vipExpiry) keepVipExpiry = existing.vipExpiry;
+        if (keepLicenseExpiry === '待开通' && existing?.licenseExpiry) keepLicenseExpiry = existing.licenseExpiry;
       } catch (_) {}
       const memberPayload = {
         id: cleanPhone, phone: cleanPhone, phoneNumber: cleanPhone,
@@ -7135,7 +7140,7 @@ function getClientIp(req: any): string {
         approvedBy: realApprover, approvedRole: String(approvedRole || ''),
         approvalTime: now, note: String(note || '').slice(0, 200),
         city: String(city || '银川市').slice(0, 20),
-        vipExpiry: keepVipExpiry, createdAt: nowTs, updatedAt: now,
+        vipExpiry: keepVipExpiry, licenseExpiry: keepLicenseExpiry, createdAt: nowTs, updatedAt: now,
       };
       if (isMySQLEnabled && mysqlPool) {
         // 1. 写入 squad_members
