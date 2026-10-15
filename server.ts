@@ -4715,7 +4715,8 @@ function getClientIp(req: any): string {
               return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
             }
             if (dispatchedTo !== cleanDriverPhone) {
-            return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
+              return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
+            }
           }
         }
       }
