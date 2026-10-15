@@ -5107,7 +5107,8 @@ export default function HomeView({
                   const days = Math.ceil((parsed - Date.now()) / (1000*60*60*24));
                   if (days > 0) {
                     licText = `接单授权（${days}天）`;
-                    licColor = days <= 7 ? 'text-amber-600' : 'text-slate-500';
+                    // 正常绿色，7天内黄色提醒，过期红色
+                    licColor = days <= 7 ? 'text-amber-600' : 'text-emerald-600';
                   } else {
                     licText = '接单授权（已到期）';
                   }
