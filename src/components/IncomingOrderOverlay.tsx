@@ -96,6 +96,16 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 不违反"无本地倒计时"铁律：仅初始显示值，无setInterval递减逻辑。
   // orderRef 已在下方声明（用于语音播报），此处复用；onDecline 用 ref 避免 effect 反复重建。
   const [timeLeft, setTimeLeft] = useState<number>(60);
+  // 2026-10-15新增：timeLeft的ref版本，供防跳变逻辑读取当前值（setState异步，闭包读不到最新）
+  const timeLeftRef = React.useRef<number>(60);
+  const setTimeLeftSync = (v: number) => {
+    timeLeftRef.current = v;
+    setTimeLeft(v);
+  };
+  // 保持 ref 与 state 同步（其他直接调 setTimeLeft 的地方）
+  React.useEffect(() => {
+    timeLeftRef.current = timeLeft;
+  }, [timeLeft]);
 
   // 2026-10-12修复：订单切换时重置倒计时，防止旧订单的0覆盖新订单的秒数
   // 解决倒计时乱跳（0→33）的根本原因
@@ -219,13 +229,22 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             }
 
             if (typeof data.serverCountdown === 'number') {
-              // 2026-10-13修复：按序到达的服务器数字直接采用（含服务端合法的 33→60 重置）。
-              // 乱序旧响应已由上方 mySeq===seq 丢弃，此处不再做单调递减过滤——
-              // 旧逻辑会把服务端合法重置当脏数据吞掉，导致迟弹窗看不到完整 60 秒。
+              // 2026-10-15修复：防跳变保护。倒计时正常每秒减1，允许服务端合法重置（上跳如33→60），
+              // 但阻断异常下跳（如56→33这种1秒内掉23秒的脏数据）。下跳超过3秒视为异常，保留本地值。
               const v = Math.max(0, Math.min(60, data.serverCountdown));
-              setTimeLeft(v);
-              // 双轨：记录服务端同步时间
-              lastServerSyncRef.current = Date.now();
+              const curLeft = timeLeftRef.current;
+              const drop = curLeft - v;
+              // 允许：上跳（重置）、正常递减（0-2秒）、初始同步（curLeft为0或60）
+              // 阻断：异常下跳（1秒内掉超过3秒）
+              const isAbnormalDrop = curLeft > 0 && curLeft < 60 && drop > 3;
+              if (!isAbnormalDrop) {
+                setTimeLeftSync(v);
+                // 双轨：记录服务端同步时间
+                lastServerSyncRef.current = Date.now();
+              } else {
+                // 异常下跳：记录日志但保留本地平滑值，不采用脏数据
+                console.warn(`[Countdown] 阻断异常下跳: 本地${curLeft} → 服务端${v}，保留本地值`);
+              }
               if (v <= 0 && !isAcceptingRef.current) {
                 const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
                 if (orderAgeMs > 25000) {

@@ -3984,6 +3984,16 @@ function getClientIp(req: any): string {
           selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
         }
 
+        // 2026-10-15 接单授权最终硬拦截（纵深防御）：即使候选过滤漏掉，
+        // 指派前再次校验选中司机的授权，无授权直接转大厅，不弹窗派单
+        if (selected) {
+          const selLic = (selected as any)?.data?.licenseExpiry ?? (selected as any)?.licenseExpiry;
+          if (!isLicenseValid(selLic)) {
+            console.log(`[Dispatch] 司机 ${selected.phone} 接单授权无效，最终拦截：订单 ${orderId} 直接转入选单大厅`);
+            selected = null as any;
+          }
+        }
+
         // H6修复：写入前用库内最新状态二次校验（防并发派单双写：高德解析+3秒等待期间可能已被其他请求派单）
         {
           const freshDb = readLocalJsonDb();
@@ -3994,6 +4004,36 @@ function getClientIp(req: any): string {
             console.log(`[Dispatch] 订单 ${orderId} 已被派单/抢单（${alreadyDispatched || alreadyClaimed}），本次跳过写入`);
             return res.json({ success: true, dispatched: true, driverPhone: alreadyDispatched || alreadyClaimed, alreadyDispatched: true });
           }
+        }
+
+        // 接单授权拦截后无可用司机：订单直接转入选单大厅
+        if (!selected) {
+          const hallPayload = {
+            ...orderData,
+            id: orderId,
+            orderId: orderId,
+            ...coordFields,
+            status: 'hall',
+            in_hall: true,
+            hallReason: 'no_licensed_driver',
+            hallAt: Date.now(),
+            timestamp: Date.now(),
+          };
+          try {
+            if (isMySQLEnabled && mysqlPool) {
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                ['merchant_orders', orderId, JSON.stringify(hallPayload)]
+              );
+            } else {
+              const db2 = readLocalJsonDb();
+              db2['merchant_orders'] = db2['merchant_orders'] || {};
+              db2['merchant_orders'][orderId] = hallPayload;
+              writeLocalJsonDb(db2);
+            }
+          } catch (_) {}
+          console.log(`[Dispatch] 订单 ${orderId} 无授权司机，直接转入选单大厅`);
+          return res.json({ success: true, dispatched: false, toHall: true, reason: 'no_licensed_driver' });
         }
 
         const distText = selected.distKm < 1.0 
