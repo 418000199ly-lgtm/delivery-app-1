@@ -4449,11 +4449,16 @@ export default function MobileDispatchValetOrder({
             {/* QR Code Container */}
             <div className="relative w-60 h-60 p-3 bg-white rounded-2xl border border-gray-200 shadow-inner flex items-center justify-center overflow-hidden">
               {wechatQrUrl ? (
-                <img 
-                  src={authedQrUrl || wechatQrUrl} 
-                  alt="微信代叫费收款码" 
-                  className="w-full h-full object-contain rounded-xl"
-                />
+                // P1(2026-10-16)：只用鉴权后的 URL，不回退直连 wechatQrUrl（会 401 闪破图）
+                authedQrUrl ? (
+                  <img 
+                    src={authedQrUrl} 
+                    alt="微信代叫费收款码" 
+                    className="w-full h-full object-contain rounded-xl"
+                  />
+                ) : (
+                  <div className="text-gray-400 text-sm">收款码加载中…</div>
+                )
               ) : (
                 <div 
                   onClick={() => fileInputRef.current?.click()}

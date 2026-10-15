@@ -1,5 +1,6 @@
 import jsQR from 'jsqr';
 import QRCode from 'qrcode';
+import { useState, useEffect, useRef } from 'react';
 import { getBaseApiUrl } from '../lib/dbProxy';
 
 /**
@@ -354,29 +355,40 @@ export function processImageFileToCleanQR(file: File, type: 'wechat' | 'alipay' 
  * 普通 <img src> 发不出自定义 header，会 401 空白。本 Hook 用 fetch 带 token 取图转 blob URL。
  * data: / http(s): URL 直接返回，无需鉴权。
  */
-import { useState, useEffect } from 'react';
-
 export function useAuthenticatedQrUrl(rawUrl: string | undefined | null): string {
   const [blobUrl, setBlobUrl] = useState<string>('');
+  // P1(2026-10-16)：用 ref 持有上一个 blob URL，新图就绪后再 revoke 旧的，避免切换时闪破图；
+  // 卸载时统一 revoke，避免泄漏。
+  const prevBlobRef = useRef<string>('');
 
   useEffect(() => {
     let cancelled = false;
-    let objectUrl = '';
+
+    const setUrl = (url: string) => {
+      if (cancelled) return;
+      // 新 URL 就绪后才释放旧的，切换过程无破图
+      const prev = prevBlobRef.current;
+      prevBlobRef.current = url;
+      setBlobUrl(url);
+      if (prev && prev.startsWith('blob:')) {
+        try { URL.revokeObjectURL(prev); } catch (_) {}
+      }
+    };
 
     const load = async () => {
       const formatted = formatQrUrl(rawUrl);
       if (!formatted) {
-        if (!cancelled) setBlobUrl('');
+        setUrl('');
         return;
       }
       // data: / 绝对 http(s): 无需鉴权，直接用
       if (formatted.startsWith('data:image/')) {
-        if (!cancelled) setBlobUrl(formatted);
+        setUrl(formatted);
         return;
       }
       const needsAuth = formatted.includes('/uploads/qrcodes');
       if (!needsAuth) {
-        if (!cancelled) setBlobUrl(formatted);
+        setUrl(formatted);
         return;
       }
       try {
@@ -388,20 +400,37 @@ export function useAuthenticatedQrUrl(rawUrl: string | undefined | null): string
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const blob = await resp.blob();
-        objectUrl = URL.createObjectURL(blob);
-        if (!cancelled) setBlobUrl(objectUrl);
+        const objectUrl = URL.createObjectURL(blob);
+        if (cancelled) {
+          // P1(2026-10-16)：fetch 完成后才发现已取消，立即释放，不泄漏
+          try { URL.revokeObjectURL(objectUrl); } catch (_) {}
+          return;
+        }
+        setUrl(objectUrl);
       } catch (e) {
         console.warn('[QR] 带鉴权加载收款码失败:', (e as any)?.message);
-        if (!cancelled) setBlobUrl('');
+        setUrl('');
       }
     };
 
     load();
     return () => {
       cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      // 注意：此处不 revoke 当前 URL（state 还指着它用于显示），
+      // 新 URL 就绪时 setUrl 会释放旧的；组件卸载时的释放在下方单独 effect 处理
     };
   }, [rawUrl]);
+
+  // 组件卸载时释放最后的 blob URL
+  useEffect(() => {
+    return () => {
+      const prev = prevBlobRef.current;
+      if (prev && prev.startsWith('blob:')) {
+        try { URL.revokeObjectURL(prev); } catch (_) {}
+      }
+      prevBlobRef.current = '';
+    };
+  }, []);
 
   return blobUrl;
 }

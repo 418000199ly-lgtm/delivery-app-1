@@ -29,6 +29,8 @@ interface IncomingOrderOverlayProps {
   onlineBillingRules?: BillingRules;
   onAccept: (trip: TripState) => void;
   onDecline: () => void;
+  // P0(2026-10-16)：409(被他人抢走)时静默关闭弹窗，不触发to-hall，避免摧毁他人已接订单
+  onDismissSilently?: () => void;
 }
 
 // Haversine straight line distance formula (真实计算起始点和司机当前位置的直线距离)
@@ -77,6 +79,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   onlineBillingRules,
   onAccept,
   onDecline,
+  onDismissSilently,
 }) => {
   // 60秒倒计时：严格由中国大陆阿里云服务器权威倒计时决定 (服务器显示60就显示60，服务器显示31就显示31)
   const targetOrderId = String((order as any)?.orderId || (order as any)?.id || (order as any)?.orderNo || '').trim();
@@ -119,6 +122,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     if (declinedRef.current) return;
     declinedRef.current = true;
     onDeclineRef.current();
+  }, []);
+  // P0(2026-10-16)：409静默关闭——只关弹窗，不调to-hall，不摧毁他人已接订单
+  const onDismissSilentlyRef = React.useRef(onDismissSilently);
+  onDismissSilentlyRef.current = onDismissSilently;
+  const silentDismiss = React.useCallback(() => {
+    if (declinedRef.current) return;
+    declinedRef.current = true;
+    if (onDismissSilentlyRef.current) onDismissSilentlyRef.current();
   }, []);
   useEffect(() => {
     if (targetOrderId && targetOrderId !== prevOrderIdRef.current) {
@@ -642,8 +653,15 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             const licMsg = msg || '接单授权已到期，请联系开发者充值接单授权';
             speakText(licMsg);
             alert('⚠️ ' + licMsg);
-          } else if (claimResp.status === 409 || /已被|已接单|不存在/.test(msg)) {
+          } else if (claimResp.status === 409 || /已被|已接单/.test(msg)) {
+            // P0(2026-10-16)：409=已被他人接走，只静默关弹窗，绝不调safeDecline()
+            // （safeDecline会触发to-hall清空claimedDriverPhone，摧毁他人合法接单）
             speakText('该订单已被其他司机接走');
+            isAcceptingRef.current = false;
+            silentDismiss();
+            return;
+          } else if (/不存在/.test(msg)) {
+            speakText('该订单已不存在');
           } else {
             speakText('接单失败，请重试');
           }

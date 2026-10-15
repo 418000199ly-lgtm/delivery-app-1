@@ -3757,6 +3757,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           onlineBillingRules={billingRules || onlineBillingRules}
           onAccept={handleAcceptIncomingOrder}
           onDecline={handleDeclineIncomingOrder}
+          // P0(2026-10-16)：409静默关闭，只清弹窗不调to-hall
+          onDismissSilently={() => setIncomingOrder(null)}
         />
       );
     }

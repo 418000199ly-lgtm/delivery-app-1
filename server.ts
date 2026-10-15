@@ -7411,14 +7411,39 @@ function getClientIp(req: any): string {
         return res.status(400).json({ success: false, error: '缺少 orderId' });
       }
       // 校验：订单存在且调用者是被派司机（或开发者）
+      // P0(2026-10-16)：同时校验 claimedDriverPhone——订单已被他人接走时，
+      // 非接单人调用 to-hall 会摧毁他人合法接单，必须 403 拒绝。
+      // 校验数据源用 MySQL（与写入路径一致），本地 JSON 可能过期。
       try {
-        const dbData = readLocalJsonDb();
-        const order = dbData.merchant_orders?.[cleanOrderId] || dbData.valet_orders?.[cleanOrderId];
         const isDev = (req as any).isAdmin;
-        if (!isDev && order) {
-          const assigned = String(order.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
-          if (assigned && assigned !== cleanDriverPhone) {
-            return res.status(403).json({ success: false, error: '只有被派司机可以将该订单转入大厅' });
+        if (!isDev) {
+          let order: any = null;
+          if (isMySQLEnabled && mysqlPool) {
+            try {
+              const [vrows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['merchant_orders', cleanOrderId]
+              );
+              if (vrows && vrows.length > 0) {
+                const vraw = vrows[0].data;
+                order = typeof vraw === 'string' ? JSON.parse(vraw) : vraw;
+              }
+            } catch (_) { order = null; }
+          }
+          if (!order) {
+            const dbData = readLocalJsonDb();
+            order = dbData.merchant_orders?.[cleanOrderId] || dbData.valet_orders?.[cleanOrderId];
+          }
+          if (order) {
+            const assigned = String(order.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+            if (assigned && assigned !== cleanDriverPhone) {
+              return res.status(403).json({ success: false, error: '只有被派司机可以将该订单转入大厅' });
+            }
+            // P0(2026-10-16)：已被他人接走的订单，非接单人不得转入大厅
+            const claimed = String(order.claimedDriverPhone || '').replace(/\D/g, '').trim();
+            if (claimed && claimed !== cleanDriverPhone) {
+              return res.status(403).json({ success: false, error: '该订单已被其他司机接走，不能转入大厅' });
+            }
           }
         }
       } catch (_) {}
