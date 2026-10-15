@@ -1316,6 +1316,12 @@ function getClientIp(req: any): string {
       (req as any).isAdmin = false;
       return next();
     }
+    // 2026-10-15：城市派单员可拒绝入队申请（写 squad_applications），不开放其他成员表
+    if ((req as any).isDispatcher && colName === 'squad_applications') {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = false;
+      return next();
+    }
     // H1修复：业务接口与读接口只做基础 token 验证，不走"无targetId需管理员"逻辑
     // （这些接口请求体本来就没有 id/docId 字段，H9 的批量操作拦截不能误伤它们）
     // 注意：/api/db/set|save|update|delete|add|clear-collection 等写接口不在此列，仍走下方严格校验
@@ -6472,7 +6478,8 @@ function getClientIp(req: any): string {
   app.post('/api/squad-member/approve', requireDbAuth, async (req, res) => {
     try {
       // P0修复(2026-10-14)：只有管理员/管理人员可以审批，防普通司机自批入队
-      const isApproverAdmin = (req as any).isAdmin || (req as any).isManager;
+      // 2026-10-15：城市派单员也可审批入队申请（用户要求），但不给改名/删人/调职位等其他管理权限
+      const isApproverAdmin = (req as any).isAdmin || (req as any).isManager || (req as any).isDispatcher;
       if (!isApproverAdmin) {
         return res.status(403).json({ success: false, error: '仅管理人员可以审批' });
       }
