@@ -1071,7 +1071,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "01f21585";
+  const SERVER_VERSION = "9b967796";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -6047,6 +6047,7 @@ async function startServer() {
       const realApprover = String(req.authPhone || approvedBy || "").trim();
       let keepRole = "\u666E\u901A\u53F8\u673A";
       let keepVipExpiry = "\u5F85\u5F00\u901A";
+      let keepLicenseExpiry = "\u5F85\u5F00\u901A";
       try {
         if (isMySQLEnabled && mysqlPool) {
           const [duRows] = await mysqlPool.query(
@@ -6056,16 +6057,19 @@ async function startServer() {
           if (duRows && duRows.length > 0) {
             const duData = typeof duRows[0].data === "string" ? JSON.parse(duRows[0].data) : duRows[0].data;
             if (duData?.vipExpiry) keepVipExpiry = duData.vipExpiry;
+            if (duData?.licenseExpiry) keepLicenseExpiry = duData.licenseExpiry;
           }
         } else {
           const dbData = readLocalJsonDb();
           const duExisting = dbData.driver_users?.[cleanPhone];
           if (duExisting?.vipExpiry) keepVipExpiry = duExisting.vipExpiry;
+          if (duExisting?.licenseExpiry) keepLicenseExpiry = duExisting.licenseExpiry;
         }
         const dbData2 = readLocalJsonDb();
         const existing = dbData2.squad_members?.[cleanPhone];
         if (existing?.role && existing.role !== "\u666E\u901A\u53F8\u673A") keepRole = existing.role;
         if (keepVipExpiry === "\u5F85\u5F00\u901A" && existing?.vipExpiry) keepVipExpiry = existing.vipExpiry;
+        if (keepLicenseExpiry === "\u5F85\u5F00\u901A" && existing?.licenseExpiry) keepLicenseExpiry = existing.licenseExpiry;
       } catch (_) {
       }
       const memberPayload = {
@@ -6084,6 +6088,7 @@ async function startServer() {
         note: String(note || "").slice(0, 200),
         city: String(city || "\u94F6\u5DDD\u5E02").slice(0, 20),
         vipExpiry: keepVipExpiry,
+        licenseExpiry: keepLicenseExpiry,
         createdAt: nowTs,
         updatedAt: now
       };

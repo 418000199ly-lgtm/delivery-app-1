@@ -3300,8 +3300,8 @@ function getClientIp(req: any): string {
         const prev = dbData[col][phone] || {};
         dbData[col][phone] = { ...prev, ...patch, phone };
       });
-      // Debounced write to avoid disk I/O saturation under 1000-1500 drivers concurrency
-      writeLocalJsonDb(dbData);
+      // P0(2026-10-15)：GPS高频上报用批量刷盘（immediate=false），防3000并发下Event Loop阻塞
+      writeLocalJsonDb(dbData, false);
 
       if (isMySQLEnabled && mysqlPool) {
         const mergedLocation = { ...(dbData.driver_locations?.[phone] || {}), ...patch, phone };
