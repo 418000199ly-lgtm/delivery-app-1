@@ -4926,8 +4926,35 @@ function getClientIp(req: any): string {
       const driverPhone = String(req.query.driverPhone || req.query.phone || '').replace(/\D/g, '').trim();
 
       const now = Date.now();
-      const dbData = readLocalJsonDb();
-      const merchantOrders = dbData['merchant_orders'] || {};
+      // 2026-10-15根治：MySQL模式下从MySQL读订单，本地JSON是stale的会导致倒计时跳变（如56→33）
+      let merchantOrders: Record<string, any> = {};
+      let passengerLinks: Record<string, any> = {};
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [moRows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
+            ['merchant_orders']
+          );
+          (moRows || []).forEach((r: any) => {
+            const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            const k = String(r.doc_id || d?.id || d?.orderId || '').trim();
+            if (k) merchantOrders[k] = d;
+          });
+          const [plRows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
+            ['passenger_links']
+          );
+          (plRows || []).forEach((r: any) => {
+            const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            const k = String(r.doc_id || '').trim();
+            if (k) passengerLinks[k] = d;
+          });
+        } catch (_) {}
+      } else {
+        const dbData = readLocalJsonDb();
+        merchantOrders = dbData['merchant_orders'] || {};
+        passengerLinks = dbData['passenger_links'] || {};
+      }
       
       let targetOrder: any = null;
       let targetMerchantKey: string | null = null;
@@ -4946,7 +4973,7 @@ function getClientIp(req: any): string {
         }
       }
       if (!targetOrder && driverPhone) {
-        const linkOrder = dbData['passenger_links']?.[driverPhone];
+        const linkOrder = passengerLinks?.[driverPhone];
         if (linkOrder) {
           const lId = String(linkOrder.id || linkOrder.orderId || linkOrder.orderNo || '').trim();
           if (!orderId || (lId && lId === orderId)) {
