@@ -2604,9 +2604,12 @@ function getClientIp(req: any): string {
     try {
       const inputPhone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
       const inputName = String(req.body.name || '').trim();
-      const days = Math.floor(Number(req.body.days) || 0);
-      if (days <= 0 || days > 3650) {
-        return res.status(400).json({ success: false, error: '天数必须在1-3650之间' });
+      // P0(2026-10-16)：天数=0 表示屏蔽接单（管理后台文案承诺的行为），不再当非法输入拦掉；
+      // 但缺参数/空字符串必须拒绝，防止误触清空授权
+      const rawDays: any = (req.body as any).days;
+      const days = Math.floor(Number(rawDays));
+      if (rawDays === undefined || rawDays === null || String(rawDays).trim() === '' || isNaN(days) || days < 0 || days > 3650) {
+        return res.status(400).json({ success: false, error: '天数必须在0-3650之间（0=屏蔽接单）' });
       }
       // 按手机号或名字查找司机（名字必须精确匹配唯一，多人重名时要求用手机号）
       let targetPhone = inputPhone;
@@ -2674,7 +2677,7 @@ function getClientIp(req: any): string {
           if (rows && rows.length > 0) {
             existing = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
           }
-          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ''));
+          if (!newExpiry) newExpiry = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
           const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
           await mysqlPool.query(
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
@@ -2686,7 +2689,7 @@ function getClientIp(req: any): string {
         for (const col of targetCols) {
           if (!dbData[col]) dbData[col] = {};
           const existing = dbData[col][targetPhone] || {};
-          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ''));
+          if (!newExpiry) newExpiry = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
           dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
         }
         writeLocalJsonDb(dbData);
@@ -2706,9 +2709,11 @@ function getClientIp(req: any): string {
       return res.status(403).json({ success: false, error: '仅开发者可批量充值' });
     }
     try {
-      const days = Math.floor(Number(req.body.days) || 0);
-      if (days <= 0 || days > 3650) {
-        return res.status(400).json({ success: false, error: '天数必须在1-3650之间' });
+      // P0(2026-10-16)：天数=0 表示屏蔽全小队接单；缺参数必须拒绝，防误触
+      const rawDays: any = (req.body as any).days;
+      const days = Math.floor(Number(rawDays));
+      if (rawDays === undefined || rawDays === null || String(rawDays).trim() === '' || isNaN(days) || days < 0 || days > 3650) {
+        return res.status(400).json({ success: false, error: '天数必须在0-3650之间（0=屏蔽接单）' });
       }
       const calcExpiry = (cur: string): string => {
         // P0(2026-10-15)：永久状态不被充值降级
@@ -2744,7 +2749,7 @@ function getClientIp(req: any): string {
             const st = String(d.status || d.approvalStatus || '');
             if (!['已通过', 'approved', '通过'].includes(st)) continue;
           } catch (_) { continue; }
-          const newExp = calcExpiry(curLic);
+          const newExp = days === 0 ? '已到期' : calcExpiry(curLic);
           for (const col of targetCols) {
             const [erows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, phone]);
@@ -2764,7 +2769,7 @@ function getClientIp(req: any): string {
           if (!/^1[3-9]\d{9}$/.test(p)) continue;
           const st = String((d as any).status || (d as any).approvalStatus || '');
           if (!['已通过', 'approved', '通过'].includes(st)) continue;
-          const newExp = calcExpiry(String((d as any).licenseExpiry || ''));
+          const newExp = days === 0 ? '已到期' : calcExpiry(String((d as any).licenseExpiry || ''));
           for (const col of targetCols) {
             if (!dbData[col]) dbData[col] = {};
             const ex = dbData[col][p] || {};

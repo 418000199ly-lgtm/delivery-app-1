@@ -4537,16 +4537,18 @@ export default function AdminPanel({
                 </div>
                 <div className="w-24">
                   <label className="text-[10px] text-slate-400 font-bold block mb-1">天数</label>
-                  <input id="license-recharge-days" type="number" placeholder="30" min="1" max="3650"
+                  <input id="license-recharge-days" type="number" placeholder="30" min="0" max="3650"
                     className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-amber-500 outline-none rounded-xl text-xs text-slate-200" />
                 </div>
                 <button onClick={async () => {
                   const inputEl = document.getElementById('license-recharge-input') as HTMLInputElement;
                   const daysEl = document.getElementById('license-recharge-days') as HTMLInputElement;
                   const input = inputEl?.value?.trim() || '';
-                  const days = parseInt(daysEl?.value || '0');
+                  const daysStr = daysEl?.value?.trim() || '';
+                  const days = parseInt(daysStr, 10);
                   if (!input) { triggerToast('请输入手机号或名字'); return; }
-                  if (!days || days < 1) { triggerToast('请输入有效天数'); return; }
+                  // P0(2026-10-16)：天数=0 表示屏蔽接单（与界面文案一致），只拦空/非法/负数/超限
+                  if (daysStr === '' || isNaN(days) || days < 0 || days > 3650) { triggerToast('请输入0-3650的有效天数（0=屏蔽接单）'); return; }
                   try {
                     const baseUrl = getBaseApiUrl();
                     const isPhone = /^1[3-9]\d{9}$/.test(input.replace(/\D/g, ''));
@@ -4560,7 +4562,9 @@ export default function AdminPanel({
                     });
                     const j = await r.json().catch(() => null);
                     if (r.ok && j?.success) {
-                      triggerToast(`✅ 接单授权充值成功：${j.phone} +${j.daysAdded}天，有效期至 ${j.licenseExpiry}`);
+                      triggerToast(days === 0
+                        ? `⛔ 已屏蔽接单授权：${j.phone}（接单授权已到期）`
+                        : `✅ 接单授权充值成功：${j.phone} +${j.daysAdded}天，有效期至 ${j.licenseExpiry}`);
                       // 2026-10-15 P0修复：派发事件通知App更新licenseExpiry，否则App徽章不更新
                       // 复用 driver_vip_updated 事件，App.tsx:696 已处理 detail.licenseExpiry
                       try {
@@ -4579,10 +4583,14 @@ export default function AdminPanel({
                   充值
                 </button>
                 <button onClick={async () => {
-                  if (!confirm('确定给全小队已通过成员批量充值吗？请输入天数后确认。')) return;
                   const daysEl = document.getElementById('license-recharge-days') as HTMLInputElement;
-                  const days = parseInt(daysEl?.value || '0');
-                  if (!days || days < 1) { triggerToast('请先输入天数'); return; }
+                  const daysStr = daysEl?.value?.trim() || '';
+                  const days = parseInt(daysStr, 10);
+                  // P0(2026-10-16)：天数=0 表示屏蔽全小队接单，只拦空/非法/负数/超限
+                  if (daysStr === '' || isNaN(days) || days < 0 || days > 3650) { triggerToast('请先输入0-3650的天数（0=屏蔽接单）'); return; }
+                  if (!confirm(days === 0
+                    ? '确定屏蔽全小队已通过成员的接单授权吗？他们的接单授权将立即到期。'
+                    : '确定给全小队已通过成员批量充值吗？请输入天数后确认。')) return;
                   try {
                     const baseUrl = getBaseApiUrl();
                     const r = await fetch(`${baseUrl}/api/admin/batch-recharge-license`, {
@@ -4592,7 +4600,9 @@ export default function AdminPanel({
                     });
                     const j = await r.json().catch(() => null);
                     if (r.ok && j?.success) {
-                      triggerToast(`✅ 批量充值成功：${j.count}人 +${j.daysAdded}天`);
+                      triggerToast(days === 0
+                        ? `⛔ 已屏蔽 ${j.count} 人的接单授权（已到期）`
+                        : `✅ 批量充值成功：${j.count}人 +${j.daysAdded}天`);
                     } else {
                       triggerToast(`❌ 批量失败：${j?.error || '服务器错误'}`);
                     }

@@ -62,7 +62,7 @@ import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
@@ -6250,7 +6250,8 @@ export default function HomeView({
                 <div className="pt-2.5 flex justify-between items-center">
                   <span className="text-xs font-bold text-slate-400">当前有效期至:</span>
                   <span className="text-xs font-black text-amber-600">
-                    {settings.vipExpiry || '即刻生效'}
+                    {/* P0(2026-10-16)：归一化显示，2099-12-31 显示"永久有效"而非原始日期，与"服务到期时间"口径一致 */}
+                    {normalizeExpiryForDisplay(settings.vipExpiry) === '待开通' ? '即刻生效' : normalizeExpiryForDisplay(settings.vipExpiry)}
                   </span>
                 </div>
               </div>
