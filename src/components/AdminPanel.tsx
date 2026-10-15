@@ -4413,6 +4413,78 @@ export default function AdminPanel({
         {/* 4. DRIVERS PRIVILEGE TAB PANEL */}
         {activeTab === 'drivers' && (
           <div className="flex-1 flex flex-col min-h-0 space-y-4 animate-in fade-in duration-200">
+            {/* 接单授权充值 (2026-10-15)：仅开发者可操作 */}
+            <div className="bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30 rounded-2xl p-4">
+              <h4 className="text-xs font-black text-amber-300 tracking-wider mb-1">📜 接单授权充值</h4>
+              <p className="text-[10px] text-slate-400 mb-3">给小队司机充值接单授权天数，天数为0时自动屏蔽接单。支持手机号或名字查找。</p>
+              <div className="flex flex-wrap gap-2 items-end">
+                <div className="flex-1 min-w-[140px]">
+                  <label className="text-[10px] text-slate-400 font-bold block mb-1">手机号或名字</label>
+                  <input id="license-recharge-input" type="text" placeholder="手机号或司机名字"
+                    className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-amber-500 outline-none rounded-xl text-xs text-slate-200" />
+                </div>
+                <div className="w-24">
+                  <label className="text-[10px] text-slate-400 font-bold block mb-1">天数</label>
+                  <input id="license-recharge-days" type="number" placeholder="30" min="1" max="3650"
+                    className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-amber-500 outline-none rounded-xl text-xs text-slate-200" />
+                </div>
+                <button onClick={async () => {
+                  const inputEl = document.getElementById('license-recharge-input') as HTMLInputElement;
+                  const daysEl = document.getElementById('license-recharge-days') as HTMLInputElement;
+                  const input = inputEl?.value?.trim() || '';
+                  const days = parseInt(daysEl?.value || '0');
+                  if (!input) { triggerToast('请输入手机号或名字'); return; }
+                  if (!days || days < 1) { triggerToast('请输入有效天数'); return; }
+                  try {
+                    const baseUrl = getBaseApiUrl();
+                    const isPhone = /^1[3-9]\d{9}$/.test(input.replace(/\D/g, ''));
+                    const body: any = { days };
+                    if (isPhone) body.phone = input.replace(/\D/g, '');
+                    else body.name = input;
+                    const r = await fetch(`${baseUrl}/api/admin/recharge-license`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                      body: JSON.stringify(body)
+                    });
+                    const j = await r.json().catch(() => null);
+                    if (r.ok && j?.success) {
+                      triggerToast(`✅ 接单授权充值成功：${j.phone} +${j.daysAdded}天，有效期至 ${j.licenseExpiry}`);
+                      inputEl.value = ''; daysEl.value = '';
+                    } else {
+                      triggerToast(`❌ 充值失败：${j?.error || '服务器错误'}`);
+                    }
+                  } catch (e) {
+                    triggerToast('❌ 网络错误');
+                  }
+                }} className="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-xl">
+                  充值
+                </button>
+                <button onClick={async () => {
+                  if (!confirm('确定给全小队已通过成员批量充值吗？请输入天数后确认。')) return;
+                  const daysEl = document.getElementById('license-recharge-days') as HTMLInputElement;
+                  const days = parseInt(daysEl?.value || '0');
+                  if (!days || days < 1) { triggerToast('请先输入天数'); return; }
+                  try {
+                    const baseUrl = getBaseApiUrl();
+                    const r = await fetch(`${baseUrl}/api/admin/batch-recharge-license`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                      body: JSON.stringify({ days })
+                    });
+                    const j = await r.json().catch(() => null);
+                    if (r.ok && j?.success) {
+                      triggerToast(`✅ 批量充值成功：${j.count}人 +${j.daysAdded}天`);
+                    } else {
+                      triggerToast(`❌ 批量失败：${j?.error || '服务器错误'}`);
+                    }
+                  } catch (e) {
+                    triggerToast('❌ 网络错误');
+                  }
+                }} className="px-4 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-xl">
+                  全小队批量充值
+                </button>
+              </div>
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-12 gap-5 flex-1 min-h-0">
               
               {/* Driver search & edit panel on left part (5 cols) */}

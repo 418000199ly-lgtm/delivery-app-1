@@ -5092,6 +5092,29 @@ export default function HomeView({
               <span className="w-1.5 h-1.5 rounded-full bg-[#ff7d00] animate-pulse"></span>
               <span className="text-[11px] font-extrabold text-slate-600 tracking-tight">选单大厅</span>
             </div>
+            {/* 接单授权显示 (2026-10-15)：仅已审批入队的小队成员可见 */}
+            {(() => {
+              if (!checkApprovalStatus()) return null;
+              const licExpiry = settings.licenseExpiry || '';
+              let licText = '接单授权（待开通）';
+              let licColor = 'text-red-500';
+              if (licExpiry === '永久有效') {
+                licText = '接单授权（永久）';
+                licColor = 'text-emerald-600';
+              } else if (licExpiry && licExpiry !== '待开通') {
+                const parsed = Date.parse(licExpiry);
+                if (!isNaN(parsed)) {
+                  const days = Math.ceil((parsed - Date.now()) / (1000*60*60*24));
+                  if (days > 0) {
+                    licText = `接单授权（${days}天）`;
+                    licColor = days <= 7 ? 'text-amber-600' : 'text-slate-500';
+                  } else {
+                    licText = '接单授权（已到期）';
+                  }
+                }
+              }
+              return <span className={`text-[9.5px] font-bold ${licColor}`}>{licText}</span>;
+            })()}
             <span className="text-[9.5px] text-slate-400 font-medium">实时派单大厅</span>
           </div>
 

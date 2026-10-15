@@ -36,6 +36,7 @@ export interface ChauffeurSettings {
   wechatQrCode?: string;
   alipayQrCode?: string;
   vipExpiry?: string;
+  licenseExpiry?: string; // 接单授权到期日 (2026-10-15)
   customAppName?: string;
   onlineOrdersEnabled?: boolean;
   city?: string;

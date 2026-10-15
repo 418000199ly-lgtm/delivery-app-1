@@ -692,6 +692,23 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           });
         }
       }
+      // 接单授权同步 (2026-10-15)：与vipExpiry同逻辑
+      if ((isBatch || cleanDetailPhone === cleanUserPhone) && detail.licenseExpiry !== undefined) {
+        const freshLic = String(detail.licenseExpiry).trim();
+        setSettings(prev => {
+          if (prev.licenseExpiry !== freshLic) {
+            const updated = { ...prev, licenseExpiry: freshLic };
+            try {
+              if (cleanUserPhone) {
+                safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+              }
+              safeSetItem('dd_settings', JSON.stringify(updated));
+            } catch (_) {}
+            return updated;
+          }
+          return prev;
+        });
+      }
     };
     window.addEventListener('driver_vip_updated', handleVipEvent);
 

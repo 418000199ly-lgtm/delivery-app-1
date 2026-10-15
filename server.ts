@@ -159,6 +159,22 @@ function getTokenSecret(): string {
     return 'fallback-secret-' + crypto.randomBytes(32).toString('hex');
   }
 }
+// 接单授权系统 (2026-10-15)：与VIP会员完全独立的第二套倒计时系统
+// 计算接单授权剩余天数：'永久有效'返回99999，'待开通'/空/过期返回0
+function getLicenseDaysRemaining(expiry: any): number {
+  const s = String(expiry || '').trim();
+  if (!s || s === '待开通' || s === '待激活' || s === '未开通' || s === '已到期' || s === '已过期') return 0;
+  if (s === '永久有效' || s === '永久' || s === '终身') return 99999;
+  const parsed = Date.parse(s);
+  if (isNaN(parsed)) return 0;
+  const diffMs = parsed - Date.now();
+  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  return days > 0 ? days : 0;
+}
+// 接单授权是否有效：天数>0 或永久有效
+function isLicenseValid(expiry: any): boolean {
+  return getLicenseDaysRemaining(expiry) > 0;
+}
 function createSignedToken(phone: string, scope: string, isMerchant: boolean): string {
   const payload = JSON.stringify({ p: phone, s: scope, m: !!isMerchant, i: Date.now() });
   const pb = _b64urlEncode(payload);
@@ -2293,6 +2309,168 @@ function getClientIp(req: any): string {
     }
   });
 
+  // 接单授权充值接口 (2026-10-15)：仅开发者15509601222可操作，按手机号或名字充值天数
+  app.post('/api/admin/recharge-license', requireDbAuth, async (req, res) => {
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '仅开发者可充值接单授权' });
+    }
+    try {
+      const inputPhone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
+      const inputName = String(req.body.name || '').trim();
+      const days = Math.floor(Number(req.body.days) || 0);
+      if (days <= 0 || days > 3650) {
+        return res.status(400).json({ success: false, error: '天数必须在1-3650之间' });
+      }
+      // 按手机号或名字查找司机
+      let targetPhone = inputPhone;
+      if (!targetPhone && inputName) {
+        if (isMySQLEnabled && mysqlPool) {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? LIMIT 500',
+            ['squad_members']);
+          for (const r of (rows || [])) {
+            try {
+              const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+              const n = String(d.name || d.driverName || '');
+              if (n && (n === inputName || n.includes(inputName))) { targetPhone = String(r.doc_id).replace(/\D/g, ''); break; }
+            } catch (_) {}
+          }
+        } else {
+          const dbData = readLocalJsonDb();
+          for (const [pid, d]: any of Object.entries(dbData.squad_members || {})) {
+            const n = String((d as any).name || (d as any).driverName || '');
+            if (n && (n === inputName || n.includes(inputName))) { targetPhone = String(pid).replace(/\D/g, ''); break; }
+          }
+        }
+      }
+      if (!targetPhone || !/^1[3-9]\d{9}$/.test(targetPhone)) {
+        return res.status(400).json({ success: false, error: '未找到该司机（请检查手机号或名字）' });
+      }
+      // 计算新到期日：现有有效期基础上累加；已过期则从今天起算
+      const calcNewExpiry = (current: string): string => {
+        let base = new Date();
+        if (current && current !== '待开通' && current !== '永久有效') {
+          const p = Date.parse(current);
+          if (!isNaN(p)) {
+            const prev = new Date(p);
+            if (prev.getTime() > base.getTime()) base = prev;
+          }
+        }
+        base.setDate(base.getDate() + days);
+        return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
+      };
+      let newExpiry = '';
+      const targetCols = ['driver_users', 'squad_members', 'online_applications'];
+      const now = new Date().toISOString();
+      if (isMySQLEnabled && mysqlPool) {
+        for (const col of targetCols) {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            [col, targetPhone]);
+          let existing: any = {};
+          if (rows && rows.length > 0) {
+            existing = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+          }
+          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ''));
+          const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            [col, targetPhone, JSON.stringify(updated)]);
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        for (const col of targetCols) {
+          if (!dbData[col]) dbData[col] = {};
+          const existing = dbData[col][targetPhone] || {};
+          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ''));
+          dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true, phone: targetPhone, licenseExpiry: newExpiry, daysAdded: days });
+    } catch (err: any) {
+      console.error('[Recharge License Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // 接单授权批量充值 (2026-10-15)：仅开发者，给全小队司机统一加天数（上线时用）
+  app.post('/api/admin/batch-recharge-license', requireDbAuth, async (req, res) => {
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ success: false, error: '仅开发者可批量充值' });
+    }
+    try {
+      const days = Math.floor(Number(req.body.days) || 0);
+      if (days <= 0 || days > 3650) {
+        return res.status(400).json({ success: false, error: '天数必须在1-3650之间' });
+      }
+      const calcExpiry = (cur: string): string => {
+        let base = new Date();
+        if (cur && cur !== '待开通' && cur !== '永久有效') {
+          const p = Date.parse(cur);
+          if (!isNaN(p)) {
+            const prev = new Date(p);
+            if (prev.getTime() > base.getTime()) base = prev;
+          }
+        }
+        base.setDate(base.getDate() + days);
+        return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
+      };
+      const targetCols = ['driver_users', 'squad_members', 'online_applications'];
+      const now = new Date().toISOString();
+      let count = 0;
+      if (isMySQLEnabled && mysqlPool) {
+        const [mrows]: any = await mysqlPool.query(
+          'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['squad_members']);
+        for (const r of (mrows || [])) {
+          const phone = String(r.doc_id).replace(/\D/g, '').trim();
+          if (!/^1[3-9]\d{9}$/.test(phone)) continue;
+          let curLic = '';
+          try {
+            const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            curLic = String(d.licenseExpiry || '');
+            // 只给已通过的成员充值
+            const st = String(d.status || d.approvalStatus || '');
+            if (!['已通过', 'approved', '通过'].includes(st)) continue;
+          } catch (_) { continue; }
+          const newExp = calcExpiry(curLic);
+          for (const col of targetCols) {
+            const [erows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, phone]);
+            let ex: any = {};
+            if (erows && erows.length > 0) ex = typeof erows[0].data === 'string' ? JSON.parse(erows[0].data) : erows[0].data;
+            const upd = { ...ex, phone, phoneNumber: phone, licenseExpiry: newExp, updatedAt: now };
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              [col, phone, JSON.stringify(upd)]);
+          }
+          count++;
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        for (const [phone, d]: any of Object.entries(dbData.squad_members || {})) {
+          const p = String(phone).replace(/\D/g, '').trim();
+          if (!/^1[3-9]\d{9}$/.test(p)) continue;
+          const st = String((d as any).status || (d as any).approvalStatus || '');
+          if (!['已通过', 'approved', '通过'].includes(st)) continue;
+          const newExp = calcExpiry(String((d as any).licenseExpiry || ''));
+          for (const col of targetCols) {
+            if (!dbData[col]) dbData[col] = {};
+            const ex = dbData[col][p] || {};
+            dbData[col][p] = { ...ex, phone: p, phoneNumber: p, licenseExpiry: newExp, updatedAt: now };
+          }
+          count++;
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true, count, daysAdded: days });
+    } catch (err: any) {
+      console.error('[Batch Recharge License Error]:', err);
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   // Dedicated admin endpoint to update driver role/position atomically across all collections
   app.post('/api/admin/update-driver-role', requireDbAuth, async (req, res) => {
     // H5修复：加鉴权+isAdmin校验（防止自助提权）
@@ -3703,6 +3881,12 @@ function getClientIp(req: any): string {
           return;
         }
 
+        // 2.5 接单授权检查 (2026-10-15)：天数为0时不派单，无豁免（含开发者本人）
+        // licenseExpiry 存在 squad_members 的 data 里
+        if (!isLicenseValid(data.licenseExpiry)) {
+          return;
+        }
+
         // 2. Role check (must be one of: 开发者司机, 城市老板司机, 城市管理司机, 城市派单员司机, 普通司机)
         if (cleanPhone !== '15509601222') {
           const role = String(data.role || data.userRole || data.approvedRole || '').trim();
@@ -3960,6 +4144,24 @@ function getClientIp(req: any): string {
         return res.status(403).json({ success: false, error: '商户身份不能抢单' });
       }
       const cleanDriverPhone = authPhoneRaw.replace(/\D/g, '').trim();
+      // 接单授权检查 (2026-10-15)：天数为0不能抢单，无豁免
+      try {
+        let licExpiry = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [lrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanDriverPhone]);
+          if (lrows && lrows.length > 0) {
+            const ld = typeof lrows[0].data === 'string' ? JSON.parse(lrows[0].data) : lrows[0].data;
+            licExpiry = String(ld.licenseExpiry || '');
+          }
+        } else {
+          licExpiry = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.licenseExpiry || '');
+        }
+        if (!isLicenseValid(licExpiry)) {
+          return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
+        }
+      } catch (_) {}
       const cleanDriverName = String(driverName || `司机${cleanDriverPhone.slice(-4)}`).trim();
 
       if (!cleanOrderId || !cleanDriverPhone) {
@@ -6811,6 +7013,24 @@ function getClientIp(req: any): string {
       if (!cleanOrderId || !/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
         return res.status(400).json({ success: false, error: '参数错误' });
       }
+      // 接单授权检查 (2026-10-15)：天数为0不能接单，无豁免
+      try {
+        let licExpiry2 = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [lrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanDriverPhone]);
+          if (lrows && lrows.length > 0) {
+            const ld = typeof lrows[0].data === 'string' ? JSON.parse(lrows[0].data) : lrows[0].data;
+            licExpiry2 = String(ld.licenseExpiry || '');
+          }
+        } else {
+          licExpiry2 = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.licenseExpiry || '');
+        }
+        if (!isLicenseValid(licExpiry2)) {
+          return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
+        }
+      } catch (_) {}
       // 2026-10-12修复：接单人必须是小队正式成员（已通过），否则403
       const checkSquadMember = async (): Promise<boolean> => {
         if (cleanDriverPhone === '15509601222') return true; // 开发者
@@ -6925,6 +7145,24 @@ function getClientIp(req: any): string {
         pickupLat, pickupLng, paymentQrCode,
       } = req.body || {};
       const cleanReporter = String(reporterPhone || '').replace(/\D/g, '').trim();
+      // 接单授权检查 (2026-10-15)：发起人天数为0不能使用报单转单功能
+      try {
+        let repLic = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [rrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanReporter]);
+          if (rrows && rrows.length > 0) {
+            const rd = typeof rrows[0].data === 'string' ? JSON.parse(rrows[0].data) : rrows[0].data;
+            repLic = String(rd.licenseExpiry || '');
+          }
+        } else {
+          repLic = String(readLocalJsonDb()?.driver_users?.[cleanReporter]?.licenseExpiry || '');
+        }
+        if (!isLicenseValid(repLic)) {
+          return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
+        }
+      } catch (_) {}
       const cleanPassenger = String(passengerPhone || '').replace(/\D/g, '').trim();
       const cleanOrderId = String(orderId || `rt_${Date.now()}`).trim();
       if (!cleanReporter || !/^1[3-9]\d{9}$/.test(cleanPassenger)) {
@@ -7043,6 +7281,8 @@ function getClientIp(req: any): string {
           const phone = m.phone;
           if (!phone || phone === cleanReporter) continue; // 绝不派给自己
           if (!isApproved(m.data)) continue;
+          // 接单授权检查 (2026-10-15)：天数为0不派转单
+          if (!isLicenseValid(m.data?.licenseExpiry)) continue;
           const loc = locationMap[phone];
           if (!loc) continue;
           const la = Number(loc.lat ?? loc.latitude);
