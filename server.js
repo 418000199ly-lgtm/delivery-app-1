@@ -1153,7 +1153,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "bdd6d26d";
+  const SERVER_VERSION = "7b13e073";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -4202,10 +4202,27 @@ async function startServer() {
       const authPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
       const isAdmin = !!req.isAdmin;
       if (!isAdmin) {
-        const dbDataCheck = readLocalJsonDb();
-        const targetOrderCheck = (dbDataCheck["merchant_orders"] || {})[orderId] || {};
+        let targetOrderCheck = {};
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [crows] = await mysqlPool.query(
+              "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+              ["merchant_orders", orderId]
+            );
+            if (crows && crows.length > 0) {
+              targetOrderCheck = typeof crows[0].data === "string" ? JSON.parse(crows[0].data) : crows[0].data;
+            }
+          } catch (_) {
+          }
+        } else {
+          const dbDataCheck = readLocalJsonDb();
+          targetOrderCheck = (dbDataCheck["merchant_orders"] || {})[orderId] || {};
+        }
         const orderPlacer = String(targetOrderCheck.merchantPhone || targetOrderCheck.orderMerchantPhone || targetOrderCheck.phone || "").replace(/\D/g, "").trim();
-        const orderDriver = String(targetOrderCheck.dispatchedDriverPhone || targetOrderCheck.driverPhone || targetOrderCheck.assignedDriver || driverPhone || "").replace(/\D/g, "").trim();
+        const orderDriver = String(targetOrderCheck.dispatchedDriverPhone || targetOrderCheck.driverPhone || targetOrderCheck.assignedDriver || targetOrderCheck.claimedDriverPhone || "").replace(/\D/g, "").trim();
+        if (!orderPlacer && !orderDriver) {
+          return res.status(404).json({ success: false, error: "\u8BA2\u5355\u4E0D\u5B58\u5728" });
+        }
         if (authPhone !== orderPlacer && authPhone !== orderDriver) {
           return res.status(403).json({ success: false, error: "\u53EA\u6709\u4E0B\u5355\u65B9\u3001\u63A5\u5355\u53F8\u673A\u6216\u7BA1\u7406\u5458\u53EF\u4EE5\u53D6\u6D88\u8BA2\u5355" });
         }
@@ -6805,6 +6822,17 @@ async function startServer() {
             [`%${cleanOrderId}%`]
           ).catch(() => {
           });
+          try {
+            const _cols = ["driver_users", "driver_locations", "squad_members"];
+            for (let _ci = 0; _ci < _cols.length; _ci++) {
+              await mysqlPool.query(
+                'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", true, "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
+                [_cols[_ci], cleanDriverPhone]
+              ).catch(function() {
+              });
+            }
+          } catch (_) {
+          }
           return { ok: true };
         } else {
           const dbData = readLocalJsonDb();
