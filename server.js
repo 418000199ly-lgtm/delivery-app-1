@@ -1021,7 +1021,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "5d66c3cb";
+  const SERVER_VERSION = "845e4b6b";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -3364,6 +3364,13 @@ async function startServer() {
           const tiedCandidates = candidates.filter((c) => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
           selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
         }
+        if (selected) {
+          const selLic = selected?.data?.licenseExpiry ?? selected?.licenseExpiry;
+          if (!isLicenseValid(selLic)) {
+            console.log(`[Dispatch] \u53F8\u673A ${selected.phone} \u63A5\u5355\u6388\u6743\u65E0\u6548\uFF0C\u6700\u7EC8\u62E6\u622A\uFF1A\u8BA2\u5355 ${orderId} \u76F4\u63A5\u8F6C\u5165\u9009\u5355\u5927\u5385`);
+            selected = null;
+          }
+        }
         {
           const freshDb = readLocalJsonDb();
           const freshOrder = freshDb?.["merchant_orders"]?.[orderId];
@@ -3373,6 +3380,35 @@ async function startServer() {
             console.log(`[Dispatch] \u8BA2\u5355 ${orderId} \u5DF2\u88AB\u6D3E\u5355/\u62A2\u5355\uFF08${alreadyDispatched || alreadyClaimed}\uFF09\uFF0C\u672C\u6B21\u8DF3\u8FC7\u5199\u5165`);
             return res.json({ success: true, dispatched: true, driverPhone: alreadyDispatched || alreadyClaimed, alreadyDispatched: true });
           }
+        }
+        if (!selected) {
+          const hallPayload = {
+            ...orderData,
+            id: orderId,
+            orderId,
+            ...coordFields,
+            status: "hall",
+            in_hall: true,
+            hallReason: "no_licensed_driver",
+            hallAt: Date.now(),
+            timestamp: Date.now()
+          };
+          try {
+            if (isMySQLEnabled && mysqlPool) {
+              await mysqlPool.query(
+                "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+                ["merchant_orders", orderId, JSON.stringify(hallPayload)]
+              );
+            } else {
+              const db2 = readLocalJsonDb();
+              db2["merchant_orders"] = db2["merchant_orders"] || {};
+              db2["merchant_orders"][orderId] = hallPayload;
+              writeLocalJsonDb(db2);
+            }
+          } catch (_) {
+          }
+          console.log(`[Dispatch] \u8BA2\u5355 ${orderId} \u65E0\u6388\u6743\u53F8\u673A\uFF0C\u76F4\u63A5\u8F6C\u5165\u9009\u5355\u5927\u5385`);
+          return res.json({ success: true, dispatched: false, toHall: true, reason: "no_licensed_driver" });
         }
         const distText = selected.distKm < 1 ? `${Math.max(50, Math.round(selected.distKm * 1e3))}\u7C73` : `${selected.distKm.toFixed(2)}\u516C\u91CC`;
         const nowTs = Date.now();
@@ -4107,8 +4143,35 @@ async function startServer() {
       const orderId = String(req.query.orderId || req.query.id || req.query.orderNo || "").trim();
       const driverPhone = String(req.query.driverPhone || req.query.phone || "").replace(/\D/g, "").trim();
       const now = Date.now();
-      const dbData = readLocalJsonDb();
-      const merchantOrders = dbData["merchant_orders"] || {};
+      let merchantOrders = {};
+      let passengerLinks = {};
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [moRows] = await mysqlPool.query(
+            "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?",
+            ["merchant_orders"]
+          );
+          (moRows || []).forEach((r) => {
+            const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+            const k = String(r.doc_id || d?.id || d?.orderId || "").trim();
+            if (k) merchantOrders[k] = d;
+          });
+          const [plRows] = await mysqlPool.query(
+            "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?",
+            ["passenger_links"]
+          );
+          (plRows || []).forEach((r) => {
+            const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+            const k = String(r.doc_id || "").trim();
+            if (k) passengerLinks[k] = d;
+          });
+        } catch (_) {
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        merchantOrders = dbData["merchant_orders"] || {};
+        passengerLinks = dbData["passenger_links"] || {};
+      }
       let targetOrder = null;
       let targetMerchantKey = null;
       if (orderId) {
@@ -4126,7 +4189,7 @@ async function startServer() {
         }
       }
       if (!targetOrder && driverPhone) {
-        const linkOrder = dbData["passenger_links"]?.[driverPhone];
+        const linkOrder = passengerLinks?.[driverPhone];
         if (linkOrder) {
           const lId = String(linkOrder.id || linkOrder.orderId || linkOrder.orderNo || "").trim();
           if (!orderId || lId && lId === orderId) {

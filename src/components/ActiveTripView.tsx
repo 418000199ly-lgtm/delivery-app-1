@@ -306,12 +306,11 @@ export default function ActiveTripView({
     // 2. Stationary jitter / drift-cluster filter (w16修复)
     // 室内GPS漂移特征：单次跳动 5-50 米，但来回 bouncing，不会持续朝一个方向走。
     // 策略：a) 小位移直接过滤；b) 新位置若落在历史锚点附近 → 漂移回弹，不累积
-    // 2026-10-15修复：阈值从8米/1m/s降到3米/0.5m/s。代驾场景经常低速挪车（堵车、小区、停车场），
-    // 3.6km/h以下也是真实行驶，不能过滤。只过滤真正的静止抖动。
-    const JITTER_DIST_M = 3.0;   // 3米内位移视为抖动（原8米太大，低速行驶被误杀）
-    const JITTER_SPEED_MS = 0.5; // 0.5m/s ≈ 1.8km/h，低于此视为静止
+    // 2026-10-15修复2：用户要求去掉速度过滤，只按GPS位移算。电动车/低速挪车速度经常低于阈值，
+    // 速度过滤误杀真实行驶。只保留距离过滤（3米）+漂移簇检测（25米来回跳）。
+    const JITTER_DIST_M = 3.0;   // 3米内位移视为抖动
     const DRIFT_CLUSTER_M = 25.0; // 25米半径内来回跳 = 漂移簇
-    if (distanceInMeters < JITTER_DIST_M && (speed !== null ? speed < JITTER_SPEED_MS : calculatedSpeed < JITTER_SPEED_MS)) {
+    if (distanceInMeters < JITTER_DIST_M) {
       lastCoordsRef.current = { lng, lat, timestamp: now };
       anchorHistoryRef.current.push({ lng, lat });
       if (anchorHistoryRef.current.length > 3) anchorHistoryRef.current.shift();
