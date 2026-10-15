@@ -516,11 +516,15 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   useEffect(() => {
     let isActive = true;
     let timerId: any = null;
+    let speechCount = 0; // P1(2026-10-15)：语音播报最多10次，防无限循环
+    const MAX_SPEECH = 10;
 
     initAudioUnlock();
 
     const playSpeech = () => {
       if (!isActive) return;
+      if (speechCount >= MAX_SPEECH) return;
+      speechCount++;
       try {
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           try {
@@ -532,7 +536,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const textToSpeak = speechTextRef.current || getTTSBroadcastText(currentOrderObj, '未知', startLocation, destination, distanceText);
         
         speakText(textToSpeak, () => {
-          if (isActive) {
+          if (isActive && speechCount < MAX_SPEECH) {
             // Pause 1.5 second between repeat loops for smooth, coherent audio
             timerId = setTimeout(() => {
               playSpeech();

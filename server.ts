@@ -4537,7 +4537,19 @@ function getClientIp(req: any): string {
         return res.status(403).json({ success: false, error: '❌ 权限不足：只有小队内审批通过的正式司机才能接收商户代叫单与报单转单！非小队成员无接单权限。' });
       }
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
-      const targetOrder = dbData['merchant_orders'][cleanOrderId];
+      let targetOrder: any = dbData['merchant_orders'][cleanOrderId];
+      // P1(2026-10-15)：MySQL模式下从MySQL读，否则永远404
+      if (isMySQLEnabled && mysqlPool && !targetOrder) {
+        try {
+          const [crows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['merchant_orders', cleanOrderId]
+          );
+          if (crows && crows.length > 0) {
+            targetOrder = typeof crows[0].data === 'string' ? JSON.parse(crows[0].data) : crows[0].data;
+          }
+        } catch (_) {}
+      }
 
       // P1-1修复(2026-10-14)：订单不存在直接 404，不创建假订单
       if (!targetOrder) {
@@ -4661,7 +4673,19 @@ function getClientIp(req: any): string {
 
       const dbData = readLocalJsonDb();
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
-      const targetOrder = dbData['merchant_orders'][cleanOrderId];
+      let targetOrder: any = dbData['merchant_orders'][cleanOrderId];
+      // P1(2026-10-15)：MySQL模式下先SELECT真实订单，防本地空数据wipe
+      if (isMySQLEnabled && mysqlPool && !targetOrder) {
+        try {
+          const [drows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['merchant_orders', cleanOrderId]
+          );
+          if (drows && drows.length > 0) {
+            targetOrder = typeof drows[0].data === 'string' ? JSON.parse(drows[0].data) : drows[0].data;
+          }
+        } catch (_) {}
+      }
 
       // P0-2修复(2026-10-13)：拒单前校验订单仍派单给本人且未被接单。
       // 否则延迟的拒单会把已进大厅被他人抢走的订单偷回大厅（B已接单，A的旧页面点拒单把B的单清空）。
@@ -7732,10 +7756,16 @@ function getClientIp(req: any): string {
   app.post('/api/report-transfer/dispatch', requireDbAuth, async (req, res) => {
     try {
       const {
-        orderId, reporterPhone, passengerPhone, pickupName, pickupDetail,
+        orderId, passengerPhone, pickupName, pickupDetail,
         pickupLat, pickupLng, paymentQrCode,
       } = req.body || {};
-      const cleanReporter = String(reporterPhone || '').replace(/\D/g, '').trim();
+      // P1(2026-10-15)：reporterPhone绑定token，防冒用他人身份
+      const cleanReporter = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(cleanReporter)) {
+        return res.status(401).json({ success: false, error: '身份验证失败' });
+      }
+      // P1(2026-10-15)：orderId服务端生成，防客户端覆盖他人订单
+      const cleanOrderId = `RT${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
       // 接单授权检查 (2026-10-15)：发起人天数为0不能使用报单转单功能
       try {
         let repLic = '';
@@ -7758,7 +7788,7 @@ function getClientIp(req: any): string {
         return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
       }
       const cleanPassenger = String(passengerPhone || '').replace(/\D/g, '').trim();
-      const cleanOrderId = String(orderId || `rt_${Date.now()}`).trim();
+      // cleanOrderId已在上方服务端生成
       if (!cleanReporter || !/^1[3-9]\d{9}$/.test(cleanPassenger)) {
         return res.status(400).json({ success: false, error: '参数错误' });
       }

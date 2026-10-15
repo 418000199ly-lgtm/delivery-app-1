@@ -1071,7 +1071,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "e6d305d8";
+  const SERVER_VERSION = "89347c6b";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -2972,6 +2972,32 @@ async function startServer() {
           }
         }
       });
+      try {
+        const requesterPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
+        let hasHubble = requesterPhone === "15509601222";
+        if (!hasHubble) {
+          if (isMySQLEnabled && mysqlPool) {
+            const [hrows] = await mysqlPool.query(
+              "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+              ["hubble_authorized_drivers", requesterPhone]
+            );
+            hasHubble = !!(hrows && hrows.length > 0);
+          } else {
+            hasHubble = !!readLocalJsonDb()?.["hubble_authorized_drivers"]?.[requesterPhone];
+          }
+        }
+        if (!hasHubble) {
+          for (const k of Object.keys(locations)) {
+            const itemPhone = String(locations[k]?.phone || k || "").replace(/\D/g, "").trim();
+            if (itemPhone && itemPhone !== requesterPhone) {
+              if (locations[k].driverName) locations[k].driverName = "\u67D0\u5E08\u5085";
+              if (locations[k].name) locations[k].name = "\u67D0\u5E08\u5085";
+              if (locations[k].phone) locations[k].phone = String(locations[k].phone).slice(0, 3) + "****" + String(locations[k].phone).slice(-4);
+            }
+          }
+        }
+      } catch (_) {
+      }
       return res.json({ success: true, locations });
     } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
@@ -7102,12 +7128,14 @@ async function startServer() {
       }
       qrLogs.push(now);
       smsSendLogs.set(qrKey, qrLogs);
-      const phone = String(req.query.phone || "").replace(/\D/g, "").trim();
+      const rawPhoneQ = String(req.query.phone || "").trim().toUpperCase();
+      const phoneDigits = rawPhoneQ.replace(/\D/g, "").trim();
       const channel = String(req.query.channel || "").trim();
-      if (!phone) {
+      if (!phoneDigits) {
         return res.status(400).json({ success: false, error: "Missing phone" });
       }
-      const isWeb = channel === "web" || channel === "mobile_web" || phone.endsWith("A") || phone.endsWith("a");
+      const phone = rawPhoneQ.endsWith("A") ? `${phoneDigits}A` : phoneDigits;
+      const isWeb = channel === "web" || channel === "mobile_web" || phone.endsWith("A");
       const webFilename = `${phone}_web.png`;
       const appFilename = `${phone}.png`;
       const appSpecificFilename = `${phone}_app.png`;
@@ -7192,7 +7220,8 @@ async function startServer() {
       if (!cleanPhone || cleanPhone.length !== 11) {
         return res.status(400).json({ error: "\u624B\u673A\u53F7\u683C\u5F0F\u9519\u8BEF" });
       }
-      const allowedFiles = /* @__PURE__ */ new Set([`${cleanPhone}.png`, `${cleanPhone}_web.png`, `${cleanPhone}_app.png`]);
+      const filePhone = rawPhone.endsWith("A") ? `${cleanPhone}A` : cleanPhone;
+      const allowedFiles = /* @__PURE__ */ new Set([`${filePhone}.png`, `${filePhone}_web.png`, `${filePhone}_app.png`]);
       [qrcodesDir, qrsDir].forEach((dir) => {
         if (import_fs.default.existsSync(dir)) {
           try {
