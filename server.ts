@@ -290,6 +290,34 @@ function blocklistToken(token: string) {
 const DEVELOPER_PHONE_SERVER = '15509601222';
 
 // P1: 定时清理内存泄漏（verificationCodes/dispatchLogs/authTokens）
+
+// P1(2026-10-15)：管理后台操作日志，记录敏感操作用于追溯
+async function logAdminOperation(opType: string, operatorPhone: string, targetPhone: string, details: string, req?: any) {
+  try {
+    const logId = `LOG${Date.now()}${Math.floor(Math.random() * 1000)}`;
+    const logData = {
+      id: logId,
+      opType,
+      operatorPhone,
+      targetPhone,
+      details,
+      ip: req?.ip || req?.headers?.['x-forwarded-for'] || '',
+      timestamp: Date.now(),
+      createdAt: new Date().toISOString()
+    };
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?)',
+        ['admin_operation_logs', logId, JSON.stringify(logData)]
+      ).catch(() => {});
+    } else {
+      const dbData = readLocalJsonDb();
+      if (!dbData['admin_operation_logs']) dbData['admin_operation_logs'] = {};
+      dbData['admin_operation_logs'][logId] = logData;
+      writeLocalJsonDb(dbData);
+    }
+  } catch (_) {}
+}
 setInterval(() => {
   const now = Date.now();
   try {
@@ -2602,6 +2630,8 @@ function getClientIp(req: any): string {
         }
         writeLocalJsonDb(dbData);
       }
+      // P1(2026-10-15)：记录操作日志
+      await logAdminOperation('recharge-license', String((req as any).authPhone || ''), targetPhone, `+${days}天，有效期至${newExpiry}`, req);
       return res.json({ success: true, phone: targetPhone, licenseExpiry: newExpiry, daysAdded: days });
     } catch (err: any) {
       console.error('[Recharge License Error]:', err);
