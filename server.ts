@@ -6495,10 +6495,27 @@ function getClientIp(req: any): string {
       const realApprover = String((req as any).authPhone || approvedBy || '').trim();
       // P1-6修复(2026-10-15)：已是成员则保留原角色，防重审降级
       let keepRole = '普通司机';
+      // 2026-10-15：审批入队必须保留司机原有VIP有效期，不硬编码'待开通'
+      let keepVipExpiry = '待开通';
       try {
-        const dbData = readLocalJsonDb();
-        const existing = dbData.squad_members?.[cleanPhone];
+        if (isMySQLEnabled && mysqlPool) {
+          const [duRows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanPhone]);
+          if (duRows && duRows.length > 0) {
+            const duData = typeof duRows[0].data === 'string' ? JSON.parse(duRows[0].data) : duRows[0].data;
+            if (duData?.vipExpiry) keepVipExpiry = duData.vipExpiry;
+          }
+        } else {
+          const dbData = readLocalJsonDb();
+          const duExisting = dbData.driver_users?.[cleanPhone];
+          if (duExisting?.vipExpiry) keepVipExpiry = duExisting.vipExpiry;
+        }
+        // 角色保留仍走本地（P1-6原逻辑）
+        const dbData2 = readLocalJsonDb();
+        const existing = dbData2.squad_members?.[cleanPhone];
         if (existing?.role && existing.role !== '普通司机') keepRole = existing.role;
+        if (keepVipExpiry === '待开通' && existing?.vipExpiry) keepVipExpiry = existing.vipExpiry;
       } catch (_) {}
       const memberPayload = {
         id: cleanPhone, phone: cleanPhone, phoneNumber: cleanPhone,
@@ -6508,7 +6525,7 @@ function getClientIp(req: any): string {
         approvedBy: realApprover, approvedRole: String(approvedRole || ''),
         approvalTime: now, note: String(note || '').slice(0, 200),
         city: String(city || '银川市').slice(0, 20),
-        vipExpiry: '待开通', createdAt: nowTs, updatedAt: now,
+        vipExpiry: keepVipExpiry, createdAt: nowTs, updatedAt: now,
       };
       if (isMySQLEnabled && mysqlPool) {
         // 1. 写入 squad_members
@@ -6766,10 +6783,10 @@ function getClientIp(req: any): string {
         if (dbData['team_members']?.[cleanPhone]) delete dbData['team_members'][cleanPhone];
         if (!dbData['driver_users']) dbData['driver_users'] = {};
         const existing = dbData['driver_users'][cleanPhone] || {};
+        // P1-10补漏(2026-10-15)：保留真名不洗成"司机+后四位"；保留vipExpiry
         dbData['driver_users'][cleanPhone] = { ...existing, phone: cleanPhone, phoneNumber: cleanPhone,
-          driverName: `司机${cleanPhone.slice(-4)}`, name: `司机${cleanPhone.slice(-4)}`,
           role: '普通司机', userRole: '普通司机', status: '未加入小队', approvalStatus: '未加入小队',
-          removedBy: String(adminPhone || ''), removedAt: now, updatedAt: now };
+          removedBy: String((req as any).authPhone || adminPhone || ''), removedAt: now, updatedAt: now };
         if (!dbData['config']) dbData['config'] = {};
         const cfg = dbData['config']['removed_squad_members'] || { phones: [] };
         const phones = Array.isArray(cfg.phones) ? cfg.phones : [];
