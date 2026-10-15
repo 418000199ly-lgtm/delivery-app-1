@@ -1153,7 +1153,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "6aec82ee";
+  const SERVER_VERSION = "b0ffd621";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -5794,12 +5794,56 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "\u53F8\u673A\u624B\u673A\u53F7\u683C\u5F0F\u4E0D\u6B63\u786E" });
       }
       try {
-        const dbData2 = readLocalJsonDb();
-        const isRealDriver = !!(dbData2.driver_users?.[cleanDriverPhone] || dbData2.squad_members?.[cleanDriverPhone] || dbData2.driver_users?.[cleanDriverPhone + "A"]);
+        let driverVipExpiry = "";
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows] = await mysqlPool.query(
+            "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+            ["driver_users", cleanDriverPhone]
+          );
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === "string" ? JSON.parse(vrows[0].data) : vrows[0].data;
+            driverVipExpiry = String(vd.vipExpiry || "");
+          }
+          if (!driverVipExpiry) {
+            const [arows] = await mysqlPool.query(
+              "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+              ["driver_users", cleanDriverPhone + "A"]
+            );
+            if (arows && arows.length > 0) {
+              const ad = typeof arows[0].data === "string" ? JSON.parse(arows[0].data) : arows[0].data;
+              driverVipExpiry = String(ad.vipExpiry || "");
+            }
+          }
+        } else {
+          const dbData2 = readLocalJsonDb();
+          driverVipExpiry = String(
+            dbData2.driver_users?.[cleanDriverPhone]?.vipExpiry || dbData2.driver_users?.[cleanDriverPhone + "A"]?.vipExpiry || ""
+          );
+        }
+        if (!isVipActiveServer(driverVipExpiry)) {
+          return res.status(403).json({ success: false, error: "\u274C \u8BE5\u53F8\u673A\u6682\u672A\u5F00\u901AVIP\u4F1A\u5458\uFF0C\u65E0\u6CD5\u4F7F\u7528\u4E8C\u7EF4\u7801\u521B\u5355\u529F\u80FD" });
+        }
+      } catch (e) {
+        console.error("[Submit] VIP\u6821\u9A8C\u5F02\u5E38:", e?.message);
+        return res.status(500).json({ success: false, error: "\u7CFB\u7EDF\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
+      }
+      try {
+        let isRealDriver = false;
+        if (isMySQLEnabled && mysqlPool) {
+          const [drows] = await mysqlPool.query(
+            "SELECT 1 FROM `daijia_documents` WHERE `collection` IN (?, ?, ?) AND `doc_id` IN (?, ?) LIMIT 1",
+            ["driver_users", "squad_members", "driver_users", cleanDriverPhone, cleanDriverPhone + "A"]
+          );
+          isRealDriver = !!(drows && drows.length > 0);
+        } else {
+          const dbData2 = readLocalJsonDb();
+          isRealDriver = !!(dbData2.driver_users?.[cleanDriverPhone] || dbData2.squad_members?.[cleanDriverPhone] || dbData2.driver_users?.[cleanDriverPhone + "A"]);
+        }
         if (!isRealDriver) {
           return res.status(400).json({ success: false, error: "\u8BE5\u53F8\u673A\u4E0D\u5B58\u5728" });
         }
       } catch (_) {
+        return res.status(500).json({ success: false, error: "\u7CFB\u7EDF\u7E41\u5FD9\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
       }
       const orderId = "scan_ord_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7);
       const payloadData = {
