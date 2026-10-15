@@ -4940,10 +4940,28 @@ function getClientIp(req: any): string {
       const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
       const isAdmin = !!(req as any).isAdmin;
       if (!isAdmin) {
-        const dbDataCheck = readLocalJsonDb();
-        const targetOrderCheck = (dbDataCheck['merchant_orders'] || {})[orderId] || {};
+        // P1(2026-10-15)：cancel鉴权必须从MySQL读真实订单，防body传driverPhone冒充
+        let targetOrderCheck: any = {};
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [crows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['merchant_orders', orderId]
+            );
+            if (crows && crows.length > 0) {
+              targetOrderCheck = typeof crows[0].data === 'string' ? JSON.parse(crows[0].data) : crows[0].data;
+            }
+          } catch (_) {}
+        } else {
+          const dbDataCheck = readLocalJsonDb();
+          targetOrderCheck = (dbDataCheck['merchant_orders'] || {})[orderId] || {};
+        }
         const orderPlacer = String(targetOrderCheck.merchantPhone || targetOrderCheck.orderMerchantPhone || targetOrderCheck.phone || '').replace(/\D/g, '').trim();
-        const orderDriver = String(targetOrderCheck.dispatchedDriverPhone || targetOrderCheck.driverPhone || targetOrderCheck.assignedDriver || driverPhone || '').replace(/\D/g, '').trim();
+        // 不再回退到body的driverPhone，必须是订单真实关联人
+        const orderDriver = String(targetOrderCheck.dispatchedDriverPhone || targetOrderCheck.driverPhone || targetOrderCheck.assignedDriver || targetOrderCheck.claimedDriverPhone || '').replace(/\D/g, '').trim();
+        if (!orderPlacer && !orderDriver) {
+          return res.status(404).json({ success: false, error: '订单不存在' });
+        }
         if (authPhone !== orderPlacer && authPhone !== orderDriver) {
           return res.status(403).json({ success: false, error: '只有下单方、接单司机或管理员可以取消订单' });
         }
@@ -7875,6 +7893,16 @@ function getClientIp(req: any): string {
             "DELETE FROM `daijia_documents` WHERE `collection` = 'passenger_links' AND `data` LIKE ?",
             [`%${cleanOrderId}%`]
           ).catch(() => {});
+          // P1(2026-10-15)：大厅抢单成功后写busy，防连抢多单（与/api/order/claim同修）
+          try {
+            const _cols = ['driver_users', 'driver_locations', 'squad_members'];
+            for (let _ci = 0; _ci < _cols.length; _ci++) {
+              await mysqlPool.query(
+                'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", true, "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
+                [_cols[_ci], cleanDriverPhone]
+              ).catch(function() {});
+            }
+          } catch (_) {}
           return { ok: true };
         } else {
           const dbData = readLocalJsonDb();

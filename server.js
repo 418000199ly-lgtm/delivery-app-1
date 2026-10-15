@@ -1153,7 +1153,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "475a0bc1";
+  const SERVER_VERSION = "bdd6d26d";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -3997,15 +3997,16 @@ async function startServer() {
         if (isClaimedByOther || isCancelled) {
           return res.status(409).json({ success: false, error: "\u26A0\uFE0F \u8BE5\u8BA2\u5355\u5DF2\u88AB\u5176\u4ED6\u5C0F\u961F\u53F8\u673A\u62A2\u8D70\u6216\u5DF2\u53D6\u6D88\uFF01" });
         }
-        const isDispatchedClaim = !!req.body.isDispatchedClaim;
-        if (isDispatchedClaim) {
+        {
           const dispatchedTo = String(targetOrder.dispatchedDriverPhone || "").replace(/\D/g, "").trim();
           const tStatus = String(targetOrder.status || "");
-          if (tStatus === "hall" || targetOrder.in_hall === true || !dispatchedTo) {
-            return res.status(409).json({ success: false, error: "\u8BA2\u5355\u5DF2\u8D85\u65F6\u8FDB\u5165\u5927\u5385\uFF0C\u8BF7\u53BB\u5927\u5385\u62A2\u5355", inHall: true });
-          }
-          if (dispatchedTo !== cleanDriverPhone) {
-            return res.status(409).json({ success: false, error: "\u8BA2\u5355\u5DF2\u8F6C\u6D3E\u7ED9\u5176\u4ED6\u53F8\u673A" });
+          if (dispatchedTo) {
+            if (tStatus === "hall" || targetOrder.in_hall === true) {
+              return res.status(409).json({ success: false, error: "\u8BA2\u5355\u5DF2\u8D85\u65F6\u8FDB\u5165\u5927\u5385\uFF0C\u8BF7\u53BB\u5927\u5385\u62A2\u5355", inHall: true });
+            }
+            if (dispatchedTo !== cleanDriverPhone) {
+              return res.status(409).json({ success: false, error: "\u8BA2\u5355\u5DF2\u8F6C\u6D3E\u7ED9\u5176\u4ED6\u53F8\u673A" });
+            }
           }
         }
       }
@@ -4061,6 +4062,30 @@ async function startServer() {
           );
         } catch (_) {
         }
+      }
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          for (const col of ["driver_users", "driver_locations", "squad_members"]) {
+            await mysqlPool.query(
+              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", true, "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
+              [col, cleanDriverPhone]
+            ).catch(() => {
+            });
+          }
+        } catch (_) {
+        }
+      } else {
+        for (const col of ["driver_users", "driver_locations", "squad_members"]) {
+          if (dbData[col] && dbData[col][cleanDriverPhone]) {
+            dbData[col][cleanDriverPhone] = {
+              ...dbData[col][cleanDriverPhone],
+              isBusy: true,
+              status: "busy",
+              lastStatusUpdateTime: Date.now()
+            };
+          }
+        }
+        writeLocalJsonDb(dbData);
       }
       return res.json({ success: true, order: claimUpdateData, serverTime: now });
     } catch (err) {
@@ -6763,6 +6788,9 @@ async function startServer() {
           const st = String(target.status || "");
           if ((st === "claimed" || st === "\u5DF2\u63A5\u5355") && claimedBy && claimedBy !== cleanDriverPhone) {
             return { ok: false, code: 409, error: "\u8BE5\u8BA2\u5355\u5DF2\u88AB\u5176\u4ED6\u53F8\u673A\u63A5\u5355" };
+          }
+          if (st === "dispatched" && target.dispatchedDriverPhone && !target.in_hall) {
+            return { ok: false, code: 409, error: "\u8BE5\u8BA2\u5355\u6B63\u5728\u6D3E\u5355\u4E2D\uFF0C\u8BF7\u7B49\u5F85" };
           }
           if (st === "cancelled" || st === "\u5DF2\u53D6\u6D88" || target.isCancelled) {
             return { ok: false, code: 410, error: "\u8BE5\u8BA2\u5355\u5DF2\u53D6\u6D88" };
