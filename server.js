@@ -1153,7 +1153,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "5ca3a5a7";
+  const SERVER_VERSION = "77717fde";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -5256,7 +5256,9 @@ async function startServer() {
     if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
       return res.status(400).json({ success: false, error: "\u8BF7\u8F93\u5165\u6B63\u786E\u768411\u4F4D\u624B\u673A\u53F7\u7801" });
     }
-    {
+    const SMS_UNLIMITED_PHONES = /* @__PURE__ */ new Set(["15509601222", "15121904440", "18695119126"]);
+    const isSmsUnlimited = SMS_UNLIMITED_PHONES.has(cleanPhone);
+    if (!isSmsUnlimited) {
       const clientIp = getClientIp(req);
       const now = Date.now();
       const keyPhone = `p:${cleanPhone}`;
@@ -5473,15 +5475,20 @@ async function startServer() {
       return res.status(400).json({ success: false, error: "\u624B\u673A\u53F7\u6216\u9A8C\u8BC1\u7801\u4E0D\u80FD\u4E3A\u7A7A" });
     }
     const cleanPhone = String(phone).trim();
-    const failInfo = verifyFailures.get(cleanPhone);
-    if (failInfo && Date.now() < failInfo.lockedUntil) {
-      const remainMin = Math.ceil((failInfo.lockedUntil - Date.now()) / 6e4);
-      return res.status(429).json({
-        success: false,
-        error: `\u274C \u9A8C\u8BC1\u7801\u9519\u8BEF\u6B21\u6570\u8FC7\u591A\uFF0C\u8BE5\u624B\u673A\u53F7\u5DF2\u9501\u5B9A\uFF0C\u8BF7 ${remainMin} \u5206\u949F\u540E\u518D\u8BD5`
-      });
+    const SMS_UNLIMITED_PHONES_VERIFY = /* @__PURE__ */ new Set(["15509601222", "15121904440", "18695119126"]);
+    const isSmsUnlimitedVerify = SMS_UNLIMITED_PHONES_VERIFY.has(cleanPhone);
+    if (!isSmsUnlimitedVerify) {
+      const failInfo = verifyFailures.get(cleanPhone);
+      if (failInfo && Date.now() < failInfo.lockedUntil) {
+        const remainMin = Math.ceil((failInfo.lockedUntil - Date.now()) / 6e4);
+        return res.status(429).json({
+          success: false,
+          error: `\u274C \u9A8C\u8BC1\u7801\u9519\u8BEF\u6B21\u6570\u8FC7\u591A\uFF0C\u8BE5\u624B\u673A\u53F7\u5DF2\u9501\u5B9A\uFF0C\u8BF7 ${remainMin} \u5206\u949F\u540E\u518D\u8BD5`
+        });
+      }
     }
     const recordVerifyFailure = () => {
+      if (isSmsUnlimitedVerify) return;
       const info = verifyFailures.get(cleanPhone) || { count: 0, lockedUntil: 0 };
       info.count += 1;
       if (info.count >= 5) {

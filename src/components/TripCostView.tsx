@@ -103,7 +103,10 @@ export default function TripCostView({
   const otherFee = isVip ? (Number(otherFeeStr) || 0) : 0;
 
   // Real-time calculated Grand Total
-  const grandTotal = Number((trip.calculatedBaseFee + bridgeFee + parkingFee + otherFee).toFixed(2));
+  // P0(2026-10-15)：用calculatedTotalFee（含里程费/等候费/返程费），不用calculatedBaseFee（仅起步价）
+  // 否则20公里的单行程中显示¥103，结束页只收¥38，司机系统性少收费
+  const baseTotal = Number(trip.calculatedTotalFee || trip.calculatedBaseFee || 0);
+  const grandTotal = Number((baseTotal + bridgeFee + parkingFee + otherFee).toFixed(2));
 
   const handleProceed = () => {
     const finalEnd = resolvedEndLocation || trip.endLocation || trip.startLocation;
