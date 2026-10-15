@@ -1061,6 +1061,27 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                   }
                 }
 
+                // P0(2026-10-15)：接单授权实时同步（与vipExpiry同逻辑，防充值后App不更新）
+                if (uData?.licenseExpiry !== undefined && uData?.licenseExpiry !== null) {
+                  const freshLic = String(uData.licenseExpiry).trim();
+                  const lastLicTime = typeof window !== 'undefined' ? localStorage.getItem(`dd_license_expiry_time_${userPhone}`) : null;
+                  const isRecentLicUpdate = lastLicTime && (Date.now() - Number(lastLicTime)) < 600000;
+                  const localSavedLic = typeof window !== 'undefined' ? localStorage.getItem(`dd_license_expiry_${userPhone}`) : null;
+                  if (!(isRecentLicUpdate && localSavedLic && localSavedLic !== freshLic)) {
+                    setSettings(prev => {
+                      if (prev.licenseExpiry !== freshLic) {
+                        const updated = { ...prev, licenseExpiry: freshLic };
+                        try {
+                          safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                          safeSetItem('dd_settings', JSON.stringify(updated));
+                        } catch (_) {}
+                        return updated;
+                      }
+                      return prev;
+                    });
+                  }
+                }
+
                 // Realtime role synchronization from driver_users
                 const freshRole = uData?.role || uData?.userRole || uData?.position || '普通司机';
                 if (userPhone !== DEVELOPER_PHONE) {

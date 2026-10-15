@@ -177,6 +177,66 @@ function getLicenseDaysRemaining(expiry) {
 function isLicenseValid(expiry) {
   return getLicenseDaysRemaining(expiry) > 0;
 }
+function isVipActiveServer(vipExpiry) {
+  if (!vipExpiry) return false;
+  const s = String(vipExpiry).trim();
+  if (s === "0" || s === "0\u5929" || s === "\u672A\u6FC0\u6D3B" || s === "\u5F85\u6FC0\u6D3B" || s === "\u5F85\u5F00\u901A" || s === "\u672A\u5F00\u901A" || s === "\u5DF2\u5230\u671F" || s === "\u5DF2\u8FC7\u671F" || s === "") return false;
+  if (s === "\u6C38\u4E45\u6709\u6548" || s === "\u6C38\u4E45") return true;
+  try {
+    const match = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+    let expDate;
+    if (match) {
+      expDate = new Date(parseInt(match[1], 10), parseInt(match[2], 10) - 1, parseInt(match[3], 10), 23, 59, 59, 999);
+    } else {
+      expDate = new Date(s);
+    }
+    if (isNaN(expDate.getTime())) return false;
+    return expDate.getTime() > Date.now();
+  } catch (_) {
+    return false;
+  }
+}
+function getBeijingTodayStr() {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1e3);
+  return now.toISOString().slice(0, 10);
+}
+async function countTodayCompletedOrders(driverPhone) {
+  const todayStr = getBeijingTodayStr();
+  let count = 0;
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      const [rows] = await mysqlPool.query("SELECT `data` FROM `daijia_documents` WHERE `collection` = ?", ["merchant_orders"]);
+      for (const r of rows || []) {
+        try {
+          const d = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+          const dPhone = String(d.driverPhone || d.claimedDriverPhone || d.dispatchedDriverPhone || "").replace(/\D/g, "");
+          if (dPhone !== driverPhone) continue;
+          if (d.status !== "completed") continue;
+          const ts = d.completedAt || d.updatedAt || d.timestamp;
+          if (!ts) continue;
+          const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1e3).toISOString().slice(0, 10);
+          if (bjt === todayStr) count++;
+        } catch (_) {
+        }
+      }
+    } else {
+      const dbData = readLocalJsonDb();
+      const orders = dbData["merchant_orders"] || {};
+      for (const o of Object.values(orders)) {
+        const dPhone = String(o.driverPhone || o.claimedDriverPhone || o.dispatchedDriverPhone || "").replace(/\D/g, "");
+        if (dPhone !== driverPhone) continue;
+        if (o.status !== "completed") continue;
+        const ts = o.completedAt || o.updatedAt || o.timestamp;
+        if (!ts) continue;
+        const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1e3).toISOString().slice(0, 10);
+        if (bjt === todayStr) count++;
+      }
+    }
+  } catch (e) {
+    console.error("[CountOrders] \u7EDF\u8BA1\u5931\u8D25:", e?.message);
+  }
+  return count;
+}
 function createSignedToken(phone, scope, isMerchant) {
   const payload = JSON.stringify({ p: phone, s: scope, m: !!isMerchant, i: Date.now() });
   const pb = _b64urlEncode(payload);
@@ -1021,7 +1081,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "d1d59d33";
+  const SERVER_VERSION = "33056169";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -1495,6 +1555,29 @@ async function startServer() {
       const merge = req.body.merge !== void 0 ? Boolean(req.body.merge) : true;
       if (!col || !docId || data === void 0) {
         return res.status(400).json({ success: false, error: "Missing col, id, or data" });
+      }
+      if (col === "driver_users" && data && data.deviationMitigation === true) {
+        try {
+          const targetPhone = docId.replace(/\D/g, "").trim();
+          let vipExpiry = String(data.vipExpiry || "");
+          if (!vipExpiry) {
+            if (isMySQLEnabled && mysqlPool) {
+              const [vrows] = await mysqlPool.query("SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1", ["driver_users", targetPhone]);
+              if (vrows && vrows.length > 0) {
+                const vd = typeof vrows[0].data === "string" ? JSON.parse(vrows[0].data) : vrows[0].data;
+                vipExpiry = String(vd.vipExpiry || "");
+              }
+            } else {
+              vipExpiry = String(readLocalJsonDb()?.driver_users?.[targetPhone]?.vipExpiry || "");
+            }
+          }
+          if (targetPhone !== "15509601222" && !isVipActiveServer(vipExpiry)) {
+            return res.status(403).json({ success: false, error: "\u7EA0\u504F\u529F\u80FD\u4E3AVIP\u4E13\u5C5E\uFF0C\u8BF7\u5148\u5F00\u901AVIP" });
+          }
+        } catch (e) {
+          console.error("[DB Set] \u7EA0\u504FVIP\u6821\u9A8C\u5F02\u5E38:", e?.message);
+          return res.status(503).json({ success: false, error: "\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
+        }
       }
       if (col === "squad_members" && !req.isAdmin && !req.isManager) {
         const SENSITIVE = ["status", "approvalStatus", "role", "squad_position", "userRole", "position"];
@@ -3387,6 +3470,16 @@ async function startServer() {
             selected = null;
           }
         }
+        if (selected) {
+          const selVip = selected?.data?.vipExpiry ?? selected?.vipExpiry;
+          if (!isVipActiveServer(selVip)) {
+            const todayCount = await countTodayCompletedOrders(String(selected.phone).replace(/\D/g, ""));
+            if (todayCount >= 2) {
+              console.log(`[Dispatch] \u53F8\u673A ${selected.phone} \u975EVIP\u4ECA\u65E5\u5DF2\u5B8C\u6210${todayCount}\u5355\uFF0C\u8DF3\u8FC7\uFF1A\u8BA2\u5355 ${orderId} \u8F6C\u5927\u5385`);
+              selected = null;
+            }
+          }
+        }
         {
           const freshDb = readLocalJsonDb();
           const freshOrder = freshDb?.["merchant_orders"]?.[orderId];
@@ -3584,6 +3677,26 @@ async function startServer() {
       } catch (e) {
         console.error("[Claim] \u63A5\u5355\u6388\u6743\u6821\u9A8C\u5F02\u5E38:", e?.message);
         return res.status(503).json({ success: false, error: "\u6388\u6743\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
+      }
+      try {
+        let vipExpiry = "";
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows] = await mysqlPool.query("SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1", ["driver_users", cleanDriverPhone]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === "string" ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiry = String(vd.vipExpiry || "");
+          }
+        } else {
+          vipExpiry = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.vipExpiry || "");
+        }
+        if (!isVipActiveServer(vipExpiry)) {
+          const todayCount = await countTodayCompletedOrders(cleanDriverPhone);
+          if (todayCount >= 2) {
+            return res.status(403).json({ success: false, error: "\u975EVIP\u4F1A\u5458\u6BCF\u5929\u96502\u5355\uFF0C\u660E\u65E96\u70B9\u81EA\u52A8\u6062\u590D\u3002\u5982\u9700\u65E0\u9650\u63A5\u5355\u8BF7\u5F00\u901AVIP" });
+          }
+        }
+      } catch (e) {
+        console.error("[Claim] VIP\u9650\u989D\u6821\u9A8C\u5F02\u5E38:", e?.message);
       }
       const cleanDriverName = String(driverName || `\u53F8\u673A${cleanDriverPhone.slice(-4)}`).trim();
       if (!cleanOrderId || !cleanDriverPhone) {
@@ -5409,8 +5522,32 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message || "Submit Proxy Error" });
     }
   });
-  app.post("/api/qr-phone-notify", async (req, res) => {
+  app.post("/api/qr-phone-notify", requireDbAuth, async (req, res) => {
     try {
+      const authPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
+      const qpDriverPhone = String(req.body?.driverPhone || "").replace(/\D/g, "").trim();
+      const targetPhone = qpDriverPhone || authPhone;
+      if (authPhone && qpDriverPhone && authPhone !== qpDriverPhone && authPhone !== "15509601222") {
+        return res.status(403).json({ success: false, error: "\u53EA\u80FD\u4E3A\u81EA\u5DF1\u521B\u5EFA\u4E8C\u7EF4\u7801\u8BA2\u5355" });
+      }
+      try {
+        let vipExpiry = "";
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows] = await mysqlPool.query("SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1", ["driver_users", targetPhone]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === "string" ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiry = String(vd.vipExpiry || "");
+          }
+        } else {
+          vipExpiry = String(readLocalJsonDb()?.driver_users?.[targetPhone]?.vipExpiry || "");
+        }
+        if (!isVipActiveServer(vipExpiry)) {
+          return res.status(403).json({ success: false, error: "\u4E8C\u7EF4\u7801\u521B\u5355\u4E3AVIP\u4E13\u5C5E\u529F\u80FD\uFF0C\u8BF7\u5148\u5F00\u901AVIP" });
+        }
+      } catch (e) {
+        console.error("[QRNotify] VIP\u6821\u9A8C\u5F02\u5E38:", e?.message);
+        return res.status(503).json({ success: false, error: "\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
+      }
       const clientIp = getClientIp(req);
       const now = Date.now();
       if (!global.__qrPhoneLogs) global.__qrPhoneLogs = /* @__PURE__ */ new Map();
@@ -5899,6 +6036,14 @@ async function startServer() {
           }
         } catch (_) {
         }
+        try {
+          const ldb = readLocalJsonDb();
+          if (ldb["_config"]?.["removedPhones"]) {
+            ldb["_config"]["removedPhones"] = (ldb["_config"]["removedPhones"] || []).filter((p) => String(p).trim() !== cleanPhone);
+            writeLocalJsonDb(ldb);
+          }
+        } catch (_) {
+        }
       } else {
         const dbData = readLocalJsonDb();
         if (!dbData["squad_members"]) dbData["squad_members"] = {};
@@ -5912,6 +6057,9 @@ async function startServer() {
         if (dbData["config"]?.["removed_squad_members"]) {
           const phones = (dbData["config"]["removed_squad_members"].phones || []).filter((p) => p !== cleanPhone);
           dbData["config"]["removed_squad_members"] = { phones, updatedAt: now };
+        }
+        if (dbData["_config"]?.["removedPhones"]) {
+          dbData["_config"]["removedPhones"] = (dbData["_config"]["removedPhones"] || []).filter((p) => String(p).trim() !== cleanPhone);
         }
         writeLocalJsonDb(dbData);
       }
@@ -6171,6 +6319,26 @@ async function startServer() {
       } catch (e) {
         console.error("[DriverClaim] \u63A5\u5355\u6388\u6743\u6821\u9A8C\u5F02\u5E38:", e?.message);
         return res.status(503).json({ success: false, error: "\u6388\u6743\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
+      }
+      try {
+        let vipExpiry2 = "";
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows] = await mysqlPool.query("SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1", ["driver_users", cleanDriverPhone]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === "string" ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiry2 = String(vd.vipExpiry || "");
+          }
+        } else {
+          vipExpiry2 = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.vipExpiry || "");
+        }
+        if (!isVipActiveServer(vipExpiry2)) {
+          const todayCount = await countTodayCompletedOrders(cleanDriverPhone);
+          if (todayCount >= 2) {
+            return res.status(403).json({ success: false, error: "\u975EVIP\u4F1A\u5458\u6BCF\u5929\u96502\u5355\uFF0C\u660E\u65E96\u70B9\u81EA\u52A8\u6062\u590D\u3002\u5982\u9700\u65E0\u9650\u63A5\u5355\u8BF7\u5F00\u901AVIP" });
+          }
+        }
+      } catch (e) {
+        console.error("[DriverClaim] VIP\u9650\u989D\u6821\u9A8C\u5F02\u5E38:", e?.message);
       }
       const checkSquadMember = async () => {
         if (cleanDriverPhone === "15509601222") return true;

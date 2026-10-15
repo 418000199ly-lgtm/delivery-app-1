@@ -113,6 +113,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   const prevOrderIdRef = React.useRef<string>('');
   // P1-6修复(2026-10-13)：onDecline幂等，多路径(轮询/取消监听/手动)只执行一次
   const declinedRef = React.useRef<boolean>(false);
+  // P1(2026-10-15)：API成功返回后永久忽略prop的serverCountdown（防旧单prop致33→59跳变）
+  const hasApiRespondedRef = React.useRef(false);
   const safeDecline = React.useCallback(() => {
     if (declinedRef.current) return;
     declinedRef.current = true;
@@ -127,6 +129,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       isAcceptingRef.current = false;
       setIsAccepting(false);
       declinedRef.current = false;
+      hasApiRespondedRef.current = false; // P1(2026-10-15)：新订单重置API标记
     }
   }, [targetOrderId]);
   const onDeclineRef = React.useRef(onDecline);
@@ -141,6 +144,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 否则服务端合法的 33→60 重置会被当作脏数据丢弃，迟弹窗场景看不到完整 60 秒。
   // 2026-10-13优化：初始已为60，此处仅当prop值与当前差异显著时才同步，避免闪烁。
   useEffect(() => {
+    if (hasApiRespondedRef.current) return; // API已返回，不再信任可能过期的prop
     const sSec = (order as any)?.serverCountdown;
     if (typeof sSec === 'number') {
       const v = Math.max(0, Math.min(60, sSec));
@@ -205,6 +209,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           const data = await resp.json();
           const curOrder: any = orderRef.current;
           if (data && data.success) {
+            hasApiRespondedRef.current = true; // P1(2026-10-15)：标记API已返回，后续忽略prop
             // 服务器判定超时、倒计时<=0 或已转入选单大厅 (且非本司机直接抢单的订单)
             // 2026-10-13新增：接单中(isAcceptingRef)时阻断超时拒单，防并发误拒
             if (
