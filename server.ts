@@ -310,6 +310,65 @@ setInterval(() => {
   } catch (_) {}
 }, 10 * 60 * 1000);
 
+// P1(2026-10-15)：大厅订单24小时归档，防merchant_orders无限增长
+// 每天凌晨4点（北京时间）运行，删除hallAt超过24小时的大厅订单
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const beijingMs = now.getTime() + (now.getTimezoneOffset() * 60000) + (8 * 3600000);
+    const beijingDate = new Date(beijingMs);
+    if (beijingDate.getHours() !== 4 || beijingDate.getMinutes() > 5) return; // 每天4:00-4:05运行一次
+    
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    let deleted = 0;
+    
+    // 本地JSON
+    try {
+      const dbData = readLocalJsonDb();
+      if (dbData['merchant_orders']) {
+        for (const orderId in dbData['merchant_orders']) {
+          const o = dbData['merchant_orders'][orderId];
+          if (o && (o.status === 'hall' || o.in_hall === true)) {
+            const hallAt = Number(o.hallAt || 0);
+            if (hallAt && hallAt < cutoff) {
+              delete dbData['merchant_orders'][orderId];
+              deleted++;
+            }
+          }
+        }
+        if (deleted > 0) writeLocalJsonDb(dbData);
+      }
+    } catch (_) {}
+    
+    // MySQL
+    if (isMySQLEnabled && mysqlPool) {
+      try {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
+          ['merchant_orders']
+        );
+        for (const row of (rows || [])) {
+          try {
+            const d = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+            if (d && (d.status === 'hall' || d.in_hall === true)) {
+              const hallAt = Number(d.hallAt || 0);
+              if (hallAt && hallAt < cutoff) {
+                await mysqlPool.query(
+                  'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+                  ['merchant_orders', row.doc_id]
+                );
+                deleted++;
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    
+    if (deleted > 0) console.log(`[HallArchive] 归档了 ${deleted} 个过期大厅订单`);
+  } catch (_) {}
+}, 5 * 60 * 1000); // 每5分钟检查一次时间窗口
+
 // In-memory 24-hour rate limiting stores for dispatch valet logins
 const dispatchPhoneLoginLogs = new Map<string, number>();
 const dispatchIpLoginLogs = new Map<string, number>();
@@ -5175,22 +5234,15 @@ function getClientIp(req: any): string {
       }
       const now = Date.now();
       // 2026-10-15 P0修复：MySQL模式下更新MySQL中的订单，否则心跳写不到真实订单
+      // 2026-10-15 P1修复：用JSON_SET定向更新，防read-modify-write覆盖定时器的转大厅写入（订单"复活"）
       if (isMySQLEnabled && mysqlPool && orderId) {
         try {
-          // 先读出当前数据，更新pageHeartbeatAt，再写回
-          const [rows]: any = await mysqlPool.query(
-            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_EXTRACT(`data`, "$.id") = ? OR JSON_EXTRACT(`data`, "$.orderId") = ?)',
-            ['merchant_orders', orderId, orderId, orderId]
+          await mysqlPool.query(
+            'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.pageHeartbeatAt", ?) ' +
+            'WHERE `collection` = ? AND (`doc_id` = ? OR JSON_EXTRACT(`data`, "$.id") = ? OR JSON_EXTRACT(`data`, "$.orderId") = ?)',
+            [now, 'merchant_orders', orderId, orderId, orderId]
           );
-          if (rows && rows[0]) {
-            const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-            d.pageHeartbeatAt = now;
-            await mysqlPool.query(
-              'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
-              [JSON.stringify(d), 'merchant_orders', rows[0].doc_id]
-            );
-            return res.json({ success: true, heartbeatAt: now });
-          }
+          return res.json({ success: true, heartbeatAt: now });
         } catch (e) {
           console.error('[Heartbeat] MySQL更新失败:', (e as any)?.message);
         }

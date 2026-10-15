@@ -1071,7 +1071,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "b751f72f";
+  const SERVER_VERSION = "4321a19f";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -4172,11 +4172,24 @@ async function startServer() {
               "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
               ["active_orders", assignedDriver, cancelNoticeStr]
             );
-            if (dbData["driver_users"] && dbData["driver_users"][assignedDriver]) {
-              await mysqlPool.query(
-                "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-                ["driver_users", assignedDriver, JSON.stringify(dbData["driver_users"][assignedDriver])]
-              );
+            for (const col of ["driver_users", "driver_locations", "squad_members"]) {
+              try {
+                const [drows] = await mysqlPool.query(
+                  "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+                  [col, assignedDriver]
+                );
+                if (drows && drows.length > 0) {
+                  const dd = typeof drows[0].data === "string" ? JSON.parse(drows[0].data) : drows[0].data;
+                  dd.isBusy = false;
+                  dd.status = "idle";
+                  dd.lastStatusUpdateTime = Date.now();
+                  await mysqlPool.query(
+                    "UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?",
+                    [JSON.stringify(dd), col, assignedDriver]
+                  );
+                }
+              } catch (_) {
+              }
             }
           }
         } catch (_) {
@@ -4227,7 +4240,19 @@ async function startServer() {
           if (remainingSec <= 0) {
             try {
               const freshDbData = readLocalJsonDb();
-              const freshOrder = freshDbData["merchant_orders"]?.[orderId] || order;
+              let freshOrder = freshDbData["merchant_orders"]?.[orderId] || order;
+              if (isMySQLEnabled && mysqlPool) {
+                try {
+                  const [frows] = await mysqlPool.query(
+                    "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+                    ["merchant_orders", orderId]
+                  );
+                  if (frows && frows.length > 0) {
+                    freshOrder = typeof frows[0].data === "string" ? JSON.parse(frows[0].data) : frows[0].data;
+                  }
+                } catch (_) {
+                }
+              }
               const freshStatus = String(freshOrder.status || "");
               if (freshStatus === "claimed" || freshStatus === "serving" || freshStatus === "completed" || freshStatus === "cancelled" || freshOrder.in_hall === true || freshOrder.claimedAt) {
                 continue;
