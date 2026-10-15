@@ -65,11 +65,13 @@ export class ProxyQuerySnapshot {
 export function getAuthHeaders(): Record<string, string> {
   try {
     const token = localStorage.getItem('dd_auth_token');
+    const headers: Record<string, string> = { 'X-Client-Version': 'V2.0' };
     if (token) {
-      return { 'X-Auth-Token': token };
+      headers['X-Auth-Token'] = token;
     }
+    return headers;
   } catch (_) {}
-  return {};
+  return { 'X-Client-Version': 'V2.0' };
 }
 
 /**

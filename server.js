@@ -1071,7 +1071,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "9b967796";
+  const SERVER_VERSION = "9b71ee97";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -1578,6 +1578,14 @@ async function startServer() {
           }
         }
       }
+      if ((col === "driver_users" || col === "squad_members") && !req.isAdmin) {
+        for (const f of ["vipExpiry", "licenseExpiry"]) {
+          if (data && typeof data === "object" && f in data) {
+            console.warn(`[Auth] \u975E\u5F00\u53D1\u8005\u5C1D\u8BD5\u5199${f}\u5DF2\u5265\u79BB: token\u624B\u673A=${req.authPhone}`);
+            delete data[f];
+          }
+        }
+      }
       const isExplicitApproval = data?.status === "\u5DF2\u901A\u8FC7" || data?.approvalStatus === "\u5DF2\u901A\u8FC7";
       const isExplicitApplication = col === "squad_applications" && (data?.status === "\u5F85\u5BA1\u6838" || data?.status === "\u5DF2\u901A\u8FC7");
       if (col === "squad_members" && isExplicitApproval || isExplicitApplication) {
@@ -1823,6 +1831,14 @@ async function startServer() {
         for (const f of SENSITIVE) {
           if (data && typeof data === "object" && f in data) {
             console.warn(`[Auth] \u5265\u79BB\u654F\u611F\u5B57\u6BB5: token\u624B\u673A=${req.authPhone}, \u5B57\u6BB5=${f}`);
+            delete data[f];
+          }
+        }
+      }
+      if ((col === "driver_users" || col === "squad_members") && !req.isAdmin) {
+        for (const f of ["vipExpiry", "licenseExpiry"]) {
+          if (data && typeof data === "object" && f in data) {
+            console.warn(`[Auth] \u975E\u5F00\u53D1\u8005\u5C1D\u8BD5\u5199${f}\u5DF2\u5265\u79BB: token\u624B\u673A=${req.authPhone}`);
             delete data[f];
           }
         }
@@ -2383,7 +2399,19 @@ async function startServer() {
         const city = du.city || sq.city || oa.city || "\u94F6\u5DDD\u5E02";
         for (const col of targetCols) {
           if (!dbData[col]) dbData[col] = {};
-          const existing = dbData[col][phone] || {};
+          let existing = dbData[col][phone] || {};
+          if (isMySQLEnabled && mysqlPool && !existing.vipExpiry) {
+            try {
+              const [erows] = await mysqlPool.query(
+                "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+                [col, phone]
+              );
+              if (erows && erows.length > 0) {
+                existing = typeof erows[0].data === "string" ? JSON.parse(erows[0].data) : erows[0].data;
+              }
+            } catch (_) {
+            }
+          }
           const curVip = String(existing.vipExpiry || "").trim();
           let newVip;
           if (curVip === "\u6C38\u4E45\u6709\u6548" || curVip === "\u6C38\u4E45") {
@@ -2859,7 +2887,7 @@ async function startServer() {
         const prev = dbData[col][phone] || {};
         dbData[col][phone] = { ...prev, ...patch, phone };
       });
-      writeLocalJsonDb(dbData);
+      writeLocalJsonDb(dbData, false);
       if (isMySQLEnabled && mysqlPool) {
         const mergedLocation = { ...dbData.driver_locations?.[phone] || {}, ...patch, phone };
         mysqlPool.query(
@@ -5624,13 +5652,12 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message || "Submit Proxy Error" });
     }
   });
-  app.post("/api/qr-phone-notify", requireDbAuth, async (req, res) => {
+  app.post("/api/qr-phone-notify", async (req, res) => {
     try {
-      const authPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
       const qpDriverPhone = String(req.body?.driverPhone || "").replace(/\D/g, "").trim();
-      const targetPhone = qpDriverPhone || authPhone;
-      if (authPhone && qpDriverPhone && authPhone !== qpDriverPhone && authPhone !== "15509601222") {
-        return res.status(403).json({ success: false, error: "\u53EA\u80FD\u4E3A\u81EA\u5DF1\u521B\u5EFA\u4E8C\u7EF4\u7801\u8BA2\u5355" });
+      const targetPhone = qpDriverPhone;
+      if (!/^1[3-9]\d{9}$/.test(targetPhone)) {
+        return res.status(400).json({ success: false, error: "\u53F8\u673A\u624B\u673A\u53F7\u683C\u5F0F\u4E0D\u6B63\u786E" });
       }
       try {
         let vipExpiry = "";
@@ -5698,11 +5725,15 @@ async function startServer() {
       res.status(500).json({ success: false, error: err.message || "QR Phone Notify Error" });
     }
   });
-  app.get("/api/qr-notify-check", async (req, res) => {
+  app.get("/api/qr-notify-check", requireDbAuth, async (req, res) => {
     try {
+      const authPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
       const driverPhone = String(req.query.driverPhone || "").replace(/\D/g, "").trim();
       if (!/^1[3-9]\d{9}$/.test(driverPhone)) {
         return res.status(400).json({ success: false, error: "\u624B\u673A\u53F7\u683C\u5F0F\u9519\u8BEF" });
+      }
+      if (authPhone !== driverPhone && authPhone !== "15509601222") {
+        return res.status(403).json({ success: false, error: "\u53EA\u80FD\u67E5\u8BE2\u81EA\u5DF1\u7684\u4E8C\u7EF4\u7801\u901A\u77E5" });
       }
       let payloadData = null;
       if (isMySQLEnabled && mysqlPool) {
