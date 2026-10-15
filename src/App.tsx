@@ -2109,9 +2109,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const curSettings = settingsRef.current;
         const licExpiry = (curSettings as any)?.licenseExpiry;
         const hasLicense = hasValidLicense(licExpiry);
+        // P1(2026-10-15)：fail-closed——settings未加载时不弹窗，防无授权司机在启动1-2秒窗口内收到单
+        if (!curSettings) {
+          console.log('[License] settings未加载，暂不弹窗新来单');
+          setIncomingOrder(null);
+          return;
+        }
         // 只拦截已审批入队成员；未入队的不受影响（商户等）
-        // 注意：这里用settings判断，如果settings还没加载则放行（避免误杀）
-        if (curSettings && !hasLicense) {
+        const isSquadMember = !!((curSettings as any)?.isSquadMember || (curSettings as any)?.squadStatus === '已通过');
+        if (isSquadMember && !hasLicense) {
           console.log('[License] 无接单授权，不弹窗新来单');
           setIncomingOrder(null);
           return;

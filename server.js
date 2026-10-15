@@ -1125,7 +1125,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "a9acd3f1";
+  const SERVER_VERSION = "ca3f8ac9";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -1342,6 +1342,14 @@ async function startServer() {
       const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
       const cleanPhone = docId.replace(/\D/g, "").trim();
       const isCleanPhone = cleanPhone.length === 11;
+      const requesterPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
+      const isAdminUser = requesterPhone === "15509601222";
+      const sensitiveSingleCols = ["driver_users", "squad_members", "online_applications", "driver_locations"];
+      if (sensitiveSingleCols.includes(col) && !isAdminUser) {
+        if (docId !== requesterPhone && cleanPhone !== requesterPhone) {
+          return res.status(403).json({ exists: false, error: "\u65E0\u6743\u8BFB\u53D6\u4ED6\u4EBA\u6863\u6848" });
+        }
+      }
       let foundData = null;
       if (isMySQLEnabled && mysqlPool) {
         try {
@@ -1464,14 +1472,32 @@ async function startServer() {
       if (col === "_config" || col === "config") {
         return res.status(403).json({ docs: [], error: "\u7981\u6B62\u8BFB\u53D6\u7CFB\u7EDF\u914D\u7F6E" });
       }
+      const requesterPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
+      const isAdmin = requesterPhone === "15509601222";
+      if (!isAdmin && (col === "driver_users" || col === "squad_members" || col === "online_applications")) {
+      }
       const limitNum = Math.min(Math.max(Number(req.query.limit) || 1e4, 1), 2e4);
       const sinceParam = String(req.query.since || "").trim();
       const sinceDate = sinceParam ? new Date(sinceParam) : null;
       const hasValidSince = sinceDate && !isNaN(sinceDate.getTime());
+      const sensitiveCols = ["driver_users", "squad_members", "online_applications", "driver_locations"];
+      const isSensitive = sensitiveCols.includes(col);
+      let forcedDocId = null;
+      if (isSensitive && !isAdmin) {
+        if (!requesterPhone) {
+          return res.status(403).json({ docs: [], error: "\u65E0\u6743\u6279\u91CF\u8BFB\u53D6" });
+        }
+        forcedDocId = requesterPhone;
+      }
       if (isMySQLEnabled && mysqlPool) {
         try {
           let rows;
-          if (hasValidSince) {
+          if (forcedDocId) {
+            [rows] = await mysqlPool.query(
+              "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+              [col, forcedDocId]
+            );
+          } else if (hasValidSince) {
             [rows] = await mysqlPool.query(
               "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND `updated_at` > ? ORDER BY `updated_at` DESC LIMIT ?",
               [col, sinceDate, limitNum]
@@ -1488,10 +1514,10 @@ async function startServer() {
           const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, "0")}-${String(target50d.getDate()).padStart(2, "0")}`;
           const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
           const isOrdersCol2 = ["merchant_orders", "valet_orders", "orders"].includes(col);
-          const requesterPhone = String(req.authPhone || "").replace(/\D/g, "").trim();
-          if (isOrdersCol2 && requesterPhone && requesterPhone !== "15509601222") {
+          const requesterPhone2 = String(req.authPhone || "").replace(/\D/g, "").trim();
+          if (isOrdersCol2 && requesterPhone2 && requesterPhone2 !== "15509601222") {
             const removedArr = dbData.config?.["removed_squad_members"]?.phones || [];
-            if (removedArr.includes(requesterPhone)) {
+            if (removedArr.includes(requesterPhone2)) {
               return res.json({ docs: [], list: [], data: [] });
             }
           }
@@ -1548,6 +1574,10 @@ async function startServer() {
           data: obj
         };
       }).filter((doc) => {
+        if (forcedDocId) {
+          const docIdStr2 = String(doc.id || "").trim();
+          if (docIdStr2 !== forcedDocId) return false;
+        }
         const docIdStr = String(doc.id || doc.phone || "").trim();
         const cleanPhone = docIdStr.replace(/\D/g, "").trim();
         if (col === "squad_applications") {

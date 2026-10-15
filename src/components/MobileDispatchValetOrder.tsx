@@ -3,6 +3,7 @@ import { geocodeAddress, geocodeAddressViaServer, isValidCoords, calculateOrderD
 import { getHighPrecisionLocationName, formatHighPrecisionDestinationName } from '../utils/locationResolver';
 import { db, collection, doc, setDoc, getDoc, getDocs, onSnapshot, deleteDoc, clearCollection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { safeSetItem, safeGetItem } from '../utils/safeStorage';
+import { hasValidLicense } from '../utils/nameResolver';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
 import { regenerateQRCode, processImageFileToCleanQR } from '../utils/qrCodeHelper';
@@ -3643,6 +3644,12 @@ export default function MobileDispatchValetOrder({
         if (!isOnline) return false;
 
         if (d.isBusy === true || d.isBusy === 'true') return false;
+
+        // 4. 接单授权检查 (2026-10-15 P1)：无授权司机不能接收商户代叫派单
+        const licExpiry = String(d.licenseExpiry || (d as any)?.data?.licenseExpiry || '').trim();
+        if (!hasValidLicense(licExpiry)) {
+          return false;
+        }
 
         return true;
       };
