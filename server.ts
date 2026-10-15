@@ -7621,6 +7621,83 @@ function getClientIp(req: any): string {
     }
   });
 
+  // P0(2026-10-15)：订单完成专用接口（requireDbAuth拦不住，必须走专用接口）
+  // 之前司机点"完成"经/api/db/set写merchant_orders，targetId=订单号≠手机号被403拦截，
+  // 导致订单永远claimed、非VIP每日2单统计永远0
+  app.post('/api/order/complete', requireDbAuth, async (req, res) => {
+    try {
+      const orderId = String(req.body?.orderId || req.body?.id || '').trim();
+      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      if (!orderId || !/^1[3-9]\d{9}$/.test(authPhone)) {
+        return res.status(400).json({ success: false, error: '参数错误' });
+      }
+      const now = Date.now();
+      if (isMySQLEnabled && mysqlPool) {
+        const [rows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['merchant_orders', orderId]
+        );
+        if (!rows || rows.length === 0) {
+          return res.status(404).json({ success: false, error: '订单不存在' });
+        }
+        const od = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        const claimedBy = String(od.claimedDriverPhone || od.dispatchedDriverPhone || '').replace(/\D/g, '');
+        if (claimedBy !== authPhone && authPhone !== '15509601222') {
+          return res.status(403).json({ success: false, error: '只能完成自己的订单' });
+        }
+        od.status = 'completed';
+        od.completedAt = now;
+        od.updatedAt = now;
+        await mysqlPool.query(
+          'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
+          [JSON.stringify(od), 'merchant_orders', orderId]
+        );
+        // 重置司机busy状态
+        for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
+          try {
+            const [drows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              [col, authPhone]
+            );
+            if (drows && drows.length > 0) {
+              const dd = typeof drows[0].data === 'string' ? JSON.parse(drows[0].data) : drows[0].data;
+              dd.isBusy = false;
+              dd.status = 'idle';
+              await mysqlPool.query(
+                'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
+                [JSON.stringify(dd), col, authPhone]
+              );
+            }
+          } catch (_) {}
+        }
+      } else {
+        const dbData = readLocalJsonDb();
+        const od = dbData['merchant_orders']?.[orderId];
+        if (!od) {
+          return res.status(404).json({ success: false, error: '订单不存在' });
+        }
+        const claimedBy = String(od.claimedDriverPhone || od.dispatchedDriverPhone || '').replace(/\D/g, '');
+        if (claimedBy !== authPhone && authPhone !== '15509601222') {
+          return res.status(403).json({ success: false, error: '只能完成自己的订单' });
+        }
+        od.status = 'completed';
+        od.completedAt = now;
+        od.updatedAt = now;
+        for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
+          if (dbData[col]?.[authPhone]) {
+            dbData[col][authPhone].isBusy = false;
+            dbData[col][authPhone].status = 'idle';
+          }
+        }
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (e: any) {
+      console.error('[OrderComplete] 失败:', e?.message);
+      return res.status(500).json({ success: false, error: '完成订单失败，请重试' });
+    }
+  });
+
   // 2026-10-12 报单转单专用派单通道：以报单人位置为圆心，3公里内找最近的上线空闲小队司机；
   // 无人则转入选单大厅。不走鉴权。
   app.post('/api/report-transfer/dispatch', requireDbAuth, async (req, res) => {

@@ -3271,15 +3271,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           };
 
           try {
-            if (db) {
-              setDoc(doc(db, 'merchant_orders', merchantOrderId), compPayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-            }
+            // P0(2026-10-15)：改调专用/api/order/complete接口（db/set会被鉴权403拦截）
             const baseUrl = getBaseApiUrl();
-            fetch(`${baseUrl}/api/db/set`, {
+            fetch(`${baseUrl}/api/order/complete`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-              body: JSON.stringify({ collection: 'merchant_orders', docId: merchantOrderId, data: compPayload })
-            }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+              body: JSON.stringify({ orderId: merchantOrderId })
+            }).then(async (r) => {
+              if (!r.ok) {
+                const j = await r.json().catch(() => ({}));
+                triggerToast(`完成订单失败：${j.error || '请重试'}`);
+              }
+            }).catch(e => {
+              console.warn("[OrderComplete]", e?.message || e);
+              triggerToast('完成订单失败，请检查网络后重试');
+            });
           } catch (_) {}
 
           try {
