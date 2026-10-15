@@ -582,17 +582,30 @@ function readLocalJsonDb(): Record<string, Record<string, any>> {
 
 // P0-1: 脏标 + 5秒批量异步刷盘已在上方声明（_dbDirty/_dbWriteInFlight）
 
+// P0(2026-10-16)：并发写入必须用唯一 tmp 文件名。
+// 之前同步写与 5 秒异步批量写共用同一个 `local_db.json.tmp`，
+// 同步 rename 先删掉 tmp 后、异步 rename 报 ENOENT（生产日志已确认）。
+let _tmpWriteSeq = 0;
+function uniqueTmpPath(): string {
+  _tmpWriteSeq = (_tmpWriteSeq + 1) % 1000000;
+  return `${LOCAL_JSON_DB_PATH}.tmp.${process.pid}.${Date.now()}.${_tmpWriteSeq}`;
+}
+function removeFileQuiet(p: string) {
+  try { fs.unlinkSync(p); } catch (_) {}
+}
+
 function writeLocalJsonDb(data: Record<string, Record<string, any>>, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
   // M3修复：immediate=true 时同步写盘（tmp+rename 原子替换），关键写入（抢单/黑名单）不再依赖5秒批量
   if (immediate) {
+    const tmpPath = uniqueTmpPath();
     try {
-      const tmpPath = LOCAL_JSON_DB_PATH + '.tmp';
       fs.writeFileSync(tmpPath, JSON.stringify(data), 'utf8');
       fs.renameSync(tmpPath, LOCAL_JSON_DB_PATH);
     } catch (e: any) {
       console.error('[Local JSON DB] Sync write error:', e?.message);
+      removeFileQuiet(tmpPath);
       _dbDirty = true; // 同步失败则回退打脏标，由5秒定时器重试
     }
     return;
@@ -607,10 +620,14 @@ setInterval(() => {
   _dbDirty = false;
   _dbWriteInFlight = true;
   const snapshot = cachedDbData;
-  const tmpPath = LOCAL_JSON_DB_PATH + '.tmp';
+  const tmpPath = uniqueTmpPath();
   fs.promises.writeFile(tmpPath, JSON.stringify(snapshot), 'utf8')
     .then(() => fs.promises.rename(tmpPath, LOCAL_JSON_DB_PATH))
-    .catch((e: any) => console.error('[Local JSON DB] Async write error:', e?.message))
+    .catch((e: any) => {
+      console.error('[Local JSON DB] Async write error:', e?.message);
+      fs.promises.unlink(tmpPath).catch(() => {});
+      _dbDirty = true; // 异步写失败重打脏标，下轮重试，避免数据只留在内存
+    })
     .finally(() => {
       _dbWriteInFlight = false;
       // P1-1修复(2026-10-14)：异步写期间若有同步写入更新了 cachedDbData，快照已过期，重打脏标下轮重写，防旧数据覆盖新数据
@@ -630,6 +647,17 @@ try {
 } catch (e: any) {
   console.error('[Local JSON DB] 启动备份失败:', e?.message);
 }
+
+// P0(2026-10-16)：清理旧版固定名 tmp 与崩溃残留的唯一 tmp 文件，避免磁盘垃圾堆积
+try {
+  const _tmpDir = path.dirname(LOCAL_JSON_DB_PATH);
+  const _tmpBase = path.basename(LOCAL_JSON_DB_PATH);
+  for (const _f of fs.readdirSync(_tmpDir)) {
+    if (_f === _tmpBase + '.tmp' || _f.startsWith(_tmpBase + '.tmp.')) {
+      removeFileQuiet(path.join(_tmpDir, _f));
+    }
+  }
+} catch (_) {}
 
 // N-6修复（2026-10-10复审）：启动时备份 auth_tokens.json.bak
 // 2026-10-15：token已改为无状态HMAC（无文件存储），此备份逻辑已废弃，移除
@@ -954,7 +982,12 @@ function getClientIp(req: any): string {
         createdAt: '2026-10-06T00:00:00.000Z',
         updatedAt: '2026-10-06T00:00:00.000Z'
       };
-      dbData.online_applications['15509601222'] = onlineApp155;
+      // P0(2026-10-16)：合并而非全量覆盖，保留已有的 licenseExpiry 等充值字段
+      const prevOnline155 = dbData.online_applications['15509601222'] || {};
+      dbData.online_applications['15509601222'] = { ...prevOnline155, ...onlineApp155 };
+      if (prevOnline155.licenseExpiry) {
+        dbData.online_applications['15509601222'].licenseExpiry = prevOnline155.licenseExpiry;
+      }
 
       // 4. In driver_users: ALL except 15509601222 and merchant A accounts are deleted
       if (dbData.driver_users) {
@@ -968,8 +1001,12 @@ function getClientIp(req: any): string {
       }
 
       // Force 15509601222 developer profile
+      // P0(2026-10-16)：合并而非全量覆盖——保留管理员设置的 vipExpiry/licenseExpiry，
+      // 否则每次重启都会洗掉接单授权充值记录（App 选单大厅变回"待开通"）
       if (!dbData.driver_users) dbData.driver_users = {};
+      const prevDev155 = dbData.driver_users['15509601222'] || {};
       dbData.driver_users['15509601222'] = {
+        ...prevDev155,
         id: '15509601222',
         phone: '15509601222',
         phoneNumber: '15509601222',
@@ -983,7 +1020,8 @@ function getClientIp(req: any): string {
         inSquad: true,
         collection: 'squad_members',
         city: '银川市',
-        vipExpiry: '2099-12-31',
+        // vipExpiry：已有（管理员设置的20天等）则保留，缺省才给永久
+        vipExpiry: prevDev155.vipExpiry || '2099-12-31',
         isOnline: true,
         onlineOrdersEnabled: true
       };
@@ -1030,11 +1068,14 @@ function getClientIp(req: any): string {
           createdAt: '2026-10-06T00:00:00.000Z',
           updatedAt: '2026-10-06T00:00:00.000Z'
         };
+        // P0(2026-10-16)：MySQL 用合并而非全量覆盖，保留已有的 licenseExpiry 充值字段
+        const onlineApp155Patch: any = { ...onlineApp155 };
+        delete onlineApp155Patch.licenseExpiry;
         await conn.query(
           `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
            VALUES ('online_applications', '15509601222', ?, NOW())
-           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
-          [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155)]
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?), \`updated_at\` = NOW()`,
+          [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155Patch)]
         );
 
         // Ensure 15509601222 developer profile in MySQL driver_users and squad_members
@@ -1056,17 +1097,23 @@ function getClientIp(req: any): string {
           isOnline: true,
           onlineOrdersEnabled: true
         };
+        // P0(2026-10-16)：MySQL 也用合并而非全量覆盖——保留管理员设置的 vipExpiry/licenseExpiry，
+        // 否则每次重启都会洗掉接单授权充值记录（App 选单大厅变回"待开通"）。
+        // 补丁负载排除 vipExpiry/licenseExpiry：新库插入时给永久默认，已有库只强制身份字段。
+        const dev155Patch: any = { ...dev155 };
+        delete dev155Patch.vipExpiry;
+        delete dev155Patch.licenseExpiry;
         await conn.query(
           `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
            VALUES ('driver_users', '15509601222', ?, NOW())
-           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
-          [JSON.stringify(dev155), JSON.stringify(dev155)]
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?), \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155Patch)]
         );
         await conn.query(
           `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
            VALUES ('squad_members', '15509601222', ?, NOW())
-           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
-          [JSON.stringify(dev155), JSON.stringify(dev155)]
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?), \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155Patch)]
         );
 
         // Force-update system_version in MySQL to V2.0 to sync with V2.0 app clients
@@ -1675,6 +1722,15 @@ function getClientIp(req: any): string {
           vipExpiry = String(sa.vipExpiry).trim();
         }
 
+        // 2026-10-16修复：licenseExpiry显式解析，MySQL(raw)优先，修充值后App仍显示"待开通"
+        // raw来自MySQL是生产环境数据源，du/sq等来自本地JSON可能滞后
+        let licenseExpiry = '';
+        const pickLic = (v: any): string => {
+          const s = String(v ?? '').trim();
+          return (s && s !== '待开通') ? s : '';
+        };
+        licenseExpiry = pickLic(raw.licenseExpiry) || pickLic(du.licenseExpiry) || pickLic(sq.licenseExpiry) || pickLic(oa.licenseExpiry) || pickLic(sa.licenseExpiry);
+
         if (isRejected) {
           vipExpiry = '待开通';
         } else if (!vipExpiry) {
@@ -1699,6 +1755,7 @@ function getClientIp(req: any): string {
           squad_position: effectiveRole === '城市派单员司机' ? 'dispatcher' : effectiveRole === '城市管理司机' ? 'manager' : effectiveRole === '城市老板司机' ? 'boss' : effectiveRole === '开发者司机' ? 'developer' : 'normal',
           status: status,
           vipExpiry: vipExpiry,
+          licenseExpiry: licenseExpiry || '待开通',
           qrcode_url: effectiveQr,
           wechatQrCode: effectiveQr,
           qrCode: effectiveQr,
@@ -1783,6 +1840,23 @@ function getClientIp(req: any): string {
         forcedDocId = requesterPhone; // 强制只读本人
       }
 
+      // P0(2026-10-16)：函数顶层统一初始化，MySQL 分支与 JSON 分支共用。
+      // 修复生产运行时 ReferenceError：① dbData 在 MySQL 分支声明前使用（TDZ）；
+      // ② isOrdersCol 仅在 MySQL 块内声明、JSON 过滤块却引用它。
+      const dbData = readLocalJsonDb();
+      const isDriverCol = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col);
+      const isOrdersCol = ['merchant_orders', 'valet_orders', 'orders'].includes(col);
+      const removedArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
+      const clearedTimestamp = Number(dbData.config?.['merchant_orders_cleared']?.clearedAt || 0);
+
+      // P1-2修复(2026-10-14)：用 token 解析出的真实身份，不信任客户端传的手机号（可伪造/可省略绕过）
+      // 被移出小队的司机一律不返回订单（MySQL/JSON 双分支统一生效）
+      if (isOrdersCol && requesterPhone && requesterPhone !== '15509601222') {
+        if (removedArr.includes(requesterPhone)) {
+          return res.json({ docs: [], list: [], data: [] });
+        }
+      }
+
       if (isMySQLEnabled && mysqlPool) {
         try {
           let rows: any;
@@ -1806,21 +1880,6 @@ function getClientIp(req: any): string {
           const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
           target50d.setDate(target50d.getDate() + 50);
           const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, '0')}-${String(target50d.getDate()).padStart(2, '0')}`;
-
-          const isDriverCol = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col);
-          const isOrdersCol = ['merchant_orders', 'valet_orders', 'orders'].includes(col);
-
-          // Check if requester is removed squad member or not approved for orders
-          // P1-2修复(2026-10-14)：用 token 解析出的真实身份，不信任客户端传的手机号（可伪造/可省略绕过）
-          const requesterPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
-          if (isOrdersCol && requesterPhone && requesterPhone !== '15509601222') {
-            const removedArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
-            if (removedArr.includes(requesterPhone)) {
-              return res.json({ docs: [], list: [], data: [] });
-            }
-          }
-
-          const clearedTimestamp = Number(dbData.config?.['merchant_orders_cleared']?.clearedAt || 0);
 
           const docs = (rows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
@@ -1869,11 +1928,13 @@ function getClientIp(req: any): string {
           return res.json({ docs, list: docs, data: docs });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy LIST MySQL Error]:', mysqlErr);
+          // P0(2026-10-16)：MySQL 已启用时查询失败必须明确返回 500，
+          // 禁止静默回退本地 JSON（旧数据/空数据会造成"空列表假成功"）
+          return res.status(500).json({ docs: [], error: 'MySQL 查询失败: ' + (mysqlErr?.message || 'unknown') });
         }
       }
 
-      // JSON DB Fallback
-      const dbData = readLocalJsonDb();
+      // JSON DB Fallback（仅 MySQL 未启用时走这里；dbData 已在函数顶部初始化）
       const colData = dbData[col] || {};
 
       const docs = Object.keys(colData).map((k) => {
@@ -5818,17 +5879,14 @@ function getClientIp(req: any): string {
       const finalId = dataWithId.id;
 
       if (isMySQLEnabled && mysqlPool) {
-        try {
-          const dataStr = JSON.stringify(dataWithId);
-          await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            [col, finalId, dataStr]
-          );
-          return res.json({ success: true, id: finalId });
-        } catch (mysqlErr: any) {
-          console.error('[DB Proxy ADD MySQL Error]:', mysqlErr);
-        }
+        // 2026-10-16修复：MySQL失败时直接抛错，不再静默回退到本地JSON（修系统消息假成功）
+        const dataStr = JSON.stringify(dataWithId);
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          [col, finalId, dataStr]
+        );
+        return res.json({ success: true, id: finalId });
       }
 
       // JSON DB Fallback
