@@ -2700,6 +2700,19 @@ function getClientIp(req: any): string {
             'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             [col, targetPhone, JSON.stringify(updated)]);
         }
+        // P0(2026-10-16)：MySQL 写入后同步双写本地 JSON。/api/db/get 在 MySQL 抖动时会回退读本地，
+        // 若本地是旧值会导致 App/后台显示跳变（已到期↔2天）。双写保证回退数据源永远新鲜。
+        try {
+          const dbData = readLocalJsonDb();
+          for (const col of targetCols) {
+            if (!dbData[col]) dbData[col] = {};
+            const existingLocal = dbData[col][targetPhone] || {};
+            dbData[col][targetPhone] = { ...existingLocal, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+          }
+          writeLocalJsonDb(dbData);
+        } catch (dualErr: any) {
+          console.error('[Recharge License] 本地JSON双写失败（MySQL已成功）:', dualErr?.message);
+        }
       } else {
         const dbData = readLocalJsonDb();
         for (const col of targetCols) {
@@ -2754,6 +2767,7 @@ function getClientIp(req: any): string {
       if (isMySQLEnabled && mysqlPool) {
         const [mrows]: any = await mysqlPool.query(
           'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['squad_members']);
+        const dualWriteMap: Record<string, string> = {};
         for (const r of (mrows || [])) {
           const phone = String(r.doc_id).replace(/\D/g, '').trim();
           if (!/^1[3-9]\d{9}$/.test(phone)) continue;
@@ -2776,7 +2790,22 @@ function getClientIp(req: any): string {
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
               [col, phone, JSON.stringify(upd)]);
           }
+          dualWriteMap[phone] = newExp;
           count++;
+        }
+        // P0(2026-10-16)：批量充值 MySQL 后双写本地 JSON，防 MySQL 抖动回退读到旧值导致显示跳变
+        try {
+          const dbData = readLocalJsonDb();
+          for (const [phone, newExp] of Object.entries(dualWriteMap)) {
+            for (const col of targetCols) {
+              if (!dbData[col]) dbData[col] = {};
+              const ex = dbData[col][phone] || {};
+              dbData[col][phone] = { ...ex, phone, phoneNumber: phone, licenseExpiry: newExp, updatedAt: now };
+            }
+          }
+          writeLocalJsonDb(dbData);
+        } catch (dualErr: any) {
+          console.error('[Batch Recharge License] 本地JSON双写失败（MySQL已成功）:', dualErr?.message);
         }
       } else {
         const dbData = readLocalJsonDb();

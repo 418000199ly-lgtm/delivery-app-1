@@ -347,3 +347,61 @@ export function processImageFileToCleanQR(file: File, type: 'wechat' | 'alipay' 
     reader.readAsDataURL(file);
   });
 }
+
+/**
+ * P0(2026-10-16)：带鉴权的收款码图片加载 Hook。
+ * /uploads/qrcodes 自 2026-10-15 起要求 X-Auth-Token（防猜 URL 下载他人收款码），
+ * 普通 <img src> 发不出自定义 header，会 401 空白。本 Hook 用 fetch 带 token 取图转 blob URL。
+ * data: / http(s): URL 直接返回，无需鉴权。
+ */
+import { useState, useEffect } from 'react';
+
+export function useAuthenticatedQrUrl(rawUrl: string | undefined | null): string {
+  const [blobUrl, setBlobUrl] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = '';
+
+    const load = async () => {
+      const formatted = formatQrUrl(rawUrl);
+      if (!formatted) {
+        if (!cancelled) setBlobUrl('');
+        return;
+      }
+      // data: / 绝对 http(s): 无需鉴权，直接用
+      if (formatted.startsWith('data:image/')) {
+        if (!cancelled) setBlobUrl(formatted);
+        return;
+      }
+      const needsAuth = formatted.includes('/uploads/qrcodes');
+      if (!needsAuth) {
+        if (!cancelled) setBlobUrl(formatted);
+        return;
+      }
+      try {
+        const token = typeof window !== 'undefined'
+          ? (localStorage.getItem('dd_auth_token') || localStorage.getItem('admin_session_token') || '')
+          : '';
+        const resp = await fetch(formatted, {
+          headers: token ? { 'X-Auth-Token': token } : {},
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const blob = await resp.blob();
+        objectUrl = URL.createObjectURL(blob);
+        if (!cancelled) setBlobUrl(objectUrl);
+      } catch (e) {
+        console.warn('[QR] 带鉴权加载收款码失败:', (e as any)?.message);
+        if (!cancelled) setBlobUrl('');
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [rawUrl]);
+
+  return blobUrl;
+}

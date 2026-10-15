@@ -3,6 +3,7 @@ import { ArrowLeft, ShieldCheck, Info, QrCode, Car } from 'lucide-react';
 import { TripState, ChauffeurSettings } from '../types';
 import { db, doc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { autoUpdateOrderDestinationIfUnset, isUnsetDestination } from '../utils/locationResolver';
+import { useAuthenticatedQrUrl } from '../utils/qrCodeHelper';
 
 interface MerchantValetPaymentViewProps {
   trip: TripState;
@@ -11,22 +12,6 @@ interface MerchantValetPaymentViewProps {
   onNavigateBack: () => void;
   onFinishTrip: (amount: number) => void;
 }
-
-// Helper to normalize image URLs with base API prefix when needed
-const getFullQrUrl = (url: string): string => {
-  if (!url) return '';
-  const trimmed = url.trim();
-  if (trimmed.startsWith('data:image/') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
-  }
-  if (trimmed.startsWith('/')) {
-    const baseUrl = getBaseApiUrl();
-    if (baseUrl && (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))) {
-      return `${baseUrl.replace(/\/$/, '')}${trimmed}`;
-    }
-  }
-  return trimmed;
-};
 
 export default function MerchantValetPaymentView({
   trip,
@@ -268,7 +253,9 @@ export default function MerchantValetPaymentView({
     ''
   ).trim();
 
-  const qrImage = getFullQrUrl(rawQr);
+  // P0(2026-10-16)：/uploads/qrcodes 需 X-Auth-Token 鉴权，普通 <img> 发不出 header 会 401 空白，
+  // 改用带鉴权的 blob URL 加载
+  const qrImage = useAuthenticatedQrUrl(rawQr);
 
   return (
     <div className="w-full h-full bg-[#f9f9f9] text-[#1a1c1c] select-none font-sans flex flex-col justify-between overflow-hidden relative z-50">
@@ -337,7 +324,7 @@ export default function MerchantValetPaymentView({
               <div className="relative w-52 h-52 sm:w-60 sm:h-60 p-2.5 bg-white rounded-2xl border border-gray-200 shadow-inner flex items-center justify-center">
                 {qrImage && qrImage.trim() !== '' ? (
                   <img 
-                    src={getFullQrUrl(qrImage)} 
+                    src={qrImage} 
                     alt="微信代叫费收款码" 
                     className="w-full h-full object-contain rounded-xl"
                     referrerPolicy="no-referrer"

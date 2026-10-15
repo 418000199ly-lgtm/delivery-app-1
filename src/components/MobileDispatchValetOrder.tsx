@@ -6,6 +6,7 @@ import { safeSetItem, safeGetItem } from '../utils/safeStorage';
 import { hasValidLicense } from '../utils/nameResolver';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
+import { useAuthenticatedQrUrl } from '../utils/qrCodeHelper';
 import { regenerateQRCode, processImageFileToCleanQR } from '../utils/qrCodeHelper';
 import { 
   MapPin, 
@@ -372,6 +373,8 @@ export default function MobileDispatchValetOrder({
   const [scheduledTime, setScheduledTime] = useState('现在（立即出发）');
   const [needScooter, setNeedScooter] = useState(true);
   const [wechatQrUrl, setWechatQrUrl] = useState<string>('');
+  // P0(2026-10-16)：/uploads/qrcodes 需鉴权，<img> 直连会 401 空白，转 blob URL
+  const authedQrUrl = useAuthenticatedQrUrl(wechatQrUrl);
 
   // Modals & UI states
   const [isDispatchLoggedIn, setIsDispatchLoggedIn] = useState<boolean>(() => {
@@ -4447,7 +4450,7 @@ export default function MobileDispatchValetOrder({
             <div className="relative w-60 h-60 p-3 bg-white rounded-2xl border border-gray-200 shadow-inner flex items-center justify-center overflow-hidden">
               {wechatQrUrl ? (
                 <img 
-                  src={wechatQrUrl} 
+                  src={authedQrUrl || wechatQrUrl} 
                   alt="微信代叫费收款码" 
                   className="w-full h-full object-contain rounded-xl"
                 />
