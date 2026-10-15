@@ -95,9 +95,30 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
   };
 
   // 1. 同步更新各大文档
+  // P2(2026-10-15)：GPS上报失败加日志和连续失败计数，防静默丢失导致被看门狗下线
   try {
-    setDoc(doc(db, 'driver_users', cleanPhone), payload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'driver_locations', cleanPhone), payload, { merge: true }).catch(() => {});
+    const logGpsFail = (where: string, err: any) => {
+      console.error(`[GPS上报失败] ${where}:`, err?.message || err);
+      try {
+        const key = 'dd_gps_fail_count';
+        const c = (Number(localStorage.getItem(key) || '0') || 0) + 1;
+        localStorage.setItem(key, String(c));
+        localStorage.setItem('dd_gps_last_fail', String(Date.now()));
+        // 连续失败5次弹提示（防频繁打扰）
+        if (c === 5 && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('gps_upload_failed', { detail: { count: c } }));
+        }
+      } catch (_) {}
+    };
+    const resetGpsFail = () => {
+      try {
+        localStorage.setItem('dd_gps_fail_count', '0');
+      } catch (_) {}
+    };
+    setDoc(doc(db, 'driver_users', cleanPhone), payload, { merge: true })
+      .then(resetGpsFail).catch((e) => logGpsFail('driver_users', e));
+    setDoc(doc(db, 'driver_locations', cleanPhone), payload, { merge: true })
+      .then(resetGpsFail).catch((e) => logGpsFail('driver_locations', e));
 
     // 严密防线：已被移出小队的司机绝不向 squad_members 写入，防止已删除成员被意外复活
     let isRemoved = false;

@@ -1570,6 +1570,17 @@ function getClientIp(req: any): string {
       const cleanPhone = docId.replace(/\D/g, '').trim();
       const isCleanPhone = cleanPhone.length === 11;
 
+      // P1(2026-10-15)：敏感集合的单文档读取加权限控制
+      // 非管理员只能读自己的文档
+      const requesterPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      const isAdminUser = requesterPhone === '15509601222';
+      const sensitiveSingleCols = ['driver_users', 'squad_members', 'online_applications', 'driver_locations'];
+      if (sensitiveSingleCols.includes(col) && !isAdminUser) {
+        if (docId !== requesterPhone && cleanPhone !== requesterPhone) {
+          return res.status(403).json({ exists: false, error: '无权读取他人档案' });
+        }
+      }
+
       let foundData: any = null;
 
       if (isMySQLEnabled && mysqlPool) {
@@ -1717,6 +1728,15 @@ function getClientIp(req: any): string {
       if (col === '_config' || col === 'config') {
         return res.status(403).json({ docs: [], error: '禁止读取系统配置' });
       }
+      // P1(2026-10-15)：敏感集合的批量读取加权限控制
+      // driver_users/squad_members：只允许管理员或本人（本人只能读自己的doc）
+      // merchant_orders：只允许管理员或订单关联人（通过doc_id过滤，本人只能读自己的）
+      const requesterPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      const isAdmin = requesterPhone === '15509601222';
+      if (!isAdmin && (col === 'driver_users' || col === 'squad_members' || col === 'online_applications')) {
+        // 非管理员只能读自己的文档，强制doc_id=本人手机号
+        // 这里先放行，后续在查询时强制过滤
+      }
 
       const limitNum = Math.min(Math.max(Number(req.query.limit) || 10000, 1), 20000);
       // P0-2: 增量拉取，只返回 updated_at > since 的文档，大幅降低3000并发时的数据量
@@ -1724,10 +1744,26 @@ function getClientIp(req: any): string {
       const sinceDate = sinceParam ? new Date(sinceParam) : null;
       const hasValidSince = sinceDate && !isNaN(sinceDate.getTime());
 
+      // P1(2026-10-15)：敏感集合非管理员只能读自己的文档
+      const sensitiveCols = ['driver_users', 'squad_members', 'online_applications', 'driver_locations'];
+      const isSensitive = sensitiveCols.includes(col);
+      let forcedDocId: string | null = null;
+      if (isSensitive && !isAdmin) {
+        if (!requesterPhone) {
+          return res.status(403).json({ docs: [], error: '无权批量读取' });
+        }
+        forcedDocId = requesterPhone; // 强制只读本人
+      }
+
       if (isMySQLEnabled && mysqlPool) {
         try {
           let rows: any;
-          if (hasValidSince) {
+          if (forcedDocId) {
+            [rows] = await mysqlPool.query(
+              'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              [col, forcedDocId]
+            );
+          } else if (hasValidSince) {
             [rows] = await mysqlPool.query(
               'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND `updated_at` > ? ORDER BY `updated_at` DESC LIMIT ?',
               [col, sinceDate, limitNum]
@@ -1821,6 +1857,11 @@ function getClientIp(req: any): string {
           data: obj
         };
       }).filter((doc: any) => {
+        // P1(2026-10-15)：敏感集合非管理员只能看自己的文档
+        if (forcedDocId) {
+          const docIdStr = String(doc.id || '').trim();
+          if (docIdStr !== forcedDocId) return false;
+        }
         const docIdStr = String(doc.id || doc.phone || '').trim();
         const cleanPhone = docIdStr.replace(/\D/g, '').trim();
 

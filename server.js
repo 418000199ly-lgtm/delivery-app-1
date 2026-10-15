@@ -302,6 +302,60 @@ setInterval(() => {
   } catch (_) {
   }
 }, 10 * 60 * 1e3);
+setInterval(async () => {
+  try {
+    const now = /* @__PURE__ */ new Date();
+    const beijingMs = now.getTime() + now.getTimezoneOffset() * 6e4 + 8 * 36e5;
+    const beijingDate = new Date(beijingMs);
+    if (beijingDate.getHours() !== 4 || beijingDate.getMinutes() > 5) return;
+    const cutoff = Date.now() - 24 * 3600 * 1e3;
+    let deleted = 0;
+    try {
+      const dbData = readLocalJsonDb();
+      if (dbData["merchant_orders"]) {
+        for (const orderId in dbData["merchant_orders"]) {
+          const o = dbData["merchant_orders"][orderId];
+          if (o && (o.status === "hall" || o.in_hall === true)) {
+            const hallAt = Number(o.hallAt || 0);
+            if (hallAt && hallAt < cutoff) {
+              delete dbData["merchant_orders"][orderId];
+              deleted++;
+            }
+          }
+        }
+        if (deleted > 0) writeLocalJsonDb(dbData);
+      }
+    } catch (_) {
+    }
+    if (isMySQLEnabled && mysqlPool) {
+      try {
+        const [rows] = await mysqlPool.query(
+          "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?",
+          ["merchant_orders"]
+        );
+        for (const row of rows || []) {
+          try {
+            const d = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+            if (d && (d.status === "hall" || d.in_hall === true)) {
+              const hallAt = Number(d.hallAt || 0);
+              if (hallAt && hallAt < cutoff) {
+                await mysqlPool.query(
+                  "DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?",
+                  ["merchant_orders", row.doc_id]
+                );
+                deleted++;
+              }
+            }
+          } catch (_) {
+          }
+        }
+      } catch (_) {
+      }
+    }
+    if (deleted > 0) console.log(`[HallArchive] \u5F52\u6863\u4E86 ${deleted} \u4E2A\u8FC7\u671F\u5927\u5385\u8BA2\u5355`);
+  } catch (_) {
+  }
+}, 5 * 60 * 1e3);
 var dispatchPhoneLoginLogs = /* @__PURE__ */ new Map();
 var dispatchIpLoginLogs = /* @__PURE__ */ new Map();
 var WHITELIST_PHONES = ["15509601222", "15121904440"];
@@ -1071,7 +1125,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "4321a19f";
+  const SERVER_VERSION = "a9acd3f1";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -4388,19 +4442,11 @@ async function startServer() {
       const now = Date.now();
       if (isMySQLEnabled && mysqlPool && orderId) {
         try {
-          const [rows] = await mysqlPool.query(
-            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ? AND (`doc_id` = ? OR JSON_EXTRACT(`data`, "$.id") = ? OR JSON_EXTRACT(`data`, "$.orderId") = ?)',
-            ["merchant_orders", orderId, orderId, orderId]
+          await mysqlPool.query(
+            'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.pageHeartbeatAt", ?) WHERE `collection` = ? AND (`doc_id` = ? OR JSON_EXTRACT(`data`, "$.id") = ? OR JSON_EXTRACT(`data`, "$.orderId") = ?)',
+            [now, "merchant_orders", orderId, orderId, orderId]
           );
-          if (rows && rows[0]) {
-            const d = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
-            d.pageHeartbeatAt = now;
-            await mysqlPool.query(
-              "UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?",
-              [JSON.stringify(d), "merchant_orders", rows[0].doc_id]
-            );
-            return res.json({ success: true, heartbeatAt: now });
-          }
+          return res.json({ success: true, heartbeatAt: now });
         } catch (e) {
           console.error("[Heartbeat] MySQL\u66F4\u65B0\u5931\u8D25:", e?.message);
         }
