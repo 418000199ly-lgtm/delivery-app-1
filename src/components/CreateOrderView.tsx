@@ -1510,7 +1510,7 @@ export default function CreateOrderView({
       try {
         const baseUrl = getBaseApiUrl();
         const url = `${baseUrl}/api/qr-notify-check?driverPhone=${encodeURIComponent(cleanPhone)}&_t=${Date.now()}`;
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(url, { cache: 'no-store', headers: getAuthHeaders() });
         if (!res.ok) return;
         const json = await res.json();
         if (json && json.success && json.hasNotify && json.data) {

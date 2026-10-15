@@ -6641,14 +6641,14 @@ function getClientIp(req: any): string {
 
   // 2026-10-11 二维码创单新流程：乘客扫码只传手机号给司机，不建单、不派单、不做地理编码
   // 司机收到后在创建订单页看到提示+语音播报，手动创建订单
-  app.post('/api/qr-phone-notify', requireDbAuth, async (req, res) => {
+  app.post('/api/qr-phone-notify', async (req, res) => {
     try {
       // P0(2026-10-15)：二维码创单仅VIP可用，服务端强制校验
-      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      // 注意：乘客扫码提交时无token（未登录），不能加requireDbAuth；靠body.driverPhone的VIP校验+IP限流防刷
       const qpDriverPhone = String(req.body?.driverPhone || '').replace(/\D/g, '').trim();
-      const targetPhone = qpDriverPhone || authPhone;
-      if (authPhone && qpDriverPhone && authPhone !== qpDriverPhone && authPhone !== '15509601222') {
-        return res.status(403).json({ success: false, error: '只能为自己创建二维码订单' });
+      const targetPhone = qpDriverPhone;
+      if (!/^1[3-9]\d{9}$/.test(targetPhone)) {
+        return res.status(400).json({ success: false, error: '司机手机号格式不正确' });
       }
       try {
         let vipExpiry = '';
@@ -6728,11 +6728,16 @@ function getClientIp(req: any): string {
 
   // 2026-10-12 二维码特殊通道：司机端开二维码弹窗时直接轮询此接口，不依赖 passenger_links 文档轮询
   // 只有扫3分钟倒计时二维码的通知走这里，司机忙碌状态也不阻断
-  app.get('/api/qr-notify-check', async (req, res) => {
+  app.get('/api/qr-notify-check', requireDbAuth, async (req, res) => {
     try {
+      // P0(2026-10-15)：只能查自己的，防止手机号被盗
+      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
       const driverPhone = String(req.query.driverPhone || '').replace(/\D/g, '').trim();
       if (!/^1[3-9]\d{9}$/.test(driverPhone)) {
         return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      if (authPhone !== driverPhone && authPhone !== '15509601222') {
+        return res.status(403).json({ success: false, error: '只能查询自己的二维码通知' });
       }
 
       let payloadData: any = null;
