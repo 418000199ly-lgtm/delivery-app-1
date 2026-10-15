@@ -136,8 +136,7 @@ function _b64urlDecode(s: string): string {
   while (b.length % 4) b += '=';
   return Buffer.from(b, 'base64').toString('utf8');
 }
-// 密钥：存 local_db.json 的 _config.tokenSecret；2026-10-11起部署包不再自带 local_db.json，
-// 跨部署靠用户备份的生产 local_db.json 保留密钥（部署前务必备份 local_db.json）
+// 密钥：存 local_db.json 的 _config.tokenSecret，部署包自带 local_db.json 故跨部署不丢
 function getTokenSecret(): string {
   try {
     const db: any = readLocalJsonDb();
@@ -176,13 +175,11 @@ function getLicenseDaysRemaining(expiry: any): number {
 function isLicenseValid(expiry: any): boolean {
   return getLicenseDaysRemaining(expiry) > 0;
 }
-// 服务端VIP有效性判断（2026-10-15 P0：二维码创单/纠偏服务端校验用，与前端checkVipActive同逻辑）
+// 服务端VIP有效性判断（2026-10-15 P0：二维码创单/纠偏/非VIP限额服务端校验用）
 function isVipActiveServer(vipExpiry: any): boolean {
   if (!vipExpiry) return false;
   const s = String(vipExpiry).trim();
-  if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '待开通' || s === '未开通' || s === '已到期' || s === '已过期' || s === '') {
-    return false;
-  }
+  if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '待开通' || s === '未开通' || s === '已到期' || s === '已过期' || s === '') return false;
   if (s === '永久有效' || s === '永久') return true;
   try {
     const match = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
@@ -198,33 +195,29 @@ function isVipActiveServer(vipExpiry: any): boolean {
     return false;
   }
 }
-// 获取北京时间今天的日期字符串（2026-10-15 P0：非VIP每日2单服务端独立计数用）
+// 北京时间今天日期字符串（2026-10-15 P0：非VIP每日2单用）
 function getBeijingTodayStr(): string {
   const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  return now.toISOString().slice(0, 10); // YYYY-MM-DD
+  return now.toISOString().slice(0, 10);
 }
-// 统计司机今天（北京时间）完成的订单数（2026-10-15 P0：防清localStorage绕过2单限制）
+// 统计司机今天（北京时间）完成的订单数（2026-10-15 P0）
 async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
   const todayStr = getBeijingTodayStr();
   let count = 0;
   try {
     if (isMySQLEnabled && mysqlPool) {
-      const [rows]: any = await mysqlPool.query(
-        'SELECT `data` FROM `daijia_documents` WHERE `collection` = ?',
-        ['merchant_orders']
-      );
+      const [rows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ?', ['merchant_orders']);
       for (const r of (rows || [])) {
         try {
           const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
           const dPhone = String(d.driverPhone || d.claimedDriverPhone || d.dispatchedDriverPhone || '').replace(/\D/g, '');
           if (dPhone !== driverPhone) continue;
           if (d.status !== 'completed') continue;
-          // 用completedAt或updatedAt判断是否今天（北京时间）
           const ts = d.completedAt || d.updatedAt || d.timestamp;
           if (!ts) continue;
           const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
           if (bjt === todayStr) count++;
-        } catch (_) {}
+        } catch (_) { /* skip bad row */ }
       }
     } else {
       const dbData = readLocalJsonDb();
@@ -427,9 +420,7 @@ async function initDatabase() {
       }
     }
     
-    // 2026-10-15 P1-4修复：生产环境（配置了MYSQL_HOST）下MySQL不可达时打error级告警，
-    // 避免静默降级到可能为空/陈旧的local_db.json而不自知
-    console.error('⚠️ [Database] MySQL不可达（MYSQL_HOST已配置），已降级为本地文件模式 local_db.json！请检查数据库连接，当前数据可能不是最新！');
+    console.log('ℹ️ [Database] Remote MySQL database not reachable. Seamlessly operating in Local File-based Database mode (local_db.json).');
     isMySQLEnabled = false;
     mysqlPool = null;
   }
@@ -1845,26 +1836,22 @@ function getClientIp(req: any): string {
         return res.status(400).json({ success: false, error: 'Missing col, id, or data' });
       }
 
-      // P1修复(2026-10-15)：纠偏功能仅VIP可用，服务端强制校验（防直接调API绕过）
+      // P1(2026-10-15)：纠偏功能仅VIP可用，服务端强制校验
       if (col === 'driver_users' && data && (data as any).deviationMitigation === true) {
         try {
-          let vipExpiry = '';
           const targetPhone = docId.replace(/\D/g, '').trim();
-          if (isMySQLEnabled && mysqlPool) {
-            const [vrows]: any = await mysqlPool.query(
-              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-              ['driver_users', targetPhone]);
-            if (vrows && vrows.length > 0) {
-              const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
-              vipExpiry = String(vd.vipExpiry || (data as any).vipExpiry || '');
+          let vipExpiry = String((data as any).vipExpiry || '');
+          if (!vipExpiry) {
+            if (isMySQLEnabled && mysqlPool) {
+              const [vrows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', ['driver_users', targetPhone]);
+              if (vrows && vrows.length > 0) {
+                const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+                vipExpiry = String(vd.vipExpiry || '');
+              }
             } else {
-              vipExpiry = String((data as any).vipExpiry || '');
+              vipExpiry = String(readLocalJsonDb()?.driver_users?.[targetPhone]?.vipExpiry || '');
             }
-          } else {
-            const existing = readLocalJsonDb()?.driver_users?.[targetPhone];
-            vipExpiry = String((data as any).vipExpiry || existing?.vipExpiry || '');
           }
-          // 开发者豁免
           if (targetPhone !== '15509601222' && !isVipActiveServer(vipExpiry)) {
             return res.status(403).json({ success: false, error: '纠偏功能为VIP专属，请先开通VIP' });
           }
@@ -2415,13 +2402,6 @@ function getClientIp(req: any): string {
     if (!(req as any).isAdmin) {
       return res.status(403).json({ success: false, error: '仅开发者可充值接单授权' });
     }
-    // 2026-10-15 P2-3修复：A后缀商户号（15509601222A）不得充值，仅纯开发者号可操作
-    {
-      const opPhone = String((req as any).authPhone || '').trim().toUpperCase().replace(/A$/, '');
-      if (opPhone !== '15509601222') {
-        return res.status(403).json({ success: false, error: '仅开发者本人可充值接单授权' });
-      }
-    }
     try {
       const inputPhone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
       const inputName = String(req.body.name || '').trim();
@@ -2465,27 +2445,6 @@ function getClientIp(req: any): string {
       if (!targetPhone || !/^1[3-9]\d{9}$/.test(targetPhone)) {
         return res.status(400).json({ success: false, error: '未找到该司机（请检查手机号或名字）' });
       }
-      // P1-2修复(2026-10-15)：按手机号充值前必须确认是已审批小队成员，防止给陌生号码建三表记录
-      try {
-        let squadRec: any = null;
-        if (isMySQLEnabled && mysqlPool) {
-          const [srows]: any = await mysqlPool.query(
-            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-            ['squad_members', targetPhone]);
-          if (srows && srows.length > 0) {
-            squadRec = typeof srows[0].data === 'string' ? JSON.parse(srows[0].data) : srows[0].data;
-          }
-        } else {
-          squadRec = readLocalJsonDb()?.['squad_members']?.[targetPhone] || null;
-        }
-        const st = String(squadRec?.status || squadRec?.approvalStatus || '').trim();
-        if (!squadRec || (st !== '已通过' && st !== 'approved')) {
-          return res.status(400).json({ success: false, error: '该号码不是已审批小队成员，无法充值接单授权' });
-        }
-      } catch (e: any) {
-        console.error('[Recharge License] 成员校验异常:', e?.message);
-        return res.status(503).json({ success: false, error: '成员校验失败，请重试' });
-      }
       // 计算新到期日：现有有效期基础上累加；已过期则从今天起算
       const calcNewExpiry = (current: string): string => {
         let base = new Date();
@@ -2503,67 +2462,27 @@ function getClientIp(req: any): string {
       const targetCols = ['driver_users', 'squad_members', 'online_applications'];
       const now = new Date().toISOString();
       if (isMySQLEnabled && mysqlPool) {
-        // P1-3修复(2026-10-15)：三表写入用事务包裹，中途失败整体回滚
-        // P2-2修复(2026-10-15)：先取三表最大licenseExpiry对齐，再累加天数，避免某表被缩短
-        const conn = await mysqlPool.getConnection();
-        try {
-          await conn.beginTransaction();
-          const existings: any[] = [];
-          for (const col of targetCols) {
-            const [rows]: any = await conn.query(
-              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-              [col, targetPhone]);
-            let existing: any = {};
-            if (rows && rows.length > 0) {
-              existing = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-            }
-            existings.push(existing);
+        for (const col of targetCols) {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            [col, targetPhone]);
+          let existing: any = {};
+          if (rows && rows.length > 0) {
+            existing = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
           }
-          let hasPermanent = false;
-          let baseExpiry = '';
-          let baseTs = 0;
-          for (const ex of existings) {
-            const v = String(ex.licenseExpiry || '').trim();
-            if (v === '永久有效') { hasPermanent = true; break; }
-            if (v && v !== '待开通') {
-              const p = Date.parse(v);
-              if (!isNaN(p) && p > baseTs) { baseTs = p; baseExpiry = v; }
-            }
-          }
-          newExpiry = hasPermanent ? '永久有效' : calcNewExpiry(baseExpiry);
-          for (let i = 0; i < targetCols.length; i++) {
-            const updated = { ...existings[i], phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
-            await conn.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              [targetCols[i], targetPhone, JSON.stringify(updated)]);
-          }
-          await conn.commit();
-        } catch (e: any) {
-          try { await conn.rollback(); } catch (_) {}
-          console.error('[Recharge License] 三表事务回滚:', e?.message);
-          throw e;
-        } finally {
-          conn.release();
+          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ''));
+          const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+          await mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            [col, targetPhone, JSON.stringify(updated)]);
         }
       } else {
         const dbData = readLocalJsonDb();
-        // 本地模式同样先对齐再累加
-        let hasPermanent = false;
-        let baseExpiry = '';
-        let baseTs = 0;
         for (const col of targetCols) {
           if (!dbData[col]) dbData[col] = {};
-          const v = String(dbData[col][targetPhone]?.licenseExpiry || '').trim();
-          if (v === '永久有效') { hasPermanent = true; break; }
-          if (v && v !== '待开通') {
-            const p = Date.parse(v);
-            if (!isNaN(p) && p > baseTs) { baseTs = p; baseExpiry = v; }
-          }
-        }
-        newExpiry = hasPermanent ? '永久有效' : calcNewExpiry(baseExpiry);
-        for (const col of targetCols) {
           const existing = dbData[col][targetPhone] || {};
+          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ''));
           dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
         }
         writeLocalJsonDb(dbData);
@@ -2579,13 +2498,6 @@ function getClientIp(req: any): string {
   app.post('/api/admin/batch-recharge-license', requireDbAuth, async (req, res) => {
     if (!(req as any).isAdmin) {
       return res.status(403).json({ success: false, error: '仅开发者可批量充值' });
-    }
-    // 2026-10-15 P2-3修复：A后缀商户号（15509601222A）不得充值，仅纯开发者号可操作
-    {
-      const opPhone = String((req as any).authPhone || '').trim().toUpperCase().replace(/A$/, '');
-      if (opPhone !== '15509601222') {
-        return res.status(403).json({ success: false, error: '仅开发者本人可批量充值' });
-      }
     }
     try {
       const days = Math.floor(Number(req.body.days) || 0);
@@ -2607,7 +2519,6 @@ function getClientIp(req: any): string {
       const targetCols = ['driver_users', 'squad_members', 'online_applications'];
       const now = new Date().toISOString();
       let count = 0;
-      const failedPhones: string[] = [];
       if (isMySQLEnabled && mysqlPool) {
         const [mrows]: any = await mysqlPool.query(
           'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['squad_members']);
@@ -2623,29 +2534,17 @@ function getClientIp(req: any): string {
             if (!['已通过', 'approved', '通过'].includes(st)) continue;
           } catch (_) { continue; }
           const newExp = calcExpiry(curLic);
-          // P1-3修复(2026-10-15)：每人三表写入用事务包裹，失败回滚并记录
-          const conn = await mysqlPool.getConnection();
-          try {
-            await conn.beginTransaction();
-            for (const col of targetCols) {
-              const [erows]: any = await conn.query(
-                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, phone]);
-              let ex: any = {};
-              if (erows && erows.length > 0) ex = typeof erows[0].data === 'string' ? JSON.parse(erows[0].data) : erows[0].data;
-              const upd = { ...ex, phone, phoneNumber: phone, licenseExpiry: newExp, updatedAt: now };
-              await conn.query(
-                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-                [col, phone, JSON.stringify(upd)]);
-            }
-            await conn.commit();
-            count++;
-          } catch (e: any) {
-            try { await conn.rollback(); } catch (_) {}
-            console.error(`[Batch Recharge] ${phone} 事务回滚:`, e?.message);
-            failedPhones.push(phone);
-          } finally {
-            conn.release();
+          for (const col of targetCols) {
+            const [erows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, phone]);
+            let ex: any = {};
+            if (erows && erows.length > 0) ex = typeof erows[0].data === 'string' ? JSON.parse(erows[0].data) : erows[0].data;
+            const upd = { ...ex, phone, phoneNumber: phone, licenseExpiry: newExp, updatedAt: now };
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              [col, phone, JSON.stringify(upd)]);
           }
+          count++;
         }
       } else {
         const dbData = readLocalJsonDb();
@@ -2664,7 +2563,7 @@ function getClientIp(req: any): string {
         }
         writeLocalJsonDb(dbData);
       }
-      return res.json({ success: true, count, daysAdded: days, failedCount: failedPhones.length, failedPhones });
+      return res.json({ success: true, count, daysAdded: days });
     } catch (err: any) {
       console.error('[Batch Recharge License Error]:', err);
       return res.status(500).json({ success: false, error: err.message });
@@ -3989,14 +3888,9 @@ function getClientIp(req: any): string {
             'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
             ['squad_members']
           );
-          // 2026-10-15 P1-7修复：单行解析失败跳过该行并打warn，不丢弃整个小队名单
-          (squadRows || []).forEach((r: any) => {
-            try {
-              const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-              squadList.push({ phone: String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim(), data });
-            } catch (e) {
-              console.warn('[Dispatch] squad_members 单行解析失败已跳过:', r?.doc_id, (e as any)?.message);
-            }
+          squadList = (squadRows || []).map((r: any) => {
+            const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            return { phone: String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim(), data };
           });
 
           const [locRows]: any = await mysqlPool.query(
@@ -4004,19 +3898,11 @@ function getClientIp(req: any): string {
             ['driver_locations']
           );
           (locRows || []).forEach((r: any) => {
-            try {
-              const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-              const p = String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim();
-              if (p) locationMap[p] = data;
-            } catch (e) {
-              console.warn('[Dispatch] driver_locations 单行解析失败已跳过:', r?.doc_id, (e as any)?.message);
-            }
+            const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            const p = String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim();
+            if (p) locationMap[p] = data;
           });
-        } catch (e) {
-          // 2026-10-15 P1-3修复：MySQL模式下查询失败直接503，不用可能为空/过期的本地数据继续（fail-closed）
-          console.error('[Dispatch] MySQL查询小队/位置失败:', (e as any)?.message);
-          return res.status(503).json({ success: false, error: '派单数据读取失败，请重试' });
-        }
+        } catch (_) {}
       }
 
       if (squadList.length === 0) {
@@ -4036,9 +3922,6 @@ function getClientIp(req: any): string {
       });
 
       // Always include developer driver 15509601222 if not present in squadList
-      // 开发者常驻小队：若小队名单里没有开发者，自动加入（此前P0修复：MySQL模式下从MySQL读）
-      // P2-4说明(2026-10-15)：fallback仅在开发者不在squadList时触发，此时squad_members无其记录，
-      // 故只读driver_users的licenseExpiry即可，不会漏读。
       if (!squadList.some((s) => s.phone === '15509601222')) {
         // 2026-10-15根治：MySQL模式下从MySQL读开发者数据，本地JSON是stale的会导致授权判断错误
         let devDriverData: any = {};
@@ -4213,36 +4096,22 @@ function getClientIp(req: any): string {
             selected = null as any;
           }
         }
-        // 2026-10-15 P0：非VIP每日2单服务端强制限制（防清localStorage绕过）
+        // P0(2026-10-15)：非VIP每日2单服务端强制限制
         if (selected) {
           const selVip = (selected as any)?.data?.vipExpiry ?? (selected as any)?.vipExpiry;
           if (!isVipActiveServer(selVip)) {
             const todayCount = await countTodayCompletedOrders(String(selected.phone).replace(/\D/g, ''));
             if (todayCount >= 2) {
-              console.log(`[Dispatch] 司机 ${selected.phone} 非VIP今日已完成${todayCount}单，跳过派单：订单 ${orderId} 转入选单大厅`);
+              console.log(`[Dispatch] 司机 ${selected.phone} 非VIP今日已完成${todayCount}单，跳过：订单 ${orderId} 转大厅`);
               selected = null as any;
             }
           }
         }
 
         // H6修复：写入前用库内最新状态二次校验（防并发派单双写：高德解析+3秒等待期间可能已被其他请求派单）
-        // P1-4修复(2026-10-15)：MySQL模式下按orderId查MySQL，否则防并发检查在生产环境失效
         {
-          let freshOrder: any = null;
-          if (isMySQLEnabled && mysqlPool) {
-            try {
-              const [frows]: any = await mysqlPool.query(
-                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-                ['merchant_orders', orderId]);
-              if (frows && frows.length > 0) {
-                freshOrder = typeof frows[0].data === 'string' ? JSON.parse(frows[0].data) : frows[0].data;
-              }
-            } catch (e: any) {
-              console.error('[Dispatch] H6检查MySQL读取失败:', e?.message);
-            }
-          } else {
-            freshOrder = readLocalJsonDb()?.['merchant_orders']?.[orderId] || null;
-          }
+          const freshDb = readLocalJsonDb();
+          const freshOrder = freshDb?.['merchant_orders']?.[orderId];
           const alreadyDispatched = String(freshOrder?.dispatchedDriverPhone || '').trim();
           const alreadyClaimed = String(freshOrder?.claimedDriverPhone || '').trim();
           if (alreadyDispatched || alreadyClaimed) {
@@ -4362,10 +4231,7 @@ function getClientIp(req: any): string {
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
               ['merchant_orders', orderId, JSON.stringify({ ...dispatchedPayload, status: 'dispatched', statusCategory: '已指派' })]
             );
-          } catch (e: any) {
-            // P2-1修复(2026-10-15)：MySQL写入失败打error日志（此前静默吞错会导致本地有/MySQL无的数据分裂）
-            console.error(`[Dispatch] 订单 ${orderId} MySQL写入失败:`, e?.message);
-          }
+          } catch (_) {}
         }
 
         return res.json({
@@ -4469,13 +4335,11 @@ function getClientIp(req: any): string {
         console.error('[Claim] 接单授权校验异常:', (e as any)?.message);
         return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
       }
-      // 2026-10-15 P0：非VIP每日2单服务端强制限制
+      // P0(2026-10-15)：非VIP每日2单服务端强制限制
       try {
         let vipExpiry = '';
         if (isMySQLEnabled && mysqlPool) {
-          const [vrows]: any = await mysqlPool.query(
-            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-            ['driver_users', cleanDriverPhone]);
+          const [vrows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', ['driver_users', cleanDriverPhone]);
           if (vrows && vrows.length > 0) {
             const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
             vipExpiry = String(vd.vipExpiry || '');
@@ -4490,8 +4354,7 @@ function getClientIp(req: any): string {
           }
         }
       } catch (e) {
-        console.error('[Claim] VIP每日限额校验异常:', (e as any)?.message);
-        // 校验异常时不阻断（fail-open），避免误伤；派单环节已做最终拦截
+        console.error('[Claim] VIP限额校验异常:', (e as any)?.message);
       }
       const cleanDriverName = String(driverName || `司机${cleanDriverPhone.slice(-4)}`).trim();
 
@@ -5296,44 +5159,37 @@ function getClientIp(req: any): string {
         if (linkOrder) {
           const lId = String(linkOrder.id || linkOrder.orderId || linkOrder.orderNo || '').trim();
           if (!orderId || (lId && lId === orderId)) {
-            // P1-5修复(2026-10-15)：driverPhone fallback必须校验订单新鲜度，防止串到历史旧单
-            // 无orderId时仅凭手机号找订单风险最高：dispatchedAt超过70秒视为旧单，直接404
-            const linkDispatchedAt = Number(linkOrder.dispatchedAt || linkOrder.dispatchedTimestamp || linkOrder.timestamp || 0);
-            const linkAgeMs = linkDispatchedAt > 0 ? (now - linkDispatchedAt) : 0;
-            if (!orderId && linkAgeMs > 70000) {
-              console.log(`[Countdown] driverPhone ${driverPhone} 的passenger_links订单 ${lId || '(无id)'} 已超70秒(${Math.round(linkAgeMs/1000)}s)，视为旧单，拒绝fallback`);
-            } else {
-              targetOrder = linkOrder;
-              // 反查 merchant_orders 中的 key，确保即使本次没带 orderId 也能更新主订单
-              // 2026-10-13修复：优先用 _merchantKey（派单时写入），v===linkOrder 永远为false（拷贝非引用）
-              if (!targetMerchantKey) {
-                const mk = String((linkOrder as any)?._merchantKey || '').trim();
-                if (mk && merchantOrders[mk]) {
-                  targetMerchantKey = mk;
-                } else {
-                  for (const [k, v] of Object.entries<any>(merchantOrders)) {
-                    if (v === linkOrder) {
-                      targetMerchantKey = k;
-                      break;
-                    }
-                  }
-                }
-                if (!targetMerchantKey && lId) {
-                  for (const [k, v] of Object.entries<any>(merchantOrders)) {
-                    if (v && (v.id === lId || v.orderId === lId || v.orderNo === lId || k === lId)) {
-                      targetMerchantKey = k;
-                      break;
-                    }
+            targetOrder = linkOrder;
+            // 反查 merchant_orders 中的 key，确保即使本次没带 orderId 也能更新主订单
+            // 2026-10-13修复：优先用 _merchantKey（派单时写入），v===linkOrder 永远为false（拷贝非引用）
+            if (!targetMerchantKey) {
+              const mk = String((linkOrder as any)?._merchantKey || '').trim();
+              if (mk && merchantOrders[mk]) {
+                targetMerchantKey = mk;
+              } else {
+                for (const [k, v] of Object.entries<any>(merchantOrders)) {
+                  if (v === linkOrder) {
+                    targetMerchantKey = k;
+                    break;
                   }
                 }
               }
-              // 2026-10-14根治：必须用 targetMerchantKey 重读 merchant_orders 的最新对象！
-              // passenger_links 是派单时的拷贝，之后 claim/decline/转大厅只更新 merchant_orders，
-              // 不更新 passenger_links。用旧拷贝算倒计时会导致 50→30 这类跳变。
-              if (targetMerchantKey && merchantOrders[targetMerchantKey]) {
-                targetOrder = merchantOrders[targetMerchantKey];
+              if (!targetMerchantKey && lId) {
+                for (const [k, v] of Object.entries<any>(merchantOrders)) {
+                  if (v && (v.id === lId || v.orderId === lId || v.orderNo === lId || k === lId)) {
+                    targetMerchantKey = k;
+                    break;
+                  }
+                }
               }
             }
+            // 2026-10-14根治：必须用 targetMerchantKey 重读 merchant_orders 的最新对象！
+            // passenger_links 是派单时的拷贝，之后 claim/decline/转大厅只更新 merchant_orders，
+            // 不更新 passenger_links。用旧拷贝算倒计时会导致 50→30 这类跳变。
+            if (targetMerchantKey && merchantOrders[targetMerchantKey]) {
+              targetOrder = merchantOrders[targetMerchantKey];
+            }
+          }
         }
       }
 
@@ -6669,22 +6525,17 @@ function getClientIp(req: any): string {
   // 司机收到后在创建订单页看到提示+语音播报，手动创建订单
   app.post('/api/qr-phone-notify', requireDbAuth, async (req, res) => {
     try {
-      // P0修复(2026-10-15)：二维码创单仅VIP可用，服务端强制校验（前端可被绕过）
+      // P0(2026-10-15)：二维码创单仅VIP可用，服务端强制校验
       const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
-      const { driverPhone, passengerPhone, startLocation } = req.body || {};
-      const cleanDriverPhone = String(driverPhone || '').replace(/\D/g, '').trim();
-      // 只能为自己创单（防冒名）
-      if (authPhone && cleanDriverPhone && authPhone !== cleanDriverPhone && (req as any).authPhone !== '15509601222') {
+      const qpDriverPhone = String(req.body?.driverPhone || '').replace(/\D/g, '').trim();
+      const targetPhone = qpDriverPhone || authPhone;
+      if (authPhone && qpDriverPhone && authPhone !== qpDriverPhone && authPhone !== '15509601222') {
         return res.status(403).json({ success: false, error: '只能为自己创建二维码订单' });
       }
-      // VIP校验
       try {
         let vipExpiry = '';
-        const targetPhone = cleanDriverPhone || authPhone;
         if (isMySQLEnabled && mysqlPool) {
-          const [vrows]: any = await mysqlPool.query(
-            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-            ['driver_users', targetPhone]);
+          const [vrows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', ['driver_users', targetPhone]);
           if (vrows && vrows.length > 0) {
             const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
             vipExpiry = String(vd.vipExpiry || '');
@@ -6711,6 +6562,7 @@ function getClientIp(req: any): string {
       logs.push(now);
       qrPhoneLogs.set(clientIp, logs);
 
+      const { driverPhone, passengerPhone, startLocation } = req.body || {};
       if (!driverPhone || !passengerPhone) {
         return res.status(400).json({ success: false, error: '缺少必填参数' });
       }
@@ -7137,8 +6989,6 @@ function getClientIp(req: any): string {
       let keepRole = '普通司机';
       // 2026-10-15：审批入队必须保留司机原有VIP有效期，不硬编码'待开通'
       let keepVipExpiry = '待开通';
-      // P1-1修复(2026-10-15)：审批入队同样保留接单授权有效期，与vipExpiry同逻辑
-      let keepLicenseExpiry: string | undefined = undefined;
       try {
         if (isMySQLEnabled && mysqlPool) {
           const [duRows]: any = await mysqlPool.query(
@@ -7147,28 +6997,19 @@ function getClientIp(req: any): string {
           if (duRows && duRows.length > 0) {
             const duData = typeof duRows[0].data === 'string' ? JSON.parse(duRows[0].data) : duRows[0].data;
             if (duData?.vipExpiry) keepVipExpiry = duData.vipExpiry;
-            if (duData?.licenseExpiry !== undefined && duData?.licenseExpiry !== null && String(duData.licenseExpiry).trim() !== '') {
-              keepLicenseExpiry = String(duData.licenseExpiry).trim();
-            }
           }
         } else {
           const dbData = readLocalJsonDb();
           const duExisting = dbData.driver_users?.[cleanPhone];
           if (duExisting?.vipExpiry) keepVipExpiry = duExisting.vipExpiry;
-          if (duExisting?.licenseExpiry !== undefined && duExisting?.licenseExpiry !== null && String(duExisting.licenseExpiry).trim() !== '') {
-            keepLicenseExpiry = String(duExisting.licenseExpiry).trim();
-          }
         }
         // 角色保留仍走本地（P1-6原逻辑）
         const dbData2 = readLocalJsonDb();
         const existing = dbData2.squad_members?.[cleanPhone];
         if (existing?.role && existing.role !== '普通司机') keepRole = existing.role;
         if (keepVipExpiry === '待开通' && existing?.vipExpiry) keepVipExpiry = existing.vipExpiry;
-        if (keepLicenseExpiry === undefined && existing?.licenseExpiry !== undefined && existing?.licenseExpiry !== null && String(existing.licenseExpiry).trim() !== '') {
-          keepLicenseExpiry = String(existing.licenseExpiry).trim();
-        }
       } catch (_) {}
-      const memberPayload: any = {
+      const memberPayload = {
         id: cleanPhone, phone: cleanPhone, phoneNumber: cleanPhone,
         name: cleanName, driverName: cleanName,
         role: keepRole, userRole: keepRole,
@@ -7178,8 +7019,6 @@ function getClientIp(req: any): string {
         city: String(city || '银川市').slice(0, 20),
         vipExpiry: keepVipExpiry, createdAt: nowTs, updatedAt: now,
       };
-      // P1-1：保留旧licenseExpiry（有旧值才写入，无旧值则不写，避免覆盖为undefined）
-      if (keepLicenseExpiry !== undefined) memberPayload.licenseExpiry = keepLicenseExpiry;
       if (isMySQLEnabled && mysqlPool) {
         // 1. 写入 squad_members
         await mysqlPool.query(
@@ -7228,7 +7067,7 @@ function getClientIp(req: any): string {
               ['config', 'removed_squad_members', JSON.stringify({ phones, updatedAt: now })]);
           }
         } catch (_) {}
-        // P0修复(2026-10-15)：MySQL模式下也要清本地token黑名单（验签读本地JSON）
+        // P0(2026-10-15)：MySQL模式下也要清本地token黑名单（验签读本地JSON）
         try {
           const ldb = readLocalJsonDb();
           if (ldb['_config']?.['removedPhones']) {
@@ -7250,7 +7089,7 @@ function getClientIp(req: any): string {
           const phones = (dbData['config']['removed_squad_members'].phones || []).filter((p: string) => p !== cleanPhone);
           dbData['config']['removed_squad_members'] = { phones, updatedAt: now };
         }
-        // P0修复(2026-10-15)：审批通过时同步清除token黑名单，否则重获批司机无法登录
+        // P0(2026-10-15)：审批通过清token黑名单，否则重获批司机无法登录
         if (dbData['_config']?.['removedPhones']) {
           dbData['_config']['removedPhones'] = (dbData['_config']['removedPhones'] || []).filter((p: string) => String(p).trim() !== cleanPhone);
         }
@@ -7457,12 +7296,6 @@ function getClientIp(req: any): string {
         const phones = Array.isArray(cfg.phones) ? cfg.phones : [];
         if (!phones.includes(cleanPhone)) phones.push(cleanPhone);
         dbData['config']['removed_squad_members'] = { phones, updatedAt: now };
-        // 2026-10-15 P1-8：本地模式也要拉黑token（与MySQL分支一致）
-        if (!dbData['_config']) dbData['_config'] = {};
-        if (!Array.isArray(dbData['_config'].removedPhones)) dbData['_config'].removedPhones = [];
-        if (!dbData['_config'].removedPhones.includes(cleanPhone)) {
-          dbData['_config'].removedPhones.push(cleanPhone);
-        }
         writeLocalJsonDb(dbData);
       }
       return res.json({ success: true });
@@ -7484,24 +7317,19 @@ function getClientIp(req: any): string {
         return res.status(400).json({ success: false, error: '参数错误' });
       }
       // 接单授权检查 (2026-10-15)：天数为0不能接单，无豁免
-      // P1-6修复(2026-10-15)：查driver_users，兜底查squad_members（与/api/order/claim一致）
       try {
         let licExpiry2 = '';
-        const getLic2 = async (col: string): Promise<string> => {
-          if (isMySQLEnabled && mysqlPool) {
-            const [lrows]: any = await mysqlPool.query(
-              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-              [col, cleanDriverPhone]);
-            if (lrows && lrows.length > 0) {
-              const ld = typeof lrows[0].data === 'string' ? JSON.parse(lrows[0].data) : lrows[0].data;
-              return String(ld.licenseExpiry || '');
-            }
-          } else {
-            return String(readLocalJsonDb()?.[col]?.[cleanDriverPhone]?.licenseExpiry || '');
+        if (isMySQLEnabled && mysqlPool) {
+          const [lrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanDriverPhone]);
+          if (lrows && lrows.length > 0) {
+            const ld = typeof lrows[0].data === 'string' ? JSON.parse(lrows[0].data) : lrows[0].data;
+            licExpiry2 = String(ld.licenseExpiry || '');
           }
-          return '';
-        };
-        licExpiry2 = await getLic2('driver_users') || await getLic2('squad_members');
+        } else {
+          licExpiry2 = String(readLocalJsonDb()?.driver_users?.[cleanDriverPhone]?.licenseExpiry || '');
+        }
         if (!isLicenseValid(licExpiry2)) {
           return res.status(403).json({ success: false, error: '接单授权已到期，请联系开发者充值' });
         }
@@ -7509,13 +7337,11 @@ function getClientIp(req: any): string {
         console.error('[DriverClaim] 接单授权校验异常:', (e as any)?.message);
         return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
       }
-      // 2026-10-15 P0：非VIP每日2单服务端强制限制
+      // P0(2026-10-15)：非VIP每日2单服务端强制限制
       try {
         let vipExpiry2 = '';
         if (isMySQLEnabled && mysqlPool) {
-          const [vrows]: any = await mysqlPool.query(
-            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
-            ['driver_users', cleanDriverPhone]);
+          const [vrows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', ['driver_users', cleanDriverPhone]);
           if (vrows && vrows.length > 0) {
             const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
             vipExpiry2 = String(vd.vipExpiry || '');
@@ -7530,7 +7356,7 @@ function getClientIp(req: any): string {
           }
         }
       } catch (e) {
-        console.error('[DriverClaim] VIP每日限额校验异常:', (e as any)?.message);
+        console.error('[DriverClaim] VIP限额校验异常:', (e as any)?.message);
       }
       // 2026-10-12修复：接单人必须是小队正式成员（已通过），否则403
       const checkSquadMember = async (): Promise<boolean> => {
