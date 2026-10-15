@@ -4907,11 +4907,24 @@ function getClientIp(req: any): string {
               'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
               ['active_orders', assignedDriver, cancelNoticeStr]
             );
-            if (dbData['driver_users'] && dbData['driver_users'][assignedDriver]) {
-              await mysqlPool.query(
-                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-                ['driver_users', assignedDriver, JSON.stringify(dbData['driver_users'][assignedDriver])]
-              );
+            // P1(2026-10-15)：cancel后三表busy状态重置，不依赖本地dbData
+            for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
+              try {
+                const [drows]: any = await mysqlPool.query(
+                  'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                  [col, assignedDriver]
+                );
+                if (drows && drows.length > 0) {
+                  const dd = typeof drows[0].data === 'string' ? JSON.parse(drows[0].data) : drows[0].data;
+                  dd.isBusy = false;
+                  dd.status = 'idle';
+                  dd.lastStatusUpdateTime = Date.now();
+                  await mysqlPool.query(
+                    'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
+                    [JSON.stringify(dd), col, assignedDriver]
+                  );
+                }
+              } catch (_) {}
             }
           }
         } catch (_) {}
@@ -4974,7 +4987,19 @@ function getClientIp(req: any): string {
           if (remainingSec <= 0) {
             try {
               const freshDbData = readLocalJsonDb();
-              const freshOrder = freshDbData['merchant_orders']?.[orderId] || order;
+              let freshOrder: any = freshDbData['merchant_orders']?.[orderId] || order;
+              // P1(2026-10-15)：MySQL模式下从MySQL重读，防用10秒前快照误判
+              if (isMySQLEnabled && mysqlPool) {
+                try {
+                  const [frows]: any = await mysqlPool.query(
+                    'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                    ['merchant_orders', orderId]
+                  );
+                  if (frows && frows.length > 0) {
+                    freshOrder = typeof frows[0].data === 'string' ? JSON.parse(frows[0].data) : frows[0].data;
+                  }
+                } catch (_) {}
+              }
               // P0修复：重读后必须检查订单状态！如果已被接单/服务中/完成/取消/已在大厅，直接跳过，绝不能搬进大厅。
               // 否则10秒快照是dispatched、但重读时已claimed的订单会被错误转大厅，导致订单丢失。
               const freshStatus = String(freshOrder.status || '');

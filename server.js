@@ -1071,7 +1071,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "89347c6b";
+  const SERVER_VERSION = "b751f72f";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -3855,7 +3855,19 @@ async function startServer() {
         return res.status(403).json({ success: false, error: "\u274C \u6743\u9650\u4E0D\u8DB3\uFF1A\u53EA\u6709\u5C0F\u961F\u5185\u5BA1\u6279\u901A\u8FC7\u7684\u6B63\u5F0F\u53F8\u673A\u624D\u80FD\u63A5\u6536\u5546\u6237\u4EE3\u53EB\u5355\u4E0E\u62A5\u5355\u8F6C\u5355\uFF01\u975E\u5C0F\u961F\u6210\u5458\u65E0\u63A5\u5355\u6743\u9650\u3002" });
       }
       if (!dbData["merchant_orders"]) dbData["merchant_orders"] = {};
-      const targetOrder = dbData["merchant_orders"][cleanOrderId];
+      let targetOrder = dbData["merchant_orders"][cleanOrderId];
+      if (isMySQLEnabled && mysqlPool && !targetOrder) {
+        try {
+          const [crows] = await mysqlPool.query(
+            "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+            ["merchant_orders", cleanOrderId]
+          );
+          if (crows && crows.length > 0) {
+            targetOrder = typeof crows[0].data === "string" ? JSON.parse(crows[0].data) : crows[0].data;
+          }
+        } catch (_) {
+        }
+      }
       if (!targetOrder) {
         return res.status(404).json({ success: false, error: "\u8BA2\u5355\u4E0D\u5B58\u5728" });
       }
@@ -3958,7 +3970,19 @@ async function startServer() {
       }
       const dbData = readLocalJsonDb();
       if (!dbData["merchant_orders"]) dbData["merchant_orders"] = {};
-      const targetOrder = dbData["merchant_orders"][cleanOrderId];
+      let targetOrder = dbData["merchant_orders"][cleanOrderId];
+      if (isMySQLEnabled && mysqlPool && !targetOrder) {
+        try {
+          const [drows] = await mysqlPool.query(
+            "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+            ["merchant_orders", cleanOrderId]
+          );
+          if (drows && drows.length > 0) {
+            targetOrder = typeof drows[0].data === "string" ? JSON.parse(drows[0].data) : drows[0].data;
+          }
+        } catch (_) {
+        }
+      }
       if (targetOrder) {
         const dispatchedTo = String(targetOrder.dispatchedDriverPhone || "").replace(/\D/g, "").trim();
         const tStatus = String(targetOrder.status || "");
@@ -6683,7 +6707,6 @@ async function startServer() {
     try {
       const {
         orderId,
-        reporterPhone,
         passengerPhone,
         pickupName,
         pickupDetail,
@@ -6691,7 +6714,11 @@ async function startServer() {
         pickupLng,
         paymentQrCode
       } = req.body || {};
-      const cleanReporter = String(reporterPhone || "").replace(/\D/g, "").trim();
+      const cleanReporter = String(req.authPhone || "").replace(/\D/g, "").trim();
+      if (!/^1[3-9]\d{9}$/.test(cleanReporter)) {
+        return res.status(401).json({ success: false, error: "\u8EAB\u4EFD\u9A8C\u8BC1\u5931\u8D25" });
+      }
+      const cleanOrderId = `RT${Date.now()}${Math.floor(Math.random() * 1e3).toString().padStart(3, "0")}`;
       try {
         let repLic = "";
         if (isMySQLEnabled && mysqlPool) {
@@ -6714,7 +6741,6 @@ async function startServer() {
         return res.status(503).json({ success: false, error: "\u6388\u6743\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u8BD5" });
       }
       const cleanPassenger = String(passengerPhone || "").replace(/\D/g, "").trim();
-      const cleanOrderId = String(orderId || `rt_${Date.now()}`).trim();
       if (!cleanReporter || !/^1[3-9]\d{9}$/.test(cleanPassenger)) {
         return res.status(400).json({ success: false, error: "\u53C2\u6570\u9519\u8BEF" });
       }
