@@ -27,7 +27,7 @@ interface IncomingOrderOverlayProps {
   userPhone?: string;
   driverCoords?: { lat: number; lng: number } | null;
   onlineBillingRules?: BillingRules;
-  onAccept: (trip: TripState) => void;
+  onAccept: (trip: TripState, meta?: { claimed?: boolean; order?: any }) => void;
   // P2(2026-10-16第三遍审计)：onDecline 支持 reason 透传（'user'|'timeout'|'no_heartbeat'），
   // 超时/未上屏时传 'timeout'，App 端只在用户主动拒单时写永久屏蔽名单。
   onDecline: (reason?: 'user' | 'timeout' | 'no_heartbeat') => void;
@@ -116,6 +116,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 解决倒计时乱跳（0→33）的根本原因
   // 2026-10-13更新：初始值改为60（配合开屏即显60秒优化）
   const prevOrderIdRef = React.useRef<string>('');
+  // 2026-10-17新增：服务端同步"首次接受"标记。同一订单的服务端秒数严格单调不增，
+  // 首次同步无条件接受，之后阻断上跳与单次下跳>3秒的脏数据（修复 5→60→4）。
+  const syncedOnceRef = React.useRef<boolean>(false);
   // P1-6修复(2026-10-13)：onDecline幂等，多路径(轮询/取消监听/手动)只执行一次
   const declinedRef = React.useRef<boolean>(false);
   // P1(2026-10-15)：API成功返回后永久忽略prop的serverCountdown（防旧单prop致33→59跳变）
@@ -136,8 +139,12 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   useEffect(() => {
     if (targetOrderId && targetOrderId !== prevOrderIdRef.current) {
       prevOrderIdRef.current = targetOrderId;
-      setTimeLeft(60);
+      // 2026-10-17根治：订单切换时不再 setTimeLeft(60)。
+      // 旧逻辑在 ID 抖动/组件重挂载时会闪出假 60（5→60→4 的 60 即来自此处），
+      // 随后服务端同步回真实值。新逻辑：保留上次显示值，新订单的首次服务端同步
+      // 无条件接受（syncedOnceRef），1 秒内即纠正为真值，无假 60 闪烁。
       lastServerSyncRef.current = Date.now();
+      syncedOnceRef.current = false; // 新订单：下次服务端同步无条件接受
       // P1-8修复(2026-10-13)：订单切换时重置接单锁和decline幂等，否则新订单按钮被旧锁卡死
       isAcceptingRef.current = false;
       setIsAccepting(false);
@@ -199,6 +206,15 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     const hbTimer = setInterval(sendHeartbeat, 2000); // 每2秒一次
     return () => clearInterval(hbTimer);
   }, [targetOrderId]);
+  // 2026-10-17诊断：挂载/卸载日志，用于确认 5→60→4 是否由组件重挂载引起。
+  // 若真机复现时看到"挂载"日志出现在 5→60 的瞬间，即可定论。
+  useEffect(() => {
+    console.log(`[IncomingOverlay] 挂载 order=${targetOrderId} t=${Date.now()}`);
+    return () => {
+      console.log(`[IncomingOverlay] 卸载 order=${targetOrderId} t=${Date.now()}`);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     let isMounted = true;
     const baseUrl = getBaseApiUrl();
@@ -247,29 +263,43 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             }
 
             if (typeof data.serverCountdown === 'number') {
-              // 2026-10-15修复：防跳变保护。倒计时正常每秒减1，允许服务端合法重置（上跳如33→60），
-              // 但阻断异常下跳（如56→33这种1秒内掉23秒的脏数据）。下跳超过3秒视为异常，保留本地值。
+              // 2026-10-17根治：同一订单的服务端秒数严格单调不增
+              // （dispatchExpiresAt 在派单后永不重写，倒计时接口只做 ceil((exp-now)/1000)）。
+              // 首次同步无条件接受；之后阻断上跳（>1秒，兼容本地平滑0.5秒漂移）与
+              // 单次下跳>3秒的脏数据。旧逻辑在 curLeft===60 时放行 56 秒下跳，
+              // 正是 5→60→4 的直接通道，此处一并封堵。
               const v = Math.max(0, Math.min(60, data.serverCountdown));
-              const curLeft = timeLeftRef.current;
-              const drop = curLeft - v;
-              // 允许：上跳（重置）、正常递减（0-2秒）、初始同步（curLeft为0或60）
-              // 阻断：异常下跳（1秒内掉超过3秒）
-              const isAbnormalDrop = curLeft > 0 && curLeft < 60 && drop > 3;
-              if (!isAbnormalDrop) {
+              let accepted = false;
+              if (!syncedOnceRef.current) {
+                syncedOnceRef.current = true;
                 setTimeLeftSync(v);
-                // 双轨：记录服务端同步时间
                 lastServerSyncRef.current = Date.now();
-                // 2026-10-15 P1-1：拒单决策也纳入防跳变校验，脏数据不触发拒单
-                if (v <= 0 && !isAcceptingRef.current) {
-                  const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
-                  if (orderAgeMs > 25000) {
-                    // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
-                    setTimeout(() => safeDecline('timeout'), 0);
-                  }
-                }
+                accepted = true;
+                console.log(`[Countdown] 订单${targetOrderId}首次同步服务端秒数=${v}`);
               } else {
-                // 异常下跳：记录日志但保留本地平滑值，不采用脏数据
-                console.warn(`[Countdown] 阻断异常下跳: 本地${curLeft} → 服务端${v}，保留本地值`);
+                const curLeft = timeLeftRef.current;
+                const drop = curLeft - v;
+                const rise = v - curLeft;
+                if (rise > 1) {
+                  // 异常上跳：服务端永不回拨，保留本地值
+                  console.warn(`[Countdown] 阻断异常上跳: 本地${curLeft} → 服务端${v}，保留本地值`);
+                } else if (drop > 3) {
+                  // 异常下跳：1秒内掉超过3秒视为脏数据，保留本地平滑值
+                  console.warn(`[Countdown] 阻断异常下跳: 本地${curLeft} → 服务端${v}，保留本地值`);
+                } else {
+                  setTimeLeftSync(v);
+                  // 双轨：记录服务端同步时间
+                  lastServerSyncRef.current = Date.now();
+                  accepted = true;
+                }
+              }
+              // 2026-10-15 P1-1：拒单决策只用被接受的服务端值，脏数据不触发拒单
+              if (accepted && v <= 0 && !isAcceptingRef.current) {
+                const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                if (orderAgeMs > 25000) {
+                  // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
+                  setTimeout(() => safeDecline('timeout'), 0);
+                }
               }
             }
           }
@@ -630,6 +660,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       // Atomic claim call to server to lock in 'claimed' / 'serving' status and avoid 30s timeout reset
       // P0修复(2026-10-13)：必须await等待服务端确认！此前fire-and-forget直接onAccept，
       // 若服务端返回409(已被他人抢走)用户仍会进服务页，形成幽灵单。
+      // 2026-10-17：claim 响应中的订单体提到外层，供单次权威调用时透传给 App。
+      let claimOrder: any = undefined;
       try {
         const baseUrl = getBaseApiUrl();
         const claimResp = await fetch(`${baseUrl}/api/order/claim`, {
@@ -644,6 +676,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           })
         });
         const claimData = await claimResp.json().catch(() => ({}));
+        claimOrder = (claimData as any)?.order;
         if (!claimResp.ok || claimData.success === false) {
           // 接单失败：已被抢/订单不存在/网络错误，绝不进服务页
           const msg = String(claimData.message || claimData.error || '');
@@ -655,6 +688,19 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             const licMsg = msg || '接单授权已到期，请联系开发者充值接单授权';
             speakText(licMsg);
             alert('⚠️ ' + licMsg);
+          } else if (claimData.inHall === true) {
+            // 2026-10-17：订单已超时进入大厅。只静默关弹窗，绝不调safeDecline()
+            // （safeDecline会触发to-hall清空claimedDriverPhone，摧毁他人合法接单）
+            speakText('该订单已进入选单大厅，可前往抢单');
+            isAcceptingRef.current = false;
+            silentDismiss();
+            return;
+          } else if (claimData.expired === true) {
+            // 2026-10-17：请求到达服务端时已过 dispatchExpiresAt，确属超时
+            speakText('接单超时');
+            isAcceptingRef.current = false;
+            safeDecline('timeout');
+            return;
           } else if (claimResp.status === 409 || /已被|已接单/.test(msg)) {
             // P0(2026-10-16)：409=已被他人接走，只静默关弹窗，绝不调safeDecline()
             // （safeDecline会触发to-hall清空claimedDriverPhone，摧毁他人合法接单）
@@ -672,14 +718,44 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           return;
         }
       } catch (_) {
-        // 网络异常：不进服务页，避免幽灵单
-        speakText('网络异常，接单失败');
+        // 2026-10-17根治：网络异常时不再直接释放锁返回。
+        // 旧逻辑：锁解了、弹窗还开着，下一秒倒计时轮询就误报"接单超时"（反向幽灵单）。
+        // 新逻辑：保持接单锁（阻断超时误判），先向服务端核实订单真实状态再决策：
+        // 已是本人接单→按成功进服务页；已进大厅→静默关弹窗；仍在派单→解锁提示重试。
+        let verified: any = null;
+        try {
+          const vResp = await fetch(
+            `${getBaseApiUrl()}/api/dispatch/countdown?orderId=${encodeURIComponent(rawOrderId)}&driverPhone=${encodeURIComponent(cleanUserPhone)}&_t=${Date.now()}`,
+            { cache: 'no-store' }
+          );
+          verified = await vResp.json().catch(() => null);
+        } catch (_) { /* 核实失败则走重试路径 */ }
+        const vStatus = String(verified?.status || '');
+        const claimedByMe = vStatus === 'claimed' &&
+          String(verified?.dispatchedDriverPhone || '').replace(/\D/g, '').trim() === cleanUserPhone;
+        if (claimedByMe) {
+          // claim 实际已成功，只是响应丢了：按成功处理，直接进服务页
+          speakText('接单成功，请前往接驾地点');
+          onAccept(trip, { claimed: true });
+          return;
+        }
+        if (verified && verified.inHall === true) {
+          speakText('该订单已进入选单大厅，可前往抢单');
+          isAcceptingRef.current = false;
+          silentDismiss();
+          return;
+        }
+        // 仍在派单（或核实失败）：解锁，提示用户重试；倒计时继续正常走
+        speakText('网络异常，接单失败，请重试');
         isAcceptingRef.current = false;
+        setIsAccepting(false);
         return;
       }
 
       speakText('接单成功，请前往接驾地点'); // P1-4:移到服务端确认成功后
-      onAccept(trip);
+      // 2026-10-17根治：单次权威调用。/api/order/claim 已是原子接单成功，
+      // 此处带 claimed 标记，App 端不再发第二次 driver-claim（大厅抢单仍走 driver-claim）。
+      onAccept(trip, { claimed: true, order: claimOrder });
     } catch (err) {
       console.error('Confirm order execution error:', err);
       // P1-3修复(2026-10-13)：异常时绝不伪造接单，改为拒单+报错，避免幽灵行程

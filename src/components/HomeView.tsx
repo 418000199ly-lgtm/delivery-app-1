@@ -2325,9 +2325,10 @@ export default function HomeView({
       const baseUrl = getBaseApiUrl();
 
       // 0. 拉取云端最新被删除小队成员名单
+      // 2026-10-17：补 X-Auth-Token，否则裸请求 401（Nginx 日志已证实）
       let cloudRemovedPhones: string[] = [];
       try {
-        const resDirect = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+        const resDirect = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (resDirect.ok) {
           const json = await resDirect.json();
           const p = json?.data?.phones || json?.phones;
@@ -2339,7 +2340,7 @@ export default function HomeView({
 
       if (cloudRemovedPhones.length === 0) {
         try {
-          const resRemoved = await fetch(`${baseUrl}/api/db/list?col=config&_t=${Date.now()}`, { cache: 'no-store' });
+          const resRemoved = await fetch(`${baseUrl}/api/db/list?col=config&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
           if (resRemoved.ok) {
             const raw = await resRemoved.json();
             const list = Array.isArray(raw) ? raw : (raw?.docs || raw?.list || raw?.data || []);
@@ -2377,7 +2378,7 @@ export default function HomeView({
 
       const currentPhone = (userPhone || applyPhone || (settings as any)?.phone || '').trim();
 
-      const resMembers = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+      const resMembers = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
       let apiMembers: any[] = [];
       if (resMembers.ok) {
         const data = await resMembers.json();
@@ -2392,7 +2393,7 @@ export default function HomeView({
         }
       }
 
-      const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store' });
+      const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
       let apiApps: any[] = [];
       if (resApps.ok) {
         const data = await resApps.json();

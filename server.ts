@@ -4461,15 +4461,46 @@ function getClientIp(req: any): string {
       const candidates: Array<{ phone: string; name: string; distKm: number; data: any }> = [];
       const removedPhonesArr: string[] = dbData.config?.['removed_squad_members']?.phones || [];
 
+      // P0(2026-10-17诊断·完整版)：记录每个候选司机的淘汰原因，定位派单失败根因。
+      // 淘汰原因全量写 Node 日志；API 响应仅在开发者(isAdmin)调用时返回脱敏摘要，
+      // 普通用户不返回任何诊断信息，不泄露他人手机号。
+      const diagOrderId = orderId;
+      const diagFiltered: Array<{ phone: string; reason: string }> = [];
+      const diagPush = (rawPhone: any, reason: string) => {
+        try {
+          diagFiltered.push({ phone: String(rawPhone || '').replace(/\D/g, '').trim(), reason });
+        } catch (_) {}
+      };
+      const maskPhone = (p: string) => {
+        const s = String(p || '');
+        return s.length >= 7 ? `${s.slice(0, 3)}****${s.slice(-4)}` : (s || '未知');
+      };
+      // 开发者关键字段快照（以 locationMap 为准：MySQL 优先于本地 JSON，避免 stale 误导）
+      try {
+        const diagRec = squadList.find(({ phone }: any) => String(phone).replace(/\D/g, '').trim() === '15509601222');
+        if (diagRec) {
+          const d: any = diagRec.data || {};
+          const loc: any = locationMap['15509601222'] || {};
+          console.log(`[DispatchDiag] 订单 ${diagOrderId} | 15509601222: status=${d.status || d.approvalStatus}, license=${d.licenseExpiry}, role=${d.role}, isOnline=${loc.isOnline}, isBusy=${loc.isBusy}, gpsValid=${(loc as any).gpsValid}, lat=${loc.lat}, lng=${loc.lng}`);
+        } else {
+          console.log(`[DispatchDiag] 订单 ${diagOrderId} | 15509601222: 不在 squadList 中! squadList长度=${squadList.length}`);
+        }
+      } catch (_) {}
+
       // Check if order already has an actively dispatched driver that is valid
       const existingDispatchedPhone = String(orderData.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
 
       squadList.forEach(({ phone, data }) => {
-        if (!phone || !data || data.isBanned) return;
-        const cleanPhone = String(phone).replace(/\D/g, '').trim();
-        
+        const cleanPhone0 = String(phone || '').replace(/\D/g, '').trim();
+        if (!phone || !data || (data as any).isBanned) {
+          diagPush(cleanPhone0, `无phone/data或被禁用(isBanned=${Boolean((data as any)?.isBanned)})`);
+          return;
+        }
+        const cleanPhone = cleanPhone0;
+
         // 0. Exclude removed drivers or generic driver placeholders
         if (cleanPhone !== '15509601222' && (removedPhonesArr.includes(cleanPhone) || isGenericDriverName(data.driverName || data.name, cleanPhone))) {
+          diagPush(cleanPhone, removedPhonesArr.includes(cleanPhone) ? '在移除名单中' : '占位司机名');
           return;
         }
         const cleanReporter = reporterPhone ? String(reporterPhone).replace(/\D/g, '').trim() : '';
@@ -4488,6 +4519,7 @@ function getClientIp(req: any): string {
         // For merchant valet orders (商户代叫), the merchant is ordering for a guest, so online squad drivers (including 15509601222) can receive it
         if (isTransferOrder) {
           if (cleanPhone && (cleanPhone === cleanReporter || cleanPhone === cleanExclude)) {
+            diagPush(cleanPhone, '报单转单排除本人');
             return;
           }
         }
@@ -4496,12 +4528,14 @@ function getClientIp(req: any): string {
         // 2026-10-12修复：必须明确已通过，缺失状态不再默认通过（铁律）
         const st = String(data.status || data.approvalStatus || '').trim();
         if (!['已通过', 'approved', '通过'].includes(st)) {
+          diagPush(cleanPhone, `审批未通过(status=${st || '空'})`);
           return;
         }
 
         // 2.5 接单授权检查 (2026-10-15)：天数为0时不派单，无豁免（含开发者本人）
         // licenseExpiry 存在 squad_members 的 data 里
         if (!isLicenseValid(data.licenseExpiry)) {
+          diagPush(cleanPhone, `接单授权无效(licenseExpiry=${data.licenseExpiry || '空'})`);
           return;
         }
 
@@ -4509,11 +4543,13 @@ function getClientIp(req: any): string {
         if (cleanPhone !== '15509601222') {
           const role = String(data.role || data.userRole || data.approvedRole || '').trim();
           if ((role.includes('商户') || role.includes('商家')) && !role.includes('司机') && !role.includes('管理')) {
+            diagPush(cleanPhone, `纯商户角色(${role || '空'})`);
             return;
           }
           const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
           const hasAllowedRole = allowedRoles.some((r) => role.includes(r)) || role === '';
           if (!hasAllowedRole) {
+            diagPush(cleanPhone, `角色不合法(${role || '空'})`);
             return;
           }
         }
@@ -4522,15 +4558,22 @@ function getClientIp(req: any): string {
         // 2026-10-12修复：必须明确 isOnline === true，字符串'false'不再算在线；恢复忙碌检查
         const loc = locationMap[cleanPhone] || {};
         const isOnline = loc.isOnline === true || loc.isOnline === 'true' || (cleanPhone === '15509601222' && loc.isOnline !== false);
-        if (!isOnline) return;
+        if (!isOnline) {
+          diagPush(cleanPhone, `未上线(isOnline=${loc.isOnline})`);
+          return;
+        }
 
         // 2026-10-12修复：忙碌司机不派单（行程中）
         const isBusy = loc.isBusy === true || loc.isBusy === "true" || loc.isBusy === 1;
-        if (isBusy) return;
+        if (isBusy) {
+          diagPush(cleanPhone, '忙碌中');
+          return;
+        }
 
         // H-G2修复：明确标记无GPS的上线司机直接跳过（滑动上线即上报功能：无GPS时只传时间戳不传坐标，
         // 旧坐标残留+新鲜时间戳会导致按几小时前位置误派单）。gpsValid 为 undefined 的老数据按有GPS兼容处理。
         if ((loc as any).gpsValid === false) {
+          diagPush(cleanPhone, 'GPS无效标记(gpsValid=false)');
           return;
         }
 
@@ -4539,6 +4582,7 @@ function getClientIp(req: any): string {
 
         // BUG4修复：位置无效的司机直接跳过，不参与就近派单（之前静默用市中心导致误派）
         if (isNaN(dLat) || isNaN(dLng) || dLat === 0 || dLng === 0) {
+          diagPush(cleanPhone, `坐标无效(lat=${loc.lat},lng=${loc.lng})`);
           return;
         }
 
@@ -4560,8 +4604,26 @@ function getClientIp(req: any): string {
             distKm,
             data
           });
+        } else {
+          diagPush(cleanPhone, `距离${distKm.toFixed(2)}km超${radiusKm}km半径`);
         }
       });
+
+      // 诊断汇总：写 Node 日志（含规范化订单ID）
+      try {
+        if (diagFiltered.length > 0) {
+          const sum = diagFiltered.map(r => `${maskPhone(r.phone)}[${r.reason}]`).join('；');
+          console.log(`[DispatchDiag] 订单 ${diagOrderId} | 淘汰${diagFiltered.length}人: ${sum}`);
+        }
+        const candSum = candidates.map(c => `${maskPhone(c.phone)}(${Number(c.distKm).toFixed(2)}km)`).join('、');
+        console.log(`[DispatchDiag] 订单 ${diagOrderId} | 候选${candidates.length}人${candSum ? ': ' + candSum : ''}`);
+      } catch (_) {}
+      // 开发者调用时才在响应里带脱敏诊断摘要（手机号打码），普通用户不返回
+      const diagForDev = ((req as any).isAdmin === true) ? {
+        orderId: diagOrderId,
+        filtered: diagFiltered.map(r => ({ phone: maskPhone(r.phone), reason: r.reason })),
+        candidates: candidates.map(c => ({ phone: maskPhone(c.phone), distKm: Number(Number(c.distKm).toFixed(2)) }))
+      } : undefined;
 
       // 坐标未知时直接进大厅，不弹窗广播（用户要求：供小队内所有司机抢单）
       const coordsUnknownForDispatch = Boolean((orderData as any)?.coordsUnknown);
@@ -4647,7 +4709,7 @@ function getClientIp(req: any): string {
             }
           } catch (_) {}
           console.log(`[Dispatch] 订单 ${orderId} 无授权司机，直接转入选单大厅`);
-          return res.json({ success: true, dispatched: false, toHall: true, reason: 'no_licensed_driver' });
+          return res.json({ success: true, dispatched: false, toHall: true, reason: 'no_licensed_driver', ...(diagForDev ? { diag: diagForDev } : {}) });
         }
 
         const distText = selected.distKm < 1.0 
@@ -4794,7 +4856,8 @@ function getClientIp(req: any): string {
           dispatchCountdown: 60,
           serverTime: nowTs,
           dispatchedAt: nowTs,
-          dispatchExpiresAt: nowTs + 60000
+          dispatchExpiresAt: nowTs + 60000,
+          ...(diagForDev ? { diag: diagForDev } : {})
         });
       } else {
         // Order Lobby fallback: Broadcast to ALL squad members in选单大厅
@@ -4833,6 +4896,7 @@ function getClientIp(req: any): string {
           passengerLng: pLng,
           serverTime: nowTs,
           coordsUnknown: coordsUnknownForDispatch || undefined,
+          ...(diagForDev ? { diag: diagForDev } : {}),
           message: coordsUnknownForDispatch
             ? '起点坐标未知，已转入选单大厅供小队司机抢单'
             : '方圆3公里内无在线空闲司机，已全员广播转入选单大厅'
@@ -4852,6 +4916,9 @@ function getClientIp(req: any): string {
   // 5.1 Atomic Order Grab / Claim from 选单大厅
   app.post('/api/order/claim', requireDbAuth, async (req, res) => {
     try {
+      // 2026-10-17：请求到达时间。接单是否超时以到达时间为准，不受后续授权/小队/
+      // MySQL 校验耗时影响（这些校验在手机网络下可达数秒）。
+      const arrivedAt = Date.now();
       const { orderId, driverName, orderPayload } = req.body;
       const cleanOrderId = String(orderId || '').trim();
       // H11修复：driverPhone 强制取 token 本人，禁止客户端传入冒名
@@ -5027,6 +5094,23 @@ function getClientIp(req: any): string {
           if (dispatchedTo !== cleanDriverPhone) {
             return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
           }
+        }
+      }
+
+      // 2026-10-17根治：
+      // ① 幂等短路：本人已接单成功直接返回成功。防"claim 成功但响应丢失→前端核实/重试"
+      //    被误判为超时或被他人抢走。必须放在过期检查之前。
+      // ② 过期检查：以请求到达时间 arrivedAt 对 dispatchExpiresAt 判定，而非响应完成时间。
+      //    5秒点接单、请求在过期前到达，必须能原子接单；过期后到达才拒绝。
+      {
+        const claimedByMe = String(targetOrder.claimedDriverPhone || '').replace(/\D/g, '').trim() === cleanDriverPhone &&
+          (String(targetOrder.status || '') === 'claimed' || Boolean(targetOrder.claimedAt));
+        if (claimedByMe) {
+          return res.json({ success: true, order: targetOrder, serverTime: Date.now(), idempotent: true });
+        }
+        const exp = Number(targetOrder.dispatchExpiresAt || 0);
+        if (exp > 0 && arrivedAt > exp) {
+          return res.status(409).json({ success: false, expired: true, error: '接单超时，派单倒计时已结束' });
         }
       }
 
@@ -5626,6 +5710,31 @@ function getClientIp(req: any): string {
               autoHallReason: order.autoHallReason || '60秒倒计时结束，中国大陆阿里云服务器自动将订单转入选单大厅'
             };
 
+            // 2026-10-17根治：转大厅与接单的条件互斥。/api/order/claim 用条件 UPDATE 原子接单，
+            // 此处转大厅也必须条件写入：MySQL 里只有仍是未接单状态才搬，否则并发到达的接单会被覆盖，
+            // 且后续的 passenger_links/active_orders 清理会摧毁合法接单（反向幽灵单）。
+            // 竞争失败或写入失败时跳过（不写本地、不清理），下一轮 tick 会重试。
+            let hallApplied = true;
+            if (isMySQLEnabled && mysqlPool) {
+              try {
+                const [hallRes]: any = await mysqlPool.query(
+                  'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ? ' +
+                  "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, '$.status')), '') NOT IN ('claimed', '已接单', 'serving', 'completed', 'cancelled', '已取消', 'hall', '等待接单') " +
+                  "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, '$.in_hall')), 'false') != 'true' " +
+                  "AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, '$.claimedDriverPhone')), '') = ''",
+                  [JSON.stringify(updatedOrder), 'merchant_orders', orderId]
+                );
+                hallApplied = Number((hallRes as any)?.affectedRows || 0) > 0;
+              } catch (e: any) {
+                console.error(`[Timer] 订单 ${orderId} 转大厅 MySQL 条件写入失败:`, e?.message);
+                hallApplied = false;
+              }
+              if (!hallApplied) {
+                console.log(`[Timer] 订单 ${orderId} 转大厅被并发接单抢先（或写入失败），跳过`);
+                continue;
+              }
+            }
+
             merchantOrders[orderId] = updatedOrder;
             hasChanges = true;
 
@@ -5665,10 +5774,7 @@ function getClientIp(req: any): string {
 
             if (isMySQLEnabled && mysqlPool) {
               try {
-                await mysqlPool.query(
-                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-                  ['merchant_orders', orderId, JSON.stringify(updatedOrder)]
-                );
+                // 2026-10-17：merchant_orders 的条件写入已在上方完成，此处只做关联清理
                 await mysqlPool.query(
                   'DELETE FROM `daijia_documents` WHERE `collection` IN (?, ?) AND `doc_id` = ?',
                   ['passenger_links', 'active_orders', timedOutDriverPhone]

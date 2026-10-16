@@ -216,7 +216,9 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
   try {
     const res = await safeFetchWithTimeout(url, { cache: 'no-store', headers: { ...getAuthHeaders() } });
     if (!res.ok) {
-      throw new Error(`DB Fetch failed with status: ${res.status}`);
+      const qErr: any = new Error(`DB Fetch failed with status: ${res.status}`);
+      qErr.status = res.status;
+      throw qErr;
     }
     const result = await res.json();
     if (result.exists && result.data) {
@@ -227,6 +229,12 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     }
     return new ProxyDocumentSnapshot(cleanId, result.data, result.exists);
   } catch (err: any) {
+    // 2026-10-17根治：401/403 是鉴权失败，不是"无数据"，必须清 token 并抛出，
+    // 绝不能回退旧缓存伪装成"不存在"（否则调用方会误判小队成员/订单不存在）。
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+      throw err;
+    }
     // Secondary simulation fallback to guarantee absolute offline stability
     const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
     if (DRIVER_COLLECTIONS.includes(docRef.collectionName) && cleanId !== DEVELOPER_PHONE) {
@@ -423,11 +431,15 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
   if (constraints.length > 0) {
     url += `&constraints=${encodeURIComponent(JSON.stringify(constraints))}`;
   }
+  // 2026-10-17：加时间戳 + no-store，防 304 命中旧缓存造成状态污染
+  url += `${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
 
   try {
-    const res = await safeFetchWithTimeout(url, { headers: { ...getAuthHeaders() } });
+    const res = await safeFetchWithTimeout(url, { cache: 'no-store', headers: { ...getAuthHeaders() } });
     if (!res.ok) {
-      throw new Error(`DB Query failed: ${res.statusText}`);
+      const lErr: any = new Error(`DB Query failed: ${res.status} ${res.statusText}`);
+      lErr.status = res.status;
+      throw lErr;
     }
     const result = await res.json();
     const docs = (result.docs || []).map((docItem: any) => {
@@ -472,6 +484,12 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
 
     return new ProxyQuerySnapshot(docs);
   } catch (err) {
+    // 2026-10-17根治：401/403 是鉴权失败，不是"空集合"，必须清 token 并抛出，
+    // 绝不能回退本地旧缓存（否则 401 后 App 会用 stale 数据渲染，造成状态污染）。
+    if (isAuthError(err)) {
+      clearAuthTokenOn401();
+      throw err;
+    }
     console.warn("Proxy DB Query falling back to local simulation:", err);
     // Sweep localStorage to retrieve matching cached documents
     const docList: ProxyDocumentSnapshot[] = [];

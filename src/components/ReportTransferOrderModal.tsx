@@ -139,7 +139,7 @@ export default function ReportTransferOrderModal({
       if (driverMap.size === 0) {
         try {
           const baseUrl = getBaseApiUrl();
-          const res = await fetch(`${baseUrl}/api/db/list?col=squad_members`);
+          const res = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
           if (res.ok) {
             const json = await res.json();
             const rawList = Array.isArray(json) ? json : (json?.docs || json?.data || []);

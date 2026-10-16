@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db, doc, setDoc, getDoc, getDocs, collection, getBaseApiUrl } from '../lib/dbProxy';
+import { db, doc, setDoc, getDoc, getDocs, collection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { QrCode, MapPin, Phone, CheckCircle, Navigation, ShieldCheck, Car, Headphones, Smartphone, BellRing, Check, ArrowLeft, Flag, CreditCard, ShieldAlert, AlertTriangle, RefreshCw, Crown } from 'lucide-react';
 import { checkVipActive } from '../types';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
@@ -220,7 +220,8 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
 
         for (const u of urls) {
           try {
-            const res = await fetch(u);
+            // 2026-10-17：补鉴权头（无 token 时为空对象，不影响乘客端匿名访问）
+            const res = await fetch(u, { cache: 'no-store', headers: { ...getAuthHeaders() } });
             if (res.ok) {
               const resData = await res.json();
               if (resData && resData.exists && resData.data) {

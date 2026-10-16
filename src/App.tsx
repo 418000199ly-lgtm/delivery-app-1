@@ -2162,6 +2162,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const orderKey = data.orderId || data.id || `${data.passengerPhone || 'p'}_${rawTime}`;
 
         dismissedIncomingOrderKeysRef.current.delete(orderKey);
+        persistDismissedKeys(); // 2026-10-17：delete 后同步持久化，否则重启后旧 key 复活导致无法重弹
         // 2026-10-15接单授权前端拦截：无授权不弹窗
         // 2026-10-15 P1-3/P1-4/P1-5：用 hasValidLicense 统一口径；用 settingsRef 读最新值；undefined视为无授权即拦截（fail-closed）
         const curSettings2 = settingsRef.current;
@@ -2663,7 +2664,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
   }, [activeOnlineOrder, currentTrip, userPhone]);
 
-  const handleAcceptIncomingOrder = async (trip: TripState) => {
+  // 2026-10-17：单次权威调用。overlay 新来单接单已调 /api/order/claim 成功时会带
+  // meta.claimed 标记，此时跳过第二次 driver-claim，直接做本地状态更新。
+  // 大厅抢单（HomeView）仍走 driver-claim，不受影响。
+  const handleAcceptIncomingOrder = async (trip: TripState, meta?: { claimed?: boolean; order?: any }) => {
     if (!userPhone) return;
     const cleanUserPhone = String(userPhone).replace(/\D/g, '').trim();
     clearPendingOrderCache();
@@ -2706,7 +2710,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     // Update database & server claim endpoint immediately to prevent 30s timeout reset
     // 2026-10-12改用接单专用通道（2026-10-15起走鉴权，原子防重）
-    if (orderIdToClaim) {
+    // 2026-10-17根治：meta.claimed 为真表示 overlay 已用 /api/order/claim 原子接单成功，
+    // 不再发第二次 driver-claim（省一次网络往返，消除"第一次成、第二次败"竞态）。
+    if (orderIdToClaim && !meta?.claimed) {
       const baseUrl = getBaseApiUrl();
       try {
         const claimResp = await fetch(`${baseUrl}/api/order/driver-claim`, {
@@ -2743,6 +2749,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           if (incomingOrder) {
             const retryKey = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
             dismissedIncomingOrderKeysRef.current.delete(retryKey);
+            persistDismissedKeys(); // 2026-10-17：delete 后同步持久化
           }
           triggerToast('⚠️ 接单未成功，请重试：' + (msg || claimResp.status));
           return;
@@ -2752,6 +2759,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         if (incomingOrder) {
           const retryKey2 = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
           dismissedIncomingOrderKeysRef.current.delete(retryKey2);
+          persistDismissedKeys(); // 2026-10-17：delete 后同步持久化
         }
         triggerToast('⚠️ 网络异常，接单未成功，请重试');
         return;
@@ -4162,6 +4170,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const rawTime = Number(orderPayload.timestamp || Date.now());
                 const orderKey = orderPayload.orderId || orderPayload.id || `${orderPayload.passengerPhone || 'p'}_${rawTime}`;
                 dismissedIncomingOrderKeysRef.current.delete(orderKey);
+                persistDismissedKeys(); // 2026-10-17：delete 后同步持久化
                 // When driver explicitly claims an order from the hall, immediately accept and jump to trip planning
                 handleAcceptIncomingOrder(orderPayload);
               }}

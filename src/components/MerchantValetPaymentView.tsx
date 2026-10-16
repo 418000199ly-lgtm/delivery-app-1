@@ -134,7 +134,7 @@ export default function MerchantValetPaymentView({
         try {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 2000);
-          const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetMerchantPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal });
+          const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetMerchantPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
           clearTimeout(timeoutId);
           if (res.ok) {
             const json = await res.json();

@@ -447,7 +447,8 @@ export default function MobileDispatchValetOrder({
         .catch(() => {});
 
       // Query web channel specific collection
-      fetch(`${baseUrl}/api/db/get?col=web_valet_qrs&id=${encodeURIComponent(activePhone)}&_t=${timeToken}`, { cache: 'no-store' })
+      // 2026-10-17：补 X-Auth-Token，否则裸请求 401
+      fetch(`${baseUrl}/api/db/get?col=web_valet_qrs&id=${encodeURIComponent(activePhone)}&_t=${timeToken}`, { cache: 'no-store', headers: { ...getAuthHeaders() } })
         .then(res => res.ok ? res.json() : null)
         .then(json => {
           if (isMounted && json && json.data) {
@@ -914,7 +915,7 @@ export default function MobileDispatchValetOrder({
         const baseUrl = getBaseApiUrl();
         const map = new Map<string, any>();
 
-        const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store' });
+        const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (resApps.ok) {
           const jsonApps = await resApps.json();
           let rawApps: any[] = [];
@@ -2300,7 +2301,7 @@ export default function MobileDispatchValetOrder({
       try {
         const baseUrl = getBaseApiUrl();
         // 1. Fetch driver_users from Aliyun
-        const res1 = await fetch(`${baseUrl}/api/db/list?col=driver_users`);
+        const res1 = await fetch(`${baseUrl}/api/db/list?col=driver_users&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res1.ok) {
           const json1 = await res1.json();
           if (json1 && Array.isArray(json1.docs) && json1.docs.length > 0) {
@@ -2336,7 +2337,7 @@ export default function MobileDispatchValetOrder({
         }
 
         // 2. Fetch squad_members from Aliyun
-        const res2 = await fetch(`${baseUrl}/api/db/list?col=squad_members`);
+        const res2 = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res2.ok) {
           const json2 = await res2.json();
           if (json2 && Array.isArray(json2.docs)) {
@@ -2370,7 +2371,7 @@ export default function MobileDispatchValetOrder({
         }
 
         // 3. Fetch driver_locations for latest real-time GPS
-        const res3 = await fetch(`${baseUrl}/api/db/list?col=driver_locations`);
+        const res3 = await fetch(`${baseUrl}/api/db/list?col=driver_locations&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res3.ok) {
           const json3 = await res3.json();
           if (json3 && Array.isArray(json3.docs)) {
@@ -2405,7 +2406,7 @@ export default function MobileDispatchValetOrder({
         }
 
         // 4. Fetch authoritative removed squad members config to ensure kicked drivers stay out
-        const resCfg = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members`);
+        const resCfg = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (resCfg.ok) {
           const jsonCfg = await resCfg.json();
           const pList = jsonCfg?.data?.phones || jsonCfg?.phones;
@@ -2469,7 +2470,7 @@ export default function MobileDispatchValetOrder({
     const fetchSquadFromHttp = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store' });
+        const res = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res.ok) {
           const json = await res.json();
           let rawList: any[] = [];
@@ -3861,16 +3862,9 @@ export default function MobileDispatchValetOrder({
         localStorage.removeItem('dd_latest_cancelled_order');
       } catch (_) {}
 
-      // 1. 本地订单数据持久化与更新 (进入大厅或直派的订单均正确保存)
-      if (!isTransferOrder || chosenDriver) {
-        try {
-          const savedLocal = JSON.parse(safeGetItem('dd_merchant_orders_v2') || '[]');
-          savedLocal.unshift(completeOrderData);
-          safeSetItem('dd_merchant_orders_v2', JSON.stringify(savedLocal.slice(0, 50)));
-        } catch (_) {}
-      }
-
-      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+      // P0(2026-10-17根因修复)：删除服务端返回前的本地预写。
+      // 之前在这里先写 hall 状态、派单成功后又未修正，导致商户端显示"进入选单大厅"、
+      // 司机端却弹出新来单。改为等服务端返回后一次性持久化最终状态（见下方步骤3）。
 
       const passengerLinkPayload = {
         ...completeOrderData,
@@ -3885,11 +3879,10 @@ export default function MobileDispatchValetOrder({
         distKm: realDistKm
       };
 
-      // P0(2026-10-15晚)：删除前端直接写passenger_links，防绕过服务端接单授权检查
+      // P0(2026-10-15晚)：前端不直接写 passenger_links，防绕过服务端接单授权检查
       // 服务端/api/dispatch/nearest会写passenger_links，前端只等服务端返回
-      // 之前前端先行写入导致无授权司机也能收到新来单弹窗
 
-      // P0(2026-10-15晚)：删除前端直接写merchant_orders和直接触发弹窗
+      // P0(2026-10-15晚)：前端不直接写merchant_orders、不直接触发弹窗
       // P0(2026-10-17)：删本地派单结果提示。App不决定派单（chosenDriver恒null），
       // 本地isDispatchedToDriver恒false会导致永远误报"无司机"。
       // 派单结果100%由服务端/api/dispatch/nearest返回的isHall决定，提示在syncRemote里统一弹。
@@ -3898,7 +3891,17 @@ export default function MobileDispatchValetOrder({
       }
 
       // 2. Delegate dispatch calculation and sync to Aliyun Baota Server /api/dispatch/nearest
+      // P0(2026-10-17根因修复)：finalOrderData 默认 hall；服务端派单成功才改写为 dispatched。
+      // 等待服务端返回后（步骤3）再一次性持久化，避免先写 hall 再修正的竞态。
       let finalAssignedDriver = chosenDriver;
+      let finalOrderData = {
+        ...completeOrderData,
+        status: 'hall',
+        in_hall: true,
+        statusCategory: '等待接单',
+        dispatchedDriverPhone: '',
+        dispatchedDriverName: ''
+      };
       const syncRemote = async () => {
         const baseUrl = getBaseApiUrl();
         try {
@@ -3928,20 +3931,21 @@ export default function MobileDispatchValetOrder({
                 if (chosenPhone && db && !isTargetingCurrentDriver) {
                   deleteDoc(doc(db, 'passenger_links', chosenPhone)).catch(() => {});
                 }
-                if (db) {
-                  setDoc(doc(db, 'merchant_orders', orderId), {
-                    ...completeOrderData,
-                    status: 'hall',
-                    in_hall: true,
-                    statusCategory: '等待接单',
-                    dispatchedDriverPhone: '',
-                    dispatchedDriverName: ''
-                  }, { merge: true }).catch(() => {});
-                }
+                // 服务端已写 merchant_orders hall 状态，前端不再重复写
               } else if (resData.dispatchedDriverPhone) {
                 const srvPhone = String(resData.dispatchedDriverPhone).replace(/\D/g, '').trim();
                 const srvName = resData.dispatchedDriverName || '小队司机';
                 finalAssignedDriver = { name: srvName, phone: srvPhone, distance: resData.distKm };
+                finalOrderData = {
+                  ...completeOrderData,
+                  status: 'dispatched',
+                  in_hall: false,
+                  statusCategory: '已指派',
+                  dispatchedDriverPhone: srvPhone,
+                  dispatchedDriverName: srvName,
+                  distKm: resData.distKm,
+                  distanceText: resData.distanceText || realDistText
+                };
                 const payloadWithServerDriver = {
                   ...passengerLinkPayload,
                   dispatchedDriverPhone: srvPhone,
@@ -3949,9 +3953,8 @@ export default function MobileDispatchValetOrder({
                   distKm: resData.distKm,
                   distanceText: resData.distanceText || realDistText
                 };
-                if (db && srvPhone) {
-                  setDoc(doc(db, 'passenger_links', srvPhone), payloadWithServerDriver).catch(() => {});
-                }
+                // P0(2026-10-17)：passenger_links 由服务端统一写入（含司机收款码），
+                // 前端不再重复 setDoc，避免把商户收款码覆盖到司机收款码字段。
                 // 注意：如果当前司机已在本地弹出新来单界面，只静默存储更新，绝不二次派发 trigger_incoming_order！
                 if (srvPhone === currentDriverClean && !isTargetingCurrentDriver) {
                   try {
@@ -3963,14 +3966,24 @@ export default function MobileDispatchValetOrder({
             }
           }
         } catch (_) {
-          if (db) {
-            setDoc(doc(db, 'merchant_orders', orderId), completeOrderData).catch(() => {});
-          }
+          // 网络异常：保持默认 hall 状态，不产生幽灵派单
         }
       };
       await syncRemote();
 
-      // 3. Update UI state to success
+      // 3. 一次性持久化最终订单状态（本地列表），与服务端保持一致
+      if (!isTransferOrder || chosenDriver) {
+        try {
+          const savedLocal = JSON.parse(safeGetItem('dd_merchant_orders_v2') || '[]');
+          const deduped = savedLocal.filter((o: any) => String(o.id || o.orderId) !== String(orderId));
+          deduped.unshift(finalOrderData);
+          safeSetItem('dd_merchant_orders_v2', JSON.stringify(deduped.slice(0, 50)));
+        } catch (_) {}
+      }
+
+      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+
+      // 4. Update UI state to success
       clearTimeout(safetyTimer);
       setIsDispatching(false);
       setButtonState('success');

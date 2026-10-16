@@ -1,4 +1,4 @@
-import { getBaseApiUrl } from '../lib/dbProxy';
+import { getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 
 function isPlaceholderPhone(phone: string): boolean {
   if (!phone) return true;
@@ -117,7 +117,7 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
       const baseUrl = getBaseApiUrl();
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch(`${baseUrl}/api/db/get?col=merchant_orders&id=${encodeURIComponent(orderId)}`, { signal: controller.signal });
+      const res = await fetch(`${baseUrl}/api/db/get?col=merchant_orders&id=${encodeURIComponent(orderId)}&_t=${Date.now()}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
       clearTimeout(timeoutId);
       if (res.ok) {
         const json = await res.json();

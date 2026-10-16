@@ -799,10 +799,10 @@ export default function AdminPanel({
       try {
         const baseUrl = getBaseApiUrl();
         const [resSquad, resApps, resUsers, resRemoved] = await Promise.allSettled([
-          fetch(`${baseUrl}/api/db/list?col=squad_members&limit=5000&_t=${Date.now()}`, { cache: 'no-store' }),
-          fetch(`${baseUrl}/api/db/list?col=squad_applications&limit=5000&_t=${Date.now()}`, { cache: 'no-store' }),
-          fetch(`${baseUrl}/api/db/list?col=driver_users&limit=5000&_t=${Date.now()}`, { cache: 'no-store' }),
-          fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store' })
+          fetch(`${baseUrl}/api/db/list?col=squad_members&limit=5000&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }),
+          fetch(`${baseUrl}/api/db/list?col=squad_applications&limit=5000&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }),
+          fetch(`${baseUrl}/api/db/list?col=driver_users&limit=5000&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }),
+          fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } })
         ]);
 
         let loadedSquad: any[] = [];
@@ -967,13 +967,13 @@ export default function AdminPanel({
     // Also fetch initial merchant accounts and removed squad members via HTTP
     try {
       const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/list?col=merchant_accounts`).then(r => r.json()).then(res => {
+      fetch(`${baseUrl}/api/db/list?col=merchant_accounts&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }).then(r => r.json()).then(res => {
         if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
           setMerchantAccountsList(res.data);
         }
       }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
-      fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members`).then(r => r.json()).then(res => {
+      fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }).then(r => r.json()).then(res => {
         if (res && res.data && Array.isArray(res.data.phones)) {
           setRemovedSquadPhones(res.data.phones);
           try {
