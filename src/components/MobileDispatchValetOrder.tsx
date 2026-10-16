@@ -3890,23 +3890,11 @@ export default function MobileDispatchValetOrder({
       // 之前前端先行写入导致无授权司机也能收到新来单弹窗
 
       // P0(2026-10-15晚)：删除前端直接写merchant_orders和直接触发弹窗
-      // 全部由服务端/api/dispatch/nearest统一处理，防绕过接单授权检查
-      if (isTargetingCurrentDriver) {
-        // 等待服务端返回，不再前端直接弹窗
-        if (typeof onClose === 'function') {
-          onClose();
-        }
-      } else if (!isDispatchedToDriver) {
-        // 超过3公里或无就近空闲小队司机，订单全员广播转入选单大厅
-        onShowToast('3公里内无在线空闲小队司机，订单已全员广播转入选单大厅');
-        if (typeof onClose === 'function') {
-          onClose();
-        }
-      } else {
-        onShowToast(`已派单给3公里内最近小队司机【${effectiveDispatchedName}】（距离${realDistText}）！对方APP已弹出新来单确认页面（60秒倒计时）`);
-        if (typeof onClose === 'function') {
-          onClose();
-        }
+      // P0(2026-10-17)：删本地派单结果提示。App不决定派单（chosenDriver恒null），
+      // 本地isDispatchedToDriver恒false会导致永远误报"无司机"。
+      // 派单结果100%由服务端/api/dispatch/nearest返回的isHall决定，提示在syncRemote里统一弹。
+      if (typeof onClose === 'function') {
+        onClose();
       }
 
       // 2. Delegate dispatch calculation and sync to Aliyun Baota Server /api/dispatch/nearest
