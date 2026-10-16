@@ -713,11 +713,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             try {
               if (cleanUserPhone) {
                 safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
-                // P1(2026-10-16)：补写时间戳与值，与 vipExpiry 对齐。
-                // 之前漏写导致 checkStatusSync 的本地优先保护恒失效，
-                // 管理后台充值后 10 分钟内可能被服务端旧值覆盖回去。
-                safeSetItem(`dd_license_expiry_${cleanUserPhone}`, freshLic);
-                safeSetItem(`dd_license_expiry_time_${cleanUserPhone}`, Date.now().toString());
+                // P0(2026-10-17)：删时间戳写入。与 checkStatusSync 同理，轮询更新不写保护时间戳，
+                // 否则管理后台充值后10分钟内App拒绝更新。
               }
               safeSetItem('dd_settings', JSON.stringify(updated));
             } catch (_) {}
@@ -1082,28 +1079,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 // P0(2026-10-15)：接单授权实时同步（与vipExpiry同逻辑，防充值后App不更新）
                 if (uData?.licenseExpiry !== undefined && uData?.licenseExpiry !== null) {
                   const freshLic = String(uData.licenseExpiry).trim();
-                  const lastLicTime = typeof window !== 'undefined' ? localStorage.getItem(`dd_license_expiry_time_${userPhone}`) : null;
-                  const isRecentLicUpdate = lastLicTime && (Date.now() - Number(lastLicTime)) < 600000;
-                  const localSavedLic = typeof window !== 'undefined' ? localStorage.getItem(`dd_license_expiry_${userPhone}`) : null;
-                  if (!(isRecentLicUpdate && localSavedLic && localSavedLic !== freshLic)) {
-                    setSettings(prev => {
-                      if (prev.licenseExpiry !== freshLic) {
-                        const updated = { ...prev, licenseExpiry: freshLic };
-                        try {
-                          safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
-                          safeSetItem('dd_settings', JSON.stringify(updated));
-                          // P0(2026-10-16晚)：轮询从服务端拿到新值时，必须同步写 dd_license_expiry_* 时间戳。
-                          // 之前只写 dd_settings，不写时间戳，导致 10 分钟本地保护在手机上永远失效：
-                          // driver_vip_updated 事件只在管理后台浏览器内有效，到不了 iPhone App，
-                          // App 全靠轮询，但轮询不写时间戳 → 下次服务端返回旧值时保护不生效 → 0 跳回 2。
-                          safeSetItem(`dd_license_expiry_${userPhone}`, freshLic);
-                          safeSetItem(`dd_license_expiry_time_${userPhone}`, Date.now().toString());
-                        } catch (_) {}
-                        return updated;
-                      }
-                      return prev;
-                    });
-                  }
+                  // P0(2026-10-17)：删10分钟本地保护。之前轮询拿到新值就写时间戳，
+                  // 导致管理后台充值后10分钟内App拒绝更新（时间戳太新+值不同=不更新）。
+                  // 服务端已修4集合写入+剥离旧值，不会再返回过期值，无需客户端保护。
+                  setSettings(prev => {
+                    if (prev.licenseExpiry !== freshLic) {
+                      const updated = { ...prev, licenseExpiry: freshLic };
+                      try {
+                        safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                        safeSetItem('dd_settings', JSON.stringify(updated));
+                      } catch (_) {}
+                      return updated;
+                    }
+                    return prev;
+                  });
                 }
 
                 // Realtime role synchronization from driver_users
