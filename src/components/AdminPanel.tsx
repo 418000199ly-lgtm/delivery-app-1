@@ -59,7 +59,7 @@ import {
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified } from '../utils/nameResolver';
+import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified, hasValidLicense } from '../utils/nameResolver';
 import { DEVELOPER_PHONE } from '../utils/constants';
 
 function calculateExpiryFromDays(days: string): string {
@@ -4949,14 +4949,14 @@ export default function AdminPanel({
                             <span className="text-[10px] font-black text-emerald-500">
                               {(() => {
                                 const lic = String(driverDoc?.licenseExpiry || foundDriver?.licenseExpiry || '').trim();
-                                if (!lic || lic === '待开通') return '⚪ 未开通';
+                                // P1(2026-10-16)：统一用 hasValidLicense 判有效（与服务端/司机端同口径）
+                                if (!hasValidLicense(lic)) return '🔴 已到期';
                                 if (lic === '永久有效' || lic === '永久' || lic === '终身') return '🌟 永久';
-                                if (lic === '已到期') return '🔴 已到期';
                                 const daysStr = calculateDaysFromExpiry(lic);
                                 const days = parseInt(daysStr, 10);
                                 if (daysStr === '永久') return '🌟 永久';
                                 if (!isNaN(days) && days > 0) return `约剩 ${days} 天（${lic}）`;
-                                return '🔴 已到期';
+                                return '🌟 永久';
                               })()}
                             </span>
                           </label>
@@ -5320,14 +5320,15 @@ export default function AdminPanel({
                                 <td className="py-2.5 px-2">
                                   {(() => {
                                     const lic = String(drv.licenseExpiry || '').trim();
-                                    if (!lic || lic === '待开通') {
-                                      return <span className="text-slate-500 text-[10px]">待开通</span>;
+                                    // P1(2026-10-16)：统一用 hasValidLicense 判有效（与服务端同口径）
+                                    if (!hasValidLicense(lic)) {
+                                      if (!lic || lic === '待开通' || lic === '未开通') {
+                                        return <span className="text-slate-500 text-[10px]">待开通</span>;
+                                      }
+                                      return <span className="text-red-500 font-bold text-[10px]">已到期</span>;
                                     }
                                     if (lic === '永久有效' || lic === '永久' || lic === '终身') {
                                       return <span className="text-emerald-500 font-bold text-[10px]">永久</span>;
-                                    }
-                                    if (lic === '已到期') {
-                                      return <span className="text-red-500 font-bold text-[10px]">已到期</span>;
                                     }
                                     const daysStr = calculateDaysFromExpiry(lic);
                                     const days = parseInt(daysStr, 10);
@@ -5338,7 +5339,7 @@ export default function AdminPanel({
                                       const color = days <= 7 ? 'text-amber-500' : 'text-emerald-500';
                                       return <span className={`${color} font-bold text-[10px] font-mono`}>{days}天</span>;
                                     }
-                                    return <span className="text-red-500 font-bold text-[10px]">已到期</span>;
+                                    return <span className="text-emerald-500 font-bold text-[10px]">今天到期</span>;
                                   })()}
                                 </td>
                                 <td className="py-2.5 px-2 text-center">

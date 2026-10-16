@@ -56,6 +56,9 @@ function getDypnsClient() {
 
 // In-memory store for phone verification codes
 const verificationCodes = new Map<string, { code: string; expiresAt: number }>();
+// P1(2026-10-16)：派单 orderId 级互斥锁。同一订单并发调用 /api/dispatch/nearest 时，
+// 后到的直接返回"派单处理中"，防同一订单被派给两名司机。
+const dispatchOrderLocks = new Map<string, number>();
 
 // H1修复：verify 失败计数，5次失败锁定手机号30分钟
 const verifyFailures = new Map<string, { count: number; lockedUntil: number }>();
@@ -165,7 +168,15 @@ function getLicenseDaysRemaining(expiry: any): number {
   const s = String(expiry || '').trim();
   if (!s || s === '待开通' || s === '待激活' || s === '未开通' || s === '已到期' || s === '已过期') return 0;
   if (s === '永久有效' || s === '永久' || s === '终身') return 99999;
-  const parsed = Date.parse(s);
+  // P1(2026-10-16)：纯 YYYY-MM-DD 按当天 23:59:59 解析（与 isVipActiveServer 同口径）。
+  // 之前 Date.parse('2026-10-20') 按 UTC 午夜解析，北京时间当天 08:00 就被判过期。
+  let parsed: number;
+  const dateOnly = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (dateOnly) {
+    parsed = new Date(parseInt(dateOnly[1], 10), parseInt(dateOnly[2], 10) - 1, parseInt(dateOnly[3], 10), 23, 59, 59, 999).getTime();
+  } else {
+    parsed = Date.parse(s);
+  }
   if (isNaN(parsed)) return 0;
   const diffMs = parsed - Date.now();
   const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
@@ -234,6 +245,46 @@ async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
     }
   } catch (e) {
     console.error('[CountOrders] 统计失败:', (e as any)?.message);
+  }
+  return count;
+}
+// P1(2026-10-16)：统计某司机今天已发起的报单转单次数（非VIP每日2次限制用）。
+// 转单订单 orderId 以 RT 开头，reporterPhone 为发起人。
+async function countTodayReportTransfers(reporterPhone: string): Promise<number> {
+  const todayStr = getBeijingTodayStr();
+  let count = 0;
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      const [rows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ?', ['merchant_orders']);
+      for (const r of (rows || [])) {
+        try {
+          const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+          const oid = String(d.orderId || d.id || '');
+          if (!oid.startsWith('RT')) continue;
+          const rp = String(d.reporterPhone || '').replace(/\D/g, '');
+          if (rp !== reporterPhone) continue;
+          const ts = d.createdAt || d.timestamp || d.dispatchedAt;
+          if (!ts) continue;
+          const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          if (bjt === todayStr) count++;
+        } catch (_) { /* skip bad row */ }
+      }
+    } else {
+      const dbData = readLocalJsonDb();
+      const orders = dbData['merchant_orders'] || {};
+      for (const o of Object.values<any>(orders)) {
+        const oid = String(o.orderId || o.id || '');
+        if (!oid.startsWith('RT')) continue;
+        const rp = String(o.reporterPhone || '').replace(/\D/g, '');
+        if (rp !== reporterPhone) continue;
+        const ts = o.createdAt || o.timestamp || o.dispatchedAt;
+        if (!ts) continue;
+        const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        if (bjt === todayStr) count++;
+      }
+    }
+  } catch (e) {
+    console.error('[CountRT] 统计失败:', (e as any)?.message);
   }
   return count;
 }
@@ -541,7 +592,9 @@ function isGenericDriverName(name: string, phone: string): boolean {
 
   if (!cleanPhone || cleanPhone.length !== 11) return true;
 
-  if (['9147', '3634', '5678', '6058', '0116', '1223', '1958'].some(s => cleanPhone.endsWith(s))) return true;
+  // P0(2026-10-16)：删除手机号尾号黑名单——尾号 9147/3634/5678/6058/0116/1223/1958 的
+  // 真实司机（已审批、上线、空闲、有授权）会被永久排除派单，且开发者尾号不在此列故永远测不出。
+  // 测试号清理应走 removed_squad_members 精确名单，不做尾号泛化匹配。
 
   if (!name || typeof name !== 'string') return true;
   const clean = String(name).trim();
@@ -549,7 +602,6 @@ function isGenericDriverName(name: string, phone: string): boolean {
   if (clean === '代驾司机' || clean === '在线代驾司机' || clean === '司机' || clean === '未命名' || clean === '代驾师傅' || clean === '虚拟司机') return true;
   if (/^司机\d+/.test(clean)) return true;
   if (clean.startsWith('司机') && /\d/.test(clean)) return true;
-  if (['9147', '3634', '5678', '6058', '0116', '1223', '1958'].some(s => clean.includes(s))) return true;
   const last4 = cleanPhone.slice(-4);
   if (last4 && (clean === `司机${last4}` || clean.endsWith(last4))) return true;
   return false;
@@ -1140,7 +1192,10 @@ function getClientIp(req: any): string {
 
   // Run startup sequence sequentially
   (async () => {
-    await purgeMockDriverData();
+    // P0(2026-10-16)：生产环境禁用启动时自动 purgeMockDriverData。
+    // 之前每次重启都 DELETE 所有非开发者司机（squad_members/driver_users 等，MySQL+本地全删），
+    // 重启即删光真实司机。清理测试号只走管理后台的显式"清理"接口，不再自动执行。
+    // await purgeMockDriverData();
     await consolidateAllDriversOnStartup();
   })();
 
@@ -4164,8 +4219,29 @@ function getClientIp(req: any): string {
   app.post('/api/dispatch/nearest', requireDbAuth, async (req, res) => {
     try {
       const { orderData, reporterPhone, pickupLat, pickupLng, excludePhone } = req.body || {};
+      // P1(2026-10-16)：orderId 级互斥。同一订单 60 秒内只允许一次派单处理，
+      // 并发第二请求直接 409 返回，防双派单弹给两名司机。
+      const lockOrderId = String(orderData?.orderId || orderData?.id || '').trim();
+      if (lockOrderId) {
+        const lockTs = dispatchOrderLocks.get(lockOrderId) || 0;
+        if (Date.now() - lockTs < 60000) {
+          return res.status(409).json({ success: false, error: '该订单正在派单处理中' });
+        }
+        dispatchOrderLocks.set(lockOrderId, Date.now());
+        // 防止 Map 无限增长：顺手清理过期锁
+        if (dispatchOrderLocks.size > 500) {
+          const cutoff = Date.now() - 60000;
+          for (const [k, v] of dispatchOrderLocks) { if (v < cutoff) dispatchOrderLocks.delete(k); }
+        }
+      }
       // M7修复：radiusKm 服务端钳制，最大3公里，防客户端突破派单半径铁律
       const radiusKm = Math.min(Number(req.body?.radiusKm) || 3, 3);
+      // P0(2026-10-16)：铁律——商户不能手动选司机，所有商户订单走系统自动派单。
+      // 删除客户端传来的 dispatchedDriverPhone，服务端只按最近+20米随机算法选人。
+      if (orderData && typeof orderData === 'object') {
+        delete (orderData as any).dispatchedDriverPhone;
+        delete (orderData as any).dispatchedDriverName;
+      }
 
       // 下单权限：开发者/小队管理人员 或 商户（带A后缀）可以直接下单
       // 商户不需要申请审批，注册登录即为商户身份
@@ -4623,16 +4699,32 @@ function getClientIp(req: any): string {
         writeLocalJsonDb(dbData);
 
         if (isMySQLEnabled && mysqlPool) {
-          try {
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              ['passenger_links', selected.phone, JSON.stringify(dispatchedPayload)]
-            );
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              ['merchant_orders', orderId, JSON.stringify({ ...dispatchedPayload, status: 'dispatched', statusCategory: '已指派' })]
-            );
-          } catch (_) {}
+          // P1(2026-10-16)：派单 MySQL 双写失败不再静默吞掉。之前 catch(_) {} 后仍返回 success，
+          // 造成"僵尸派单"（本地有弹窗、MySQL 无记录 → 无倒计时、无超时转大厅）。
+          // 照 update-driver-expiry 模式：重试3次，仍失败则抛500，不返回虚假成功。
+          const mysqlWrites: Array<[string, any[]]> = [
+            ['INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['passenger_links', selected.phone, JSON.stringify(dispatchedPayload)]],
+            ['INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['merchant_orders', orderId, JSON.stringify({ ...dispatchedPayload, status: 'dispatched', statusCategory: '已指派' })]],
+          ];
+          for (const [sql, params] of mysqlWrites) {
+            let ok = false;
+            let lastErr: any = null;
+            for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+              try {
+                await mysqlPool.query(sql, params);
+                ok = true;
+              } catch (e: any) {
+                lastErr = e;
+                if (attempt < 3) await new Promise(r => setTimeout(r, 200 * attempt));
+              }
+            }
+            if (!ok) {
+              console.error(`[Dispatch] 订单 ${orderId} MySQL 写入失败(3次重试):`, lastErr?.message);
+              return res.status(500).json({ success: false, error: '派单写入失败，请重试' });
+            }
+          }
         }
 
         return res.json({
@@ -4780,10 +4872,24 @@ function getClientIp(req: any): string {
 
       let isSquadApproved = isDevDriver;
       if (!isDevDriver && !isRemovedDriver) {
-        const squadDoc = dbData['squad_members']?.[cleanDriverPhone];
+        // P1(2026-10-16)：审批口径收紧——① MySQL 优先读（本地 JSON 可能滞后）；
+        // ② 去掉 || !st：空状态不再算通过，必须是明确的已通过状态。
+        let squadDoc: any = null;
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [srows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['squad_members', cleanDriverPhone]);
+            if (srows && srows.length > 0) {
+              const sraw = srows[0].data;
+              squadDoc = typeof sraw === 'string' ? JSON.parse(sraw) : sraw;
+            }
+          } catch (_) {}
+        }
+        if (!squadDoc) squadDoc = dbData['squad_members']?.[cleanDriverPhone];
         if (squadDoc) {
           const st = String(squadDoc.status || squadDoc.approvalStatus || '').trim();
-          if (st === '已通过' || st === 'approved' || st === '通过' || !st) {
+          if (st === '已通过' || st === 'approved' || st === '通过') {
             isSquadApproved = true;
           }
         }
@@ -4895,10 +5001,13 @@ function getClientIp(req: any): string {
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             ['merchant_orders', cleanOrderId, JSON.stringify(claimUpdateData)]
           );
+          // P1(2026-10-16)：接单后 passenger_links 必须 DELETE，不能 upsert。
+          // 之前 upsert 的是本地已 delete 掉的 undefined（JSON.stringify(undefined)），被静默吞错，
+          // MySQL 里残留旧 passenger_links，司机 App 会继续收到已接订单的弹窗。
           await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['passenger_links', cleanDriverPhone, JSON.stringify(dbData['passenger_links'][cleanDriverPhone])]
-          );
+            'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            ['passenger_links', cleanDriverPhone]
+          ).catch(() => {});
           await mysqlPool.query(
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             ['active_orders', cleanDriverPhone, JSON.stringify(dbData['active_orders'][cleanDriverPhone])]
@@ -5345,19 +5454,22 @@ function getClientIp(req: any): string {
           // (App被杀/用户未点通知/页面崩溃)，不等60秒，立即转大厅让其他司机抢。
           // 心跳由App新来单页面每2秒发送一次。
           // P0-3修复(2026-10-13)：区分"从未上屏"vs"曾经上屏后切后台"。
-          // - 从未收到心跳(pageHeartbeatAt=0)：App被杀，页面从未显示，15秒转大厅。
+          // - 从未收到心跳(pageHeartbeatAt=0)：App被杀，页面从未显示，35秒转大厅。
           // - 曾经收到心跳：用户切后台/锁屏(Web后台setInterval被节流)，宽限走完60秒，
           //   保证"后台10秒后点通知回来显示50秒"的滴滴体验。
-          // 注意：定时器每10秒运行，快照数据最多10秒旧，故"从未上屏"阈值设为15秒。
+          // P0(2026-10-16)：15s→35s。App后台轮询 passenger_links 是 30s 一次，
+          // 15s 阈值下约 40-60% 概率轮询还没跑到、服务端已转大厅删通道，司机全程无感知。
+          // 35s > 30s 轮询周期，保证后台 App 至少有一次轮询机会看到派单。
+          // 注意：定时器每10秒运行，快照数据最多10秒旧，故"从未上屏"阈值设为35秒。
           const pageHeartbeatAt = Number(order.pageHeartbeatAt || 0);
           const sinceDispatched = now - dispatchedTime;
           const neverHadHeartbeat = pageHeartbeatAt === 0;
-          const pageNotOnScreen = neverHadHeartbeat && sinceDispatched > 15000;
+          const pageNotOnScreen = neverHadHeartbeat && sinceDispatched > 35000;
           if (pageNotOnScreen && remainingSec > 0) {
             console.log(`[上屏检测] 订单 ${orderId} 派单${Math.round(sinceDispatched/1000)}秒无页面心跳，判定未上屏，立即转大厅！`);
             // 复用下方的转大厅逻辑：设置 remainingSec=0 触发转大厅
             remainingSec = 0;
-            order.autoHallReason = '新来单页面5秒无心跳，判定未上屏，服务器提前转入选单大厅';
+            order.autoHallReason = '新来单页面35秒无心跳，判定未上屏，服务器提前转入选单大厅';
           }
 
           // 2. 倒计时结束 (0秒)：防止司机大退、断网或关机造成假死，服务器立即自动将订单转入选单大厅
@@ -7994,6 +8106,26 @@ function getClientIp(req: any): string {
       if (!(await checkSquadMember())) {
         return res.status(403).json({ success: false, error: '仅小队正式成员可接单' });
       }
+      // P1(2026-10-16)：大厅抢单加忙碌检查——行程中的司机不能再抢一单，防一人同时持有两单。
+      // 与 /api/order/claim 同口径；busy 状态写 MySQL，故优先读 MySQL。
+      try {
+        let busyLoc: any = null;
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [brows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['driver_locations', cleanDriverPhone]);
+            if (brows && brows.length > 0) {
+              const braw = brows[0].data;
+              busyLoc = typeof braw === 'string' ? JSON.parse(braw) : braw;
+            }
+          } catch (_) {}
+        }
+        if (!busyLoc) busyLoc = readLocalJsonDb()?.driver_locations?.[cleanDriverPhone];
+        if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === 'true')) {
+          return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
+        }
+      } catch (_) {}
       const now = Date.now();
       const claimData = {
         status: 'claimed',
@@ -8027,15 +8159,29 @@ function getClientIp(req: any): string {
           if (st === 'dispatched' && target.dispatchedDriverPhone && !target.in_hall) {
             return { ok: false, code: 409, error: '该订单正在派单中，请等待' };
           }
+          // P1(2026-10-16)：大厅抢单必须校验订单真在大厅。否则可经 API 直接盗抢他人
+          // 二维码创单（submitted 状态）等非大厅订单。
+          const inHall = target.in_hall === true || st === 'hall' || st === '等待接单';
+          if (!inHall) {
+            return { ok: false, code: 409, error: '该订单不在选单大厅，无法抢单' };
+          }
           if (st === 'cancelled' || st === '已取消' || target.isCancelled) {
             return { ok: false, code: 410, error: '该订单已取消' };
           }
           const updated = { ...target, ...claimData };
-          await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['merchant_orders', cleanOrderId, JSON.stringify(updated)]
+          // P1(2026-10-16)：并发双抢原子化——改条件 UPDATE，只有订单仍未被他人认领时才写入。
+          // 之前先 SELECT 再 INSERT，两人同时通过检查会都写成功。条件不满足时 affectedRows=0 → 409。
+          const [updRes]: any = await mysqlPool.query(
+            'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ? ' +
+            'AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.status\')), \'\') NOT IN (\'claimed\', \'已接单\', \'cancelled\', \'已取消\') ' +
+            'AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.claimedDriverPhone\')), \'\') = \'\' ' +
+            'OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.claimedDriverPhone\')), \'\') = ?)',
+            [JSON.stringify(updated), 'merchant_orders', cleanOrderId, cleanDriverPhone]
           );
+          const affected = Number(updRes?.affectedRows || 0);
+          if (affected === 0) {
+            return { ok: false, code: 409, error: '该订单已被其他司机接单' };
+          }
           // 清掉所有相关的 passenger_links（防重复弹窗）
           await mysqlPool.query(
             "DELETE FROM `daijia_documents` WHERE `collection` = 'passenger_links' AND `data` LIKE ?",
@@ -8060,6 +8206,14 @@ function getClientIp(req: any): string {
           const st = String(target.status || '');
           if ((st === 'claimed' || st === '已接单') && claimedBy && claimedBy !== cleanDriverPhone) {
             return { ok: false, code: 409, error: '该订单已被其他司机接单' };
+          }
+          if (st === 'dispatched' && target.dispatchedDriverPhone && !target.in_hall) {
+            return { ok: false, code: 409, error: '该订单正在派单中，请等待' };
+          }
+          // P1(2026-10-16)：本地分支同样校验订单真在大厅（与 MySQL 分支同口径）
+          const inHallLocal = target.in_hall === true || st === 'hall' || st === '等待接单';
+          if (!inHallLocal) {
+            return { ok: false, code: 409, error: '该订单不在选单大厅，无法抢单' };
           }
           if (st === 'cancelled' || st === '已取消' || target.isCancelled) {
             return { ok: false, code: 410, error: '该订单已取消' };
@@ -8200,6 +8354,29 @@ function getClientIp(req: any): string {
         console.error('[ReportTransfer] 发起人授权校验异常:', (e as any)?.message);
         return res.status(503).json({ success: false, error: '授权校验失败，请重试' });
       }
+      // P1(2026-10-16)：转单发起侧加非VIP每日2次服务端限制（之前仅前端限制，可绕过）。
+      try {
+        let vipExpiryRT = '';
+        if (isMySQLEnabled && mysqlPool) {
+          const [vrows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['driver_users', cleanReporter]);
+          if (vrows && vrows.length > 0) {
+            const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+            vipExpiryRT = String(vd.vipExpiry || '');
+          }
+        } else {
+          vipExpiryRT = String(readLocalJsonDb()?.driver_users?.[cleanReporter]?.vipExpiry || '');
+        }
+        if (!isVipActiveServer(vipExpiryRT)) {
+          const todayRT = await countTodayReportTransfers(cleanReporter);
+          if (todayRT >= 2) {
+            return res.status(403).json({ success: false, error: '非VIP会员每天限转单2次，明早6点自动恢复。如需无限转单请开通VIP' });
+          }
+        }
+      } catch (e) {
+        console.error('[ReportTransfer] VIP限额校验异常:', (e as any)?.message);
+      }
       const cleanPassenger = String(passengerPhone || '').replace(/\D/g, '').trim();
       // cleanOrderId已在上方服务端生成
       if (!cleanReporter || !/^1[3-9]\d{9}$/.test(cleanPassenger)) {
@@ -8325,7 +8502,9 @@ function getClientIp(req: any): string {
           const la = Number(loc.lat ?? loc.latitude);
           const lo = Number(loc.lng ?? loc.longitude);
           if (isNaN(la) || isNaN(lo) || la === 0 || lo === 0) continue;
-          const updTs = Number(loc.timestamp || loc.updatedAt || loc.lastUpdate || 0);
+          const updTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || loc.lastLocationTime || 0);
+          // P0(2026-10-16)：字段名与 /api/dispatch/nearest 同口径。之前读 loc.timestamp/loc.updatedAt/loc.lastUpdate
+          // 三个不存在的字段，updTs 恒为 0，所有候选人被跳过，报单转单实际从未派单成功过、全部进了大厅。
           // 2026-10-12修复：无时间戳按过期处理（M2规则），不再放行幽灵司机
           if (!updTs || nowTs - updTs > 120000) continue; // GPS超120秒或无时间戳不派
           // 2026-10-12修复：必须明确 isOnline === true，undefined 不算在线

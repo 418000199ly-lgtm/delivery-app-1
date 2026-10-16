@@ -340,10 +340,22 @@ export default function ReportTransferOrderModal({
         return;
       }
 
+      // P1(2026-10-16)：去掉服务端失败后的本地降级"假成功"。
+      // 之前服务端异常（非401/403）时走本地 candidates 派单并显示"派单成功"，
+      // 但绕过了服务端的接单授权/VIP限额/3公里等校验，且倒计时/转大厅定时器不在服务端，
+      // 造成"有弹窗、无倒计时、永不转大厅"的僵尸单。现在服务端失败直接报错，不再假成功。
       const isServerHandled = serverResult && serverResult.success;
-      const isHallFromServer = isServerHandled ? serverResult.isHall : (candidates.length === 0);
+      if (!isServerHandled) {
+        setDispatchResultMsg({
+          title: '报单转单失败',
+          desc: '服务器派单失败，请检查网络后重试。如持续失败请联系开发者。',
+          isHall: false
+        });
+        return;
+      }
+      const isHallFromServer = serverResult.isHall;
 
-      if (isServerHandled && !serverResult.isHall && serverResult.dispatchedDriverPhone) {
+      if (!serverResult.isHall && serverResult.dispatchedDriverPhone) {
         // Server assigned to nearest driver
         const srvPhone = String(serverResult.dispatchedDriverPhone).replace(/\D/g, '').trim();
         const srvName = serverResult.dispatchedDriverName || `司机${srvPhone.slice(-4)}`;
@@ -352,65 +364,6 @@ export default function ReportTransferOrderModal({
         setDispatchResultMsg({
           title: '报单转单派单成功',
           desc: `已派单给报单司机附近3公里内最近的小队司机【${srvName} (${srvPhone})】，直线距离 ${serverResult.distanceText || formatDistance(serverResult.distKm || 0.5)}，对方司机APP已实时弹出新来单界面（60秒倒计时）！`,
-          isHall: false
-        });
-      } else if (!isServerHandled && candidates.length > 0) {
-        // Local fallback when server unreachable
-        const minDist = Math.min(...candidates.map(c => c.distKm));
-        const sameMinDistCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) < 0.001);
-        const selectedDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
-        chosenDriver = selectedDriver;
-        const calculatedDistText = selectedDriver.distKm < 0.05 ? '0米' : formatDistance(selectedDriver.distKm);
-
-        const orderPayload = {
-          id: orderId,
-          orderId: orderId,
-          passengerPhone: cleanPhone,
-          startLocation: currentPickup,
-          destination: '',
-          status: 'submitted',
-          timestamp: Date.now(),
-          dispatchedAt: Date.now(),
-          dispatchCountdown: 60,
-          dispatchExpiresAt: Date.now() + 60000,
-          isValetOrder: true,
-          isPlatformDispatch: true,
-          orderRemark: '报单转单',
-          orderType: '报单转单',
-          type: '报单转单',
-          passengerLat: pLat,
-          passengerLng: pLng,
-          lat: pLat,
-          lng: pLng,
-          startLat: pLat,
-          startLng: pLng,
-          approxPrice: '未知',
-          scheduledTime: '现在出发',
-          needScooter: false,
-          dispatchedDriverPhone: selectedDriver.phone,
-          dispatchedDriverName: selectedDriver.name,
-          merchantPhone: userPhone || '',
-          reporterPhone: userPhone || '',
-          dispatchedByPhone: userPhone || '',
-          dispatchedBy: userPhone || '',
-          paymentQrCode: myQrCode,
-          merchantPaymentQrCode: myQrCode,
-          distanceText: calculatedDistText,
-        };
-
-        if (db) {
-          await setDoc(doc(db, 'passenger_links', selectedDriver.phone), orderPayload).catch(() => {});
-          await setDoc(doc(db, 'merchant_orders', orderId), {
-            ...orderPayload,
-            status: 'dispatched',
-            statusCategory: '派单给司机',
-            createdAt: Date.now()
-          }).catch(() => {});
-        }
-
-        setDispatchResultMsg({
-          title: '报单转单派单成功',
-          desc: `已派单给报单司机附近3公里内最近的小队司机【${selectedDriver.name} (${selectedDriver.phone})】，直线距离 ${calculatedDistText}，对方司机APP已实时弹出新来单界面（60秒倒计时）！`,
           isHall: false
         });
       } else {

@@ -858,16 +858,23 @@ export function calculateDaysFromExpiry(expiry?: string): string {
   }
 }
 
-// 接单授权是否有效（2026-10-15 P1-3/P2：与服务端 getLicenseDaysRemaining 口径对齐）
-// '永久有效'/'永久'/'终身'视为有效；日期按天数>0有效；空值/待开通/非法视为无效
+// 接单授权是否有效（2026-10-16 P1-1/P1-2：与服务端 getLicenseDaysRemaining 口径对齐）
+// '永久有效'/'永久'/'终身'视为有效；纯 YYYY-MM-DD 按当天 23:59:59 解析（与服务端同口径），
+// 避免 Date.parse 按 UTC 午夜解析导致到期日当天 08:00 就被判过期。
 export function hasValidLicense(licenseExpiry?: string): boolean {
   if (!licenseExpiry) return false;
   const trimmed = String(licenseExpiry).trim();
   if (trimmed === '永久有效' || trimmed === '永久' || trimmed === '终身' || trimmed === 'permanent') return true;
   if (!trimmed || trimmed === '待开通' || trimmed === '待激活' || trimmed === '未激活' || trimmed === '未开通' || trimmed === '0' || trimmed === '0天' || trimmed === '已到期' || trimmed === '已过期') return false;
-  const parsed = Date.parse(trimmed);
+  const dateOnly = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  let parsed: number;
+  if (dateOnly) {
+    parsed = new Date(parseInt(dateOnly[1], 10), parseInt(dateOnly[2], 10) - 1, parseInt(dateOnly[3], 10), 23, 59, 59, 999).getTime();
+  } else {
+    parsed = Date.parse(trimmed);
+  }
   if (isNaN(parsed)) return false;
-  return Math.ceil((parsed - Date.now()) / 86400000) > 0;
+  return parsed > Date.now();
 }
 
 // 补缺失的导出（2026-10-10修复：stash版本引用了不存在的函数）

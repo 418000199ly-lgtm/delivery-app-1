@@ -4984,25 +4984,19 @@ export default function HomeView({
             {(() => {
               if (!checkApprovalStatus()) return null;
               const licExpiry = settings.licenseExpiry || '';
-              let licText = '接单授权（待开通）';
-              let licColor = 'text-red-500';
-              // 2026-10-15 P1-3：与服务端 getLicenseDaysRemaining 口径对齐，'永久'/'终身'也视为永久
-              if (licExpiry === '永久有效' || licExpiry === '永久' || licExpiry === '终身') {
-                licText = '接单授权（永久）';
-                licColor = 'text-emerald-600';
-              } else if (licExpiry && licExpiry !== '待开通') {
-                // 2026-10-15 P2：用 calculateDaysFromExpiry 统一口径（按自然日计算，避免Math.ceil体感偏移1天）
+              // P1(2026-10-16)：统一先用 hasValidLicense 判有效（与服务端同口径），无效直接显示已到期。
+              // 之前显示层与判定层口径不一致，边界当天可能显示"已到期"但服务端仍派单（或反之）。
+              if (!hasValidLicense(licExpiry)) {
+                return <span className="text-[9.5px] font-bold text-red-500">接单授权（已到期）</span>;
+              }
+              let licText = '接单授权（永久）';
+              let licColor = 'text-emerald-600';
+              if (licExpiry !== '永久有效' && licExpiry !== '永久' && licExpiry !== '终身') {
                 const daysStr = calculateDaysFromExpiry(licExpiry);
                 const days = parseInt(daysStr, 10);
-                if (daysStr === '永久') {
-                  licText = '接单授权（永久）';
-                  licColor = 'text-emerald-600';
-                } else if (!isNaN(days) && days > 0) {
+                if (!isNaN(days) && days > 0) {
                   licText = `接单授权（${days}天）`;
-                  // 正常绿色，7天内黄色提醒，过期红色
                   licColor = days <= 7 ? 'text-amber-600' : 'text-emerald-600';
-                } else {
-                  licText = '接单授权（已到期）';
                 }
               }
               return <span className={`text-[9.5px] font-bold ${licColor}`}>{licText}</span>;

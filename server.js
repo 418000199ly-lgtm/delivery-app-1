@@ -522,16 +522,28 @@ function readLocalJsonDb() {
   if (!cachedDbData) cachedDbData = {};
   return cachedDbData;
 }
+var _tmpWriteSeq = 0;
+function uniqueTmpPath() {
+  _tmpWriteSeq = (_tmpWriteSeq + 1) % 1e6;
+  return `${LOCAL_JSON_DB_PATH}.tmp.${process.pid}.${Date.now()}.${_tmpWriteSeq}`;
+}
+function removeFileQuiet(p) {
+  try {
+    import_fs.default.unlinkSync(p);
+  } catch (_) {
+  }
+}
 function writeLocalJsonDb(data, immediate = true) {
   cachedDbData = data;
   lastDbReadTime = Date.now();
   if (immediate) {
+    const tmpPath = uniqueTmpPath();
     try {
-      const tmpPath = LOCAL_JSON_DB_PATH + ".tmp";
       import_fs.default.writeFileSync(tmpPath, JSON.stringify(data), "utf8");
       import_fs.default.renameSync(tmpPath, LOCAL_JSON_DB_PATH);
     } catch (e) {
       console.error("[Local JSON DB] Sync write error:", e?.message);
+      removeFileQuiet(tmpPath);
       _dbDirty = true;
     }
     return;
@@ -543,8 +555,13 @@ setInterval(() => {
   _dbDirty = false;
   _dbWriteInFlight = true;
   const snapshot = cachedDbData;
-  const tmpPath = LOCAL_JSON_DB_PATH + ".tmp";
-  import_fs.default.promises.writeFile(tmpPath, JSON.stringify(snapshot), "utf8").then(() => import_fs.default.promises.rename(tmpPath, LOCAL_JSON_DB_PATH)).catch((e) => console.error("[Local JSON DB] Async write error:", e?.message)).finally(() => {
+  const tmpPath = uniqueTmpPath();
+  import_fs.default.promises.writeFile(tmpPath, JSON.stringify(snapshot), "utf8").then(() => import_fs.default.promises.rename(tmpPath, LOCAL_JSON_DB_PATH)).catch((e) => {
+    console.error("[Local JSON DB] Async write error:", e?.message);
+    import_fs.default.promises.unlink(tmpPath).catch(() => {
+    });
+    _dbDirty = true;
+  }).finally(() => {
     _dbWriteInFlight = false;
     if (cachedDbData !== snapshot) {
       _dbDirty = true;
@@ -559,6 +576,16 @@ try {
   }
 } catch (e) {
   console.error("[Local JSON DB] \u542F\u52A8\u5907\u4EFD\u5931\u8D25:", e?.message);
+}
+try {
+  const _tmpDir = import_path.default.dirname(LOCAL_JSON_DB_PATH);
+  const _tmpBase = import_path.default.basename(LOCAL_JSON_DB_PATH);
+  for (const _f of import_fs.default.readdirSync(_tmpDir)) {
+    if (_f === _tmpBase + ".tmp" || _f.startsWith(_tmpBase + ".tmp.")) {
+      removeFileQuiet(import_path.default.join(_tmpDir, _f));
+    }
+  }
+} catch (_) {
 }
 async function runSystemDiskCleanup() {
   if (isMySQLEnabled && mysqlPool) {
@@ -829,7 +856,11 @@ async function startServer() {
         createdAt: "2026-10-06T00:00:00.000Z",
         updatedAt: "2026-10-06T00:00:00.000Z"
       };
-      dbData.online_applications["15509601222"] = onlineApp155;
+      const prevOnline155 = dbData.online_applications["15509601222"] || {};
+      dbData.online_applications["15509601222"] = { ...prevOnline155, ...onlineApp155 };
+      if (prevOnline155.licenseExpiry) {
+        dbData.online_applications["15509601222"].licenseExpiry = prevOnline155.licenseExpiry;
+      }
       if (dbData.driver_users) {
         Object.keys(dbData.driver_users).forEach((docId) => {
           const isMerchantA = docId.toUpperCase().endsWith("A") || dbData.driver_users[docId]?.isMerchant;
@@ -840,7 +871,9 @@ async function startServer() {
         });
       }
       if (!dbData.driver_users) dbData.driver_users = {};
+      const prevDev155 = dbData.driver_users["15509601222"] || {};
       dbData.driver_users["15509601222"] = {
+        ...prevDev155,
         id: "15509601222",
         phone: "15509601222",
         phoneNumber: "15509601222",
@@ -854,7 +887,8 @@ async function startServer() {
         inSquad: true,
         collection: "squad_members",
         city: "\u94F6\u5DDD\u5E02",
-        vipExpiry: "2099-12-31",
+        // vipExpiry：已有（管理员设置的20天等）则保留，缺省才给永久
+        vipExpiry: prevDev155.vipExpiry || "2099-12-31",
         isOnline: true,
         onlineOrdersEnabled: true
       };
@@ -896,11 +930,13 @@ async function startServer() {
           createdAt: "2026-10-06T00:00:00.000Z",
           updatedAt: "2026-10-06T00:00:00.000Z"
         };
+        const onlineApp155Patch = { ...onlineApp155 };
+        delete onlineApp155Patch.licenseExpiry;
         await conn.query(
           `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
            VALUES ('online_applications', '15509601222', ?, NOW())
-           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
-          [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155)]
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?), \`updated_at\` = NOW()`,
+          [JSON.stringify(onlineApp155), JSON.stringify(onlineApp155Patch)]
         );
         const dev155 = {
           id: "15509601222",
@@ -920,17 +956,20 @@ async function startServer() {
           isOnline: true,
           onlineOrdersEnabled: true
         };
+        const dev155Patch = { ...dev155 };
+        delete dev155Patch.vipExpiry;
+        delete dev155Patch.licenseExpiry;
         await conn.query(
           `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
            VALUES ('driver_users', '15509601222', ?, NOW())
-           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
-          [JSON.stringify(dev155), JSON.stringify(dev155)]
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?), \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155Patch)]
         );
         await conn.query(
           `INSERT INTO \`daijia_documents\` (\`collection\`, \`doc_id\`, \`data\`, \`updated_at\`)
            VALUES ('squad_members', '15509601222', ?, NOW())
-           ON DUPLICATE KEY UPDATE \`data\` = ?, \`updated_at\` = NOW()`,
-          [JSON.stringify(dev155), JSON.stringify(dev155)]
+           ON DUPLICATE KEY UPDATE \`data\` = JSON_MERGE_PATCH(\`data\`, ?), \`updated_at\` = NOW()`,
+          [JSON.stringify(dev155), JSON.stringify(dev155Patch)]
         );
         const vData = {
           version: "V2.0",
@@ -1153,7 +1192,7 @@ async function startServer() {
   };
   consolidateAllDriversOnStartup().catch(() => {
   });
-  const SERVER_VERSION = "7b13e073";
+  const SERVER_VERSION = "c6158b2a";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -1430,6 +1469,12 @@ async function startServer() {
         } else if (sa.vipExpiry !== void 0 && sa.vipExpiry !== null && sa.vipExpiry !== "") {
           vipExpiry = String(sa.vipExpiry).trim();
         }
+        let licenseExpiry = "";
+        const pickLic = (v) => {
+          const s = String(v ?? "").trim();
+          return s && s !== "\u5F85\u5F00\u901A" ? s : "";
+        };
+        licenseExpiry = pickLic(raw.licenseExpiry) || pickLic(du.licenseExpiry) || pickLic(sq.licenseExpiry) || pickLic(oa.licenseExpiry) || pickLic(sa.licenseExpiry);
         if (isRejected) {
           vipExpiry = "\u5F85\u5F00\u901A";
         } else if (!vipExpiry) {
@@ -1452,6 +1497,7 @@ async function startServer() {
           squad_position: effectiveRole === "\u57CE\u5E02\u6D3E\u5355\u5458\u53F8\u673A" ? "dispatcher" : effectiveRole === "\u57CE\u5E02\u7BA1\u7406\u53F8\u673A" ? "manager" : effectiveRole === "\u57CE\u5E02\u8001\u677F\u53F8\u673A" ? "boss" : effectiveRole === "\u5F00\u53D1\u8005\u53F8\u673A" ? "developer" : "normal",
           status,
           vipExpiry,
+          licenseExpiry: licenseExpiry || "\u5F85\u5F00\u901A",
           qrcode_url: effectiveQr,
           wechatQrCode: effectiveQr,
           qrCode: effectiveQr,
@@ -1517,6 +1563,16 @@ async function startServer() {
         }
         forcedDocId = requesterPhone;
       }
+      const dbData = readLocalJsonDb();
+      const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
+      const isOrdersCol = ["merchant_orders", "valet_orders", "orders"].includes(col);
+      const removedArr = dbData.config?.["removed_squad_members"]?.phones || [];
+      const clearedTimestamp = Number(dbData.config?.["merchant_orders_cleared"]?.clearedAt || 0);
+      if (isOrdersCol && requesterPhone && requesterPhone !== "15509601222") {
+        if (removedArr.includes(requesterPhone)) {
+          return res.json({ docs: [], list: [], data: [] });
+        }
+      }
       if (isMySQLEnabled && mysqlPool) {
         try {
           let rows;
@@ -1540,16 +1596,6 @@ async function startServer() {
           const target50d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
           target50d.setDate(target50d.getDate() + 50);
           const default50DaysVip = `${target50d.getFullYear()}-${String(target50d.getMonth() + 1).padStart(2, "0")}-${String(target50d.getDate()).padStart(2, "0")}`;
-          const isDriverCol = ["driver_users", "squad_members", "online_applications", "squad_applications"].includes(col);
-          const isOrdersCol2 = ["merchant_orders", "valet_orders", "orders"].includes(col);
-          const requesterPhone2 = String(req.authPhone || "").replace(/\D/g, "").trim();
-          if (isOrdersCol2 && requesterPhone2 && requesterPhone2 !== "15509601222") {
-            const removedArr = dbData.config?.["removed_squad_members"]?.phones || [];
-            if (removedArr.includes(requesterPhone2)) {
-              return res.json({ docs: [], list: [], data: [] });
-            }
-          }
-          const clearedTimestamp2 = Number(dbData.config?.["merchant_orders_cleared"]?.clearedAt || 0);
           const docs2 = (rows || []).map((r) => {
             const data = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
             const obj = typeof data === "object" && data !== null ? { ...data } : {};
@@ -1580,18 +1626,18 @@ async function startServer() {
               if (isGenericDriverName(doc.name || doc.driverName, cleanPhone)) return false;
               return true;
             }
-            if (isOrdersCol2 && clearedTimestamp2 > 0) {
+            if (isOrdersCol && clearedTimestamp > 0) {
               const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
-              if (t > 0 && t <= clearedTimestamp2) return false;
+              if (t > 0 && t <= clearedTimestamp) return false;
             }
             return true;
           });
           return res.json({ docs: docs2, list: docs2, data: docs2 });
         } catch (mysqlErr) {
           console.error("[DB Proxy LIST MySQL Error]:", mysqlErr);
+          return res.status(500).json({ docs: [], error: "MySQL \u67E5\u8BE2\u5931\u8D25: " + (mysqlErr?.message || "unknown") });
         }
       }
-      const dbData = readLocalJsonDb();
       const colData = dbData[col] || {};
       const docs = Object.keys(colData).map((k) => {
         const itemData = colData[k];
@@ -2131,11 +2177,23 @@ async function startServer() {
         };
         dbData[col][phone] = updated;
         if (isMySQLEnabled && mysqlPool) {
-          await mysqlPool.query(
-            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-            [col, phone, JSON.stringify(updated)]
-          ).catch(() => {
-          });
+          const upsertSql = "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)";
+          const upsertArgs = [col, phone, JSON.stringify(updated)];
+          let mysqlOk = false;
+          let lastMysqlErr = null;
+          for (let attempt = 0; attempt < 3 && !mysqlOk; attempt++) {
+            try {
+              await mysqlPool.query(upsertSql, upsertArgs);
+              mysqlOk = true;
+            } catch (e) {
+              lastMysqlErr = e;
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+            }
+          }
+          if (!mysqlOk) {
+            console.error("[Admin VIP Expiry MySQL Write Failed]:", col, phone, lastMysqlErr?.message || lastMysqlErr);
+            throw new Error(`MySQL \u5199\u5165\u5931\u8D25(${col})\uFF1A${lastMysqlErr?.message || lastMysqlErr}`);
+          }
         }
       }
       writeLocalJsonDb(dbData, true);
@@ -2175,9 +2233,10 @@ async function startServer() {
     try {
       const inputPhone = String(req.body.phone || req.body.phoneNumber || "").replace(/\D/g, "").trim();
       const inputName = String(req.body.name || "").trim();
-      const days = Math.floor(Number(req.body.days) || 0);
-      if (days <= 0 || days > 3650) {
-        return res.status(400).json({ success: false, error: "\u5929\u6570\u5FC5\u987B\u57281-3650\u4E4B\u95F4" });
+      const rawDays = req.body.days;
+      const days = Math.floor(Number(rawDays));
+      if (rawDays === void 0 || rawDays === null || String(rawDays).trim() === "" || isNaN(days) || days < 0 || days > 3650) {
+        return res.status(400).json({ success: false, error: "\u5929\u6570\u5FC5\u987B\u57280-3650\u4E4B\u95F4\uFF080=\u5C4F\u853D\u63A5\u5355\uFF09" });
       }
       let targetPhone = inputPhone;
       if (!targetPhone && inputName) {
@@ -2245,19 +2304,30 @@ async function startServer() {
           if (rows && rows.length > 0) {
             existing = typeof rows[0].data === "string" ? JSON.parse(rows[0].data) : rows[0].data;
           }
-          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ""));
+          if (!newExpiry) newExpiry = days === 0 ? "\u5DF2\u5230\u671F" : calcNewExpiry(String(existing.licenseExpiry || ""));
           const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
           await mysqlPool.query(
             "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
             [col, targetPhone, JSON.stringify(updated)]
           );
         }
+        try {
+          const dbData = readLocalJsonDb();
+          for (const col of targetCols) {
+            if (!dbData[col]) dbData[col] = {};
+            const existingLocal = dbData[col][targetPhone] || {};
+            dbData[col][targetPhone] = { ...existingLocal, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+          }
+          writeLocalJsonDb(dbData);
+        } catch (dualErr) {
+          console.error("[Recharge License] \u672C\u5730JSON\u53CC\u5199\u5931\u8D25\uFF08MySQL\u5DF2\u6210\u529F\uFF09:", dualErr?.message);
+        }
       } else {
         const dbData = readLocalJsonDb();
         for (const col of targetCols) {
           if (!dbData[col]) dbData[col] = {};
           const existing = dbData[col][targetPhone] || {};
-          if (!newExpiry) newExpiry = calcNewExpiry(String(existing.licenseExpiry || ""));
+          if (!newExpiry) newExpiry = days === 0 ? "\u5DF2\u5230\u671F" : calcNewExpiry(String(existing.licenseExpiry || ""));
           dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
         }
         writeLocalJsonDb(dbData);
@@ -2274,9 +2344,10 @@ async function startServer() {
       return res.status(403).json({ success: false, error: "\u4EC5\u5F00\u53D1\u8005\u53EF\u6279\u91CF\u5145\u503C" });
     }
     try {
-      const days = Math.floor(Number(req.body.days) || 0);
-      if (days <= 0 || days > 3650) {
-        return res.status(400).json({ success: false, error: "\u5929\u6570\u5FC5\u987B\u57281-3650\u4E4B\u95F4" });
+      const rawDays = req.body.days;
+      const days = Math.floor(Number(rawDays));
+      if (rawDays === void 0 || rawDays === null || String(rawDays).trim() === "" || isNaN(days) || days < 0 || days > 3650) {
+        return res.status(400).json({ success: false, error: "\u5929\u6570\u5FC5\u987B\u57280-3650\u4E4B\u95F4\uFF080=\u5C4F\u853D\u63A5\u5355\uFF09" });
       }
       const calcExpiry = (cur) => {
         const curTrim = String(cur || "").trim();
@@ -2302,6 +2373,7 @@ async function startServer() {
           "SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?",
           ["squad_members"]
         );
+        const dualWriteMap = {};
         for (const r of mrows || []) {
           const phone = String(r.doc_id).replace(/\D/g, "").trim();
           if (!/^1[3-9]\d{9}$/.test(phone)) continue;
@@ -2314,7 +2386,7 @@ async function startServer() {
           } catch (_) {
             continue;
           }
-          const newExp = calcExpiry(curLic);
+          const newExp = days === 0 ? "\u5DF2\u5230\u671F" : calcExpiry(curLic);
           for (const col of targetCols) {
             const [erows] = await mysqlPool.query(
               "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
@@ -2328,7 +2400,21 @@ async function startServer() {
               [col, phone, JSON.stringify(upd)]
             );
           }
+          dualWriteMap[phone] = newExp;
           count++;
+        }
+        try {
+          const dbData = readLocalJsonDb();
+          for (const [phone, newExp] of Object.entries(dualWriteMap)) {
+            for (const col of targetCols) {
+              if (!dbData[col]) dbData[col] = {};
+              const ex = dbData[col][phone] || {};
+              dbData[col][phone] = { ...ex, phone, phoneNumber: phone, licenseExpiry: newExp, updatedAt: now };
+            }
+          }
+          writeLocalJsonDb(dbData);
+        } catch (dualErr) {
+          console.error("[Batch Recharge License] \u672C\u5730JSON\u53CC\u5199\u5931\u8D25\uFF08MySQL\u5DF2\u6210\u529F\uFF09:", dualErr?.message);
         }
       } else {
         const dbData = readLocalJsonDb();
@@ -2337,7 +2423,7 @@ async function startServer() {
           if (!/^1[3-9]\d{9}$/.test(p)) continue;
           const st = String(d.status || d.approvalStatus || "");
           if (!["\u5DF2\u901A\u8FC7", "approved", "\u901A\u8FC7"].includes(st)) continue;
-          const newExp = calcExpiry(String(d.licenseExpiry || ""));
+          const newExp = days === 0 ? "\u5DF2\u5230\u671F" : calcExpiry(String(d.licenseExpiry || ""));
           for (const col of targetCols) {
             if (!dbData[col]) dbData[col] = {};
             const ex = dbData[col][p] || {};
@@ -2383,11 +2469,23 @@ async function startServer() {
         if (city) updated.city = city;
         dbData[col][phone] = updated;
         if (isMySQLEnabled && mysqlPool) {
-          await mysqlPool.query(
-            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-            [col, phone, JSON.stringify(updated)]
-          ).catch(() => {
-          });
+          const upsertSql2 = "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)";
+          const upsertArgs2 = [col, phone, JSON.stringify(updated)];
+          let mysqlOk2 = false;
+          let lastMysqlErr2 = null;
+          for (let attempt = 0; attempt < 3 && !mysqlOk2; attempt++) {
+            try {
+              await mysqlPool.query(upsertSql2, upsertArgs2);
+              mysqlOk2 = true;
+            } catch (e) {
+              lastMysqlErr2 = e;
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+            }
+          }
+          if (!mysqlOk2) {
+            console.error("[Admin Driver Role MySQL Write Failed]:", col, phone, lastMysqlErr2?.message || lastMysqlErr2);
+            throw new Error(`MySQL \u5199\u5165\u5931\u8D25(${col})\uFF1A${lastMysqlErr2?.message || lastMysqlErr2}`);
+          }
         }
       }
       if (!dbData.team_members) dbData.team_members = {};
@@ -4944,16 +5042,12 @@ async function startServer() {
       const dataWithId = { ...data, id: data.id || generatedId };
       const finalId = dataWithId.id;
       if (isMySQLEnabled && mysqlPool) {
-        try {
-          const dataStr = JSON.stringify(dataWithId);
-          await mysqlPool.query(
-            "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
-            [col, finalId, dataStr]
-          );
-          return res.json({ success: true, id: finalId });
-        } catch (mysqlErr) {
-          console.error("[DB Proxy ADD MySQL Error]:", mysqlErr);
-        }
+        const dataStr = JSON.stringify(dataWithId);
+        await mysqlPool.query(
+          "INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)",
+          [col, finalId, dataStr]
+        );
+        return res.json({ success: true, id: finalId });
       }
       const dbData = readLocalJsonDb();
       if (!dbData[col]) dbData[col] = {};
@@ -6202,13 +6296,36 @@ async function startServer() {
         return res.status(400).json({ success: false, error: "\u7F3A\u5C11 orderId" });
       }
       try {
-        const dbData = readLocalJsonDb();
-        const order = dbData.merchant_orders?.[cleanOrderId] || dbData.valet_orders?.[cleanOrderId];
         const isDev = req.isAdmin;
-        if (!isDev && order) {
-          const assigned = String(order.dispatchedDriverPhone || "").replace(/\D/g, "").trim();
-          if (assigned && assigned !== cleanDriverPhone) {
-            return res.status(403).json({ success: false, error: "\u53EA\u6709\u88AB\u6D3E\u53F8\u673A\u53EF\u4EE5\u5C06\u8BE5\u8BA2\u5355\u8F6C\u5165\u5927\u5385" });
+        if (!isDev) {
+          let order = null;
+          if (isMySQLEnabled && mysqlPool) {
+            try {
+              const [vrows] = await mysqlPool.query(
+                "SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1",
+                ["merchant_orders", cleanOrderId]
+              );
+              if (vrows && vrows.length > 0) {
+                const vraw = vrows[0].data;
+                order = typeof vraw === "string" ? JSON.parse(vraw) : vraw;
+              }
+            } catch (_) {
+              order = null;
+            }
+          }
+          if (!order) {
+            const dbData = readLocalJsonDb();
+            order = dbData.merchant_orders?.[cleanOrderId] || dbData.valet_orders?.[cleanOrderId];
+          }
+          if (order) {
+            const assigned = String(order.dispatchedDriverPhone || "").replace(/\D/g, "").trim();
+            if (assigned && assigned !== cleanDriverPhone) {
+              return res.status(403).json({ success: false, error: "\u53EA\u6709\u88AB\u6D3E\u53F8\u673A\u53EF\u4EE5\u5C06\u8BE5\u8BA2\u5355\u8F6C\u5165\u5927\u5385" });
+            }
+            const claimed = String(order.claimedDriverPhone || "").replace(/\D/g, "").trim();
+            if (claimed && claimed !== cleanDriverPhone) {
+              return res.status(403).json({ success: false, error: "\u8BE5\u8BA2\u5355\u5DF2\u88AB\u5176\u4ED6\u53F8\u673A\u63A5\u8D70\uFF0C\u4E0D\u80FD\u8F6C\u5165\u5927\u5385" });
+            }
           }
         }
       } catch (_) {

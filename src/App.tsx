@@ -280,7 +280,16 @@ export default function App() {
   const [currentTrip, setCurrentTrip] = useState<TripState | null>(() => {
     try {
       const cached = typeof window !== 'undefined' ? localStorage.getItem('dd_current_trip') : null;
-      return cached ? JSON.parse(cached) : null;
+      if (!cached) return null;
+      const trip = JSON.parse(cached);
+      // P1(2026-10-16)：启动时丢弃终态 trip 缓存。之前已完成/已取消的订单残留，
+      // 重启后司机被判定为忙碌（busy），收不到新派单也抢不了单。
+      const st = String(trip?.status || '').toLowerCase();
+      if (['completed', '已完成', '完成', 'cancelled', '已取消', '取消'].includes(st) || trip?.isCancelled === true) {
+        try { localStorage.removeItem('dd_current_trip'); } catch (_) {}
+        return null;
+      }
+      return trip;
     } catch (_) {
       return null;
     }
@@ -2712,10 +2721,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             return;
           }
           // 其他失败也提示，避免静默假接单
+          // P0(2026-10-16)：非终态错误（网络抖动等）移除 dismissed key，下轮轮询可重弹；
+          // 终态错误（403/409/410 在上方已 return）保持抑制，避免死循环弹窗
+          if (incomingOrder) {
+            const retryKey = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
+            dismissedIncomingOrderKeysRef.current.delete(retryKey);
+          }
           triggerToast('⚠️ 接单未成功，请重试：' + (msg || claimResp.status));
           return;
         }
       } catch (e) {
+        // P0(2026-10-16)：网络异常是非终态错误，移除 dismissed key 让下轮重弹，否则一次抖动就永久丢单
+        if (incomingOrder) {
+          const retryKey2 = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
+          dismissedIncomingOrderKeysRef.current.delete(retryKey2);
+        }
         triggerToast('⚠️ 网络异常，接单未成功，请重试');
         return;
       }
