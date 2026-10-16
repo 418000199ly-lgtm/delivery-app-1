@@ -28,7 +28,9 @@ interface IncomingOrderOverlayProps {
   driverCoords?: { lat: number; lng: number } | null;
   onlineBillingRules?: BillingRules;
   onAccept: (trip: TripState) => void;
-  onDecline: () => void;
+  // P2(2026-10-16第三遍审计)：onDecline 支持 reason 透传（'user'|'timeout'|'no_heartbeat'），
+  // 超时/未上屏时传 'timeout'，App 端只在用户主动拒单时写永久屏蔽名单。
+  onDecline: (reason?: 'user' | 'timeout' | 'no_heartbeat') => void;
   // P0(2026-10-16)：409(被他人抢走)时静默关闭弹窗，不触发to-hall，避免摧毁他人已接订单
   onDismissSilently?: () => void;
 }
@@ -118,10 +120,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   const declinedRef = React.useRef<boolean>(false);
   // P1(2026-10-15)：API成功返回后永久忽略prop的serverCountdown（防旧单prop致33→59跳变）
   const hasApiRespondedRef = React.useRef(false);
-  const safeDecline = React.useCallback(() => {
+  const safeDecline = React.useCallback((reason?: string) => {
     if (declinedRef.current) return;
     declinedRef.current = true;
-    onDeclineRef.current();
+    onDeclineRef.current(reason);
   }, []);
   // P0(2026-10-16)：409静默关闭——只关弹窗，不调to-hall，不摧毁他人已接订单
   const onDismissSilentlyRef = React.useRef(onDismissSilently);
@@ -165,7 +167,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const curOrder = orderRef.current as any;
         const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
         if (orderAgeMs > 25000) {
-          safeDecline();
+          safeDecline('timeout');
         }
       }
     }
@@ -232,14 +234,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               // 心跳转大厅(约派单后15秒)时orderAgeMs<25秒，旧guard会卡死页面。
               if (data.inHall) {
                 setTimeLeft(0);
-                safeDecline();
+                safeDecline('timeout');
                 return;
               }
               const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
               // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
               if (orderAgeMs > 25000) {
                 setTimeLeft(0);
-                safeDecline();
+                safeDecline('timeout');
                 return;
               }
             }
@@ -262,7 +264,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
                   const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
                   if (orderAgeMs > 25000) {
                     // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
-                    setTimeout(() => safeDecline(), 0);
+                    setTimeout(() => safeDecline('timeout'), 0);
                   }
                 }
               } else {
@@ -468,7 +470,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           if ((pId && validCandidateIds.includes(pId)) || (pNo && validCandidateIds.includes(pNo))) {
             if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
             stopSpeaking();
-            safeDecline();
+            safeDecline('timeout');
             return;
           }
         }
@@ -481,7 +483,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
           stopSpeaking();
-          safeDecline();
+          safeDecline('timeout');
         }
       } catch (_) {}
     };
@@ -494,7 +496,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         if ((dId && validCandidateIds.includes(dId)) || (dNo && validCandidateIds.includes(dNo))) {
           if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
           stopSpeaking();
-          safeDecline();
+          safeDecline('timeout');
         }
       }
     };
@@ -594,7 +596,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
       if (ended) {
         speakText('该订单已结单，无法重复接单');
-        safeDecline();
+        safeDecline('timeout');
         return;
       }
 
@@ -666,7 +668,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             speakText('接单失败，请重试');
           }
           isAcceptingRef.current = false;
-          safeDecline();
+          safeDecline('timeout');
           return;
         }
       } catch (_) {
@@ -682,7 +684,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       console.error('Confirm order execution error:', err);
       // P1-3修复(2026-10-13)：异常时绝不伪造接单，改为拒单+报错，避免幽灵行程
       speakText('接单异常，请重试');
-      safeDecline();
+      safeDecline('timeout');
     } finally {
       setIsAccepting(false);
       isAcceptingRef.current = false;

@@ -4491,23 +4491,15 @@ export default function HomeView({
         badgeText: '终身' 
       };
     }
+    // 用户2026-10-17铁律：VIP只显示数字倒计时 3天/2天/1天/0天，取消"今日到期"和"待开通/待激活"
+    // 0天=非会员，禁止所有会员功能；新司机默认0
     if (days === '0' || !days) {
-      const isStillActiveToday = checkVipActive(settings.vipExpiry);
-      if (isStillActiveToday) {
-        return { 
-          text: '今日到期', 
-          daysText: '今日到期', 
-          colorClass: 'text-amber-700 bg-amber-100/90 border border-amber-300 font-bold font-mono text-[9px] shadow-xs', 
-          subColor: 'text-amber-700 font-bold', 
-          badgeText: '今日到期' 
-        };
-      }
       return { 
-        text: '待开通', 
-        daysText: '待开通', 
+        text: '0天', 
+        daysText: '0天', 
         colorClass: 'text-slate-400 bg-slate-100 border border-slate-200 font-extrabold text-[9px]', 
         subColor: 'text-slate-400', 
-        badgeText: '待激活' 
+        badgeText: '0天' 
       };
     }
     return { 
@@ -4515,7 +4507,7 @@ export default function HomeView({
       daysText: `${days}天`, 
       colorClass: 'text-amber-600 bg-amber-50 border border-amber-200 font-bold font-mono text-[11px] shadow-xs', 
       subColor: 'text-amber-600 font-bold', 
-      badgeText: '已授权' 
+      badgeText: `${days}天` 
     };
   };
 

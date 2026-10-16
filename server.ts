@@ -170,19 +170,25 @@ function getLicenseDaysRemaining(expiry: any): number {
   // P0(2026-10-16)：加上 'permanent'，与前端 hasValidLicense 对齐。
   // 之前服务端不认识 'permanent'，走 Date.parse→NaN→0天，前端显示永久但服务端判无效，无声丢单。
   if (s === '永久有效' || s === '永久' || s === '终身' || s === 'permanent') return 99999;
-  // P1(2026-10-16)：纯 YYYY-MM-DD 按当天 23:59:59 解析（与 isVipActiveServer 同口径）。
-  // 之前 Date.parse('2026-10-20') 按 UTC 午夜解析，北京时间当天 08:00 就被判过期。
-  let parsed: number;
+  // P1(2026-10-16晚)：改成日期差口径，与 App 端 calculateDaysFromExpiry 显示一致。
+  // 之前用 Math.ceil(到当天23:59:59的毫秒差)，设1天（到期日明天）服务端算2天，App显示1天，
+  // 到期日当天 App 显示0（屏蔽）但服务端判有效（仍派单），显示与派单打架。
+  // 现在统一为日期差：到期日-今天，Math.round，与前端显示完全一致。
+  let year = 0, month = 0, day = 0;
   const dateOnly = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (dateOnly) {
-    parsed = new Date(parseInt(dateOnly[1], 10), parseInt(dateOnly[2], 10) - 1, parseInt(dateOnly[3], 10), 23, 59, 59, 999).getTime();
+    year = parseInt(dateOnly[1], 10); month = parseInt(dateOnly[2], 10) - 1; day = parseInt(dateOnly[3], 10);
   } else {
-    parsed = Date.parse(s);
+    const parsed = Date.parse(s);
+    if (isNaN(parsed)) return 0;
+    const d = new Date(parsed);
+    year = d.getFullYear(); month = d.getMonth(); day = d.getDate();
   }
-  if (isNaN(parsed)) return 0;
-  const diffMs = parsed - Date.now();
-  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-  return days > 0 ? days : 0;
+  const expDate = new Date(year, month, day, 0, 0, 0, 0);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const diffDays = Math.round((expDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  return diffDays > 0 ? diffDays : 0;
 }
 // 接单授权是否有效：天数>0 或永久有效
 function isLicenseValid(expiry: any): boolean {
@@ -1277,7 +1283,9 @@ function getClientIp(req: any): string {
         const cleanPhone = String(item?.phone || item?.phoneNumber || k).replace(/\D/g, '').trim();
         const rawName = String(item?.name || item?.driverName || item?.applicantName || '');
         if (cleanPhone !== '15509601222') {
-          if (removedList.includes(cleanPhone) || cleanPhone.includes('9147') || (isGenericDriverName(rawName, cleanPhone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone])) {
+          // P1(2026-10-16第二遍审计)：删 includes('9147') 残留。之前尾号黑名单已删，
+          // 此处是 includes（任意位置包含）误杀面更大，且与决议不一致。
+          if (removedList.includes(cleanPhone) || (isGenericDriverName(rawName, cleanPhone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[cleanPhone])) {
             delete dbData.squad_members[k];
           }
         }
@@ -2132,11 +2140,15 @@ function getClientIp(req: any): string {
           }
         }
       }
-      // P1(2026-10-15)：vipExpiry/licenseExpiry仅开发者可写（与/admin接口口径一致，防"假失败"）
-      if ((col === 'driver_users' || col === 'squad_members') && !(req as any).isAdmin) {
+      // P1(2026-10-16晚)：vipExpiry/licenseExpiry 任何人（包括开发者）都不能经通用 /api/db/set 写入。
+      // 根因：开发者身份的 App 在 21:01:13 把旧 licenseExpiry(2026-10-18) 写回 MySQL，
+      // 覆盖了管理后台 20:57:50 设的"已到期"，导致 App 显示从 0 跳回 2。
+      // licenseExpiry/vipExpiry 只能经专用 /api/admin/recharge-license 和 /api/admin/*-vip* 接口修改。
+      // P0(2026-10-16第二遍审计)：覆盖全部四个司机集合（与 /api/db/get 合并链一致），之前只盖了两个。
+      if (['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col)) {
         for (const f of ['vipExpiry', 'licenseExpiry']) {
           if (data && typeof data === 'object' && f in data) {
-            console.warn(`[Auth] 非开发者尝试写${f}已剥离: token手机=${(req as any).authPhone}`);
+            console.warn(`[Auth] 通用接口写${f}已剥离: token手机=${(req as any).authPhone}, col=${col}`);
             delete data[f];
           }
         }
@@ -2418,11 +2430,14 @@ function getClientIp(req: any): string {
           }
         }
       }
-      // P1(2026-10-15)：vipExpiry/licenseExpiry仅开发者可写
-      if ((col === 'driver_users' || col === 'squad_members') && !(req as any).isAdmin) {
+      // P1(2026-10-16晚)：vipExpiry/licenseExpiry 任何人（包括开发者）都不能经通用 /api/db/update 写入。
+      // 与 /api/db/set 同口径：只能经专用 /api/admin/recharge-license 和 /api/admin/*-vip* 接口修改。
+      // 根因见 /api/db/set 处注释（2026-10-16 21:01:13 App 写回旧值覆盖管理后台设置）。
+      // P0(2026-10-16第二遍审计)：覆盖全部四个司机集合（与 /api/db/get 合并链一致）。
+      if (['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col)) {
         for (const f of ['vipExpiry', 'licenseExpiry']) {
           if (data && typeof data === 'object' && f in data) {
-            console.warn(`[Auth] 非开发者尝试写${f}已剥离: token手机=${(req as any).authPhone}`);
+            console.warn(`[Auth] 通用接口写${f}已剥离: token手机=${(req as any).authPhone}, col=${col}`);
             delete data[f];
           }
         }
@@ -2684,6 +2699,8 @@ function getClientIp(req: any): string {
       }
 
       console.log(`[Admin VIP Expiry Updated] Phone: ${phone} -> vipExpiry: ${vipExpiry}`);
+      // P1(2026-10-16第二遍审计)：VIP单改补操作日志。
+      await logAdminOperation('update-vip-expiry', String((req as any).authPhone || ''), phone, `VIP有效期设为${vipExpiry}`, req).catch(() => {});
       return res.json({ success: true, phone, vipExpiry });
     } catch (err: any) {
       console.error('[Admin VIP Expiry Update Error]:', err);
@@ -2759,7 +2776,9 @@ function getClientIp(req: any): string {
       };
       let newExpiry = ''; // 主值（driver_users 的），用于返回给前端
       const colExpiries: Record<string, string> = {}; // 每集合的到期日
-      const targetCols = ['driver_users', 'squad_members', 'online_applications'];
+      // P0(2026-10-16晚)：加入 squad_applications。它从未被充值更新，一直是旧值，
+      // 在 /api/db/get 合并时污染结果（pickLic 链最后一位），导致 App 读到旧的 2 天。
+      const targetCols = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'];
       const now = new Date().toISOString();
       if (isMySQLEnabled && mysqlPool) {
         for (const col of targetCols) {
@@ -2837,7 +2856,7 @@ function getClientIp(req: any): string {
         base.setDate(base.getDate() + days);
         return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
       };
-      const targetCols = ['driver_users', 'squad_members', 'online_applications'];
+      const targetCols = ['driver_users', 'squad_members', 'online_applications', 'squad_applications'];
       const now = new Date().toISOString();
       let count = 0;
       if (isMySQLEnabled && mysqlPool) {
@@ -2900,6 +2919,8 @@ function getClientIp(req: any): string {
         }
         writeLocalJsonDb(dbData);
       }
+      // P1(2026-10-16第二遍审计)：批量充补操作日志（单充有，批量没有，无审计追踪）。
+      await logAdminOperation('batch-recharge-license', String((req as any).authPhone || ''), `${count}人`, `批量设为${days}天，共${count}人`, req).catch(() => {});
       return res.json({ success: true, count, daysAdded: days });
     } catch (err: any) {
       console.error('[Batch Recharge License Error]:', err);
@@ -3062,6 +3083,8 @@ function getClientIp(req: any): string {
       }
 
       const updatedPhones: string[] = [];
+      // P1(2026-10-16第二遍审计)：收集MySQL写入失败，不再静默吞掉。
+      const failedPhones: string[] = [];
       const targetCols = ['driver_users', 'squad_members', 'squad_applications'];
 
       // P0(2026-10-15)：只给已通过的小队成员充值，防误批待审申请人
@@ -3163,6 +3186,9 @@ function getClientIp(req: any): string {
               );
             } catch (e) {
               console.error(`[Batch VIP] MySQL写入失败 ${col}/${phone}:`, (e as any)?.message);
+              // P1(2026-10-16第二遍审计)：失败记入名单，不再静默吞掉。
+              const failKey = `${phone}`;
+              if (!failedPhones.includes(failKey)) failedPhones.push(failKey);
             }
           }
         }
@@ -3172,11 +3198,14 @@ function getClientIp(req: any): string {
       console.log(`✓ [Batch VIP Recharge] Successfully recharged ${updatedPhones.length} squad drivers with ${daysCount} days VIP`);
 
       return res.json({
-        success: true,
+        success: failedPhones.length === 0,
         count: updatedPhones.length,
         days: daysCount,
         targetExpiry,
-        updatedPhones
+        updatedPhones,
+        // P1(2026-10-16第二遍审计)：返回失败名单，管理后台可见部分失败。
+        failedPhones,
+        failedCount: failedPhones.length
       });
     } catch (err: any) {
       console.error('[Batch VIP Recharge Error]:', err);
@@ -4242,7 +4271,9 @@ function getClientIp(req: any): string {
       const { orderData, reporterPhone, pickupLat, pickupLng, excludePhone } = req.body || {};
       // P1(2026-10-16)：orderId 级互斥。同一订单 60 秒内只允许一次派单处理，
       // 并发第二请求直接 409 返回，防双派单弹给两名司机。
-      const lockOrderId = String(orderData?.orderId || orderData?.id || '').trim();
+      // P1(2026-10-16第二遍审计)：锁键补 orderNo。订单主键还认 orderNo（:4436），
+      // 只带 orderNo 的请求之前旁路互斥锁，导致一单一派多司机。
+      const lockOrderId = String(orderData?.orderId || orderData?.id || orderData?.orderNo || '').trim();
       if (lockOrderId) {
         const lockTs = dispatchOrderLocks.get(lockOrderId) || 0;
         if (Date.now() - lockTs < 60000) {
@@ -4420,7 +4451,8 @@ function getClientIp(req: any): string {
         });
       }
 
-      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}`).trim();
+      // P2(2026-10-16)：订单ID加随机后缀，防同一毫秒创建的两单重ID串单
+      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).trim();
 
       // Candidate drivers filter (Strictly approved squad drivers only)
       const candidates: Array<{ phone: string; name: string; distKm: number; data: any }> = [];
@@ -4490,7 +4522,7 @@ function getClientIp(req: any): string {
         if (!isOnline) return;
 
         // 2026-10-12修复：忙碌司机不派单（行程中）
-        const isBusy = loc.isBusy === true || loc.isBusy === 'true';
+        const isBusy = loc.isBusy === true || loc.isBusy === "true" || loc.isBusy === 1;
         if (isBusy) return;
 
         // H-G2修复：明确标记无GPS的上线司机直接跳过（滑动上线即上报功能：无GPS时只传时间戳不传坐标，
@@ -4963,7 +4995,7 @@ function getClientIp(req: any): string {
           } catch (_) {}
         }
         if (!busyLoc) busyLoc = dbData.driver_locations?.[cleanDriverPhone];
-        if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === 'true')) {
+        if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === "true" || busyLoc.isBusy === 1)) {
           return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
         }
       } catch (_) {}
@@ -4984,13 +5016,17 @@ function getClientIp(req: any): string {
         {
           const dispatchedTo = String(targetOrder.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
           const tStatus = String(targetOrder.status || '');
-          if (dispatchedTo) {
-            if (tStatus === 'hall' || targetOrder.in_hall === true) {
-              return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
-            }
-            if (dispatchedTo !== cleanDriverPhone) {
-              return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
-            }
+          // P0(2026-10-16第二遍审计)：/api/order/claim 是派单接单通道，必须要求订单已派给本人。
+          // 之前 dispatchedTo 为空时直接跳过校验，导致 submitted 状态的二维码创单可被任意司机经 API 盗抢。
+          // 大厅抢单走 /api/order/driver-claim，此处不放行无派单的订单。
+          if (!dispatchedTo) {
+            return res.status(409).json({ success: false, error: '该订单未派单给你，无法接单' });
+          }
+          if (tStatus === 'hall' || targetOrder.in_hall === true) {
+            return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
+          }
+          if (dispatchedTo !== cleanDriverPhone) {
+            return res.status(409).json({ success: false, error: '订单已转派给其他司机' });
           }
         }
       }
@@ -5048,7 +5084,8 @@ function getClientIp(req: any): string {
           try {
             const [updRes]: any = await mysqlPool.query(
               'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ? ' +
-              'AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.status\')), \'\') NOT IN (\'claimed\', \'已接单\', \'cancelled\', \'已取消\') ' +
+              'AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.status\')), \'\') NOT IN (\'claimed\', \'已接单\', \'cancelled\', \'已取消\', \'hall\', \'等待接单\') ' +
+              'AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.in_hall\')), \'false\') != \'true\' ' +
               'AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.claimedDriverPhone\')), \'\') = \'\' ' +
               'OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.claimedDriverPhone\')), \'\') = ?)',
               [JSON.stringify(claimUpdateData), 'merchant_orders', cleanOrderId, cleanDriverPhone]
@@ -5087,7 +5124,7 @@ function getClientIp(req: any): string {
         try {
           for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
             await mysqlPool.query(
-              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", true, "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
+              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", CAST(TRUE AS JSON), "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
               [col, cleanDriverPhone]
             ).catch(() => {});
           }
@@ -5212,7 +5249,7 @@ function getClientIp(req: any): string {
               ['passenger_links', cleanDriverPhone]
             );
             await mysqlPool.query(
-              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", false, "$.status", "idle") WHERE `collection` IN ("driver_users", "driver_locations", "squad_members") AND `doc_id` = ?',
+              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", CAST(FALSE AS JSON), "$.status", "idle") WHERE `collection` IN ("driver_users", "driver_locations", "squad_members") AND `doc_id` = ?',
               [cleanDriverPhone]
             );
           }
@@ -5284,6 +5321,35 @@ function getClientIp(req: any): string {
 
       const dbData = readLocalJsonDb();
       
+      // P0(2026-10-17)：取消前检查订单状态——服务中/已完成不可取消
+      // 用户铁律：司机在实时计费中页面时，管理人员点取消派单要提示"订单进行中或已完成不可取消"
+      let checkSt = '';
+      let checkCat = '';
+      // 先读 MySQL（主数据源），失败回退本地
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [srows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['merchant_orders', orderId]
+          );
+          if (srows && srows.length > 0) {
+            const sd = typeof srows[0].data === 'string' ? JSON.parse(srows[0].data) : srows[0].data;
+            checkSt = String(sd.status || '');
+            checkCat = String(sd.statusCategory || '');
+          }
+        } catch (_) {}
+      }
+      if (!checkSt && !checkCat) {
+        const targetMerchantCheck = (dbData['merchant_orders'] || {})[orderId] || {};
+        checkSt = String(targetMerchantCheck.status || '');
+        checkCat = String(targetMerchantCheck.statusCategory || '');
+      }
+      const isServing = checkSt === 'serving' || checkSt === 'in_service' || checkSt === 'started' || checkCat === '服务中' || checkCat === '计费中' || checkCat === '进行中';
+      const isCompleted = checkSt === 'completed' || checkSt === 'finished' || checkCat === '已完成';
+      if (isServing || isCompleted) {
+        return res.status(400).json({ success: false, error: '订单进行中或已完成不可取消' });
+      }
+
       // Update merchant_orders
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
       const targetMerchant = dbData['merchant_orders'][orderId] || {};
@@ -6113,6 +6179,17 @@ function getClientIp(req: any): string {
         for (const f of SENSITIVE) {
           if (data && typeof data === 'object' && f in data) {
             console.warn(`[Auth] 剥离敏感字段(add): token手机=${(req as any).authPhone}, 字段=${f}`);
+            delete data[f];
+          }
+        }
+      }
+      // P0(2026-10-16第二遍审计)：/api/db/add 剥离 licenseExpiry/vipExpiry，防普通司机自助伪造接单授权/VIP。
+      // set/update 已剥离，add 漏了，且用整文档覆盖（非合并），毒化后直接生效。
+      // 覆盖全部四个司机集合（与 /api/db/get 合并链一致）。
+      if (['driver_users', 'squad_members', 'online_applications', 'squad_applications'].includes(col)) {
+        for (const f of ['vipExpiry', 'licenseExpiry']) {
+          if (data && typeof data === 'object' && f in data) {
+            console.warn(`[Auth] add接口写${f}已剥离: token手机=${(req as any).authPhone}, col=${col}`);
             delete data[f];
           }
         }
@@ -7623,6 +7700,14 @@ function getClientIp(req: any): string {
             if (claimed && claimed !== cleanDriverPhone) {
               return res.status(403).json({ success: false, error: '该订单已被其他司机接走，不能转入大厅' });
             }
+            // P1(2026-10-16第二遍审计)：to-hall 状态守卫，已完成/已取消/服务中的订单不得复活回大厅。
+            // /api/order/complete 完成订单时不清空 dispatchedDriverPhone，司机事后调 to-hall 可把 completed 翻回 hall。
+            const oStatus = String(order.status || '');
+            const oCat = String(order.statusCategory || '');
+            if (['completed', '已完成', 'cancelled', '已取消', 'serving', '服务中'].includes(oStatus) ||
+                ['已完成', '已取消', '服务中'].includes(oCat)) {
+              return res.status(409).json({ success: false, error: '订单已完结，不能转入大厅' });
+            }
           }
         }
       } catch (_) {}
@@ -8100,7 +8185,12 @@ function getClientIp(req: any): string {
       const { orderId, driverName } = req.body || {};
       const cleanOrderId = String(orderId || '').trim();
       // 2026-10-15 P0修复：driverPhone强制取token本人，防冒名替他人抢单（与/api/order/claim的H11一致）
-      const cleanDriverPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      // P0(2026-10-16第二遍审计)：补A后缀商户拦截（与/api/order/claim一致），必须在 replace(/\D/g) 之前判断原始值。
+      const authPhoneRawClaim = String((req as any).authPhone || '').trim();
+      if (/a$/i.test(authPhoneRawClaim)) {
+        return res.status(403).json({ success: false, error: '商户身份不能抢单' });
+      }
+      const cleanDriverPhone = authPhoneRawClaim.replace(/\D/g, '').trim();
       const cleanDriverName = String(driverName || '').slice(0, 20);
       if (!cleanOrderId || !/^1[3-9]\d{9}$/.test(cleanDriverPhone)) {
         return res.status(400).json({ success: false, error: '参数错误' });
@@ -8173,8 +8263,38 @@ function getClientIp(req: any): string {
       if (!(await checkSquadMember())) {
         return res.status(403).json({ success: false, error: '仅小队正式成员可接单' });
       }
+      // P0(2026-10-16第二遍审计)：幂等短路必须在忙碌检查之前。
+      // 新来单弹窗点"确认接单"会调两次服务端（overlay先调/api/order/claim成功，busy已=true，
+      // 再经onAccept调driver-claim），第二次必须幂等成功，否则被忙碌检查409误杀，App进不了行程页。
+      // 先读订单判幂等，命中则直接返回成功，跳过忙碌检查。
+      try {
+        if (isMySQLEnabled && mysqlPool) {
+          const [idemRows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['merchant_orders', cleanOrderId]);
+          if (idemRows && idemRows.length > 0) {
+            const idemRaw = idemRows[0].data;
+            const idemTarget: any = typeof idemRaw === 'string' ? JSON.parse(idemRaw) : idemRaw;
+            const idemClaimedBy = String(idemTarget.claimedDriverPhone || idemTarget.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+            const idemSt = String(idemTarget.status || '');
+            if ((idemSt === 'claimed' || idemSt === '已接单') && idemClaimedBy === cleanDriverPhone) {
+              return res.json({ success: true });
+            }
+          }
+        } else {
+          const idemLocal = readLocalJsonDb()?.merchant_orders?.[cleanOrderId];
+          if (idemLocal) {
+            const idemClaimedBy = String((idemLocal as any).claimedDriverPhone || (idemLocal as any).dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+            const idemSt = String((idemLocal as any).status || '');
+            if ((idemSt === 'claimed' || idemSt === '已接单') && idemClaimedBy === cleanDriverPhone) {
+              return res.json({ success: true });
+            }
+          }
+        }
+      } catch (_) {}
       // P1(2026-10-16)：大厅抢单加忙碌检查——行程中的司机不能再抢一单，防一人同时持有两单。
       // 与 /api/order/claim 同口径；busy 状态写 MySQL，故优先读 MySQL。
+      // 注意：上方幂等短路已处理"本人重复调用"，此处忙碌检查只拦真正有别单在身的司机。
       try {
         let busyLoc: any = null;
         if (isMySQLEnabled && mysqlPool) {
@@ -8189,7 +8309,7 @@ function getClientIp(req: any): string {
           } catch (_) {}
         }
         if (!busyLoc) busyLoc = readLocalJsonDb()?.driver_locations?.[cleanDriverPhone];
-        if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === 'true')) {
+        if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === "true" || busyLoc.isBusy === 1)) {
           return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
         }
       } catch (_) {}
@@ -8220,9 +8340,8 @@ function getClientIp(req: any): string {
           const claimedBy = String(target.claimedDriverPhone || target.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
           const st = String(target.status || '');
           // P0(2026-10-16)：幂等短路——订单已被本人认领时直接成功。
-          // 新来单弹窗点"确认接单"会调两次服务端（overlay先调/api/order/claim成功，
-          // 再经onAccept→handleAcceptIncomingOrder调driver-claim），第二次必须幂等成功，
-          // 否则会被in_hall校验/忙碌检查409误杀，App进不了行程页且busy锁死。
+          // 主幂等已在忙碌检查前做过（2026-10-16第二遍审计），此处为 doClaim 内部二次保险，
+          // 防"早检通过→忙碌检查→doClaim执行"窗口内状态变化。
           if ((st === 'claimed' || st === '已接单') && claimedBy === cleanDriverPhone) {
             return { ok: true };
           }
@@ -8266,7 +8385,7 @@ function getClientIp(req: any): string {
             const _cols = ['driver_users', 'driver_locations', 'squad_members'];
             for (let _ci = 0; _ci < _cols.length; _ci++) {
               await mysqlPool.query(
-                'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", true, "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
+                'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", CAST(TRUE AS JSON), "$.status", "busy") WHERE `collection` = ? AND `doc_id` = ?',
                 [_cols[_ci], cleanDriverPhone]
               ).catch(function() {});
             }
@@ -8325,7 +8444,12 @@ function getClientIp(req: any): string {
   app.post('/api/order/complete', requireDbAuth, async (req, res) => {
     try {
       const orderId = String(req.body?.orderId || req.body?.id || '').trim();
-      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      // P0(2026-10-16第二遍审计)：补A后缀商户拦截，商户不能完成订单。
+      const completeRaw = String((req as any).authPhone || '').trim();
+      if (/a$/i.test(completeRaw)) {
+        return res.status(403).json({ success: false, error: '商户身份不能完成订单' });
+      }
+      const authPhone = completeRaw.replace(/\D/g, '').trim();
       if (!orderId || !/^1[3-9]\d{9}$/.test(authPhone)) {
         return res.status(400).json({ success: false, error: '参数错误' });
       }
@@ -8405,7 +8529,12 @@ function getClientIp(req: any): string {
         pickupLat, pickupLng, paymentQrCode,
       } = req.body || {};
       // P1(2026-10-15)：reporterPhone绑定token，防冒用他人身份
-      const cleanReporter = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+      // P0(2026-10-16第二遍审计)：补A后缀商户拦截，必须在 replace(/\D/g) 之前判断原始值。
+      const reporterRaw = String((req as any).authPhone || '').trim();
+      if (/a$/i.test(reporterRaw)) {
+        return res.status(403).json({ success: false, error: '商户身份不能发起转单' });
+      }
+      const cleanReporter = reporterRaw.replace(/\D/g, '').trim();
       if (!/^1[3-9]\d{9}$/.test(cleanReporter)) {
         return res.status(401).json({ success: false, error: '身份验证失败' });
       }
@@ -8587,7 +8716,7 @@ function getClientIp(req: any): string {
           if (!updTs || nowTs - updTs > 120000) continue; // GPS超120秒或无时间戳不派
           // 2026-10-12修复：必须明确 isOnline === true，undefined 不算在线
           const isOnline = loc.isOnline === true || loc.isOnline === 'true';
-          const isBusy = loc.isBusy === true || loc.isBusy === 'true';
+          const isBusy = loc.isBusy === true || loc.isBusy === "true" || loc.isBusy === 1;
           if (!isOnline || isBusy) continue;
           const distKm = haversineKm(pLat, pLng, la, lo);
           if (distKm <= 3) candidates.push({ phone, name: m.data?.name || m.data?.driverName || `司机${phone.slice(-4)}`, distKm });

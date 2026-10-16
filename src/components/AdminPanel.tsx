@@ -4573,7 +4573,7 @@ export default function AdminPanel({
                     if (r.ok && j?.success) {
                       triggerToast(days === 0
                         ? `⛔ 已屏蔽接单授权：${j.phone}（接单授权已到期）`
-                        : `✅ 接单授权充值成功：${j.phone} +${j.daysAdded}天，有效期至 ${j.licenseExpiry}`);
+                        : `✅ 接单授权设置成功：${j.phone} 设为${j.daysAdded}天，有效期至 ${j.licenseExpiry}`);
                       // 2026-10-15 P0修复：派发事件通知App更新licenseExpiry，否则App徽章不更新
                       // 复用 driver_vip_updated 事件，App.tsx:696 已处理 detail.licenseExpiry
                       try {
@@ -4611,7 +4611,7 @@ export default function AdminPanel({
                     if (r.ok && j?.success) {
                       triggerToast(days === 0
                         ? `⛔ 已屏蔽 ${j.count} 人的接单授权（已到期）`
-                        : `✅ 批量充值成功：${j.count}人 +${j.daysAdded}天`);
+                        : `✅ 批量设置成功：${j.count}人 设为${j.daysAdded}天`);
                     } else {
                       triggerToast(`❌ 批量失败：${j?.error || '服务器错误'}`);
                     }

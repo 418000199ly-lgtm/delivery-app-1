@@ -130,7 +130,7 @@ export const DEFAULT_SETTINGS: ChauffeurSettings = {
   deviationWaitSec: 30,
   wechatQrCode: '',
   alipayQrCode: '',
-  vipExpiry: '待开通',
+  vipExpiry: '0',
   customAppName: 'XX代驾',
   onlineOrdersEnabled: false,
   city: '',

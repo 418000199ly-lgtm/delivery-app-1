@@ -1092,6 +1092,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                         try {
                           safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
                           safeSetItem('dd_settings', JSON.stringify(updated));
+                          // P0(2026-10-16晚)：轮询从服务端拿到新值时，必须同步写 dd_license_expiry_* 时间戳。
+                          // 之前只写 dd_settings，不写时间戳，导致 10 分钟本地保护在手机上永远失效：
+                          // driver_vip_updated 事件只在管理后台浏览器内有效，到不了 iPhone App，
+                          // App 全靠轮询，但轮询不写时间戳 → 下次服务端返回旧值时保护不生效 → 0 跳回 2。
+                          safeSetItem(`dd_license_expiry_${userPhone}`, freshLic);
+                          safeSetItem(`dd_license_expiry_time_${userPhone}`, Date.now().toString());
                         } catch (_) {}
                         return updated;
                       }
@@ -3610,6 +3616,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         });
 
         // Sync to dispatch_qrs collection for cross-driver 报单转单 payment QR code resolution
+        // P2(2026-10-16第三遍审计)：删冗余直接 fetch。dbProxy 的 setDoc 内部已发 /api/db/set，
+        // 重复直调浪费 QPS 且失败时部分成功难排查。driver_users 的 wechatQrCode 已在上方 setDoc 写过。
         if (newSettings.wechatQrCode) {
           const qrPayload = {
             id: userPhone,
@@ -3619,16 +3627,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             updatedAt: Date.now()
           };
           setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ collection: 'dispatch_qrs', docId: userPhone, data: qrPayload, merge: true })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: newSettings.wechatQrCode, qrCode: newSettings.wechatQrCode }, merge: true })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         } else {
           // Explicitly delete from server collections and disk
           fetch(`${baseUrl}/api/delete-wechat-qr`, {
@@ -3666,7 +3664,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     // Force offline if daily limits are exhausted
     if (!isVip && stats.todayOrders >= 2 && isOnline) {
       setIsOnline(false);
-      alert('🔒 提示：您当前的会员已到期或未激活。今日报单次数已用完（每天限额2次，每天凌晨6点自动刷新），系统已自动强制您下线并无法继续上线。如需无限报单，请开通/激活VIP服务。');
+      // P0(2026-10-17)：先让React提交下线状态（按钮变灰），再弹提示。
+      // 否则alert阻塞主线程，用户点OK后才看到被踢下线。用户要求：弹提示的同时就已下线，不用点OK才踢。
+      setTimeout(() => {
+        alert('🔒 提示：您当前的会员已到期或未激活。今日报单次数已用完（每天限额2次，每天凌晨6点自动刷新），系统已自动强制您下线并无法继续上线。如需无限报单，请开通/激活VIP服务。');
+      }, 100);
     }
 
     // Force revert custom branding name & deviation features when VIP is not active

@@ -1490,7 +1490,8 @@ export default function DispatchValetOrder({
       if (db) {
         await setDoc(doc(db, 'merchant_orders', targetDocId), adminCancelPayload, { merge: true });
       }
-      fetch(`${baseUrl}/api/order/cancel`, {
+      // P0(2026-10-17)：服务端返回400（服务中/已完成不可取消）时要弹提示，不能吞掉
+      const cancelResp = await fetch(`${baseUrl}/api/order/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -1500,7 +1501,13 @@ export default function DispatchValetOrder({
           reason: '管理员取消订单',
           cancelledBy: 'admin'
         })
-      }).catch(() => {});
+      });
+      if (!cancelResp.ok) {
+        const errData = await cancelResp.json().catch(() => ({}));
+        const errMsg = errData.error || '取消失败';
+        alert(errMsg);
+        return;
+      }
     } catch (e) {
       console.error("Error setting merchant order to cancelled:", e);
     }
@@ -3421,26 +3428,13 @@ export default function DispatchValetOrder({
         return distKm <= 3.0 && isValidCoords(d.lat, d.lng);
       });
 
+      // 架构铁律（2026-10-16）：App 不决定派单！派单 100% 由阿里云服务器 /api/dispatch/nearest 决定。
+      // App 只负责：上传GPS、下单时把起点坐标发给服务器、显示服务器返回的结果。
+      // 此处不再做本地选司机（过滤3公里/按距离排序/选最近），全部删掉。
+      // 服务端按6条件过滤：上线状态、小队内、空闲、接单授权>0、3公里内、最近距离。
       let chosenDriver: any = null;
-
-      if (driversWithin3km.length > 0) {
-        // Sort strictly by physical distance ascending (closest driver first!)
-        driversWithin3km.sort((a, b) => (a.distance || 999) - (b.distance || 999));
-        
-        // Minimum distance candidate
-        const minDist = driversWithin3km[0].distance;
-        
-        // Candidates with practically identical distance (within 10 meters / 0.01km)
-        const sameMinDistCandidates = driversWithin3km.filter(d => Math.abs((d.distance || 0) - minDist) < 0.01);
-        
-        if (sameMinDistCandidates.length === 1) {
-          chosenDriver = sameMinDistCandidates[0];
-        } else {
-          // 如果有多名符合资格的小队司机直线距离完全一样，随机派单给这几名司机之一
-          chosenDriver = sameMinDistCandidates[Math.floor(Math.random() * sameMinDistCandidates.length)];
-        }
-      }
-      // 严格规则：当代驾商家起点附近直线距离3公里内无上线空闲司机（或最近司机超过3公里），绝不直接派单，订单必须进入选单大厅供小队司机抢单！
+      // 注意：chosenDriver 恒为 null，App 不预选司机。等服务端 /api/dispatch/nearest 返回后再更新 UI。
+      // 严格规则：服务端决定无符合司机时，订单进入选单大厅供小队司机抢单！
 
       const finalScheduledTime = (scheduledTime && scheduledTime.trim() !== '' && scheduledTime !== '现在出发')
         ? scheduledTime.trim()
