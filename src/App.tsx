@@ -2915,8 +2915,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       localStorage.removeItem('dd_active_incoming_order');
     } catch (_) {}
     // P1(2026-10-16)：文案区分主动拒单 vs 超时/未上屏，避免用户误以为自己点了拒单
+    // 2026-10-17诊断：toast带上凶手分支，手机上直接可见是哪条逻辑杀的弹窗
+    let killerBranch = '';
+    try { killerBranch = String((window as any).__popupKillerBranch || ''); (window as any).__popupKillerBranch = ''; } catch (_) {}
     const toastMsg = reason === 'timeout'
-      ? '接单超时，订单已转入选单大厅。'
+      ? `接单超时，订单已转入选单大厅。${killerBranch ? `[${killerBranch}]` : ''}`
       : reason === 'no_heartbeat'
       ? '订单已转入选单大厅。'
       : '已放弃接单，订单已转入选单大厅供其他小队司机抢单。';

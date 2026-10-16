@@ -126,6 +126,11 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   const safeDecline = React.useCallback((reason?: string) => {
     if (declinedRef.current) return;
     declinedRef.current = true;
+    // 2026-10-17诊断：把凶手分支存到全局，App端toast可显示
+    try {
+      const tag = (safeDecline as any)._tag || '';
+      if (tag) (window as any).__popupKillerBranch = tag;
+    } catch (_) {}
     onDeclineRef.current(reason);
   }, []);
   // P0(2026-10-16)：409静默关闭——只关弹窗，不调to-hall，不摧毁他人已接订单
@@ -174,6 +179,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         const curOrder = orderRef.current as any;
         const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
         if (orderAgeMs > 25000) {
+          console.log(`[PopupKiller] 分支A-prop同步v<=0 (订单${Math.round(orderAgeMs/1000)}秒) 关闭弹窗`); try{(window as any).__popupKillerBranch='A-prop同步';}catch(_){}
           safeDecline('timeout');
         }
       }
@@ -248,15 +254,25 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             ) {
               // P0-2修复(2026-10-13)：服务端明确inHall时直接放行，不受25秒guard拦截。
               // 心跳转大厅(约派单后15秒)时orderAgeMs<25秒，旧guard会卡死页面。
+              // 2026-10-17修正：25秒内的新单绝不因inHall瞬间自杀。新单不可能经35秒无心跳/60秒倒计时
+              // 合法进大厅，此处inHall必为竞态脏读（如派单写入与轮询交错）。放行则弹窗闪退，
+              // 用户感知为"没弹过"。改为继续轮询，下次拿到真实状态再决策。
               if (data.inHall) {
-                setTimeLeft(0);
-                safeDecline('timeout');
+                const inHallAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                if (inHallAgeMs > 25000) {
+                  setTimeLeft(0);
+                  console.log(`[Overlay] inHall确认(订单已${Math.round(inHallAgeMs/1000)}秒)，关闭弹窗`);
+                  safeDecline('timeout');
+                  return;
+                }
+                console.log(`[Overlay] 新单(${Math.round(inHallAgeMs/1000)}秒)inHall疑似脏读，继续轮询不关闭`);
                 return;
               }
               const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
               // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
               if (orderAgeMs > 25000) {
                 setTimeLeft(0);
+                console.log(`[PopupKiller] 分支B-倒计时isExpired (订单${Math.round(orderAgeMs/1000)}秒) 关闭弹窗`); try{(window as any).__popupKillerBranch='B-isExpired';}catch(_){}
                 safeDecline('timeout');
                 return;
               }
@@ -298,7 +314,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
                 const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
                 if (orderAgeMs > 25000) {
                   // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
-                  setTimeout(() => safeDecline('timeout'), 0);
+                  setTimeout(() => {
+                    console.log(`[PopupKiller] 分支C-倒计时归零 (订单${Math.round(orderAgeMs/1000)}秒) 关闭弹窗`); try{(window as any).__popupKillerBranch='C-倒计时归零';}catch(_){}
+                    safeDecline('timeout');
+                  }, 0);
                 }
               }
             }
@@ -492,6 +511,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
 
     const checkCancelled = () => {
       try {
+        // 2026-10-17：25秒内新单不响应取消检查。商户组件下单时本地默认写hall/取消态，
+        // 服务端返回前轮询到会误杀弹窗。25秒后服务端状态已稳定，再检查不迟。
+        const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+        if (orderAgeMs < 25000) return;
         const latestRaw = localStorage.getItem('dd_latest_cancelled_order');
         if (latestRaw) {
           const parsed = JSON.parse(latestRaw);
@@ -500,6 +523,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           if ((pId && validCandidateIds.includes(pId)) || (pNo && validCandidateIds.includes(pNo))) {
             if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
             stopSpeaking();
+            console.log('[PopupKiller] 分支D-本地取消标记 关闭弹窗'); try{(window as any).__popupKillerBranch='D-本地取消标记';}catch(_){}
             safeDecline('timeout');
             return;
           }
@@ -513,6 +537,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
           stopSpeaking();
+          console.log('[PopupKiller] 分支E-本地订单已取消 关闭弹窗'); try{(window as any).__popupKillerBranch='E-本地已取消';}catch(_){}
           safeDecline('timeout');
         }
       } catch (_) {}
@@ -526,6 +551,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         if ((dId && validCandidateIds.includes(dId)) || (dNo && validCandidateIds.includes(dNo))) {
           if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
           stopSpeaking();
+          console.log('[PopupKiller] 分支F-商户取消事件 关闭弹窗'); try{(window as any).__popupKillerBranch='F-商户取消事件';}catch(_){}
           safeDecline('timeout');
         }
       }

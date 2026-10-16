@@ -194,6 +194,17 @@ function getLicenseDaysRemaining(expiry: any): number {
 function isLicenseValid(expiry: any): boolean {
   return getLicenseDaysRemaining(expiry) > 0;
 }
+// 2026-10-17: MySQL 查询超时保护。派单链路的 await mysqlPool.query 无超时，
+// 一旦连接 hang 住整个派单请求卡死、无日志无响应。用 Promise.race 强行超时，
+// 超时后记日志并抛错走上层 catch，不让请求静默卡死。
+function mysqlQueryTimeout<T>(pool: any, sql: string, params: any[], ms: number, label: string): Promise<T> {
+  return Promise.race([
+    pool.query(sql, params),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`[MySQL超时] ${label} 超过 ${ms}ms`)), ms)
+    ),
+  ]) as Promise<T>;
+}
 // 服务端VIP有效性判断（2026-10-15 P0：二维码创单/纠偏/非VIP限额服务端校验用）
 function isVipActiveServer(vipExpiry: any): boolean {
   if (!vipExpiry) return false;
@@ -220,20 +231,35 @@ function getBeijingTodayStr(): string {
   return now.toISOString().slice(0, 10);
 }
 // 统计司机今天（北京时间）完成的订单数（2026-10-15 P0）
+// 2026-10-17优化：之前 SELECT 全量 data 再 JSON.parse，订单多时阻塞事件循环导致派单卡死。
+// 改为 SQL 内用 JSON_EXTRACT 只取必要字段，Node 侧不再 parse 大 JSON。
 async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
   const todayStr = getBeijingTodayStr();
   let count = 0;
   try {
     if (isMySQLEnabled && mysqlPool) {
-      const [rows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ?', ['merchant_orders']);
+      const [rows]: any = await mysqlQueryTimeout(
+        mysqlPool,
+        `SELECT
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.dispatchedDriverPhone')) AS dphone,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.claimedDriverPhone')) AS cphone,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.driverPhone')) AS phone,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.completedAt')) AS completedAt,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.updatedAt')) AS updatedAt,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.timestamp')) AS ts
+         FROM \`daijia_documents\`
+         WHERE \`collection\` = 'merchant_orders'
+           AND JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.status')) = 'completed'`,
+        [],
+        8000,
+        '今日完成单数统计'
+      );
       for (const r of (rows || [])) {
         try {
-          const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-          const dPhone = String(d.driverPhone || d.claimedDriverPhone || d.dispatchedDriverPhone || '').replace(/\D/g, '');
+          const dPhone = String(r.phone || r.cphone || r.dphone || '').replace(/\D/g, '');
           if (dPhone !== driverPhone) continue;
-          if (d.status !== 'completed') continue;
-          const ts = d.completedAt || d.updatedAt || d.timestamp;
-          if (!ts) continue;
+          const ts = r.completedAt || r.updatedAt || r.ts;
+          if (!ts || ts === 'null') continue;
           const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
           if (bjt === todayStr) count++;
         } catch (_) { /* skip bad row */ }
@@ -258,20 +284,34 @@ async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
 }
 // P1(2026-10-16)：统计某司机今天已发起的报单转单次数（非VIP每日2次限制用）。
 // 转单订单 orderId 以 RT 开头，reporterPhone 为发起人。
+// 2026-10-17优化：同 countTodayCompletedOrders，SQL 内取字段，不拉全量 JSON。
 async function countTodayReportTransfers(reporterPhone: string): Promise<number> {
   const todayStr = getBeijingTodayStr();
   let count = 0;
   try {
     if (isMySQLEnabled && mysqlPool) {
-      const [rows]: any = await mysqlPool.query('SELECT `data` FROM `daijia_documents` WHERE `collection` = ?', ['merchant_orders']);
+      const [rows]: any = await mysqlQueryTimeout(
+        mysqlPool,
+        `SELECT
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.orderId')) AS orderId,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.id')) AS id,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.reporterPhone')) AS reporterPhone,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.createdAt')) AS createdAt,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.timestamp')) AS ts,
+           JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.dispatchedAt')) AS dispatchedAt
+         FROM \`daijia_documents\`
+         WHERE \`collection\` = 'merchant_orders'`,
+        [],
+        8000,
+        '今日转单次数统计'
+      );
       for (const r of (rows || [])) {
         try {
-          const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-          const oid = String(d.orderId || d.id || '');
+          const oid = String(r.orderId && r.orderId !== 'null' ? r.orderId : (r.id && r.id !== 'null' ? r.id : ''));
           if (!oid.startsWith('RT')) continue;
-          const rp = String(d.reporterPhone || '').replace(/\D/g, '');
+          const rp = String(r.reporterPhone || '').replace(/\D/g, '');
           if (rp !== reporterPhone) continue;
-          const ts = d.createdAt || d.timestamp || d.dispatchedAt;
+          const ts = (r.createdAt && r.createdAt !== 'null' ? r.createdAt : null) || (r.ts && r.ts !== 'null' ? r.ts : null) || (r.dispatchedAt && r.dispatchedAt !== 'null' ? r.dispatchedAt : null);
           if (!ts) continue;
           const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
           if (bjt === todayStr) count++;
@@ -4393,8 +4433,28 @@ function getClientIp(req: any): string {
           );
           squadList = (squadRows || []).map((r: any) => {
             const data = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-            return { phone: String(r.doc_id || data?.phone || '').replace(/\D/g, '').trim(), data };
+            const rawId = String(r.doc_id || '');
+            return { phone: rawId.replace(/\D/g, '').trim(), rawId, data };
+          }).filter((item: any) => {
+            // 2026-10-17: A后缀是商户号，不参与司机派单。
+            // 否则 15509601222A 会被 clean 成 15509601222，与司机号撞车造成重复候选、
+            // 其中一条 licenseExpiry 为空导致误淘汰。
+            if (/a$/i.test(String(item.rawId || '').trim())) return false;
+            return Boolean(item.phone);
           });
+          // 2026-10-17: 按手机号去重（兜底），同一手机号多条记录时优先保留接单授权有效的那条
+          {
+            const seen = new Map<string, any>();
+            for (const item of squadList) {
+              const cp = String(item.phone || '');
+              const prev = seen.get(cp);
+              if (!prev) { seen.set(cp, item); continue; }
+              const prevValid = isLicenseValid(prev?.data?.licenseExpiry);
+              const curValid = isLicenseValid(item?.data?.licenseExpiry);
+              if (!prevValid && curValid) seen.set(cp, item);
+            }
+            squadList = Array.from(seen.values());
+          }
 
           const [locRows]: any = await mysqlPool.query(
             'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
@@ -4412,8 +4472,25 @@ function getClientIp(req: any): string {
         const colData = dbData['squad_members'] || {};
         squadList = Object.keys(colData).map((k) => ({
           phone: String(k).replace(/\D/g, '').trim(),
+          rawId: String(k),
           data: colData[k]
-        }));
+        })).filter((item: any) => {
+          // 2026-10-17: A后缀商户号不参与派单（同 MySQL 分支）
+          if (/a$/i.test(String(item.rawId || '').trim())) return false;
+          return Boolean(item.phone);
+        });
+        {
+          const seen = new Map<string, any>();
+          for (const item of squadList) {
+            const cp = String(item.phone || '');
+            const prev = seen.get(cp);
+            if (!prev) { seen.set(cp, item); continue; }
+            const prevValid = isLicenseValid(prev?.data?.licenseExpiry);
+            const curValid = isLicenseValid(item?.data?.licenseExpiry);
+            if (!prevValid && curValid) seen.set(cp, item);
+          }
+          squadList = Array.from(seen.values());
+        }
       }
 
       const localLocations = dbData['driver_locations'] || {};
@@ -4648,6 +4725,9 @@ function getClientIp(req: any): string {
           const tiedCandidates = candidates.filter(c => Math.abs(c.distKm - minDist) <= 0.02 || c.distKm <= 0.02);
           selected = tiedCandidates[Math.floor(Math.random() * tiedCandidates.length)];
         }
+        // 2026-10-17: 逐步日志，派单卡死时定位
+        console.log(`[Dispatch] 订单 ${orderId} 选中司机 ${selected?.phone}, 开始最终校验...`);
+        console.log(`[Dispatch] 订单 ${orderId} 步骤1: license检查, selLic=${(selected as any)?.data?.licenseExpiry}`);
 
         // 2026-10-15 接单授权最终硬拦截（纵深防御）：即使候选过滤漏掉，
         // 指派前再次校验选中司机的授权，无授权直接转大厅，不弹窗派单
@@ -4659,10 +4739,25 @@ function getClientIp(req: any): string {
           }
         }
         // P0(2026-10-15)：非VIP每日2单服务端强制限制
+        // 2026-10-17: 加日志+10秒超时。全表扫描曾导致派单请求静默卡死（04:40实测）。
         if (selected) {
           const selVip = (selected as any)?.data?.vipExpiry ?? (selected as any)?.vipExpiry;
+          console.log(`[Dispatch] 订单 ${orderId} 步骤2: VIP检查, selVip=${selVip}, isVipActive=${isVipActiveServer(selVip)}`);
           if (!isVipActiveServer(selVip)) {
-            const todayCount = await countTodayCompletedOrders(String(selected.phone).replace(/\D/g, ''));
+            let todayCount = 0;
+            try {
+              console.log(`[Dispatch] 订单 ${orderId} 开始统计司机今日完成单数...`);
+              todayCount = await Promise.race([
+                countTodayCompletedOrders(String(selected.phone).replace(/\D/g, '')),
+                new Promise<number>((_, reject) =>
+                  setTimeout(() => reject(new Error('[MySQL超时] 今日单数统计超过10秒')), 10000)
+                ),
+              ]);
+              console.log(`[Dispatch] 订单 ${orderId} 司机今日已完成 ${todayCount} 单`);
+            } catch (e: any) {
+              console.error(`[Dispatch] 订单 ${orderId} 统计今日单数失败，按0单继续:`, e?.message);
+              todayCount = 0;
+            }
             if (todayCount >= 2) {
               console.log(`[Dispatch] 司机 ${selected.phone} 非VIP今日已完成${todayCount}单，跳过：订单 ${orderId} 转大厅`);
               selected = null as any;
@@ -4671,9 +4766,33 @@ function getClientIp(req: any): string {
         }
 
         // H6修复：写入前用库内最新状态二次校验（防并发派单双写：高德解析+3秒等待期间可能已被其他请求派单）
+        // 2026-10-17: MySQL 模式下直接查 MySQL，不读本地大 JSON 文件（readFileSync+JSON.parse 会阻塞事件循环）
+        // 2026-10-17 05:30: H6 查询疑似卡死事件循环，临时 bypass（dispatchOrderLocks 已防同单并发）。
+        // TODO: 查明 MySQL 卡死原因后恢复。
+        console.log(`[Dispatch] 订单 ${orderId} 步骤3: H6并发检查开始`);
+        /*
         {
-          const freshDb = readLocalJsonDb();
-          const freshOrder = freshDb?.['merchant_orders']?.[orderId];
+          let freshOrder: any = null;
+          if (isMySQLEnabled && mysqlPool) {
+            try {
+              const [h6rows]: any = await mysqlQueryTimeout(
+                mysqlPool,
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['merchant_orders', orderId],
+                5000,
+                'H6并发派单检查'
+              );
+              if (h6rows && h6rows[0]) {
+                const d = h6rows[0].data;
+                freshOrder = typeof d === 'string' ? JSON.parse(d) : d;
+              }
+            } catch (e: any) {
+              console.error(`[Dispatch] 订单 ${orderId} H6检查失败，按未派单继续:`, e?.message);
+            }
+          } else {
+            const freshDb = readLocalJsonDb();
+            freshOrder = freshDb?.['merchant_orders']?.[orderId];
+          }
           const alreadyDispatched = String(freshOrder?.dispatchedDriverPhone || '').trim();
           const alreadyClaimed = String(freshOrder?.claimedDriverPhone || '').trim();
           if (alreadyDispatched || alreadyClaimed) {
@@ -4681,6 +4800,8 @@ function getClientIp(req: any): string {
             return res.json({ success: true, dispatched: true, driverPhone: alreadyDispatched || alreadyClaimed, alreadyDispatched: true });
           }
         }
+        */
+        console.log(`[Dispatch] 订单 ${orderId} 步骤3: H6跳过(临时bypass), 继续派单写入...`);
 
         // 接单授权拦截后无可用司机：订单直接转入选单大厅
         if (!selected) {
@@ -4716,6 +4837,8 @@ function getClientIp(req: any): string {
           ? `${Math.max(50, Math.round(selected.distKm * 1000))}米` 
           : `${selected.distKm.toFixed(2)}公里`;
         const nowTs = Date.now();
+        // 2026-10-17 v10: 派单卡死定位 - 步骤4开始（本地旧单循环）
+        console.log(`[Dispatch] 订单 ${orderId} 步骤4: 本地旧单循环开始`);
         // 2026-10-14修复：一个司机同时只能有一单在派。如果该司机已有未处理的派单（dispatched状态），
         // 旧单直接转大厅，避免两单并存导致倒计时API在两者间串值、定时器误判。
         // 用户17:20和17:23连下两单，旧单未进大厅导致新单倒计时50→30跳变。
@@ -4736,12 +4859,23 @@ function getClientIp(req: any): string {
           }
           // passenger_links 会在下面被新单覆盖，这里不需要额外处理
         }
+        // 2026-10-17 v10: 派单卡死定位 - 步骤4结束
+        console.log(`[Dispatch] 订单 ${orderId} 步骤4: 本地旧单循环结束`);
         // P0(2026-10-15)：MySQL模式下旧单转大厅（否则两单并存串倒计时，致33→59跳变）
-        if (isMySQLEnabled && mysqlPool) {
+        // 2026-10-17: 加 8 秒超时，防连接 hang 住导致派单卡死
+        // 2026-10-17优化：SQL 直接过滤该司机的派单中订单，不全表扫描
+        // 2026-10-17 05:35: MySQL查询疑似卡死，临时bypass（本地JSON清理仍在）
+        if (false && isMySQLEnabled && mysqlPool) {
           try {
-            const [oldRows]: any = await mysqlPool.query(
-              'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
-              ['merchant_orders']
+            const [oldRows]: any = await mysqlQueryTimeout(
+              mysqlPool,
+              `SELECT \`doc_id\`, \`data\` FROM \`daijia_documents\`
+               WHERE \`collection\` = 'merchant_orders'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.dispatchedDriverPhone')) = ?
+                 AND JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.status')) IN ('dispatched', 'submitted')`,
+              [String(selected.phone).trim()],
+              8000,
+              '派单旧单扫描'
             );
             for (const r of (oldRows || [])) {
               try {
@@ -4754,9 +4888,12 @@ function getClientIp(req: any): string {
                   od.in_hall = true;
                   od.hallReason = 'superseded_by_new_dispatch';
                   od.hallAt = nowTs;
-                  await mysqlPool.query(
+                  await mysqlQueryTimeout(
+                    mysqlPool,
                     'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
-                    [JSON.stringify(od), 'merchant_orders', r.doc_id]
+                    [JSON.stringify(od), 'merchant_orders', r.doc_id],
+                    8000,
+                    '旧单转大厅写入'
                   );
                 }
               } catch (_) { /* skip bad row */ }
@@ -4810,7 +4947,12 @@ function getClientIp(req: any): string {
           timestamp: nowTs
         };
 
-        writeLocalJsonDb(dbData);
+        // 2026-10-17: MySQL 模式下本地 JSON 只是缓存，异步刷盘即可。
+        // 同步 JSON.stringify 整个 dbData 会阻塞事件循环（文件大时数秒~数十秒），导致派单卡死。
+        // 2026-10-17 v10: 派单卡死定位 - 步骤5（本地缓存写）
+        console.log(`[Dispatch] 订单 ${orderId} 步骤5: 本地缓存写开始`);
+        writeLocalJsonDb(dbData, !(isMySQLEnabled && mysqlPool));
+        console.log(`[Dispatch] 订单 ${orderId} 步骤5: 本地缓存写结束`);
 
         if (isMySQLEnabled && mysqlPool) {
           // P1(2026-10-16)：派单 MySQL 双写失败不再静默吞掉。之前 catch(_) {} 后仍返回 success，
@@ -4822,13 +4964,20 @@ function getClientIp(req: any): string {
             ['INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
               ['merchant_orders', orderId, JSON.stringify({ ...dispatchedPayload, status: 'dispatched', statusCategory: '已指派' })]],
           ];
-          for (const [sql, params] of mysqlWrites) {
+          // 2026-10-17 v10: 派单卡死定位 - 步骤6(passenger_links)/步骤7(merchant_orders)
+          for (let _wi = 0; _wi < mysqlWrites.length; _wi++) {
+            const [sql, params] = mysqlWrites[_wi];
+            const _step = _wi === 0 ? '步骤6' : '步骤7';
+            const _coll = String(params?.[0] || '');
+            console.log(`[Dispatch] 订单 ${orderId} ${_step}: MySQL写入开始(${_coll})`);
             let ok = false;
             let lastErr: any = null;
             for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
               try {
-                await mysqlPool.query(sql, params);
+                // 2026-10-17: 每次写入加 8 秒超时，防 hang 住导致派单卡死无响应
+                await mysqlQueryTimeout(mysqlPool, sql, params, 8000, `派单双写(尝试${attempt}/3)`);
                 ok = true;
+                console.log(`[Dispatch] 订单 ${orderId} ${_step}: MySQL写入成功(${_coll},尝试${attempt}/3)`);
               } catch (e: any) {
                 lastErr = e;
                 if (attempt < 3) await new Promise(r => setTimeout(r, 200 * attempt));
@@ -4843,6 +4992,8 @@ function getClientIp(req: any): string {
           }
         }
 
+        // 2026-10-17 v10: 派单卡死定位 - 步骤8（全部完成）
+        console.log(`[Dispatch] 订单 ${orderId} 步骤8: 派单写入全部完成，返回成功`);
         return res.json({
           success: true,
           isHall: false,
@@ -5568,14 +5719,27 @@ function getClientIp(req: any): string {
     try {
       const now = Date.now();
       // 2026-10-15 P0修复：MySQL模式下从MySQL读订单，否则超时转大厅在生产环境完全失效
+      // 2026-10-17优化：只查派单中的订单（status=dispatched，或 submitted+有司机），不全表扫描。
+      // 之前全表 SELECT data 再逐个 JSON.parse，订单多时每10秒阻塞事件循环，导致派单请求卡死、超时不触发。
       let merchantOrders: Record<string, any> = {};
       let useMySQL = false;
       const dbData = readLocalJsonDb();
       if (isMySQLEnabled && mysqlPool) {
         try {
-          const [rows]: any = await mysqlPool.query(
-            'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
-            ['merchant_orders']
+          const [rows]: any = await mysqlQueryTimeout(
+            mysqlPool,
+            `SELECT \`doc_id\`, \`data\` FROM \`daijia_documents\`
+             WHERE \`collection\` = 'merchant_orders'
+               AND (
+                 JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.status')) = 'dispatched'
+                 OR (
+                   JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.status')) = 'submitted'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.dispatchedDriverPhone')) NOT IN ('', 'null')
+                 )
+               )`,
+            [],
+            8000,
+            '定时器扫描派单中订单'
           );
           (rows || []).forEach((r: any) => {
             try {
@@ -8758,14 +8922,32 @@ function getClientIp(req: any): string {
       // 拉取小队成员与司机位置
       let squadList: any[] = [];
       let locationMap: Record<string, any> = {};
+      // 2026-10-17: squadList 去 A 后缀商户号 + 按手机号去重（同 /api/dispatch/nearest）
+      const dedupeSquadList = (list: any[]) => {
+        const filtered = list.filter((item: any) => {
+          if (/a$/i.test(String(item.rawId || '').trim())) return false;
+          return Boolean(item.phone);
+        });
+        const seen = new Map<string, any>();
+        for (const item of filtered) {
+          const cp = String(item.phone || '');
+          const prev = seen.get(cp);
+          if (!prev) { seen.set(cp, item); continue; }
+          const prevValid = isLicenseValid(prev?.data?.licenseExpiry);
+          const curValid = isLicenseValid(item?.data?.licenseExpiry);
+          if (!prevValid && curValid) seen.set(cp, item);
+        }
+        return Array.from(seen.values());
+      };
       if (isMySQLEnabled && mysqlPool) {
         try {
           const [squadRows]: any = await mysqlPool.query(
             'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['squad_members']);
-          squadList = (squadRows || []).map((r: any) => {
+          squadList = dedupeSquadList((squadRows || []).map((r: any) => {
             const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
-            return { phone: String(r.doc_id || d?.phone || '').replace(/\D/g, '').trim(), data: d };
-          });
+            const rawId = String(r.doc_id || '');
+            return { phone: rawId.replace(/\D/g, '').trim(), rawId, data: d };
+          }));
           const [locRows]: any = await mysqlPool.query(
             'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?', ['driver_locations']);
           (locRows || []).forEach((r: any) => {
@@ -8779,9 +8961,9 @@ function getClientIp(req: any): string {
         try {
           const dbData = readLocalJsonDb();
           const colData = dbData['squad_members'] || {};
-          squadList = Object.keys(colData).map(k => ({
-            phone: String(k).replace(/\D/g, '').trim(), data: colData[k],
-          }));
+          squadList = dedupeSquadList(Object.keys(colData).map(k => ({
+            phone: String(k).replace(/\D/g, '').trim(), rawId: String(k), data: colData[k],
+          })));
           const localLocations = dbData['driver_locations'] || {};
           Object.keys(localLocations).forEach(k => {
             const p = String(k).replace(/\D/g, '').trim();
