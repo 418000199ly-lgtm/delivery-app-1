@@ -1749,10 +1749,30 @@ function getClientIp(req: any): string {
       }
 
       if ((foundData || docId === '15509601222') && (isDriverCol || isCleanPhone) && docId) {
-        const sq = dbData.squad_members?.[docId] || {};
-        const oa = dbData.online_applications?.[docId] || {};
-        const sa = dbData.squad_applications?.[docId] || {};
-        const du = dbData.driver_users?.[docId] || {};
+        // P1(2026-10-16)：合并用的 du/sq/oa/sa 优先读 MySQL，不再永远读本地 JSON。
+        // 之前本地 JSON 永远参与合并，MySQL 抖动回退时拿到旧值，导致 App 显示跳变（已到期↔2天）。
+        let sq: any = dbData.squad_members?.[docId] || {};
+        let oa: any = dbData.online_applications?.[docId] || {};
+        let sa: any = dbData.squad_applications?.[docId] || {};
+        let du: any = dbData.driver_users?.[docId] || {};
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [mrows]: any = await mysqlPool.query(
+              "SELECT `collection`, `data` FROM `daijia_documents` WHERE `collection` IN ('driver_users','squad_members','online_applications','squad_applications') AND `doc_id` = ?",
+              [docId]);
+            for (const r of (mrows || [])) {
+              try {
+                const d = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+                if (r.collection === 'driver_users') du = d;
+                else if (r.collection === 'squad_members') sq = d;
+                else if (r.collection === 'online_applications') oa = d;
+                else if (r.collection === 'squad_applications') sa = d;
+              } catch (_) {}
+            }
+          } catch (_) {
+            // MySQL 失败时回退用本地（已在上方赋值）
+          }
+        }
         const raw = foundData || {};
 
         const effectiveRole = (docId === '15509601222')
@@ -5028,11 +5048,36 @@ function getClientIp(req: any): string {
       writeLocalJsonDb(dbData);
 
       if (isMySQLEnabled && mysqlPool) {
+        // P1(2026-10-16)：改条件 UPDATE 原子化，防并发双抢都成功。
+        // 之前无条件 upsert，两人同时通过检查会都写入。条件不满足时 affectedRows=0 → 409。
+        // P1(2026-10-16)：加 3 次重试，失败抛 500。之前 catch(_) {} 静默吞错，
+        // 本地标 claimed 但 MySQL 仍是 dispatched，60秒后订单被超时转大厅（反向幽灵单）。
+        let claimOk = false;
+        let claimErr: any = null;
+        for (let attempt = 1; attempt <= 3 && !claimOk; attempt++) {
+          try {
+            const [updRes]: any = await mysqlPool.query(
+              'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ? ' +
+              'AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.status\')), \'\') NOT IN (\'claimed\', \'已接单\', \'cancelled\', \'已取消\') ' +
+              'AND (COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.claimedDriverPhone\')), \'\') = \'\' ' +
+              'OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.claimedDriverPhone\')), \'\') = ?)',
+              [JSON.stringify(claimUpdateData), 'merchant_orders', cleanOrderId, cleanDriverPhone]
+            );
+            const affected = Number(updRes?.affectedRows || 0);
+            if (affected === 0) {
+              return res.status(409).json({ success: false, error: '该订单已被其他司机接单' });
+            }
+            claimOk = true;
+          } catch (e: any) {
+            claimErr = e;
+            if (attempt < 3) await new Promise(r => setTimeout(r, 200 * attempt));
+          }
+        }
+        if (!claimOk) {
+          console.error(`[Claim] 订单 ${cleanOrderId} MySQL 写入失败(3次重试):`, claimErr?.message);
+          return res.status(500).json({ success: false, error: '接单写入失败，请重试' });
+        }
         try {
-          await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['merchant_orders', cleanOrderId, JSON.stringify(claimUpdateData)]
-          );
           // P1(2026-10-16)：接单后 passenger_links 必须 DELETE，不能 upsert。
           // 之前 upsert 的是本地已 delete 掉的 undefined（JSON.stringify(undefined)），被静默吞错，
           // MySQL 里残留旧 passenger_links，司机 App 会继续收到已接订单的弹窗。

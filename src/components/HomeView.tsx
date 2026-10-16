@@ -4997,6 +4997,11 @@ export default function HomeView({
                 if (!isNaN(days) && days > 0) {
                   licText = `接单授权（${days}天）`;
                   licColor = days <= 7 ? 'text-amber-600' : 'text-emerald-600';
+                } else {
+                  // P1(2026-10-16)：到期当天 calculateDaysFromExpiry 返回 '0'，
+                  // 但 hasValidLicense 为 true（到23:59:59有效），显示"今天到期"而非"永久"
+                  licText = '接单授权（今天到期）';
+                  licColor = 'text-amber-600';
                 }
               }
               return <span className={`text-[9.5px] font-bold ${licColor}`}>{licText}</span>;

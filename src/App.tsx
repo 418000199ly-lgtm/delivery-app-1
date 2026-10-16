@@ -713,6 +713,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             try {
               if (cleanUserPhone) {
                 safeSetItem(`dd_settings_${cleanUserPhone}`, JSON.stringify(updated));
+                // P1(2026-10-16)：补写时间戳与值，与 vipExpiry 对齐。
+                // 之前漏写导致 checkStatusSync 的本地优先保护恒失效，
+                // 管理后台充值后 10 分钟内可能被服务端旧值覆盖回去。
+                safeSetItem(`dd_license_expiry_${cleanUserPhone}`, freshLic);
+                safeSetItem(`dd_license_expiry_time_${cleanUserPhone}`, Date.now().toString());
               }
               safeSetItem('dd_settings', JSON.stringify(updated));
             } catch (_) {}
@@ -2790,7 +2795,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     });
   };
 
-  const handleDeclineIncomingOrder = () => {
+  const handleDeclineIncomingOrder = (reason?: 'user' | 'timeout' | 'no_heartbeat') => {
     if (!userPhone) return;
     const cleanUserPhone = String(userPhone).replace(/\D/g, '').trim();
     clearPendingOrderCache();
@@ -2799,14 +2804,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const orderKey = orderId || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
 
-      // Record in driver's local storage so this order NEVER appears in this driver's 选单大厅
-      try {
-        const localDeclined = JSON.parse(localStorage.getItem(`dd_declined_orders_${cleanUserPhone}`) || '[]');
-        if (orderId && !localDeclined.includes(orderId)) {
-          localDeclined.push(orderId);
-          localStorage.setItem(`dd_declined_orders_${cleanUserPhone}`, JSON.stringify(localDeclined.slice(-100)));
-        }
-      } catch (_) {}
+      // P1(2026-10-16)：只有用户主动拒单才记入 dd_declined_orders（大厅永不显示）。
+      // 60秒超时/35秒未上屏是被动转大厅，司机根本没见过单，不应永久屏蔽。
+      const isUserDecline = reason === 'user' || reason === undefined;
+      if (isUserDecline) {
+        // Record in driver's local storage so this order NEVER appears in this driver's 选单大厅
+        try {
+          const localDeclined = JSON.parse(localStorage.getItem(`dd_declined_orders_${cleanUserPhone}`) || '[]');
+          if (orderId && !localDeclined.includes(orderId)) {
+            localDeclined.push(orderId);
+            localStorage.setItem(`dd_declined_orders_${cleanUserPhone}`, JSON.stringify(localDeclined.slice(-100)));
+          }
+        } catch (_) {}
+      }
 
       const existingDeclined = Array.isArray(incomingOrder.declinedDriverPhones) ? incomingOrder.declinedDriverPhones : [];
       const existingTimeout = Array.isArray(incomingOrder.timeoutDriverPhones) ? incomingOrder.timeoutDriverPhones : [];
@@ -2827,10 +2837,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
       if (orderId) {
         const baseUrl = getBaseApiUrl();
-        // 2026-10-12改用专用通道：秒级进选单大厅，不走鉴权
+        // P1(2026-10-16)：补鉴权头。服务端已加 requireDbAuth，不带 token 恒 401，
+        // 拒单后订单要等 35s/60s 超时才进大厅。注释"不走鉴权"已过期。
         fetch(`${baseUrl}/api/order/to-hall`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ orderId, driverPhone: cleanUserPhone, reason: 'decline_or_timeout' })
         }).catch(() => {});
       }
@@ -2882,7 +2893,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     try {
       localStorage.removeItem('dd_active_incoming_order');
     } catch (_) {}
-    triggerToast('已放弃接单，订单已转入选单大厅供其他小队司机抢单。');
+    // P1(2026-10-16)：文案区分主动拒单 vs 超时/未上屏，避免用户误以为自己点了拒单
+    const toastMsg = reason === 'timeout'
+      ? '接单超时，订单已转入选单大厅。'
+      : reason === 'no_heartbeat'
+      ? '订单已转入选单大厅。'
+      : '已放弃接单，订单已转入选单大厅供其他小队司机抢单。';
+    triggerToast(toastMsg);
     // Clear/delete the passenger link doc to finish the session
     if (db && cleanUserPhone) {
       deleteDoc(doc(db, 'passenger_links', cleanUserPhone)).catch(err => {
