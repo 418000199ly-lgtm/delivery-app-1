@@ -2740,21 +2740,13 @@ function getClientIp(req: any): string {
       if (!targetPhone || !/^1[3-9]\d{9}$/.test(targetPhone)) {
         return res.status(400).json({ success: false, error: '未找到该司机（请检查手机号或名字）' });
       }
-      // 计算新到期日：现有有效期基础上累加；已过期则从今天起算
-      const calcNewExpiry = (current: string): string => {
-        // P0(2026-10-15)：永久状态不被充值降级
-        const curTrim = String(current || '').trim();
-        if (curTrim === '永久有效' || curTrim === '永久' || curTrim === '终身') {
-          return curTrim;
-        }
-        let base = new Date();
-        if (current && current !== '待开通') {
-          const p = Date.parse(current);
-          if (!isNaN(p)) {
-            const prev = new Date(p);
-            if (prev.getTime() > base.getTime()) base = prev;
-          }
-        }
+      // P1(2026-10-16晚)：改为绝对值设置，不再累加。
+      // 之前：现有有效期基础上累加（2天+填1天=3天）。
+      // 现在：管理后台填几天，App 就显示几天（填1天→1天）。
+      // 0天=已到期（屏蔽接单）。
+      const calcAbsoluteExpiry = (): string => {
+        if (days === 0) return '已到期';
+        const base = new Date();
         base.setDate(base.getDate() + days);
         return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
       };
@@ -2774,7 +2766,7 @@ function getClientIp(req: any): string {
           // P0(2026-10-16)：每个集合用自己的旧值单独算到期日。之前 newExpiry 只算一次复用三集合，
           // 三集合旧值不同时会永久分叉，导致 App 显示/派单/抢单读到不同的值。
           // 0 天场景不受影响（都是'已到期'）。
-          const colExpiry = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
+          const colExpiry = days === 0 ? '已到期' : calcAbsoluteExpiry();
           colExpiries[col] = colExpiry;
           if (col === 'driver_users') newExpiry = colExpiry;
           const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiry, updatedAt: now };
@@ -2803,7 +2795,7 @@ function getClientIp(req: any): string {
           if (!dbData[col]) dbData[col] = {};
           const existing = dbData[col][targetPhone] || {};
           // P0(2026-10-16)：每集合单独算（与 MySQL 分支同口径）
-          const colExpiryLocal = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
+          const colExpiryLocal = days === 0 ? '已到期' : calcAbsoluteExpiry();
           if (col === 'driver_users') newExpiry = colExpiryLocal;
           dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiryLocal, updatedAt: now };
         }
@@ -2830,20 +2822,10 @@ function getClientIp(req: any): string {
       if (rawDays === undefined || rawDays === null || String(rawDays).trim() === '' || isNaN(days) || days < 0 || days > 3650) {
         return res.status(400).json({ success: false, error: '天数必须在0-3650之间（0=屏蔽接单）' });
       }
-      const calcExpiry = (cur: string): string => {
-        // P0(2026-10-15)：永久状态不被充值降级
-        const curTrim = String(cur || '').trim();
-        if (curTrim === '永久有效' || curTrim === '永久' || curTrim === '终身') {
-          return curTrim;
-        }
-        let base = new Date();
-        if (cur && cur !== '待开通') {
-          const p = Date.parse(cur);
-          if (!isNaN(p)) {
-            const prev = new Date(p);
-            if (prev.getTime() > base.getTime()) base = prev;
-          }
-        }
+      // P1(2026-10-16晚)：改为绝对值设置（与单充一致）。填几天就是几天，不再累加。
+      const calcExpiry = (): string => {
+        if (days === 0) return '已到期';
+        const base = new Date();
         base.setDate(base.getDate() + days);
         return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
       };
@@ -2865,7 +2847,7 @@ function getClientIp(req: any): string {
             const st = String(d.status || d.approvalStatus || '');
             if (!['已通过', 'approved', '通过'].includes(st)) continue;
           } catch (_) { continue; }
-          const newExp = days === 0 ? '已到期' : calcExpiry(curLic);
+          const newExp = days === 0 ? '已到期' : calcExpiry();
           for (const col of targetCols) {
             const [erows]: any = await mysqlPool.query(
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1', [col, phone]);
@@ -2900,7 +2882,7 @@ function getClientIp(req: any): string {
           if (!/^1[3-9]\d{9}$/.test(p)) continue;
           const st = String((d as any).status || (d as any).approvalStatus || '');
           if (!['已通过', 'approved', '通过'].includes(st)) continue;
-          const newExp = days === 0 ? '已到期' : calcExpiry(String((d as any).licenseExpiry || ''));
+          const newExp = days === 0 ? '已到期' : calcExpiry();
           for (const col of targetCols) {
             if (!dbData[col]) dbData[col] = {};
             const ex = dbData[col][p] || {};

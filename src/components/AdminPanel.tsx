@@ -4504,8 +4504,8 @@ export default function AdminPanel({
             {/* 接单授权充值 (2026-10-15)：仅开发者可操作 + P1-6前端隐藏非开发者 */}
             {isDeveloper && (
             <div className="bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30 rounded-2xl p-4">
-              <h4 className="text-xs font-black text-amber-300 tracking-wider mb-1">📜 接单授权充值</h4>
-              <p className="text-[10px] text-slate-400 mb-3">给小队司机充值接单授权天数，天数为0时自动屏蔽接单。支持手机号或名字查找。</p>
+              <h4 className="text-xs font-black text-amber-300 tracking-wider mb-1">📜 接单授权设置</h4>
+              <p className="text-[10px] text-slate-400 mb-3">设置小队司机的接单授权天数（绝对值，非累加）。填1天则App显示1，填0天自动屏蔽接单。支持手机号或名字查找。</p>
               <div className="flex flex-wrap gap-2 items-end">
                 <div className="flex-1 min-w-[140px]">
                   <label className="text-[10px] text-slate-400 font-bold block mb-1">手机号或名字</label>
@@ -4942,21 +4942,18 @@ export default function AdminPanel({
                           </div>
                         </div>
 
-                        {/* 2026-10-16新增：接单授权到期日显示（只读，与 App 选单大厅同口径） */}
+                        {/* 2026-10-16晚：接单授权只显示数字倒计时 */}
                         <div className="space-y-1 pt-1">
                           <label className="text-[10px] font-bold text-slate-500 flex justify-between items-center">
-                            <span>📜 接单授权到期日</span>
+                            <span>📜 接单授权</span>
                             <span className="text-[10px] font-black text-emerald-500">
                               {(() => {
                                 const lic = String(driverDoc?.licenseExpiry || foundDriver?.licenseExpiry || '').trim();
-                                // P1(2026-10-16)：统一用 hasValidLicense 判有效（与服务端/司机端同口径）
-                                if (!hasValidLicense(lic)) return '🔴 已到期';
                                 if (lic === '永久有效' || lic === '永久' || lic === '终身') return '🌟 永久';
                                 const daysStr = calculateDaysFromExpiry(lic);
                                 const days = parseInt(daysStr, 10);
-                                if (daysStr === '永久') return '🌟 永久';
-                                if (!isNaN(days) && days > 0) return `约剩 ${days} 天（${lic}）`;
-                                return '🌟 永久';
+                                const showDays = (!isNaN(days) && days > 0 && hasValidLicense(lic)) ? days : 0;
+                                return showDays === 0 ? '🔴 0（已屏蔽接单）' : `${showDays}（${lic}）`;
                               })()}
                             </span>
                           </label>
@@ -5316,30 +5313,18 @@ export default function AdminPanel({
                                     </span>
                                   )}
                                 </td>
-                                {/* 2026-10-16新增：接单授权倒计时列，与 App 选单大厅同口径 */}
+                                {/* 2026-10-16晚：接单授权只显示数字倒计时（与 App 同口径），不显示"待开通/今天到期/已到期" */}
                                 <td className="py-2.5 px-2">
                                   {(() => {
                                     const lic = String(drv.licenseExpiry || '').trim();
-                                    // P1(2026-10-16)：统一用 hasValidLicense 判有效（与服务端同口径）
-                                    if (!hasValidLicense(lic)) {
-                                      if (!lic || lic === '待开通' || lic === '未开通') {
-                                        return <span className="text-slate-500 text-[10px]">待开通</span>;
-                                      }
-                                      return <span className="text-red-500 font-bold text-[10px]">已到期</span>;
-                                    }
                                     if (lic === '永久有效' || lic === '永久' || lic === '终身') {
                                       return <span className="text-emerald-500 font-bold text-[10px]">永久</span>;
                                     }
                                     const daysStr = calculateDaysFromExpiry(lic);
                                     const days = parseInt(daysStr, 10);
-                                    if (daysStr === '永久') {
-                                      return <span className="text-emerald-500 font-bold text-[10px]">永久</span>;
-                                    }
-                                    if (!isNaN(days) && days > 0) {
-                                      const color = days <= 7 ? 'text-amber-500' : 'text-emerald-500';
-                                      return <span className={`${color} font-bold text-[10px] font-mono`}>{days}天</span>;
-                                    }
-                                    return <span className="text-emerald-500 font-bold text-[10px]">今天到期</span>;
+                                    const showDays = (!isNaN(days) && days > 0 && hasValidLicense(lic)) ? days : 0;
+                                    const color = showDays === 0 ? 'text-red-500' : showDays <= 7 ? 'text-amber-500' : 'text-emerald-500';
+                                    return <span className={`${color} font-bold text-[10px] font-mono`}>{showDays}</span>;
                                   })()}
                                 </td>
                                 <td className="py-2.5 px-2 text-center">

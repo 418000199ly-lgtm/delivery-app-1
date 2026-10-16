@@ -4980,31 +4980,21 @@ export default function HomeView({
               <span className="w-1.5 h-1.5 rounded-full bg-[#ff7d00] animate-pulse"></span>
               <span className="text-[11px] font-extrabold text-slate-600 tracking-tight">选单大厅</span>
             </div>
-            {/* 接单授权显示 (2026-10-15)：仅已审批入队的小队成员可见 */}
+            {/* 接单授权显示 (2026-10-16晚)：只显示数字倒计时，不显示"待开通/今天到期/已过期"。0=屏蔽接单 */}
             {(() => {
               if (!checkApprovalStatus()) return null;
               const licExpiry = settings.licenseExpiry || '';
-              // P1(2026-10-16)：统一先用 hasValidLicense 判有效（与服务端同口径），无效直接显示已到期。
-              // 之前显示层与判定层口径不一致，边界当天可能显示"已到期"但服务端仍派单（或反之）。
-              if (!hasValidLicense(licExpiry)) {
-                return <span className="text-[9.5px] font-bold text-red-500">接单授权（已到期）</span>;
+              const licTrim = String(licExpiry).trim();
+              // 永久：显示"永久"
+              if (licTrim === '永久有效' || licTrim === '永久' || licTrim === '终身') {
+                return <span className="text-[9.5px] font-bold text-emerald-600">接单授权（永久）</span>;
               }
-              let licText = '接单授权（永久）';
-              let licColor = 'text-emerald-600';
-              if (licExpiry !== '永久有效' && licExpiry !== '永久' && licExpiry !== '终身') {
-                const daysStr = calculateDaysFromExpiry(licExpiry);
-                const days = parseInt(daysStr, 10);
-                if (!isNaN(days) && days > 0) {
-                  licText = `接单授权（${days}天）`;
-                  licColor = days <= 7 ? 'text-amber-600' : 'text-emerald-600';
-                } else {
-                  // P1(2026-10-16)：到期当天 calculateDaysFromExpiry 返回 '0'，
-                  // 但 hasValidLicense 为 true（到23:59:59有效），显示"今天到期"而非"永久"
-                  licText = '接单授权（今天到期）';
-                  licColor = 'text-amber-600';
-                }
-              }
-              return <span className={`text-[9.5px] font-bold ${licColor}`}>{licText}</span>;
+              // 数字倒计时：有效显示剩余天数，无效/过期/待开通显示0
+              const daysStr = calculateDaysFromExpiry(licExpiry);
+              const days = parseInt(daysStr, 10);
+              const showDays = (!isNaN(days) && days > 0 && hasValidLicense(licExpiry)) ? days : 0;
+              const licColor = showDays === 0 ? 'text-red-500' : showDays <= 7 ? 'text-amber-600' : 'text-emerald-600';
+              return <span className={`text-[9.5px] font-bold ${licColor}`}>接单授权（{showDays}）</span>;
             })()}
             <span className="text-[9.5px] text-slate-400 font-medium">实时派单大厅</span>
           </div>
