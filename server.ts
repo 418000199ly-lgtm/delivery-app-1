@@ -1198,7 +1198,9 @@ function getClientIp(req: any): string {
     // 之前每次重启都 DELETE 所有非开发者司机（squad_members/driver_users 等，MySQL+本地全删），
     // 重启即删光真实司机。清理测试号只走管理后台的显式"清理"接口，不再自动执行。
     // await purgeMockDriverData();
-    await consolidateAllDriversOnStartup();
+    // P1(2026-10-16晚)：删除此处的 consolidateAllDriversOnStartup() 调用。
+    // 它在下方 1205 行才用 const 定义，此处调用触发 TDZ ReferenceError 导致启动崩溃。
+    // 真正的调用在 1435 行（定义之后），功能不受影响。
   })();
 
   // Consolidate all approved squad/online drivers into driver_users on startup
