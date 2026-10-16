@@ -167,7 +167,9 @@ function getTokenSecret(): string {
 function getLicenseDaysRemaining(expiry: any): number {
   const s = String(expiry || '').trim();
   if (!s || s === '待开通' || s === '待激活' || s === '未开通' || s === '已到期' || s === '已过期') return 0;
-  if (s === '永久有效' || s === '永久' || s === '终身') return 99999;
+  // P0(2026-10-16)：加上 'permanent'，与前端 hasValidLicense 对齐。
+  // 之前服务端不认识 'permanent'，走 Date.parse→NaN→0天，前端显示永久但服务端判无效，无声丢单。
+  if (s === '永久有效' || s === '永久' || s === '终身' || s === 'permanent') return 99999;
   // P1(2026-10-16)：纯 YYYY-MM-DD 按当天 23:59:59 解析（与 isVipActiveServer 同口径）。
   // 之前 Date.parse('2026-10-20') 按 UTC 午夜解析，北京时间当天 08:00 就被判过期。
   let parsed: number;
@@ -2736,7 +2738,8 @@ function getClientIp(req: any): string {
         base.setDate(base.getDate() + days);
         return `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,'0')}-${String(base.getDate()).padStart(2,'0')}`;
       };
-      let newExpiry = '';
+      let newExpiry = ''; // 主值（driver_users 的），用于返回给前端
+      const colExpiries: Record<string, string> = {}; // 每集合的到期日
       const targetCols = ['driver_users', 'squad_members', 'online_applications'];
       const now = new Date().toISOString();
       if (isMySQLEnabled && mysqlPool) {
@@ -2748,8 +2751,13 @@ function getClientIp(req: any): string {
           if (rows && rows.length > 0) {
             existing = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
           }
-          if (!newExpiry) newExpiry = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
-          const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+          // P0(2026-10-16)：每个集合用自己的旧值单独算到期日。之前 newExpiry 只算一次复用三集合，
+          // 三集合旧值不同时会永久分叉，导致 App 显示/派单/抢单读到不同的值。
+          // 0 天场景不受影响（都是'已到期'）。
+          const colExpiry = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
+          colExpiries[col] = colExpiry;
+          if (col === 'driver_users') newExpiry = colExpiry;
+          const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiry, updatedAt: now };
           await mysqlPool.query(
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
             'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
@@ -2757,12 +2765,13 @@ function getClientIp(req: any): string {
         }
         // P0(2026-10-16)：MySQL 写入后同步双写本地 JSON。/api/db/get 在 MySQL 抖动时会回退读本地，
         // 若本地是旧值会导致 App/后台显示跳变（已到期↔2天）。双写保证回退数据源永远新鲜。
+        // 每集合用自己的值（与 MySQL 一致），不再复用单一 newExpiry。
         try {
           const dbData = readLocalJsonDb();
           for (const col of targetCols) {
             if (!dbData[col]) dbData[col] = {};
             const existingLocal = dbData[col][targetPhone] || {};
-            dbData[col][targetPhone] = { ...existingLocal, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+            dbData[col][targetPhone] = { ...existingLocal, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiries[col] || newExpiry, updatedAt: now };
           }
           writeLocalJsonDb(dbData);
         } catch (dualErr: any) {
@@ -2773,8 +2782,10 @@ function getClientIp(req: any): string {
         for (const col of targetCols) {
           if (!dbData[col]) dbData[col] = {};
           const existing = dbData[col][targetPhone] || {};
-          if (!newExpiry) newExpiry = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
-          dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: newExpiry, updatedAt: now };
+          // P0(2026-10-16)：每集合单独算（与 MySQL 分支同口径）
+          const colExpiryLocal = days === 0 ? '已到期' : calcNewExpiry(String(existing.licenseExpiry || ''));
+          if (col === 'driver_users') newExpiry = colExpiryLocal;
+          dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiryLocal, updatedAt: now };
         }
         writeLocalJsonDb(dbData);
       }
@@ -4722,6 +4733,8 @@ function getClientIp(req: any): string {
             }
             if (!ok) {
               console.error(`[Dispatch] 订单 ${orderId} MySQL 写入失败(3次重试):`, lastErr?.message);
+              // P0(2026-10-16)：写失败时释放锁，允许立即重试
+              if (lockOrderId) dispatchOrderLocks.delete(lockOrderId);
               return res.status(500).json({ success: false, error: '派单写入失败，请重试' });
             }
           }
@@ -4786,6 +4799,11 @@ function getClientIp(req: any): string {
       }
     } catch (err: any) {
       console.error('[Dispatch Nearest Exception]:', err);
+      // P0(2026-10-16)：派单异常时释放 orderId 锁，否则 60 秒内重试被 409 挡住
+      try {
+        const failOrderId = String((req.body?.orderData as any)?.orderId || (req.body?.orderData as any)?.id || '').trim();
+        if (failOrderId) dispatchOrderLocks.delete(failOrderId);
+      } catch (_) {}
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -4919,9 +4937,23 @@ function getClientIp(req: any): string {
       }
 
       // P1-2修复(2026-10-14)：司机行程中（isBusy）不能再抢单，防一人同时持有两单
+      // P0(2026-10-16)：改优先读 MySQL。之前只读本地 JSON，MySQL 模式下 busy 只写 MySQL，
+      // 本地永远是旧值，检查恒失效，司机可同时持有多单。
       try {
-        const loc = dbData.driver_locations?.[cleanDriverPhone];
-        if (loc && (loc.isBusy === true || loc.isBusy === 'true')) {
+        let busyLoc: any = null;
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [brows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['driver_locations', cleanDriverPhone]);
+            if (brows && brows.length > 0) {
+              const braw = brows[0].data;
+              busyLoc = typeof braw === 'string' ? JSON.parse(braw) : braw;
+            }
+          } catch (_) {}
+        }
+        if (!busyLoc) busyLoc = dbData.driver_locations?.[cleanDriverPhone];
+        if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === 'true')) {
           return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
         }
       } catch (_) {}
@@ -8152,6 +8184,13 @@ function getClientIp(req: any): string {
           // 原子检查：已被他人认领则拒绝（409）
           const claimedBy = String(target.claimedDriverPhone || target.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
           const st = String(target.status || '');
+          // P0(2026-10-16)：幂等短路——订单已被本人认领时直接成功。
+          // 新来单弹窗点"确认接单"会调两次服务端（overlay先调/api/order/claim成功，
+          // 再经onAccept→handleAcceptIncomingOrder调driver-claim），第二次必须幂等成功，
+          // 否则会被in_hall校验/忙碌检查409误杀，App进不了行程页且busy锁死。
+          if ((st === 'claimed' || st === '已接单') && claimedBy === cleanDriverPhone) {
+            return { ok: true };
+          }
           if ((st === 'claimed' || st === '已接单') && claimedBy && claimedBy !== cleanDriverPhone) {
             return { ok: false, code: 409, error: '该订单已被其他司机接单' };
           }
@@ -8204,6 +8243,10 @@ function getClientIp(req: any): string {
           const target = dbData['merchant_orders'][cleanOrderId] || {};
           const claimedBy = String(target.claimedDriverPhone || target.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
           const st = String(target.status || '');
+          // P0(2026-10-16)：幂等短路（与 MySQL 分支同口径）——已被本人认领直接成功
+          if ((st === 'claimed' || st === '已接单') && claimedBy === cleanDriverPhone) {
+            return { ok: true };
+          }
           if ((st === 'claimed' || st === '已接单') && claimedBy && claimedBy !== cleanDriverPhone) {
             return { ok: false, code: 409, error: '该订单已被其他司机接单' };
           }
@@ -8520,9 +8563,22 @@ function getClientIp(req: any): string {
       const writeOrder = async (col: string, docId: string, data: any) => {
         const dataStr = JSON.stringify(data);
         if (isMySQLEnabled && mysqlPool) {
-          await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', [col, docId, dataStr]);
+          // P0(2026-10-16)：加 3 次重试，失败抛错（照 nearest P1-3 模式）。
+          // 之前无重试，passenger_links 成功、merchant_orders 失败时产生僵尸派单。
+          let ok = false;
+          let lastErr: any = null;
+          for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+            try {
+              await mysqlPool.query(
+                'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', [col, docId, dataStr]);
+              ok = true;
+            } catch (e: any) {
+              lastErr = e;
+              if (attempt < 3) await new Promise(r => setTimeout(r, 200 * attempt));
+            }
+          }
+          if (!ok) throw lastErr;
         } else {
           const dbData = readLocalJsonDb();
           if (!dbData[col]) dbData[col] = {};
