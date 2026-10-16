@@ -3817,7 +3817,31 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           onAccept={handleAcceptIncomingOrder}
           onDecline={handleDeclineIncomingOrder}
           // P0(2026-10-16)：409静默关闭，只清弹窗不调to-hall
-          onDismissSilently={() => setIncomingOrder(null)}
+          // 2026-10-17修复：静默关闭必须同步删passenger_links并记入dismissed，否则5秒轮询
+          // 又把已进大厅/已失效的订单拉回来，导致弹窗闪现循环。
+          onDismissSilently={() => {
+            try {
+              const cur = incomingOrder;
+              const oid = String((cur as any)?.orderId || (cur as any)?.id || (cur as any)?.orderNo || '').trim();
+              if (oid) {
+                dismissedIncomingOrderKeysRef.current.add(oid);
+                persistDismissedKeys();
+              }
+              const cp = String(userPhone || '').replace(/\D/g, '').trim();
+              if (cp && db) {
+                deleteDoc(doc(db, 'passenger_links', cp)).catch(() => {});
+              }
+              const baseUrl = getBaseApiUrl();
+              if (cp) {
+                fetch(`${baseUrl}/api/db/delete`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                  body: JSON.stringify({ collection: 'passenger_links', docId: cp })
+                }).catch(() => {});
+              }
+            } catch (_) {}
+            setIncomingOrder(null);
+          }}
         />
       );
     }
