@@ -2697,12 +2697,16 @@ function getClientIp(req: any): string {
     try {
       const inputPhone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
       const inputName = String(req.body.name || '').trim();
+      // 2026-10-16晚：支持 permanent=true 设为永久。永久直接写'永久有效'，跳过天数校验。
+      const wantPermanent = (req.body as any).permanent === true;
       // P0(2026-10-16)：天数=0 表示屏蔽接单（管理后台文案承诺的行为），不再当非法输入拦掉；
       // 但缺参数/空字符串必须拒绝，防止误触清空授权
       const rawDays: any = (req.body as any).days;
       const days = Math.floor(Number(rawDays));
-      if (rawDays === undefined || rawDays === null || String(rawDays).trim() === '' || isNaN(days) || days < 0 || days > 3650) {
-        return res.status(400).json({ success: false, error: '天数必须在0-3650之间（0=屏蔽接单）' });
+      if (!wantPermanent) {
+        if (rawDays === undefined || rawDays === null || String(rawDays).trim() === '' || isNaN(days) || days < 0 || days > 3650) {
+          return res.status(400).json({ success: false, error: '天数必须在0-3650之间（0=屏蔽接单）' });
+        }
       }
       // 按手机号或名字查找司机（名字必须精确匹配唯一，多人重名时要求用手机号）
       let targetPhone = inputPhone;
@@ -2743,8 +2747,9 @@ function getClientIp(req: any): string {
       // P1(2026-10-16晚)：改为绝对值设置，不再累加。
       // 之前：现有有效期基础上累加（2天+填1天=3天）。
       // 现在：管理后台填几天，App 就显示几天（填1天→1天）。
-      // 0天=已到期（屏蔽接单）。
+      // 0天=已到期（屏蔽接单）。permanent=true 时返回'永久有效'。
       const calcAbsoluteExpiry = (): string => {
+        if (wantPermanent) return '永久有效';
         if (days === 0) return '已到期';
         const base = new Date();
         base.setDate(base.getDate() + days);
@@ -2766,7 +2771,7 @@ function getClientIp(req: any): string {
           // P0(2026-10-16)：每个集合用自己的旧值单独算到期日。之前 newExpiry 只算一次复用三集合，
           // 三集合旧值不同时会永久分叉，导致 App 显示/派单/抢单读到不同的值。
           // 0 天场景不受影响（都是'已到期'）。
-          const colExpiry = days === 0 ? '已到期' : calcAbsoluteExpiry();
+          const colExpiry = calcAbsoluteExpiry();
           colExpiries[col] = colExpiry;
           if (col === 'driver_users') newExpiry = colExpiry;
           const updated = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiry, updatedAt: now };
@@ -2795,15 +2800,16 @@ function getClientIp(req: any): string {
           if (!dbData[col]) dbData[col] = {};
           const existing = dbData[col][targetPhone] || {};
           // P0(2026-10-16)：每集合单独算（与 MySQL 分支同口径）
-          const colExpiryLocal = days === 0 ? '已到期' : calcAbsoluteExpiry();
+          const colExpiryLocal = calcAbsoluteExpiry();
           if (col === 'driver_users') newExpiry = colExpiryLocal;
           dbData[col][targetPhone] = { ...existing, phone: targetPhone, phoneNumber: targetPhone, licenseExpiry: colExpiryLocal, updatedAt: now };
         }
         writeLocalJsonDb(dbData);
       }
       // P1(2026-10-15)：记录操作日志
-      await logAdminOperation('recharge-license', String((req as any).authPhone || ''), targetPhone, `+${days}天，有效期至${newExpiry}`, req);
-      return res.json({ success: true, phone: targetPhone, licenseExpiry: newExpiry, daysAdded: days });
+      const logDesc = wantPermanent ? '设为永久有效' : `设为${days}天，有效期至${newExpiry}`;
+      await logAdminOperation('recharge-license', String((req as any).authPhone || ''), targetPhone, logDesc, req);
+      return res.json({ success: true, phone: targetPhone, licenseExpiry: newExpiry, daysAdded: wantPermanent ? -1 : days, permanent: wantPermanent });
     } catch (err: any) {
       console.error('[Recharge License Error]:', err);
       return res.status(500).json({ success: false, error: err.message });

@@ -4518,6 +4518,38 @@ export default function AdminPanel({
                     className="w-full px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-amber-500 outline-none rounded-xl text-xs text-slate-200" />
                 </div>
                 <button onClick={async () => {
+                  // 2026-10-16晚：设为永久。输入框只收数字，永久走单独参数。
+                  const inputEl = document.getElementById('license-recharge-input') as HTMLInputElement;
+                  const input = inputEl?.value?.trim() || '';
+                  if (!input) { triggerToast('请输入手机号或名字'); return; }
+                  if (!confirm(`确定将 ${input} 的接单授权设为永久吗？`)) return;
+                  try {
+                    const baseUrl = getBaseApiUrl();
+                    const isPhone = /^1[3-9]\d{9}$/.test(input.replace(/\D/g, ''));
+                    const body: any = { permanent: true };
+                    if (isPhone) body.phone = input.replace(/\D/g, '');
+                    else body.name = input;
+                    const r = await fetch(`${baseUrl}/api/admin/recharge-license`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                      body: JSON.stringify(body)
+                    });
+                    const j = await r.json().catch(() => null);
+                    if (r.ok && j?.success) {
+                      triggerToast(`🌟 已设为永久：${j.phone}`);
+                      window.dispatchEvent(new CustomEvent('driver_vip_updated', { detail: { phone: j.phone, licenseExpiry: j.licenseExpiry } }));
+                      inputEl.value = '';
+                    } else {
+                      triggerToast(`❌ ${j?.error || '设置失败'}`);
+                    }
+                  } catch (e: any) {
+                    triggerToast(`❌ ${e?.message || '网络错误'}`);
+                  }
+                }}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl whitespace-nowrap">
+                  🌟 设为永久
+                </button>
+                <button onClick={async () => {
                   const inputEl = document.getElementById('license-recharge-input') as HTMLInputElement;
                   const daysEl = document.getElementById('license-recharge-days') as HTMLInputElement;
                   const input = inputEl?.value?.trim() || '';
