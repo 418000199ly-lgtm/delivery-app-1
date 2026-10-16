@@ -1816,7 +1816,10 @@ function getClientIp(req: any): string {
           const s = String(v ?? '').trim();
           return (s && s !== '待开通') ? s : '';
         };
-        licenseExpiry = pickLic(raw.licenseExpiry) || pickLic(du.licenseExpiry) || pickLic(sq.licenseExpiry) || pickLic(oa.licenseExpiry) || pickLic(sa.licenseExpiry);
+        // P0(2026-10-17)：删 raw 优先级。raw 来自 LIMIT 1 无 ORDER BY 的随机查询，
+        // 可能拿到4集合中任意一个的旧值（如 squad_applications 的 2天），导致 0↔2 跳变。
+        // du/sq/oa/sa 是全量查询（无 LIMIT），按 driver_users 优先顺序合并。
+        licenseExpiry = pickLic(du.licenseExpiry) || pickLic(sq.licenseExpiry) || pickLic(oa.licenseExpiry) || pickLic(sa.licenseExpiry) || pickLic(raw.licenseExpiry);
 
         if (isRejected) {
           vipExpiry = '待开通';
@@ -4539,13 +4542,9 @@ function getClientIp(req: any): string {
           return;
         }
 
-        // GPS 120秒无更新视为离线，跳过（用户铁律：120秒无GPS强制下线，防死司机占用派单）
-        // 服务端30秒看门狗已提前标记 isOnline=false，这里是派单时的最后一道防线
-        // M2修复：无时间戳按过期处理，不再放行幽灵司机
-        const locTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || data.locationTimestamp || loc.lastLocationTime || 0);
-        if (Date.now() - locTs > 120 * 1000) {
-          return;
-        }
+        // 用户2026-10-17要求：删120秒GPS派单检查。理由：已有"新来单页35秒无心跳转大厅"兜底，
+        // GPS过期司机收到弹窗不点确认/不看页面，35秒后自动转大厅，不会卡单。
+        // 之前 indoor 测试时 GPS 不新鲜导致"无在线空闲司机"误判。
 
         // H12修复：删除 0.3km 假距离回退；坐标非法时不参与距离派单
         const distKm = (!isNaN(pLat) && !isNaN(pLng) && pLat !== 0 && pLng !== 0)
