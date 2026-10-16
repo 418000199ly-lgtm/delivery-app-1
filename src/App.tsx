@@ -2089,7 +2089,22 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   // Active VIP Limit & State Reset Listener moved after handleUpdateSettings to avoid TDZ issues.
 
-  const dismissedIncomingOrderKeysRef = useRef<Set<string>>(new Set());
+  const dismissedIncomingOrderKeysRef = useRef<Set<string>>((() => {
+    // P0(2026-10-17)：弹窗去重持久化。之前纯内存，组件重挂载后丢失，导致已滑掉的弹窗重弹。
+    try {
+      const saved = localStorage.getItem('dd_dismissed_incoming_keys');
+      if (saved) {
+        const arr = JSON.parse(saved);
+        if (Array.isArray(arr)) return new Set(arr.slice(-100)); // 最多保留100个
+      }
+    } catch (_) {}
+    return new Set();
+  })());
+  const persistDismissedKeys = () => {
+    try {
+      localStorage.setItem('dd_dismissed_incoming_keys', JSON.stringify(Array.from(dismissedIncomingOrderKeysRef.current).slice(-100)));
+    } catch (_) {}
+  };
   const lastAlertedOrderKeyRef = useRef<string>('');
   const lastAlertedOrderTimeRef = useRef<number>(0);
   const handledCancelledOrderKeysRef = useRef<Set<string>>(new Set());
@@ -2254,6 +2269,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             });
           } else {
             dismissedIncomingOrderKeysRef.current.add(orderKey);
+            persistDismissedKeys();
             setIncomingOrder(null);
             setActiveOnlineOrder({ ...data, isQrOrder: true });
             setCurrentView('create_order');
@@ -2658,6 +2674,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (incomingOrder) {
       const orderKey = incomingOrder.orderId || incomingOrder.id || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
+      persistDismissedKeys();
 
       try {
         const ended = await Promise.race([
@@ -2798,6 +2815,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const orderId = String(incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo || '').trim();
       const orderKey = orderId || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || ''}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
+      persistDismissedKeys();
 
       // P1(2026-10-16)：只有用户主动拒单才记入 dd_declined_orders（大厅永不显示）。
       // 60秒超时/35秒未上屏是被动转大厅，司机根本没见过单，不应永久屏蔽。
@@ -2950,10 +2968,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if (incomingOrder) {
       const orderKey = incomingOrder.orderId || incomingOrder.id || incomingOrder.orderNo || `${incomingOrder.passengerPhone || 'p'}_${incomingOrder.timestamp || 0}`;
       dismissedIncomingOrderKeysRef.current.add(orderKey);
+      persistDismissedKeys();
     }
     if (activeOnlineOrder) {
       const activeKey = activeOnlineOrder.orderId || activeOnlineOrder.id || activeOnlineOrder.orderNo || `${activeOnlineOrder.passengerPhone || 'p'}_${activeOnlineOrder.timestamp || 0}`;
       dismissedIncomingOrderKeysRef.current.add(activeKey);
+      persistDismissedKeys();
     }
     setIncomingOrder(null);
     setActiveOnlineOrder(null);

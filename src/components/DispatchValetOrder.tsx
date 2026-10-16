@@ -3678,6 +3678,9 @@ export default function DispatchValetOrder({
 
       if (!finalAssignedDriver) {
         onShowToast('3公里内无空闲上线小队司机，订单已进入选单大厅供抢单');
+      } else {
+        // P0(2026-10-17)：派单成功给商户端提示。之前只有司机端弹窗，商户端无反馈。
+        onShowToast(`已派单给${finalAssignedDriver.name || '小队司机'}，对方APP已弹出新来单确认页面（60秒倒计时）`);
       }
 
       setTimeout(() => {
