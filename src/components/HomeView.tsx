@@ -4375,14 +4375,27 @@ export default function HomeView({
     try {
       // 2026-10-12改用专用通道，不走 /api/db/get 的严格鉴权
       const baseUrl = getBaseApiUrl();
-      const checkRes = await fetch(`${baseUrl}/api/vip-code-check?code=${encodeURIComponent(codeValue)}&_t=${Date.now()}`, { cache: 'no-store' });
+      // 2026-10-17修复：补 X-Auth-Token（10-17全仓补token时漏了这一处，无token会被requireDbAuth直接401，误报"码不存在"）
+      const checkRes = await fetch(`${baseUrl}/api/vip-code-check?code=${encodeURIComponent(codeValue)}&_t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: { ...getAuthHeaders() }
+      });
       const checkJson = await checkRes.json().catch(() => null);
+      // 401/403 是登录问题，不是码的问题，别误导用户
+      if (checkRes.status === 401 || checkRes.status === 403) {
+        setModalMessage({
+          type: 'error',
+          text: '❌ 登录已失效，请重新短信登录后再兑换'
+        });
+        setIsMatching(false);
+        return;
+      }
       const codeData = (checkJson && checkJson.success && checkJson.exists) ? checkJson.data : null;
 
       if (!codeData) {
         setModalMessage({ 
           type: 'error', 
-          text: '❌ 匹配失败：该兑换码/充值卡密不存在或已被撤销。请从右侧决策管理后台「一键极速批产」生成真实卡密粘贴至此处！' 
+          text: '❌ 匹配失败：请输入正确的卡密，或复制卡密粘贴至此处！' 
         });
         setIsMatching(false);
         return;

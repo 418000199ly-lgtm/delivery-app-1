@@ -3358,6 +3358,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             }).then(async (r) => {
               if (!r.ok) {
                 const j = await r.json().catch(() => ({}));
+                // 2026-10-17：报单/二维码创单是本地单，服务端无记录时404「订单不存在」属预期，不弹提示（本地已存档）
+                if (j.error === '订单不存在') {
+                  console.warn('[OrderComplete] 服务端无此订单，跳过同步:', merchantOrderId);
+                  return;
+                }
                 triggerToast(`完成订单失败：${j.error || '请重试'}`);
               }
             }).catch(e => {
