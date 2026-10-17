@@ -5257,6 +5257,7 @@ function getClientIp(req: any): string {
           if (!dispatchedTo) {
             return res.status(409).json({ success: false, error: '该订单未派单给你，无法接单' });
           }
+          console.log('[ClaimHall] order=' + cleanOrderId + ' tStatus=' + tStatus + ' in_hall=' + JSON.stringify(targetOrder.in_hall));
           if (tStatus === 'hall' || targetOrder.in_hall === true) {
             return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
           }

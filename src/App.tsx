@@ -2804,7 +2804,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setMobileActiveTab('app');
     setCurrentView('create_order');
     setIncomingOrder(null);
-    reportDriverBusyStatus(userPhone, true, { currentView: 'create_order', isBusy: true });
+    // 2026-10-17：商户代叫不再置忙（防弹窗接单409自锁）
     try {
       localStorage.removeItem('dd_active_incoming_order');
     } catch (_) {}

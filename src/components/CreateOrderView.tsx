@@ -312,11 +312,9 @@ export default function CreateOrderView({
   const [arrivedAtDeparture, setArrivedAtDeparture] = useState(false);
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
 
-  // 严格规则：进入报单页面即刻将司机置为忙碌状态，退出/返回则即刻恢复为空闲接单状态
+  // 2026-10-17：报单/商户代叫页面不再置忙。司机号下商户单会把自己标忙，导致弹窗接单409自锁。
+  // 防双单由服务端派单的"已有未处理派单转大厅"保护。
   useEffect(() => {
-    if (userPhone) {
-      reportDriverBusyStatus(userPhone, true, { currentView: 'create_order', isBusy: true });
-    }
     return () => {
       if (userPhone) {
         reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });

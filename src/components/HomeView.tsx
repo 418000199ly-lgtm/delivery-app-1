@@ -1523,7 +1523,7 @@ export default function HomeView({
       } catch (_) {}
 
       if (userPhone) {
-        reportDriverBusyStatus(userPhone, true, { currentView: 'create_order', isBusy: true });
+        // 2026-10-17：商户代叫不再置忙（防弹窗接单409自锁）
         if (db) {
           deleteDoc(doc(db, 'passenger_links', userPhone)).catch(e => console.warn("[SilentCatch]", e?.message || e));
         }
