@@ -659,6 +659,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       const orderNumber = (order as any)?.orderNo || (order as any)?.orderId || (order as any)?.id || ('YC' + Date.now());
       const rawOrderId = String((order as any)?.id || (order as any)?.orderId || orderNumber).trim();
       const cleanUserPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+      // 2026-10-17 诊断：弹窗显示发送的订单ID
+      try { alert('接单ID: ' + rawOrderId); } catch (_) {}
 
       const trip: TripState = {
         id: rawOrderId,

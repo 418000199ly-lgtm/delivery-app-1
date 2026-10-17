@@ -4909,6 +4909,10 @@ function getClientIp(req: any): string {
           orderId: orderId,
           ...coordFields,
           status: 'submitted',
+          // 2026-10-17根治：派单成功必须显式 in_hall=false。客户端orderData带的in_hall恒为true
+          // （App内商户代叫从不本地选司机），不覆盖则DB里status=dispatched但in_hall=true，
+          // 接单接口的in_hall检查会409拦截，且大厅列表会把dispatched单显示出来。
+          in_hall: false,
           isValetOrder: true,
           isPlatformDispatch: true,
           dispatchedDriverPhone: selected.phone,
