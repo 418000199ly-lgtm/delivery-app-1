@@ -659,8 +659,6 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       const orderNumber = (order as any)?.orderNo || (order as any)?.orderId || (order as any)?.id || ('YC' + Date.now());
       const rawOrderId = String((order as any)?.id || (order as any)?.orderId || orderNumber).trim();
       const cleanUserPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
-      // 2026-10-17 诊断：弹窗显示发送的订单ID
-      try { alert('接单ID: ' + rawOrderId); } catch (_) {}
 
       const trip: TripState = {
         id: rawOrderId,
@@ -705,6 +703,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         });
         const claimData = await claimResp.json().catch(() => ({}));
         claimOrder = (claimData as any)?.order;
+        // 2026-10-17 诊断：显示服务端返回状态
+        try { alert('服务端返回: ' + claimResp.status + ' ' + JSON.stringify(claimData).slice(0, 200)); } catch (_) {}
         if (!claimResp.ok || claimData.success === false) {
           // 接单失败：已被抢/订单不存在/网络错误，绝不进服务页
           const msg = String(claimData.message || claimData.error || '');
