@@ -1311,9 +1311,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }, [userPhone, isOnline, isSquadApprovedOrManagement, settings?.city, settings?.driverName, currentTrip, stats?.todayOrders, currentView, sysVersion, incomingOrder, activeOnlineOrder]);
 
   // Synchronize driver busy / idle status to Mainland China Aliyun server, Firestore & local state
+  // 2026-10-17：去掉 incomingOrder 和 create_order。弹窗/报单页不再置忙，防接单409自锁。
+  // 真正忙碌只看 currentTrip（服务中）/ activeOnlineOrder（有进行中订单）。
   useEffect(() => {
     if (!userPhone) return;
-    const isBusy = Boolean(currentTrip || currentView === 'create_order' || incomingOrder || activeOnlineOrder);
+    const isBusy = Boolean(currentTrip || activeOnlineOrder);
     reportDriverBusyStatus(userPhone, isBusy, {
       driverName: settings?.driverName,
       currentView: incomingOrder ? 'incoming_overlay' : currentView
