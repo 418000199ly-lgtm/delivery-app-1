@@ -1605,7 +1605,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } catch (_) {}
       setUserPhone(null);
       setCurrentView('login');
-      triggerToast('登录已失效，请重新短信登录');
+      // 2026-10-17：去掉"登录已失效"toast，用户反馈一直弹很烦。跳登录页即可。
     };
     window.addEventListener('auth_token_expired', handleTokenExpired);
     return () => window.removeEventListener('auth_token_expired', handleTokenExpired);
