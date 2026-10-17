@@ -3948,6 +3948,9 @@ export default function MobileDispatchValetOrder({
                 };
                 const payloadWithServerDriver = {
                   ...passengerLinkPayload,
+                  // 2026-10-17：带上服务端返回的MO订单ID，接单接口按doc_id查必须用这个
+                  id: resData.orderId || (passengerLinkPayload as any)?.id,
+                  orderId: resData.orderId || (passengerLinkPayload as any)?.orderId,
                   dispatchedDriverPhone: srvPhone,
                   dispatchedDriverName: srvName,
                   distKm: resData.distKm,

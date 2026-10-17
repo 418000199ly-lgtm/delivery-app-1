@@ -4997,6 +4997,7 @@ function getClientIp(req: any): string {
         return res.json({
           success: true,
           isHall: false,
+          orderId: orderId,
           dispatchedDriverPhone: selected.phone,
           dispatchedDriverName: selected.name,
           distKm: selected.distKm,
@@ -5176,9 +5177,10 @@ function getClientIp(req: any): string {
         return res.status(403).json({ success: false, error: '❌ 权限不足：只有小队内审批通过的正式司机才能接收商户代叫单与报单转单！非小队成员无接单权限。' });
       }
       if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
-      let targetOrder: any = dbData['merchant_orders'][cleanOrderId];
-      // P1(2026-10-15)：MySQL模式下从MySQL读，否则永远404
-      if (isMySQLEnabled && mysqlPool && !targetOrder) {
+      let targetOrder: any = null;
+      // 2026-10-17：MySQL模式下优先读MySQL。本地JSON可能滞后（双写不一致），
+      // 若本地是旧hall状态而MySQL是dispatched，按本地会误判"已进大厅"导致接单失败。
+      if (isMySQLEnabled && mysqlPool) {
         try {
           const [crows]: any = await mysqlPool.query(
             'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
@@ -5188,6 +5190,9 @@ function getClientIp(req: any): string {
             targetOrder = typeof crows[0].data === 'string' ? JSON.parse(crows[0].data) : crows[0].data;
           }
         } catch (_) {}
+      }
+      if (!targetOrder) {
+        targetOrder = dbData['merchant_orders'][cleanOrderId];
       }
 
       // P1-1修复(2026-10-14)：订单不存在直接 404，不创建假订单
