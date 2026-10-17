@@ -358,13 +358,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     };
   }, [targetOrderId, cleanDriverPhone]);
 
-  // 无论3公里内还是3公里外派单，只要司机端屏幕弹出 w31 新来单页面，立即标记为忙碌状态并上报服务器
-  // P1-7修复(2026-10-13)：卸载时恢复空闲，否则司机永久"忙碌"接不到单
+  // 2026-10-17：弹窗挂载不再上报忙碌。原因：挂载即标忙会导致接单时服务端isBusy检查409自锁。
+  // 派单时服务端已校验不忙；接单成功后服务端claim会置忙；拒单/超时卸载时清闲。
   useEffect(() => {
-    const phone = userPhone || localStorage.getItem('dd_user_phone') || '';
-    if (phone) {
-      reportDriverBusyStatus(phone, true, { currentView: 'incoming_overlay', isBusy: true });
-    }
     return () => {
       const p = userPhone || localStorage.getItem('dd_user_phone') || '';
       if (p) {
@@ -703,8 +699,6 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         });
         const claimData = await claimResp.json().catch(() => ({}));
         claimOrder = (claimData as any)?.order;
-        // 2026-10-17 诊断：显示服务端返回状态
-        try { alert('服务端返回: ' + claimResp.status + ' ' + JSON.stringify(claimData).slice(0, 200)); } catch (_) {}
         if (!claimResp.ok || claimData.success === false) {
           // 接单失败：已被抢/订单不存在/网络错误，绝不进服务页
           const msg = String(claimData.message || claimData.error || '');

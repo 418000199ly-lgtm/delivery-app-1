@@ -5209,6 +5209,7 @@ function getClientIp(req: any): string {
       // 本地永远是旧值，检查恒失效，司机可同时持有多单。
       try {
         let busyLoc: any = null;
+        let busySrc = 'none';
         if (isMySQLEnabled && mysqlPool) {
           try {
             const [brows]: any = await mysqlPool.query(
@@ -5217,10 +5218,18 @@ function getClientIp(req: any): string {
             if (brows && brows.length > 0) {
               const braw = brows[0].data;
               busyLoc = typeof braw === 'string' ? JSON.parse(braw) : braw;
+              busySrc = 'mysql';
+            } else {
+              busySrc = 'mysql-empty';
             }
-          } catch (_) {}
+          } catch (e: any) {
+            busySrc = 'mysql-err:' + String(e?.message || e).slice(0, 80);
+          }
+        } else {
+          busySrc = 'mysql-disabled';
         }
-        if (!busyLoc) busyLoc = dbData.driver_locations?.[cleanDriverPhone];
+        if (!busyLoc) { busyLoc = dbData.driver_locations?.[cleanDriverPhone]; if (busyLoc) busySrc = 'local'; }
+        console.log('[ClaimBusy] phone=' + cleanDriverPhone + ' src=' + busySrc + ' isBusy=' + JSON.stringify(busyLoc?.isBusy));
         if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === "true" || busyLoc.isBusy === 1)) {
           return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
         }
