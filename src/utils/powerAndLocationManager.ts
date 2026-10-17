@@ -297,10 +297,8 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     }
 
     const isDriverBusy = Boolean(
-      currentTrip || 
-      currentView === 'create_order' || 
-      incomingOrder || 
-      activeOnlineOrder || 
+      currentTrip ||
+      activeOnlineOrder ||
       localStorage.getItem('dd_driver_status_is_busy') === 'true'
     );
     const timestampIso = new Date().toISOString();
