@@ -4766,11 +4766,12 @@ function getClientIp(req: any): string {
         }
 
         // H6修复：写入前用库内最新状态二次校验（防并发派单双写：高德解析+3秒等待期间可能已被其他请求派单）
-        // 2026-10-17: MySQL 模式下直接查 MySQL，不读本地大 JSON 文件（readFileSync+JSON.parse 会阻塞事件循环）
-        // 2026-10-17 05:30: H6 查询疑似卡死事件循环，临时 bypass（dispatchOrderLocks 已防同单并发）。
-        // TODO: 查明 MySQL 卡死原因后恢复。
-        console.log(`[Dispatch] 订单 ${orderId} 步骤3: H6并发检查开始`);
-        /*
+        // 2026-10-17 正式版恢复：05:30 的临时 bypass 是"疑似卡死"的预防措施，从未证实。
+        // mysqlQueryTimeout 本就是 Promise.race + 5秒定时器，异步不可能阻塞事件循环；真正堵死的
+        // 是本地 JSON 分支的 readFileSync（v6 卡死根因），正式版已改为异步读。保护逻辑完整恢复。
+        // MySQL 分支走 mysqlQueryTimeout（5秒硬超时，异步不堵事件循环）；
+        // 本地 JSON 分支改异步读文件（原 readLocalJsonDb 的 readFileSync 大文件阻塞事件循环是 v6 派单卡死根因，
+        // 正式版改为 fs.promises 异步读；内存有脏数据时直接用内存缓存，语义与 readLocalJsonDb 一致）。
         {
           let freshOrder: any = null;
           if (isMySQLEnabled && mysqlPool) {
@@ -4790,8 +4791,17 @@ function getClientIp(req: any): string {
               console.error(`[Dispatch] 订单 ${orderId} H6检查失败，按未派单继续:`, e?.message);
             }
           } else {
-            const freshDb = readLocalJsonDb();
-            freshOrder = freshDb?.['merchant_orders']?.[orderId];
+            try {
+              if (_dbDirty && cachedDbData) {
+                freshOrder = cachedDbData?.['merchant_orders']?.[orderId];
+              } else {
+                const content = await fs.promises.readFile(LOCAL_JSON_DB_PATH, 'utf8');
+                const freshDb = JSON.parse(content || '{}');
+                freshOrder = freshDb?.['merchant_orders']?.[orderId];
+              }
+            } catch (e: any) {
+              console.error(`[Dispatch] 订单 ${orderId} H6本地读取失败，按未派单继续:`, e?.message);
+            }
           }
           const alreadyDispatched = String(freshOrder?.dispatchedDriverPhone || '').trim();
           const alreadyClaimed = String(freshOrder?.claimedDriverPhone || '').trim();
@@ -4800,8 +4810,6 @@ function getClientIp(req: any): string {
             return res.json({ success: true, dispatched: true, driverPhone: alreadyDispatched || alreadyClaimed, alreadyDispatched: true });
           }
         }
-        */
-        console.log(`[Dispatch] 订单 ${orderId} 步骤3: H6跳过(临时bypass), 继续派单写入...`);
 
         // 接单授权拦截后无可用司机：订单直接转入选单大厅
         if (!selected) {
@@ -4864,8 +4872,8 @@ function getClientIp(req: any): string {
         // P0(2026-10-15)：MySQL模式下旧单转大厅（否则两单并存串倒计时，致33→59跳变）
         // 2026-10-17: 加 8 秒超时，防连接 hang 住导致派单卡死
         // 2026-10-17优化：SQL 直接过滤该司机的派单中订单，不全表扫描
-        // 2026-10-17 05:35: MySQL查询疑似卡死，临时bypass（本地JSON清理仍在）
-        if (false && isMySQLEnabled && mysqlPool) {
+        // 2026-10-17 正式版恢复：之前临时 bypass（05:35），走 mysqlQueryTimeout（8秒硬超时，异步不堵事件循环）
+        if (isMySQLEnabled && mysqlPool) {
           try {
             const [oldRows]: any = await mysqlQueryTimeout(
               mysqlPool,
@@ -5209,7 +5217,6 @@ function getClientIp(req: any): string {
       // 本地永远是旧值，检查恒失效，司机可同时持有多单。
       try {
         let busyLoc: any = null;
-        let busySrc = 'none';
         if (isMySQLEnabled && mysqlPool) {
           try {
             const [brows]: any = await mysqlPool.query(
@@ -5218,18 +5225,12 @@ function getClientIp(req: any): string {
             if (brows && brows.length > 0) {
               const braw = brows[0].data;
               busyLoc = typeof braw === 'string' ? JSON.parse(braw) : braw;
-              busySrc = 'mysql';
-            } else {
-              busySrc = 'mysql-empty';
             }
-          } catch (e: any) {
-            busySrc = 'mysql-err:' + String(e?.message || e).slice(0, 80);
+          } catch (_) {
+            // MySQL 读取失败：busyLoc 保持 null，下一行回退读本地缓存
           }
-        } else {
-          busySrc = 'mysql-disabled';
         }
-        if (!busyLoc) { busyLoc = dbData.driver_locations?.[cleanDriverPhone]; if (busyLoc) busySrc = 'local'; }
-        console.log('[ClaimBusy] phone=' + cleanDriverPhone + ' src=' + busySrc + ' isBusy=' + JSON.stringify(busyLoc?.isBusy));
+        if (!busyLoc) { busyLoc = dbData.driver_locations?.[cleanDriverPhone]; }
         if (busyLoc && (busyLoc.isBusy === true || busyLoc.isBusy === "true" || busyLoc.isBusy === 1)) {
           return res.status(409).json({ success: false, error: '您当前有行程中的订单，请完成后再抢单' });
         }
@@ -5257,7 +5258,6 @@ function getClientIp(req: any): string {
           if (!dispatchedTo) {
             return res.status(409).json({ success: false, error: '该订单未派单给你，无法接单' });
           }
-          console.log('[ClaimHall] order=' + cleanOrderId + ' tStatus=' + tStatus + ' in_hall=' + JSON.stringify(targetOrder.in_hall));
           if (tStatus === 'hall' || targetOrder.in_hall === true) {
             return res.status(409).json({ success: false, error: '订单已超时进入大厅，请去大厅抢单', inHall: true });
           }
