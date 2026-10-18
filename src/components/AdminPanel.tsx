@@ -897,7 +897,9 @@ export default function AdminPanel({
           });
         } else if (rawP.toUpperCase().endsWith('A') || data.isMerchant || data.accountType === 'merchant') {
           list.push({ id: doc.id, ...data });
-        } else if (data.status === '已通过' && data.is_squad_member === 1) {
+        } else {
+          // 2026-10-18修：非小队司机（未加入/待审核）也要进列表，否则"非小队隔离区"永远为空，
+          // 新注册用户在管理后台不可见。是否小队成员由 isOfficialSquadMember 统一判定。
           list.push({ id: doc.id, ...data });
         }
       });
