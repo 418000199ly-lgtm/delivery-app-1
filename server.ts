@@ -1746,8 +1746,15 @@ function getClientIp(req: any): string {
     const BUSINESS_PATHS = new Set([
       '/api/order/claim',
       '/api/order/driver-claim',
+      '/api/order/cancel',
+      '/api/order/complete',
+      '/api/order/decline',
+      '/api/order/to-hall',
+      '/api/order/true-cancel',
       '/api/dispatch/nearest',
+      '/api/dispatch/page-heartbeat',
       '/api/driver/location',
+      '/api/driver/locations',
       '/api/driver/status',
       '/api/driver/offline',
       '/api/driver/name',
@@ -1757,19 +1764,37 @@ function getClientIp(req: any): string {
       '/api/geo/locate',
       '/api/auth/validate',
       '/api/auth/logout',
+      // 2026-10-18修：收款码上传/删除/获取、入队申请，这些接口传 phone 不传 id，
+      // 不加白名单会被 H9 的"无目标id批量操作"逻辑误杀 403
+      '/api/upload-wechat-qr',
+      '/api/delete-wechat-qr',
+      '/api/get-wechat-qr',
+      '/api/squad-apply',
+      // 2026-10-18补：二维码通知、VIP兑换、小队成员列表，业务接口有自己的鉴权，
+      // 不走通用 id 归属检查，避免订单号等非手机号 id 被误杀
+      '/api/qr-notify-check',
+      '/api/vip-code-check',
+      '/api/vip-code-redeem',
+      '/api/squad/members',
     ]);
     if (BUSINESS_PATHS.has(req.path)) {
       (req as any).authPhone = info.phone;
       (req as any).isAdmin = false;
       return next();
     }
-    // H9修复：无目标文档id的批量操作（如 clear-collection 清空整表）必须要求管理员
-    if (!targetId) {
-      // /api/db/add 未指定 id 时服务端生成随机 id，允许普通用户创建新文档
-      const isAddWithGeneratedId = req.path === '/api/db/add' && !req.body?.data?.id;
-      if (!isAddWithGeneratedId) {
-        console.warn(`[Auth] 拒绝无目标id的批量操作: token手机=${info.phone}, 路径=${req.path}`);
-        return res.status(403).json({ success: false, error: '该操作需要管理员权限' });
+    // H9修复（2026-10-18重构）：无目标文档id的批量操作拦截只针对 /api/db/* 通用数据接口
+    // （如 clear-collection 清空整表必须要求管理员）。
+    // 业务接口（/api/upload-wechat-qr、/api/squad-apply、/api/qr-notify-check 等）
+    // 有自己的鉴权逻辑（验手机号匹配等），不走这个通用拦截，避免误杀。
+    // 之前用白名单一个个加，漏了就 403（如 15121904440 传码被误杀）。
+    if (req.path.startsWith('/api/db/')) {
+      if (!targetId) {
+        // /api/db/add 未指定 id 时服务端生成随机 id，允许普通用户创建新文档
+        const isAddWithGeneratedId = req.path === '/api/db/add' && !req.body?.data?.id;
+        if (!isAddWithGeneratedId) {
+          console.warn(`[Auth] 拒绝无目标id的批量操作: token手机=${info.phone}, 路径=${req.path}`);
+          return res.status(403).json({ success: false, error: '该操作需要管理员权限' });
+        }
       }
     }
     if (targetId && targetId !== infoPhoneNorm) {
