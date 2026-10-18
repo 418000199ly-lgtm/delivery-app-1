@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# 本地测试数据库（冒烟测试生成，永不提交）
+local_db.json
+local_db.json.bak

@@ -289,17 +289,23 @@ export default function SettingsView({
 
           const baseUrl = getBaseApiUrl();
           // P1-1修复(2026-10-14)：上传加成功/失败反馈，不再静默
+          // 2026-10-18修：失败时显示真实状态码与服务端错误信息，不再一律"检查网络"
           fetch(`${baseUrl}/api/upload-wechat-qr`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
-          }).then(res => {
+          }).then(async (res) => {
             if (!res.ok) {
-              alert('⚠️ 本地已保存，服务器上传失败，请检查网络后重试');
+              let detail = '';
+              try {
+                const j = await res.json();
+                detail = String(j.error || j.message || '');
+              } catch (_) {}
+              alert(`⚠️ 本地已保存，服务器上传失败（${res.status}）${detail ? '：' + detail : ''}，请截图发给管理员排查`);
             }
           }).catch(err => {
             console.error('Upload QR to server error:', err);
-            alert('⚠️ 本地已保存，服务器上传失败，请检查网络后重试');
+            alert('⚠️ 本地已保存，服务器上传失败（网络错误），请检查网络后重试');
           });
         }
       } catch (err) {

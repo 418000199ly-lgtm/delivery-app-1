@@ -1732,7 +1732,10 @@ export default function HomeView({
     triggerToast('✓ 您的入队申请已成功提交，正在等待管理审核');
   };
 
-  const checkApprovalStatus = () => {
+  // 2026-10-18修：原 checkApprovalStatus 改名为 Raw，见下方防抖包装。
+  // 根因：4 个数据源（squadMembers 轮询/localStorage/申请人表/标记）互相打架，
+  // 5 秒一轮询就在 true/false 间横跳，导致选单大厅来回闪烁。
+  const checkApprovalStatusRaw = () => {
     const currentPhone = getCurrentPhone();
     if (!currentPhone) return false;
 
@@ -1810,6 +1813,25 @@ export default function HomeView({
     }
 
     return false;
+  };
+
+  // 2026-10-18修：审批状态防抖包装。Raw 版读 4 个数据源，轮询时 true/false 横跳；
+  // 此处用 ref 缓存上次稳定值，要求连续 2 次一致才翻转，渲染层只认稳定值，杜绝闪烁。
+  // 副作用（setUserRole/清标记）仍在 Raw 里每次执行，不受影响。
+  const approvalStableRef = useRef<{ val: boolean; count: number }>({ val: false, count: 0 });
+  const checkApprovalStatus = (): boolean => {
+    const raw = checkApprovalStatusRaw();
+    const ref = approvalStableRef.current;
+    if (raw === ref.val) {
+      ref.count = 0;
+      return ref.val;
+    }
+    ref.count += 1;
+    if (ref.count >= 2) {
+      ref.val = raw;
+      ref.count = 0;
+    }
+    return ref.val;
   };
 
   const hasDriverUploadedQrCode = (): boolean => {
