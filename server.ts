@@ -354,15 +354,13 @@ function verifySignedToken(token: string): { phone: string; scope: string; isMer
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
     const payload = JSON.parse(_b64urlDecode(pb));
     if (!payload || !payload.p) return null;
-    // 登出黑名单检查
+    // 2026-10-18：移除 removedPhones 拉黑检查。踢出小队不再废 token（用户拍板），
+    // 接单权限由 is_squad_member 在业务层拦截。登出黑名单保留（旧 v1 token 显式登出仍失效，
+    // 但新版登出不再拉黑，重登返回同一有状态 token）。
     try {
       const db: any = readLocalJsonDb();
       const bl = db && db._config && db._config.tokenBlocklist;
       if (Array.isArray(bl) && bl.includes(token)) return null;
-      // P1-10(2026-10-15)：被删除司机的手机号黑名单，token直接失效
-      const rp = db && db._config && db._config.removedPhones;
-      const phoneNorm = String(payload.p || '').replace(/\D/g, '').trim();
-      if (Array.isArray(rp) && phoneNorm && rp.includes(phoneNorm)) return null;
     } catch (_) {}
     return { phone: String(payload.p), scope: String(payload.s || 'driver'), isMerchant: !!payload.m };
   } catch (_) {
@@ -384,6 +382,85 @@ function blocklistToken(token: string) {
   } catch (e: any) {
     console.error('[Auth] token 拉黑失败:', e?.message);
   }
+}
+
+// 2026-10-18 有状态鉴权（一号一token终身制，用户拍板）：
+// MySQL auth_tokens 集合存 phone<->token 双向映射，token 为随机串，永久有效，
+// 退出/重装/重登不换 token，密钥轮换不影响。doc_id 用 p:{phone} 和 t:{token} 前缀区分。
+async function getOrCreatePersistentToken(phone: string, scope: string, isMerchant: boolean): Promise<string> {
+  const cleanPhone = String(phone || '').trim();
+  if (!cleanPhone) throw new Error('手机号为空');
+  const phoneKey = `p:${cleanPhone}`;
+  // 1. 查已绑定
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      const [rows]: any = await mysqlPool.query(
+        'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+        ['auth_tokens', phoneKey]
+      );
+      if (rows && rows.length > 0) {
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        if (d && d.token) return String(d.token);
+      }
+    } else {
+      const dbData: any = readLocalJsonDb() || {};
+      const existing = dbData?.auth_tokens?.[phoneKey];
+      if (existing && (existing as any).token) return String((existing as any).token);
+    }
+  } catch (_) {}
+  // 2. 无绑定则生成（64位随机hex，不依赖HMAC密钥，轮换密钥不影响）
+  const newToken = 'st_' + crypto.randomBytes(32).toString('hex');
+  const now = new Date().toISOString();
+  const tokenKey = `t:${newToken}`;
+  const phoneData = JSON.stringify({ token: newToken, phone: cleanPhone, createdAt: now });
+  const tokenData = JSON.stringify({ phone: cleanPhone, scope: String(scope || 'driver'), isMerchant: !!isMerchant, createdAt: now });
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['auth_tokens', phoneKey, phoneData]
+      ).catch(() => {});
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['auth_tokens', tokenKey, tokenData]
+      ).catch(() => {});
+    } else {
+      const dbData: any = readLocalJsonDb() || {};
+      if (!dbData.auth_tokens) dbData.auth_tokens = {};
+      dbData.auth_tokens[phoneKey] = JSON.parse(phoneData);
+      dbData.auth_tokens[tokenKey] = JSON.parse(tokenData);
+      writeLocalJsonDb(dbData);
+    }
+  } catch (_) {}
+  return newToken;
+}
+
+// 校验有状态 token：查 MySQL auth_tokens（t:{token}），命中返回身份，否则 null
+async function verifyPersistentToken(token: string): Promise<{ phone: string; scope: string; isMerchant: boolean } | null> {
+  const t = String(token || '').trim();
+  if (!t || !t.startsWith('st_')) return null;
+  const tokenKey = `t:${t}`;
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      const [rows]: any = await mysqlPool.query(
+        'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+        ['auth_tokens', tokenKey]
+      );
+      if (rows && rows.length > 0) {
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        if (d && d.phone) {
+          return { phone: String(d.phone), scope: String(d.scope || 'driver'), isMerchant: !!d.isMerchant };
+        }
+      }
+    } else {
+      const dbData: any = readLocalJsonDb() || {};
+      const d = dbData?.auth_tokens?.[tokenKey];
+      if (d && (d as any).phone) {
+        return { phone: String((d as any).phone), scope: String((d as any).scope || 'driver'), isMerchant: !!(d as any).isMerchant };
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
 const DEVELOPER_PHONE_SERVER = '15509601222';
@@ -1545,17 +1622,26 @@ function getClientIp(req: any): string {
 
   // 认证中间件：写操作需要有效的短信登录令牌
   // 规则：普通用户只能写自己手机号的文档；开发者（15509601222）可写任意
-  const requireDbAuth = (req: any, res: any, next: any) => {
+  const requireDbAuth = async (req: any, res: any, next: any) => {
     const token = req.headers['x-auth-token'] || req.headers['authorization']?.replace(/^Bearer\s+/i, '');
     if (!token) {
       return res.status(401).json({ success: false, error: '未登录：缺少认证令牌，请先短信验证登录' });
     }
-    // 根治"登录已过期"：优先验签无状态 token（服务端不存，重启/部署不丢）；
-    // 老版本随机 token 走内存 Map 兼容过渡
-    const signed = verifySignedToken(String(token));
-    const info = signed
-      ? { phone: signed.phone, scope: signed.scope, isMerchant: signed.isMerchant, createdAt: 0 }
-      : authTokens.get(String(token));
+    // 2026-10-18 有状态鉴权优先（一号一token终身制，MySQL持久化）；
+    // 兼容：老 v1 HMAC token（过渡期）→ 内存 Map（更老版本）
+    let info: { phone: string; scope: string; isMerchant: boolean; createdAt: number } | null = null;
+    try {
+      const persistent = await verifyPersistentToken(String(token));
+      if (persistent) {
+        info = { phone: persistent.phone, scope: persistent.scope, isMerchant: persistent.isMerchant, createdAt: 0 };
+      }
+    } catch (_) {}
+    if (!info) {
+      const signed = verifySignedToken(String(token));
+      info = signed
+        ? { phone: signed.phone, scope: signed.scope, isMerchant: signed.isMerchant, createdAt: 0 }
+        : (authTokens.get(String(token)) as any) || null;
+    }
     if (!info) {
       return res.status(401).json({ success: false, error: '登录已失效：令牌无效，请重新短信验证登录' });
     }
@@ -7098,16 +7184,8 @@ function getClientIp(req: any): string {
   // M1: 登出接口——删除服务端 token（客户端手动登出时调用）
   app.post('/api/auth/logout', async (req, res) => {
     try {
-      const token = String(req.headers['x-auth-token'] || req.body?.token || '').trim();
-      if (token) {
-        // 无状态签名 token：加入黑名单使其失效
-        if (token.startsWith('v1.')) blocklistToken(token);
-        if (authTokens.has(token)) {
-          authTokens.delete(token);
-          _authTokensDirty = true;
-          persistAuthTokensSync(); // a5修复：登出立即写盘
-        }
-      }
+      // 2026-10-18 有状态鉴权：退出仅客户端清本地，服务端绑定永久保留。
+      // 一号一token终身制，重登返回同一 token，不浪费短信包。服务端不再拉黑。
       return res.json({ success: true });
     } catch (e: any) {
       return res.json({ success: true });
@@ -7285,7 +7363,9 @@ function getClientIp(req: any): string {
       const tokenScope = scope || (isAdminLogin ? 'admin_panel' : 'driver');
       const isMerchantLogin = String(scope || '').trim() === 'dispatch_valet';
       const tokenPhone = isMerchantLogin ? String(cleanPhone || '').trim().toUpperCase() + 'A' : cleanPhone;
-      const authToken = createSignedToken(tokenPhone, tokenScope, isMerchantLogin);
+      // 2026-10-18 有状态鉴权：一号一token终身制。已绑定则返回同一 token，未绑定则生成并持久化到 MySQL。
+      // 退出/重装/重登不换 token，不浪费短信包。
+      const authToken = await getOrCreatePersistentToken(tokenPhone, tokenScope, isMerchantLogin);
       // 2026-10-15：被删除司机重新短信登录成功=解封，清除删除黑名单（踢出可重申请）
       try {
         const dbData = readLocalJsonDb();
@@ -8264,6 +8344,63 @@ function getClientIp(req: any): string {
     }
   });
 
+  // 2026-10-18 新增：拒绝小队申请专用接口。之前管理后台走 /api/db/set 直接写，
+  // 非开发者管理人员（isManager/isDispatcher）写他人文档会被 403 拦截，导致点拒绝没反应。
+  // 权限口径与 approve 一致：管理员/管理人员/城市派单员可拒绝。
+  app.post('/api/squad-member/reject', requireDbAuth, async (req, res) => {
+    try {
+      const isApproverAdmin = (req as any).isAdmin || (req as any).isManager || (req as any).isDispatcher;
+      if (!isApproverAdmin) {
+        return res.status(403).json({ success: false, error: '仅管理人员可以拒绝申请' });
+      }
+      const { phone, reason } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
+        return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      const now = new Date().toISOString();
+      const realRejecter = String((req as any).authPhone || '').trim();
+      const finalReason = String(reason || '').trim().slice(0, 200) || '申请信息不符合小队要求，请完善后重新申请。';
+      const rejectData = {
+        status: '已拒绝',
+        approvalStatus: '已拒绝',
+        rejectedBy: realRejecter,
+        rejectionReason: finalReason,
+        rejectionTime: now,
+        updatedAt: now,
+      };
+      if (isMySQLEnabled && mysqlPool) {
+        // 读现有申请保留姓名等字段，merge 更新状态
+        let existing: any = {};
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['squad_applications', cleanPhone]
+          );
+          if (rows && rows.length > 0) {
+            const raw = rows[0].data;
+            existing = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          }
+        } catch (_) {}
+        const merged = { ...existing, ...rejectData, phone: cleanPhone };
+        await mysqlPool.query(
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+          ['squad_applications', cleanPhone, JSON.stringify(merged)]
+        );
+      } else {
+        const dbData: any = readLocalJsonDb() || {};
+        if (!dbData.squad_applications) dbData.squad_applications = {};
+        const existing = dbData.squad_applications[cleanPhone] || {};
+        dbData.squad_applications[cleanPhone] = { ...existing, ...rejectData, phone: cleanPhone };
+        writeLocalJsonDb(dbData);
+      }
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error('[Squad Reject] error:', err);
+      res.status(500).json({ success: false, error: err.message || 'Reject Error' });
+    }
+  });
+
   // 2026-10-12 司机改名专用通道：同步更新所有相关表。不走鉴权。
   app.post('/api/squad-member/rename', requireDbAuth, async (req, res) => {
     try {
@@ -8430,18 +8567,9 @@ function getClientIp(req: any): string {
         // P1-10: 清GPS位置（地图不再显示被删的人）
         await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
           ['driver_locations', cleanPhone]).catch(() => {});
-        // P1-10: 拉黑该手机号所有token（被删司机App立即掉线，需用户拍板：删除=踢出但可重申请）
-        try {
-          const dbData2 = readLocalJsonDb();
-          if (!dbData2._config) dbData2._config = {};
-          if (!Array.isArray(dbData2._config.tokenBlocklist)) dbData2._config.tokenBlocklist = [];
-          // 标记该手机号的token失效（验签时检查手机号黑名单）
-          if (!dbData2._config.removedPhones) dbData2._config.removedPhones = [];
-          if (!dbData2._config.removedPhones.includes(cleanPhone)) {
-            dbData2._config.removedPhones.push(cleanPhone);
-          }
-          writeLocalJsonDb(dbData2);
-        } catch (_) {}
+        // 2026-10-18用户拍板：删除=踢出但可重申请，不再拉黑token。
+        // 被踢司机 token 保持有效，可直接重申请；接单权限由 is_squad_member=0 在业务层拦截。
+        // 真正恶意的用 isBanned 封停。_config.removedPhones 仅保留历史数据，不再新增。
       } else {
         const dbData = readLocalJsonDb();
         if (dbData['squad_members']?.[cleanPhone]) delete dbData['squad_members'][cleanPhone];

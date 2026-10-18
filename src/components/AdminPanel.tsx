@@ -2510,7 +2510,7 @@ export default function AdminPanel({
     }
   };
 
-  // 拒绝小队申请：将 squad_applications 状态标为已拒绝，司机端可看到结果
+  // 拒绝小队申请：调服务端专用接口（2026-10-18新增），管理人员可操作，服务端做权限校验+merge
   const handleRejectSquadApplication = async (targetPhone: string, reason?: string) => {
     const cleanPhone = String(targetPhone || '').replace(/\D/g, '').trim();
     if (!cleanPhone || cleanPhone.length !== 11) return;
@@ -2520,31 +2520,17 @@ export default function AdminPanel({
 
     try {
       const baseUrl = getBaseApiUrl();
-      const rejectData = {
-        status: '已拒绝',
-        approvalStatus: '已拒绝',
-        rejectedBy: userPhone || DEVELOPER_PHONE,
-        rejectionReason: finalReason,
-        rejectionTime: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-
-      // 更新 squad_applications 状态为已拒绝（保留记录供查询）
-      const results = await Promise.allSettled([
-        setDoc(doc(db, 'squad_applications', cleanPhone), rejectData, { merge: true }),
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_applications', docId: cleanPhone, data: rejectData, merge: true })
-        }).then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
-      ]);
-
-      const failed = results.filter(r => r.status === 'rejected');
-      if (failed.length > 0) {
-        triggerToast(`⚠️ 拒绝操作部分失败，请重试`);
-      } else {
-        triggerToast(`✓ 已拒绝 ${cleanPhone} 的小队申请`);
+      const res = await fetch(`${baseUrl}/api/squad-member/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone: cleanPhone, reason: finalReason })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        triggerToast(`⚠️ 拒绝失败：${json.error || `HTTP ${res.status}`}`);
+        return;
       }
+      triggerToast(`✓ 已拒绝 ${cleanPhone} 的小队申请`);
 
       // 更新本地状态
       setAllDrivers(prev => prev.map(d => {
