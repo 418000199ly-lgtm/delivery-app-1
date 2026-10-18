@@ -1501,6 +1501,8 @@ export default function CreateOrderView({
     if (!showQrModal) return;
     const cleanPhone = (userPhone || '').replace(/\s+/g, '').trim();
     if (!cleanPhone) return;
+    // 2026-10-18：弹窗每次打开重置鉴权警告标记，确保 token 失效能被重新发现
+    (window as any).__qrNotifyAuthWarned = false;
 
     let stopped = false;
     const checkQrNotify = async () => {
@@ -1509,7 +1511,14 @@ export default function CreateOrderView({
         const baseUrl = getBaseApiUrl();
         const url = `${baseUrl}/api/qr-notify-check?driverPhone=${encodeURIComponent(cleanPhone)}&_t=${Date.now()}`;
         const res = await fetch(url, { cache: 'no-store', headers: getAuthHeaders() });
-        if (!res.ok) return;
+        // 2026-10-18修：401/403 不再静默吞掉，弹一次提示，方便定位 token 失效导致的收不到通知
+        if (!res.ok) {
+          if ((res.status === 401 || res.status === 403) && !(window as any).__qrNotifyAuthWarned) {
+            (window as any).__qrNotifyAuthWarned = true;
+            try { setToastMsg('登录已失效，请重新登录后再扫码'); } catch (_) {}
+          }
+          return;
+        }
         const json = await res.json();
         if (json && json.success && json.hasNotify && json.data) {
           const data = json.data;
