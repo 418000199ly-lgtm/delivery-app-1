@@ -335,9 +335,10 @@ export default function HomeView({
   onClaimIncomingOrder
 }: HomeViewProps) {
   const getCurrentPhone = () => {
+    // 2026-10-18修：优先 localStorage 登录号（source of truth），React 的 userPhone 退出重登后可能过期
     return String(
-      userPhone ||
       (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') ||
+      userPhone ||
       (settings as any)?.phone ||
       ''
     ).replace(/\D/g, '').trim();

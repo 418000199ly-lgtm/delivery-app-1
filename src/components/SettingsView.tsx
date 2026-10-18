@@ -274,7 +274,9 @@ export default function SettingsView({
         // Update state with clean QR DataURL
         onUpdateSettings({ ...settings, wechatQrCode: cleanQr });
 
-        const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+        // 2026-10-18修：上传/删除必须用 localStorage 的登录号（source of truth），
+        // 不用 React state 的 effectivePhone（退出重登后可能是过期值，导致 403 手机号对不上）
+        const targetPhone = (localStorage.getItem('dd_user_phone') || effectivePhone || (settings as any)?.phone || settings.phoneNumber || '').replace(/\D/g, '').trim();
         if (targetPhone) {
           try {
             localStorage.removeItem(`dd_qr_deleted_${targetPhone}`);
@@ -337,7 +339,7 @@ export default function SettingsView({
 
         onUpdateSettings({ ...settings, alipayQrCode: cleanQr });
 
-        const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+        const targetPhone = (localStorage.getItem('dd_user_phone') || effectivePhone || (settings as any)?.phone || settings.phoneNumber || '').replace(/\D/g, '').trim();
         if (targetPhone) {
           try {
             localStorage.setItem(`dd_dispatch_alipay_qr_${targetPhone}`, cleanQr);
@@ -1043,7 +1045,7 @@ export default function SettingsView({
                         // User selects the photo
                         try {
                           const selectedImgUrl = photo.dataUrl;
-                          const targetPhone = (effectivePhone || (settings as any)?.phone || settings.phoneNumber || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+                          const targetPhone = (localStorage.getItem('dd_user_phone') || effectivePhone || (settings as any)?.phone || settings.phoneNumber || '').replace(/\D/g, '').trim();
                           
                           if (selectedQrTab === 'wechat') {
                             onUpdateSettings({ ...settings, wechatQrCode: selectedImgUrl });

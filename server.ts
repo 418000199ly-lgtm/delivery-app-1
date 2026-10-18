@@ -7355,7 +7355,24 @@ function getClientIp(req: any): string {
         const existing = dbData.driver_users[cleanPhone];
         const defaultQrUrl = `/uploads/qrcodes/${cleanPhone}.png`;
 
-        if (!existing) {
+        // 2026-10-18修：登录自动注册不再覆盖已有数据。
+        // 原逻辑只查本地JSON，若本地无记录就造新的并 ON DUPLICATE KEY UPDATE 到 MySQL，
+        // 会把管理员刚充的 VIP/授权天数覆盖成"待开通"。
+        // 现改查 MySQL：MySQL 有记录则以 MySQL 为准（回写本地不同步覆盖）；两边都没有才新建。
+        let mysqlExisting: any = null;
+        if (isMySQLEnabled && mysqlPool) {
+          try {
+            const [mrows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+              ['driver_users', cleanPhone]
+            );
+            if (mrows && mrows.length > 0) {
+              mysqlExisting = typeof mrows[0].data === 'string' ? JSON.parse(mrows[0].data) : mrows[0].data;
+            }
+          } catch (_) {}
+        }
+
+        if (!existing && !mysqlExisting) {
           const newDriverProfile = {
             id: cleanPhone,
             phone: cleanPhone,
@@ -7388,6 +7405,10 @@ function getClientIp(req: any): string {
               ['driver_users', cleanPhone, JSON.stringify(newDriverProfile)]
             ).catch(() => {});
           }
+        } else if (mysqlExisting && !existing) {
+          // MySQL 有、本地无：回写本地，不覆盖 MySQL（保住管理员充的 VIP/授权）
+          dbData.driver_users[cleanPhone] = mysqlExisting;
+          writeLocalJsonDb(dbData);
         }
       } catch (regErr) {
         console.error('[Auto Register Driver User Error]:', regErr);
