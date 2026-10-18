@@ -1807,11 +1807,9 @@ export default function HomeView({
       return true;
     }
 
-    // 4. 检查 localStorage 显式审核通过标记
-    if (typeof window !== 'undefined' && (localStorage.getItem(`dd_approved_${currentPhone}`) === 'true' || localStorage.getItem(`dd_in_squad_${currentPhone}`) === 'true')) {
-      return true;
-    }
-
+    // 2026-10-18修：删除本地标记检查（dd_approved_*/dd_in_squad_*）。
+    // 这些标记一旦置 true，被踢/删除后不清掉，导致非成员被误判为成员，大厅来回闪。
+    // 现在只信服务端 squadMembers（5秒轮询）+ 申请人状态，防抖已处理闪烁，不需要本地标记兜底。
     return false;
   };
 

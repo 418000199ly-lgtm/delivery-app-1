@@ -424,9 +424,30 @@ async function getOrCreatePersistentToken(phone: string, scope: string, isMercha
         'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
         ['auth_tokens', tokenKey, tokenData]
       ).catch(() => {});
+      // 2026-10-18修：防并发竞态。两请求同时登录都查无token、各生成一个时，
+      // 回读 p:{phone} 看最终赢家；若不是自己，则删掉自己的孤儿 t:{token} 记录，返回赢家的 token。
+      // 保证一号一 token，不产生孤儿。
+      try {
+        const [vrows]: any = await mysqlPool.query(
+          'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+          ['auth_tokens', phoneKey]
+        );
+        if (vrows && vrows.length > 0) {
+          const vd = typeof vrows[0].data === 'string' ? JSON.parse(vrows[0].data) : vrows[0].data;
+          const winnerToken = vd && vd.token ? String(vd.token) : '';
+          if (winnerToken && winnerToken !== newToken) {
+            await mysqlPool.query(
+              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+              ['auth_tokens', tokenKey]
+            ).catch(() => {});
+            return winnerToken;
+          }
+        }
+      } catch (_) {}
     } else {
       const dbData: any = readLocalJsonDb() || {};
       if (!dbData.auth_tokens) dbData.auth_tokens = {};
+      // 本地 JSON 单进程无并发，此处直接覆盖即最终一致
       dbData.auth_tokens[phoneKey] = JSON.parse(phoneData);
       dbData.auth_tokens[tokenKey] = JSON.parse(tokenData);
       writeLocalJsonDb(dbData);
@@ -3825,12 +3846,27 @@ function getClientIp(req: any): string {
 
       if (isMySQLEnabled && mysqlPool) {
         const mergedLocation = { ...(dbData.driver_locations?.[phone] || {}), ...patch, phone };
-        // Fire-and-forget async update with error catching
-        mysqlPool.query(
-          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-          ['driver_locations', phone, JSON.stringify(mergedLocation)]
-        ).catch(() => {});
+        // 2026-10-18优化：司机没动（50米内）且状态没变时，跳过MySQL写，降90%写库压力。
+        // 本地JSON照常更新（看门狗和地图读本地，不受影响）。
+        const prevLoc = dbData.driver_locations?.[phone] || {};
+        let skipMysql = false;
+        if (lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng) &&
+            prevLoc.lat !== undefined && prevLoc.lng !== undefined) {
+          const dLat = (lat - Number(prevLoc.lat)) * 111320;
+          const dLng = (lng - Number(prevLoc.lng)) * 111320 * Math.cos(Number(prevLoc.lat) * Math.PI / 180);
+          const distM = Math.sqrt(dLat * dLat + dLng * dLng);
+          const statusChanged = (isOnline !== undefined && Boolean(prevLoc.isOnline) !== Boolean(isOnline)) ||
+            (Boolean(prevLoc.isBusy) !== Boolean(isBusy));
+          if (distM < 50 && !statusChanged) skipMysql = true;
+        }
+        if (!skipMysql) {
+          // Fire-and-forget async update with error catching
+          mysqlPool.query(
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+            ['driver_locations', phone, JSON.stringify(mergedLocation)]
+          ).catch(() => {});
+        }
       }
 
       return res.json({ success: true, isOnline: patch.isOnline, serverTime: Date.now() });

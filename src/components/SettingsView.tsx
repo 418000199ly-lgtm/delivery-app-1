@@ -259,13 +259,12 @@ export default function SettingsView({
       setIsProcessingWechat(true);
       try {
         let cleanQr = await processImageFileToCleanQR(file, 'wechat');
+        // 2026-10-18改：裁剪失败（未识别出二维码）时不再回退上传原图，直接报错让司机重选。
+        // 用户要求：只上传裁剪后的干净二维码，不上传截图前的原图。
         if (!cleanQr || !cleanQr.startsWith('data:image/')) {
-          cleanQr = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result || ''));
-            reader.onerror = () => resolve('');
-            reader.readAsDataURL(file);
-          });
+          setIsProcessingWechat(false);
+          alert('❌ 未能从图片中识别出微信收款码\n\n请重新截图，确保二维码完整清晰，然后再上传。');
+          return;
         }
         if (!cleanQr) {
           setIsProcessingWechat(false);

@@ -339,9 +339,12 @@ export function processImageFileToCleanQR(file: File, type: 'wechat' | 'alipay' 
       }
       try {
         const cleaned = await cropQRCodeFromImage(rawDataUrl);
-        resolve(cleaned || rawDataUrl);
+        // 2026-10-18改：裁剪失败（未识别出二维码）时返回空，不再回退上传原图。
+        // 用户要求：只上传裁剪后的干净二维码，不上传截图前的原图。
+        // 调用方收到空字符串时应提示用户重新选择更清晰的图片。
+        resolve(cleaned || '');
       } catch (_) {
-        resolve(rawDataUrl);
+        resolve('');
       }
     };
     reader.onerror = () => resolve('');
