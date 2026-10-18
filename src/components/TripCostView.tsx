@@ -23,7 +23,7 @@ export default function TripCostView({
   // Modal state
   const [showRulesModal, setShowRulesModal] = useState(false);
   const [resolvedEndLocation, setResolvedEndLocation] = useState<string>(() => {
-    const isInPlace = (trip.currentDistance <= 0.25);
+    const isInPlace = (trip.currentDistance <= 0.05);
     if (isInPlace && trip.startLocation && !isUnsetDestination(trip.startLocation)) {
       return trip.startLocation;
     }
@@ -38,7 +38,7 @@ export default function TripCostView({
     if (hasCapturedRef.current) return;
     hasCapturedRef.current = true;
 
-    const isInPlace = (trip.currentDistance <= 0.25);
+    const isInPlace = (trip.currentDistance <= 0.05);
     if (isInPlace) {
       if (trip.startLocation && !isUnsetDestination(trip.startLocation)) {
         setResolvedEndLocation(trip.startLocation);

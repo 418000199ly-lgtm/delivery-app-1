@@ -3028,25 +3028,22 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         })();
 
     let finalEndLocation = currentTrip.endLocation;
-    const isInPlace = (currentTrip.currentDistance <= 0.25) || 
-      (tripCoords && currentTrip.startCoords && calculateHaversineDistanceKm(tripCoords.lat, tripCoords.lng, currentTrip.startCoords.lat, currentTrip.startCoords.lng) <= 0.25);
+    // 2026-10-18修2：原地阈值统一为0.05km（与历史记录写入一致；按用户规则"在哪结束显示哪"，0.25太松）
+    const isInPlace = (currentTrip.currentDistance <= 0.05) || 
+      (tripCoords && currentTrip.startCoords && calculateHaversineDistanceKm(tripCoords.lat, tripCoords.lng, currentTrip.startCoords.lat, currentTrip.startCoords.lng) <= 0.05);
 
-    // If in-place completion (currentDistance <= 0.25km or ending at same location), destination strictly mirrors departure:
+    // If in-place completion (currentDistance <= 0.05km or ending at same location), destination strictly mirrors departure:
     if (isInPlace && currentTrip.startLocation && !isUnsetDestination(currentTrip.startLocation) && !currentTrip.startLocation.includes('宁夏博物馆')) {
       finalEndLocation = currentTrip.startLocation;
     } else {
       const isInvalidEnd = isUnsetDestination(finalEndLocation) || 
         finalEndLocation.includes('宁夏博物馆') || 
-        (finalEndLocation.includes('游乐小区') && (currentTrip.currentDistance > 0.25 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
-        (finalEndLocation === currentTrip.startLocation && currentTrip.currentDistance > 0.25);
+        (finalEndLocation.includes('游乐小区') && (currentTrip.currentDistance > 0.05 || (currentTrip.startLocation && currentTrip.startLocation.includes('五宝苑')))) ||
+        (finalEndLocation === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
 
       if (isInvalidEnd) {
-        if ((currentTrip as any).driverCurrentLocationName && 
-            !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
-            !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
-            !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
-          finalEndLocation = (currentTrip as any).driverCurrentLocationName;
-        } else if (tripCoords) {
+        // 2026-10-18修4：driverCurrentLocationName 全代码无写入处，死代码已移除；findNearestKnownPoi 本地表为空恒返回null
+        if (tripCoords) {
           const nearestKnown = findNearestKnownPoi(tripCoords, 0.3);
           if (nearestKnown) {
             finalEndLocation = nearestKnown;
@@ -3079,8 +3076,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setCurrentView('cost');
 
     // Async trigger high precision geocoding to resolve exact end landmark if needed
-    // DO NOT asynchronously overwrite in-place trips where distance <= 0.25km!
+    // DO NOT asynchronously overwrite in-place trips where distance <= 0.05km!
     if (!isInPlace && (isUnsetDestination(finalEndLocation) || finalEndLocation === '目的地定位中...' || finalEndLocation === currentTrip.startLocation)) {
+      const asyncTripId = currentTrip.id || (currentTrip as any).orderNumber;
       resolveCurrentGpsLocationName(tripCoords).then(res => {
         if (res && res.name && !res.name.includes('宁夏博物馆') && !isUnsetDestination(res.name)) {
           setCurrentTrip(prev => {
@@ -3097,6 +3095,33 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             } catch (_) {}
             return u;
           });
+          // 2026-10-18修3：异步反查完成后，回写本地订单历史（消灭"先写历史后回真名"的竞态）
+          try {
+            const patchKeys: string[] = ['dd_driver_orders'];
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && /^dd_driver_orders_\d{4}-\d{2}$/.test(k) && !patchKeys.includes(k)) patchKeys.push(k);
+            }
+            for (const pk of patchKeys) {
+              try {
+                const arr = JSON.parse(localStorage.getItem(pk) || '[]');
+                if (!Array.isArray(arr)) continue;
+                let changed = false;
+                const updated = arr.map((o: any) => {
+                  const oid = String(o?.id || o?.orderId || o?.orderNumber || '');
+                  if (asyncTripId && oid && oid === String(asyncTripId)) {
+                    changed = true;
+                    return { ...o, endLocation: res.name, destination: res.name, dropoffName: res.name, endCoords: { lng: res.lng, lat: res.lat } };
+                  }
+                  return o;
+                });
+                if (changed) {
+                  localStorage.setItem(pk, JSON.stringify(updated));
+                  window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
+                }
+              } catch (_) {}
+            }
+          } catch (_) {}
         }
       }).catch(e => console.warn("[SilentCatch]", e?.message || e));
     }
@@ -3208,12 +3233,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             (finalEndLoc === currentTrip.startLocation && currentTrip.currentDistance > 0.05);
 
           if (isInvalidFinishEnd) {
-            if ((currentTrip as any).driverCurrentLocationName && 
-                !isUnsetDestination((currentTrip as any).driverCurrentLocationName) && 
-                !(currentTrip as any).driverCurrentLocationName.includes('宁夏博物馆') &&
-                !(currentTrip as any).driverCurrentLocationName.includes('游乐小区')) {
-              finalEndLoc = (currentTrip as any).driverCurrentLocationName;
-            } else if (currentTrip.endCoords) {
+            // 2026-10-18修4：driverCurrentLocationName 全代码无写入处，死代码已移除
+            if (currentTrip.endCoords) {
               const nearestKnown = findNearestKnownPoi(currentTrip.endCoords, 0.01);
               if (nearestKnown) finalEndLoc = nearestKnown;
             }
@@ -3350,11 +3371,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
           try {
             // P0(2026-10-15)：改调专用/api/order/complete接口（db/set会被鉴权403拦截）
+            // 2026-10-18修1：完单时把解析好的终点名+终点坐标+里程同步到服务端，商户端/管理后台看到的终点才对得上
             const baseUrl = getBaseApiUrl();
+            const completeEndCoords = (currentTrip as any).endCoords;
             fetch(`${baseUrl}/api/order/complete`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-              body: JSON.stringify({ orderId: merchantOrderId })
+              body: JSON.stringify({
+                orderId: merchantOrderId,
+                endLocation: finalEndLoc,
+                destination: finalEndLoc,
+                dropoffName: finalEndLoc,
+                endCoords: (completeEndCoords && typeof completeEndCoords.lng === 'number' && typeof completeEndCoords.lat === 'number') ? completeEndCoords : undefined,
+                currentDistance: finalDist
+              })
             }).then(async (r) => {
               if (!r.ok) {
                 const j = await r.json().catch(() => ({}));

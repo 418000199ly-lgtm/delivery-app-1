@@ -8758,6 +8758,24 @@ function getClientIp(req: any): string {
         od.status = 'completed';
         od.completedAt = now;
         od.updatedAt = now;
+        // 2026-10-18修1：完单时存储司机端解析好的真实终点（名+坐标+里程），商户端/管理后台看终点才对得上
+        {
+          const destName = String(req.body?.endLocation || req.body?.destination || req.body?.dropoffName || '').trim();
+          if (destName && destName !== '位置未知' && destName !== '目的地定位中...' && !/^(请填写|待指定|未完成|未填写)/.test(destName)) {
+            od.endLocation = destName;
+            od.destination = destName;
+            od.dropoffName = destName;
+          }
+          const ec = req.body?.endCoords;
+          if (ec && typeof ec.lng === 'number' && typeof ec.lat === 'number' && ec.lng > 0 && ec.lat > 0) {
+            od.endCoords = { lng: ec.lng, lat: ec.lat };
+          }
+          const cdist = Number(req.body?.currentDistance);
+          if (!isNaN(cdist) && cdist > 0) {
+            od.currentDistance = cdist;
+            od.distance = cdist;
+          }
+        }
         await mysqlPool.query(
           'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
           [JSON.stringify(od), 'merchant_orders', orderId]
@@ -8793,6 +8811,24 @@ function getClientIp(req: any): string {
         od.status = 'completed';
         od.completedAt = now;
         od.updatedAt = now;
+        // 2026-10-18修1：完单时存储司机端解析好的真实终点（名+坐标+里程），商户端/管理后台看终点才对得上
+        {
+          const destName = String(req.body?.endLocation || req.body?.destination || req.body?.dropoffName || '').trim();
+          if (destName && destName !== '位置未知' && destName !== '目的地定位中...' && !/^(请填写|待指定|未完成|未填写)/.test(destName)) {
+            od.endLocation = destName;
+            od.destination = destName;
+            od.dropoffName = destName;
+          }
+          const ec = req.body?.endCoords;
+          if (ec && typeof ec.lng === 'number' && typeof ec.lat === 'number' && ec.lng > 0 && ec.lat > 0) {
+            od.endCoords = { lng: ec.lng, lat: ec.lat };
+          }
+          const cdist = Number(req.body?.currentDistance);
+          if (!isNaN(cdist) && cdist > 0) {
+            od.currentDistance = cdist;
+            od.distance = cdist;
+          }
+        }
         for (const col of ['driver_users', 'driver_locations', 'squad_members']) {
           if (dbData[col]?.[authPhone]) {
             dbData[col][authPhone].isBusy = false;

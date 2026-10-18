@@ -186,8 +186,9 @@ const sanitizeOrderLocations = (order: any) => {
   eLoc = isTransfer ? eLoc : formatHighPrecisionDestinationName(eLoc, order);
 
   // Clean empty or placeholder values
+  // 2026-10-18修：删掉'德隆楼德鼎逸品'硬编码占位（铁律：位置未知显示"位置未知"），与订单详情页一致
   if (!sLoc || sLoc === '正在获取当前位置...' || sLoc === '未定位起点') {
-    sLoc = '德隆楼德鼎逸品';
+    sLoc = '位置未知';
   }
 
   // Handle specific old placeholder artifacts if any
@@ -198,9 +199,10 @@ const sanitizeOrderLocations = (order: any) => {
     eLoc = sLoc;
   }
 
-  // In-place orders (distance <= 0.25km, 原地结束订单): destination strictly matches startLocation
+  // In-place orders (distance <= 0.05km, 原地结束订单): destination strictly matches startLocation
   // 2026-10-12修复：非原地订单终点未知时显示"位置未知"，绝不用起点冒充（铁律）
-  if (!isTransfer && dist <= 0.25 && sLoc && !sLoc.includes('正在获取')) {
+  // 2026-10-18修：原地阈值统一0.05km
+  if (!isTransfer && dist <= 0.05 && sLoc && !sLoc.includes('正在获取')) {
     eLoc = sLoc;
   } else if (!eLoc || eLoc === '正在获取当前位置...' || eLoc === '未定位终点' || eLoc === '目的地定位中...' || eLoc === '目的地') {
     eLoc = '位置未知';

@@ -1,9 +1,116 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { ArrowLeft, MoreVertical, CheckCircle2, Receipt, Route, Clock, User, Phone, Trash2, Send } from 'lucide-react';
 import { BillingRules, DEFAULT_SLOTS } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
 import { formatOrderDisplayTime, formatTransferOrderEndLocation } from './HomeView';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
+
+/**
+ * 订单费用明细统一计算（2026-10-18抽取）：
+ * 起步价（订单锁定的 calculatedBaseFee/startPrice）+ 里程费（超出起步含公里部分）
+ * + 等候费 + 返程/附加费；订单总计恒等于四项之和。
+ * 头部大数字与明细卡片共用，保证一致。
+ */
+function computeCostBreakdown(order: any, billingRules?: BillingRules) {
+  // Accurate order start time resolution: timestamp or timeStr
+  let orderDate: Date = new Date();
+  if (order.startTimestamp || order.timestamp) {
+    orderDate = new Date(Number(order.startTimestamp || order.timestamp));
+  } else {
+    const orderTimeStr = order.timeStr || order.fullTimeStr || '';
+    const timeMatch = orderTimeStr.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      orderDate = new Date(
+        parseInt(timeMatch[1], 10),
+        parseInt(timeMatch[2], 10) - 1,
+        parseInt(timeMatch[3], 10),
+        parseInt(timeMatch[4], 10),
+        parseInt(timeMatch[5], 10)
+      );
+    } else {
+      const hmMatch = orderTimeStr.match(/(\d{1,2}):(\d{2})/);
+      if (hmMatch) {
+        orderDate = new Date();
+        orderDate.setHours(parseInt(hmMatch[1], 10), parseInt(hmMatch[2], 10), 0, 0);
+      }
+    }
+  }
+
+  const activeSlot = getTimeSlotForTime(billingRules, orderDate);
+
+  // 1. 起步价: 优先使用订单创建/锁定的起步价（calculatedBaseFee / startPrice）
+  const ruleStartPrice = activeSlot?.startingPrice ?? 38.00;
+  const startFee = Number(order.calculatedBaseFee || order.startPrice || ruleStartPrice);
+
+  // 2. 里程解析与真实自动计算
+  let totalKm = Number(order.distance ?? order.currentDistance ?? order.tripDistance ?? 0);
+  if (totalKm <= 0) {
+    if (order.routeDistance && Number(order.routeDistance) > 0) {
+      totalKm = Number(order.routeDistance);
+    } else if (order.estimatedDistance && Number(order.estimatedDistance) > 0) {
+      totalKm = Number(order.estimatedDistance);
+    } else if (order.distanceText && typeof order.distanceText === 'string') {
+      const numMatch = order.distanceText.match(/(\d+(\.\d+)?)/);
+      if (numMatch) totalKm = parseFloat(numMatch[1]);
+    }
+  }
+
+  const includedKm = activeSlot?.includedDistance ?? 7;
+  const distInterval = activeSlot?.distanceInterval || 1;
+  const distUnitPrice = activeSlot?.priceIncrease ?? activeSlot?.unitPricePerKm ?? 5;
+
+  let distFee = 0;
+  if (order.distanceFee !== undefined && order.distanceFee !== null && Number(order.distanceFee) >= 0) {
+    distFee = Number(order.distanceFee);
+  } else if (totalKm > includedKm) {
+    const extraKm = totalKm - includedKm;
+    distFee = Math.ceil(extraKm / distInterval) * distUnitPrice;
+  }
+
+  // 3. 中途等候与等候费
+  // 2026-10-18修：等候时间存的就是分钟（currentWaitingTime=wMins），旧逻辑 rawWait>60 时除以60，
+  // 导致90分钟显示成1分钟。直接按分钟取整。
+  const rawWait = Number(order.currentWaitingTime ?? order.waitTime ?? order.waitingTime ?? 0);
+  const totalWaitMin = Math.max(0, Math.round(rawWait));
+  const freeWaitMin = billingRules?.freeWaitingTime ?? 10;
+  const waitInterval = billingRules?.waitingIntervalMin || 1;
+  const waitUnitPrice = billingRules?.waitingIncreaseYuan ?? billingRules?.waitingChargePerMin ?? 1;
+
+  let waitFee = 0;
+  if (order.waitFee !== undefined && order.waitFee !== null && Number(order.waitFee) >= 0) {
+    waitFee = Number(order.waitFee);
+  } else if (totalWaitMin > freeWaitMin) {
+    const extraWait = totalWaitMin - freeWaitMin;
+    waitFee = Math.ceil(extraWait / waitInterval) * waitUnitPrice;
+  }
+
+  // 4. 返程/附加费
+  const returnStartKm = billingRules?.returnFeeStartKm ?? 0;
+  const returnInterval = billingRules?.returnFeeIntervalKm || 1;
+  const returnUnitPrice = billingRules?.returnFeeIncreaseYuan ?? billingRules?.returnFeePerKm ?? 0;
+
+  let returnFee = 0;
+  if (order.returnFee !== undefined && order.returnFee !== null && Number(order.returnFee) >= 0) {
+    returnFee = Number(order.returnFee);
+  } else if (returnStartKm > 0 && totalKm > returnStartKm) {
+    const extraReturnKm = totalKm - returnStartKm;
+    returnFee = Math.ceil(extraReturnKm / returnInterval) * returnUnitPrice;
+  }
+
+  const extraSum = Number(order.extraBridgeFee || 0) +
+                   Number(order.extraParkingFee || 0) +
+                   Number(order.extraOtherFee || 0);
+  const extraFee = returnFee + extraSum;
+
+  // 5. 订单总计
+  // 2026-10-18修：按用户规则，总计恒等于四项之和（起步价+里程费+等候费+返程/附加费），
+  // 不再用 order.amount / calculatedTotalFee 覆盖，也不再"自动调和"伪造费用。
+  const totalAmount = Number((startFee + distFee + waitFee + extraFee).toFixed(2));
+
+  const totalKmStr = totalKm > 0 ? (totalKm % 1 === 0 ? totalKm.toFixed(0) : totalKm.toFixed(1)) : "0.0";
+
+  return { startFee, totalKm, totalKmStr, distFee, totalWaitMin, waitFee, extraFee, totalAmount };
+}
 
 interface OrderDetailModalProps {
   order: any;
@@ -25,6 +132,9 @@ export default function OrderDetailModal({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   if (!order) return null;
+
+  // 费用明细统一计算：头部大数字与明细卡片共用，保证一致（2026-10-18）
+  const bd = useMemo(() => computeCostBreakdown(order, billingRules), [order, billingRules]);
 
   const rawP = (
     order.passengerPhone || 
@@ -83,121 +193,13 @@ export default function OrderDetailModal({
           </div>
           <h2 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-1">已完成</h2>
           <p className="text-2xl font-bold text-[#ff7d00]">
-            ¥ {Number(order.amount ?? order.calculatedTotalFee ?? 38).toFixed(2)}
+            ¥ {bd.totalAmount.toFixed(2)}
           </p>
         </div>
 
         {/* 费用明细卡片 - 无论是报单、二维码创单、报单转单、商户代叫订单都真实自动计算 */}
         {(() => {
-          // Accurate order start time resolution: timestamp or timeStr
-          let orderDate: Date = new Date();
-          if (order.startTimestamp || order.timestamp) {
-            orderDate = new Date(Number(order.startTimestamp || order.timestamp));
-          } else {
-            const orderTimeStr = order.timeStr || order.fullTimeStr || '';
-            const timeMatch = orderTimeStr.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})/);
-            if (timeMatch) {
-              orderDate = new Date(
-                parseInt(timeMatch[1], 10),
-                parseInt(timeMatch[2], 10) - 1,
-                parseInt(timeMatch[3], 10),
-                parseInt(timeMatch[4], 10),
-                parseInt(timeMatch[5], 10)
-              );
-            } else {
-              const hmMatch = orderTimeStr.match(/(\d{1,2}):(\d{2})/);
-              if (hmMatch) {
-                orderDate = new Date();
-                orderDate.setHours(parseInt(hmMatch[1], 10), parseInt(hmMatch[2], 10), 0, 0);
-              }
-            }
-          }
-
-          const activeSlot = getTimeSlotForTime(billingRules, orderDate);
-
-          // 1. 起步价: 优先使用订单创建/锁定的起步价（calculatedBaseFee / startPrice）
-          const ruleStartPrice = activeSlot?.startingPrice ?? 38.00;
-          const startFee = Number(order.calculatedBaseFee || order.startPrice || ruleStartPrice);
-
-          // 2. 里程解析与真实自动计算
-          let totalKm = Number(order.distance ?? order.currentDistance ?? order.tripDistance ?? 0);
-          if (totalKm <= 0) {
-            if (order.routeDistance && Number(order.routeDistance) > 0) {
-              totalKm = Number(order.routeDistance);
-            } else if (order.estimatedDistance && Number(order.estimatedDistance) > 0) {
-              totalKm = Number(order.estimatedDistance);
-            } else if (order.distanceText && typeof order.distanceText === 'string') {
-              const numMatch = order.distanceText.match(/(\d+(\.\d+)?)/);
-              if (numMatch) totalKm = parseFloat(numMatch[1]);
-            }
-          }
-
-          const includedKm = activeSlot?.includedDistance ?? 7;
-          const distInterval = activeSlot?.distanceInterval || 1;
-          const distUnitPrice = activeSlot?.priceIncrease ?? activeSlot?.unitPricePerKm ?? 5;
-
-          let distFee = 0;
-          if (order.distanceFee !== undefined && order.distanceFee !== null && Number(order.distanceFee) >= 0) {
-            distFee = Number(order.distanceFee);
-          } else if (totalKm > includedKm) {
-            const extraKm = totalKm - includedKm;
-            distFee = Math.ceil(extraKm / distInterval) * distUnitPrice;
-          }
-
-          // 3. 中途等候与等候费
-          const rawWait = Number(order.currentWaitingTime ?? order.waitTime ?? order.waitingTime ?? 0);
-          const totalWaitMin = rawWait > 60 ? Math.floor(rawWait / 60) : Math.round(rawWait);
-          const freeWaitMin = billingRules?.freeWaitingTime ?? 10;
-          const waitInterval = billingRules?.waitingIntervalMin || 1;
-          const waitUnitPrice = billingRules?.waitingIncreaseYuan ?? billingRules?.waitingChargePerMin ?? 1;
-
-          let waitFee = 0;
-          if (order.waitFee !== undefined && order.waitFee !== null && Number(order.waitFee) >= 0) {
-            waitFee = Number(order.waitFee);
-          } else if (totalWaitMin > freeWaitMin) {
-            const extraWait = totalWaitMin - freeWaitMin;
-            waitFee = Math.ceil(extraWait / waitInterval) * waitUnitPrice;
-          }
-
-          // 4. 返程/附加费
-          const returnStartKm = billingRules?.returnFeeStartKm ?? 0;
-          const returnInterval = billingRules?.returnFeeIntervalKm || 1;
-          const returnUnitPrice = billingRules?.returnFeeIncreaseYuan ?? billingRules?.returnFeePerKm ?? 0;
-
-          let returnFee = 0;
-          if (order.returnFee !== undefined && order.returnFee !== null && Number(order.returnFee) >= 0) {
-            returnFee = Number(order.returnFee);
-          } else if (returnStartKm > 0 && totalKm > returnStartKm) {
-            const extraReturnKm = totalKm - returnStartKm;
-            returnFee = Math.ceil(extraReturnKm / returnInterval) * returnUnitPrice;
-          }
-
-          const extraSum = Number(order.extraBridgeFee || 0) + 
-                           Number(order.extraParkingFee || 0) + 
-                           Number(order.extraOtherFee || 0);
-          let extraFee = returnFee + extraSum;
-
-          // 5. 订单总计
-          let totalAmount = startFee + distFee + waitFee + extraFee;
-          if (order.amount !== undefined && order.amount !== null) {
-            totalAmount = Number(order.amount);
-          } else if (order.calculatedTotalFee !== undefined && order.calculatedTotalFee !== null) {
-            totalAmount = Number(order.calculatedTotalFee);
-          }
-
-          // Auto-reconcile breakdown if totalAmount has extra mileage amount not broken down
-          const sumFour = startFee + distFee + waitFee + extraFee;
-          if (Math.abs(sumFour - totalAmount) > 0.01) {
-            const diff = totalAmount - sumFour;
-            if (diff > 0 && distFee === 0 && totalKm <= includedKm && order.distanceFee === undefined) {
-              distFee = Number(diff.toFixed(2));
-              totalKm = Number((includedKm + Math.ceil(distFee / distUnitPrice) * distInterval).toFixed(1));
-            } else if (extraFee + diff >= 0) {
-              extraFee = Number((extraFee + diff).toFixed(2));
-            }
-          }
-
-          const totalKmStr = totalKm > 0 ? (totalKm % 1 === 0 ? totalKm.toFixed(0) : totalKm.toFixed(1)) : "0.0";
+          const { startFee, totalKmStr, distFee, totalWaitMin, waitFee, extraFee, totalAmount } = bd;
 
           return (
             <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl p-4 shadow-xs">
@@ -358,7 +360,7 @@ export default function OrderDetailModal({
                   <span className="text-sm text-slate-800 dark:text-slate-200 font-medium">
                     {(() => {
                       let s = (order.startLocation || '').toString().trim();
-                      return s || '德隆楼德鼎逸品';
+                      return s || '位置未知';
                     })()}
                   </span>
                 </div>
@@ -376,10 +378,12 @@ export default function OrderDetailModal({
                       let s = (order.startLocation || '').toString().trim();
                       let e = (order.endLocation || order.destination || order.dropoffName || '').toString().trim();
                       const dist = Number(order.distance ?? order.currentDistance ?? 0);
-                      if (dist <= 0.25 && s) {
+                      // 2026-10-18修：原地阈值统一0.05km（与其他处一致）
+                      if (dist <= 0.05 && s) {
                         return s;
                       }
-                      return formatHighPrecisionDestinationName(e, order) || s || '德隆楼德鼎逸品';
+                      // 2026-10-18修：删掉'德隆楼德鼎逸品'硬编码占位（铁律：位置未知显示"位置未知"）
+                      return formatHighPrecisionDestinationName(e, order) || s || '位置未知';
                     })()}
                   </span>
                 </div>

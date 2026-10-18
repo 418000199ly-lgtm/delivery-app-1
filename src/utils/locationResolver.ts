@@ -504,10 +504,11 @@ export async function autoUpdateOrderDestinationIfUnset(
     return undefined;
   })();
 
-  // In-place trip completion (distance <= 0.25km, e.g. 原地结束订单):
+  // In-place trip completion (distance <= 0.05km, e.g. 原地结束订单):
   // For ALL order types (报单, 商户代叫, 二维码创单, 报单转单, etc.),
   // destination strictly equals startLocation!
-  const isInPlaceTrip = (trip.currentDistance !== undefined && trip.currentDistance <= 0.25) ||
+  // 2026-10-18修2：阈值统一为0.05km（与App.tsx handleEndTrip一致）
+  const isInPlaceTrip = (trip.currentDistance !== undefined && trip.currentDistance <= 0.05) ||
     (!trip.currentDistance && (!currentDest || isUnsetDestination(currentDest) || currentDest === '目的地定位中...'));
 
   if (isInPlaceTrip && trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
@@ -516,11 +517,10 @@ export async function autoUpdateOrderDestinationIfUnset(
     return trip;
   } else {
     // Drive-away trip: obtain exact ending coordinates
+    // 2026-10-18修4：driverCurrentLocationName 全代码无写入处，死代码已移除
     const gpsResult = await resolveCurrentGpsLocationName(tripCoords);
     if (gpsResult && gpsResult.name && !gpsResult.name.includes('宁夏博物馆') && !isUnsetDestination(gpsResult.name)) {
       resolvedName = gpsResult.name;
-    } else if ((trip as any).driverCurrentLocationName && !isUnsetDestination((trip as any).driverCurrentLocationName) && !(trip as any).driverCurrentLocationName.includes('宁夏博物馆') && !(trip as any).driverCurrentLocationName.includes('游乐小区')) {
-      resolvedName = (trip as any).driverCurrentLocationName;
     } else if (tripCoords) {
       const nearest = findNearestKnownPoi(tripCoords, 0.01);
       if (nearest) {
@@ -532,7 +532,7 @@ export async function autoUpdateOrderDestinationIfUnset(
   // If still unresolved:
   // 2026-10-12修复：非原地订单GPS解析失败时显示"位置未知"，绝不用起点冒充终点（铁律）
   if (!resolvedName) {
-    const isInPlace = (trip.currentDistance !== undefined && trip.currentDistance <= 0.25);
+    const isInPlace = (trip.currentDistance !== undefined && trip.currentDistance <= 0.05);
     if (isInPlace && trip.startLocation && !isUnsetDestination(trip.startLocation) && !trip.startLocation.includes('宁夏博物馆')) {
       // 原地结束订单：终点=起点（司机没动，这是对的）
       resolvedName = trip.startLocation;
@@ -700,10 +700,11 @@ export function formatHighPrecisionDestinationName(rawDest: string, order?: any)
     return d;
   }
 
-  // In-place orders (distance <= 0.25km, 原地结束订单): destination equals startLocation
+  // In-place orders (distance <= 0.05km, 原地结束订单): destination equals startLocation
+  // 2026-10-18修2：阈值统一为0.05km
   const dist = Number(order?.distance ?? order?.currentDistance ?? 0);
   const startLoc = String(order?.startLocation || order?.originName || '').trim();
-  if (dist <= 0.25 && startLoc && !startLoc.includes('正在获取') && !startLoc.includes('未定位')) {
+  if (dist <= 0.05 && startLoc && !startLoc.includes('正在获取') && !startLoc.includes('未定位')) {
     return startLoc;
   }
 
