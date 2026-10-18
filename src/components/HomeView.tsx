@@ -4390,7 +4390,7 @@ export default function HomeView({
         setIsMatching(false);
         return;
       }
-      const codeData = (checkJson && checkJson.success && checkJson.exists) ? checkJson.data : null;
+      const codeData = (checkJson && checkJson.success && checkJson.exists) ? checkJson : null;
 
       if (!codeData) {
         setModalMessage({ 

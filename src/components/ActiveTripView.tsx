@@ -305,26 +305,26 @@ export default function ActiveTripView({
 
     // 2. Stationary jitter / drift-cluster filter (w16修复)
     // 室内GPS漂移特征：单次跳动 5-50 米，但来回 bouncing，不会持续朝一个方向走。
-    // 策略：a) 小位移直接过滤；b) 新位置若落在历史锚点附近 → 漂移回弹，不累积
     // 2026-10-15修复2：用户要求去掉速度过滤，只按GPS位移算。电动车/低速挪车速度经常低于阈值，
-    // 速度过滤误杀真实行驶。只保留距离过滤（3米）+漂移簇检测（25米来回跳）。
-    const JITTER_DIST_M = 3.0;   // 3米内位移视为抖动
-    const DRIFT_CLUSTER_M = 25.0; // 25米半径内来回跳 = 漂移簇
+    // 速度过滤误杀真实行驶。只保留距离过滤（3米）+漂移回弹检测。
+    // 2026-10-18根治走路/电动车不计公里：
+    //   Bug1：旧逻辑在位移<3米时把锚点前移到新位置，导致步行（每次1-2米）锚点永远追着人跑，位移永远攒不够3米 → 0.00公里。
+    //         修复：锚点固定不动，小位移直接丢弃不累计，等位移攒够3米一次性累计。
+    //   Bug2：旧漂移检测拿新位置跟全部3个历史锚点比，滑动窗口跟着人走，慢速持续移动永远被判"原地打转"。
+    //         修复：只跟最老的一个锚点比，且要求本次位移≥25米（即：先走远又折返回来，才算漂移回弹）。
+    const JITTER_DIST_M = 3.0;   // 3米内位移视为抖动，直接丢弃，锚点不动
+    const DRIFT_CLUSTER_M = 25.0; // 25米半径
     if (distanceInMeters < JITTER_DIST_M) {
+      return;
+    }
+    // 漂移回弹检测：新位置回到"最老锚点"附近，且本次是从远处折返（位移≥25米）→ 室内GPS漂移来回跳，不累积
+    const oldestAnchor = anchorHistoryRef.current.length > 0 ? anchorHistoryRef.current[0] : null;
+    if (oldestAnchor && distanceInMeters >= DRIFT_CLUSTER_M && getDistance(oldestAnchor.lng, oldestAnchor.lat, lng, lat) < DRIFT_CLUSTER_M) {
+      console.log(`⚠️ [GPS Tracker] 漂移回弹过滤 (折返至老锚点 ${getDistance(oldestAnchor.lng, oldestAnchor.lat, lng, lat).toFixed(1)}m)`);
       lastCoordsRef.current = { lng, lat, timestamp: now };
       anchorHistoryRef.current.push({ lng, lat });
       if (anchorHistoryRef.current.length > 3) anchorHistoryRef.current.shift();
       return;
-    }
-    // 漂移回弹检测：新位置离"上上个"锚点很近 → 说明在原地打转，不累积
-    for (const h of anchorHistoryRef.current) {
-      if (getDistance(h.lng, h.lat, lng, lat) < DRIFT_CLUSTER_M && distanceInMeters < DRIFT_CLUSTER_M * 2) {
-        console.log(`⚠️ [GPS Tracker] 漂移回弹过滤 (距历史锚点 ${getDistance(h.lng, h.lat, lng, lat).toFixed(1)}m)`);
-        lastCoordsRef.current = { lng, lat, timestamp: now };
-        anchorHistoryRef.current.push({ lng, lat });
-        if (anchorHistoryRef.current.length > 3) anchorHistoryRef.current.shift();
-        return;
-      }
     }
 
     // 3. Anomalous Teleport / High Speed Jump Guard (Allow up to 180 km/h = 50 m/s)

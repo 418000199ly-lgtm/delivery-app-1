@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Volume2, Download, AlertCircle } from 'lucide-react';
+import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Download, AlertCircle } from 'lucide-react';
 import { ChauffeurSettings, checkVipActive } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
@@ -443,17 +443,6 @@ export default function SettingsView({
           <div className="w-full py-3.5 px-4 flex items-center justify-between bg-white">
             <span className="text-sm font-semibold text-gray-700">语音播报状态</span>
             <div className="flex items-center space-x-2">
-              <button 
-                type="button"
-                onClick={() => {
-                  initAudioUnlock();
-                  speakText('语音播报测试正常');
-                }}
-                className="flex items-center space-x-1 text-xs text-blue-600 bg-blue-50 font-bold py-1 px-2.5 rounded-lg border border-blue-100 active:scale-95 transition-all cursor-pointer"
-              >
-                <Volume2 className="w-3.5 h-3.5 text-blue-500" />
-                <span>测试语音</span>
-              </button>
               <button 
                 type="button"
                 onClick={toggleVoiceBroadcast}

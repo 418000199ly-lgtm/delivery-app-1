@@ -1846,13 +1846,25 @@ export default function MobileDispatchValetOrder({
         const data = d.data();
         const p = String(data?.phone || d.id || '').trim();
         const cleanP = p.replace(/\D/g, '');
-        if (p.toUpperCase().endsWith('A')) {
+        // 2026-10-12修复：phone和id都要检查A后缀（与 DispatchValetOrder 保持一致）
+        const pUpper = p.toUpperCase();
+        const idUpper = String(d.id || '').toUpperCase();
+        if (pUpper.endsWith('A') || idUpper.endsWith('A')) {
           list.push({ id: d.id, ...data });
         }
       });
-      setMerchantUsers(list);
+      // 2026-10-18防闪烁：服务端偶发返回空列表时不清空已有商户，避免「一会显示一会不显示」
+      setMerchantUsers((prev: any[]) => {
+        if (list.length === 0 && prev && prev.length > 0) {
+          console.warn('[merchant_users] server returned empty, keeping previous list to avoid flicker');
+          return prev;
+        }
+        return list;
+      });
       try {
-        localStorage.setItem('dd_merchant_users_v2', JSON.stringify(list));
+        if (list.length > 0) {
+          localStorage.setItem('dd_merchant_users_v2', JSON.stringify(list));
+        }
       } catch (_) {}
     }, (err) => console.warn('Error fetching merchant_users:', err));
     return () => unsub();

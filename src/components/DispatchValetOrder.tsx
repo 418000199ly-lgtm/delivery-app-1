@@ -1711,9 +1711,18 @@ export default function DispatchValetOrder({
           list.push({ id: d.id, ...data });
         }
       });
-      setMerchantUsers(list);
+      // 2026-10-18防闪烁：服务端偶发返回空列表时不清空已有商户，避免「一会显示一会不显示」
+      setMerchantUsers((prev: any[]) => {
+        if (list.length === 0 && prev && prev.length > 0) {
+          console.warn('[merchant_users] server returned empty, keeping previous list to avoid flicker');
+          return prev;
+        }
+        return list;
+      });
       try {
-        localStorage.setItem('dd_merchant_users_v2', JSON.stringify(list));
+        if (list.length > 0) {
+          localStorage.setItem('dd_merchant_users_v2', JSON.stringify(list));
+        }
       } catch (_) {}
     }, (err) => console.warn('Error fetching merchant_users:', err));
     return () => unsub();
@@ -3826,11 +3835,10 @@ export default function DispatchValetOrder({
             </h2>
 
             {/* Current City display tag on the right side (IP located) */}
+            {/* 2026-10-18：取消点击弹隔离规则提示 */}
             <div className="flex items-center gap-1 shrink-0 ml-2">
               <div 
-                onClick={() => onShowToast(`📍 手机网络IP定位城市：${currentCity}\n🔒 隔离规则：仅限同城经审批加入的小队成员接收商户代叫订单，多小队（每城最多10个）互不相通`)}
-                className="flex items-center gap-1 bg-[#ffdbc8]/90 hover:bg-[#ffdbc8] border border-[#dfc0af] px-2.5 py-1 rounded-full text-xs font-bold text-[#984800] shadow-xs cursor-pointer transition-all active:scale-95"
-                title="点击查看城市与小队隔离规则"
+                className="flex items-center gap-1 bg-[#ffdbc8]/90 border border-[#dfc0af] px-2.5 py-1 rounded-full text-xs font-bold text-[#984800] shadow-xs"
               >
                 <MapPin className="w-3.5 h-3.5 text-[#ff7d00] shrink-0" />
                 <span>当前城市：{currentCity}</span>
