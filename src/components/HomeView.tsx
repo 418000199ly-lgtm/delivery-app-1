@@ -1633,6 +1633,11 @@ export default function HomeView({
       const updatedApps = [newApp, ...existingApps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone)];
       localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
 
+      // 2026-10-20修复：提交新申请时重置审批防抖锁存，防旧"已通过"状态残留误判
+      try {
+        approvalStableRef.current = { val: false, count: 0 };
+      } catch (_) {}
+
       // 2026-10-19修复说明：上面已写 dd_applicants_v2（checkApprovalStatusRaw 优先读它）
       // 注意：不要写 dd_squad_members_v2，审批通过前不是成员，写了会导致状态来回跳
 
@@ -1685,13 +1690,11 @@ export default function HomeView({
         serverOk = false;
       }
       if (!serverOk) {
-        // 服务端写入失败：回滚本地，提示用户
-        try {
-          localStorage.setItem('dd_applicants_v2', JSON.stringify(existingApps));
-        } catch (_) {}
+        // 2026-10-20修复：服务端写入疑似失败时不回滚本地（可能是响应丢失，服务端实际已收到）
+        // 保持"审核中"UI，靠5秒同步确认；若服务端真没收到，同步会显示无记录用户可重试
         setIsSubmittingApply(false);
         submittingRef.current = false;
-        setLocalAlert({ title: '提交失败', message: '网络异常，申请未能发送到服务器，请检查网络后重试', type: 'error' });
+        setLocalAlert({ title: '提交中', message: '申请已提交，正在等待服务器确认…', type: 'info' });
         return;
       }
 
@@ -2674,6 +2677,17 @@ export default function HomeView({
             localStorage.setItem(`dd_squad_member_${currentPhone}`, JSON.stringify(myRecord));
             localStorage.setItem(`dd_approved_${currentPhone}`, 'true');
             localStorage.setItem(`dd_in_squad_${currentPhone}`, 'true');
+            // 2026-10-20修复：已通过后清理本地申请记录，防旧"待审核"挡住"审核通过"页
+            try {
+              const savedApps = localStorage.getItem('dd_applicants_v2');
+              if (savedApps) {
+                const apps = JSON.parse(savedApps);
+                const filtered = apps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone);
+                if (filtered.length !== apps.length) {
+                  localStorage.setItem('dd_applicants_v2', JSON.stringify(filtered));
+                }
+              }
+            } catch (_) {}
             if (myRecord?.role) {
               setUserRole(myRecord.role);
               localStorage.setItem('dd_user_role', myRecord.role);
