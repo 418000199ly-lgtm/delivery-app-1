@@ -1906,14 +1906,16 @@ export default function HomeView({
       if (saved) {
         const apps = JSON.parse(saved);
         const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
-        if (myApp && ['待审核', 'pending', '审核中'].includes(myApp.status)) {
+        const myAppSt = String(myApp?.status || myApp?.approvalStatus || '').trim();
+        if (myApp && ['待审核', 'pending', '审核中'].includes(myAppSt)) {
           return true;
         }
       }
     } catch (_) {}
 
     const member = squadMembers.find((m: any) => String(m.phone || m.id).replace(/\D/g, '').trim() === currentPhone);
-    if (member && ['待审核', 'pending', '审核中'].includes(member.status)) {
+    const memberSt = String(member?.status || member?.approvalStatus || '').trim();
+    if (member && ['待审核', 'pending', '审核中'].includes(memberSt)) {
       return true;
     }
 
@@ -2111,14 +2113,16 @@ export default function HomeView({
       if (saved) {
         const apps = JSON.parse(saved);
         const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
-        if (myApp && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(myApp.status)) {
+        const myAppSt = String(myApp?.status || myApp?.approvalStatus || '').trim();
+        if (myApp && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(myAppSt)) {
           return true;
         }
       }
     } catch (_) {}
 
     const member = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
-    if (member && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(member.status)) {
+    const memberSt = String(member?.status || member?.approvalStatus || '').trim();
+    if (member && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(memberSt)) {
       return true;
     }
 
@@ -2445,17 +2449,32 @@ export default function HomeView({
         }
       });
       const combinedApps = Array.from(appMap.values());
-      // 2026-10-20修复：合并本地待审核记录，防止刚提交的申请被服务端空列表覆盖
-      // 服务端同步有延迟，本地刚写的待审核不能丢
+      // 2026-10-20修复：合并本地待审核记录，防止刚提交的申请被服务端空列表或坏状态覆盖
+      // 服务端同步有延迟，本地刚写的待审核不能丢；服务端坏状态（NULL）不能覆盖本地好状态
       try {
         const localApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-        const serverPhones = new Set(combinedApps.map((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim()));
+        const serverMap = new Map();
+        combinedApps.forEach((a: any) => {
+          const p = String(a.phone || a.id || '').replace(/\D/g, '').trim();
+          if (p) serverMap.set(p, a);
+        });
         localApps.forEach((la: any) => {
           const lp = String(la.phone || la.id || '').replace(/\D/g, '').trim();
           const lst = String(la.status || la.approvalStatus || '').trim();
-          if (lp && ['待审核', 'pending', '审核中'].includes(lst) && !serverPhones.has(lp)) {
+          if (!lp || !['待审核', 'pending', '审核中'].includes(lst)) return;
+          const serverApp = serverMap.get(lp);
+          if (!serverApp) {
+            // 服务端没有，直接加
             combinedApps.push(la);
-            serverPhones.add(lp);
+            serverMap.set(lp, la);
+          } else {
+            // 服务端有，检查状态是否坏了
+            const sst = String(serverApp.status || serverApp.approvalStatus || '').trim();
+            if (!['待审核', 'pending', '审核中', '已通过', 'approved', '通过'].includes(sst)) {
+              // 服务端状态坏了（NULL/空），用本地好状态替换
+              const idx = combinedApps.findIndex((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() === lp);
+              if (idx >= 0) combinedApps[idx] = la;
+            }
           }
         });
       } catch (_) {}
@@ -2713,6 +2732,9 @@ export default function HomeView({
               if (Array.isArray(savedApps)) {
                 const filteredApps = savedApps.filter((a: any) => {
                   const p = String(a.phone || a.id).replace(/\D/g, '').trim();
+                  const st = String(a.status || a.approvalStatus || '').trim();
+                  // 2026-10-20修复：待审核申请不删（用户可能正在重新申请）
+                  if (['待审核', 'pending', '审核中'].includes(st)) return true;
                   return p === DEVELOPER_PHONE || !phones.includes(p);
                 });
                 localStorage.setItem('dd_applicants_v2', JSON.stringify(filteredApps));
@@ -2765,6 +2787,19 @@ export default function HomeView({
           }
           apps.push({ ...data, id: docSnap.id, phone: p || data?.phone });
         });
+        // 2026-10-20修复：合并本地待审核，防止 onSnapshot 覆盖丢失刚提交的申请
+        try {
+          const localApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+          const appPhones = new Set(apps.map((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim()));
+          localApps.forEach((la: any) => {
+            const lp = String(la.phone || la.id || '').replace(/\D/g, '').trim();
+            const lst = String(la.status || la.approvalStatus || '').trim();
+            if (lp && ['待审核', 'pending', '审核中'].includes(lst) && !appPhones.has(lp)) {
+              apps.push(la);
+              appPhones.add(lp);
+            }
+          });
+        } catch (_) {}
         if (apps.length > 0) {
           try {
             localStorage.setItem('dd_applicants_v2', JSON.stringify(apps));
@@ -2776,7 +2811,7 @@ export default function HomeView({
         const curP = getCurrentPhone();
         if (curP && curP !== DEVELOPER_PHONE) {
           const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === curP);
-          const myAppSt = String(myApp?.status || '').trim();
+          const myAppSt = String(myApp?.status || myApp?.approvalStatus || '').trim();
           const hasActiveApp = ['待审核', 'pending', '审核中', '已通过', 'approved', '通过'].includes(myAppSt);
           const isCurRemoved = !hasActiveApp && (removedSet.has(curP) || isDriverRemoved(curP));
 
@@ -2791,7 +2826,7 @@ export default function HomeView({
             return;
           }
 
-          if (myApp && ['已通过', 'approved', '通过'].includes(myApp.status)) {
+          if (myApp && ['已通过', 'approved', '通过'].includes(myAppSt)) {
             try {
               localStorage.setItem(`dd_approved_${curP}`, 'true');
               localStorage.setItem(`dd_in_squad_${curP}`, 'true');

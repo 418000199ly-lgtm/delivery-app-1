@@ -1077,6 +1077,21 @@ export default function DispatchValetOrder({
           approvalTime: new Date().toLocaleString()
         }, { merge: true }).catch(() => {});
 
+        // 2026-10-20修复：审批前先从黑名单移除，否则 squad_members 写入会被服务端拦截丢弃
+        try {
+          getDoc(doc(db, 'config', 'removed_squad_members')).then((rmSnap: any) => {
+            if (rmSnap.exists()) {
+              const rmData = rmSnap.data();
+              const phones = Array.isArray(rmData?.phones) ? rmData.phones : [];
+              const cleanTarget = String(targetPhone).replace(/\D/g, '').trim();
+              const filtered = phones.filter((p: any) => String(p).replace(/\D/g, '').trim() !== cleanTarget);
+              if (filtered.length !== phones.length) {
+                setDoc(doc(db, 'config', 'removed_squad_members'), { phones: filtered }, { merge: true }).catch(() => {});
+              }
+            }
+          }).catch(() => {});
+        } catch (_) {}
+
         setDoc(doc(db, 'squad_members', targetPhone), {
           name,
           phone: targetPhone,
