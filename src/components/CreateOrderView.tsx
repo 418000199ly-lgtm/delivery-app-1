@@ -348,13 +348,13 @@ export default function CreateOrderView({
       };
 
       if (candidateIds.length > 0) {
-        // 2026-10-12改用专用通道：真取消，不进大厅，不走鉴权
+        // 2026-10-20修复：加鉴权头（服务端已要求鉴权）
         try {
           const baseUrl = getBaseApiUrl();
           for (const targetId of candidateIds) {
             fetch(`${baseUrl}/api/order/true-cancel`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
               body: JSON.stringify({
                 orderId: targetId,
                 driverPhone: userPhone,

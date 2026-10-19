@@ -2294,11 +2294,11 @@ function getClientIp(req: any): string {
         }
       }
 
-      // 1. If explicitly approving or applying, automatically unblacklist the driver
+      // 1. If explicitly approving, automatically unblacklist the driver
+      // 2026-10-20修复：申请（待审核）不解黑名单，只有审批通过才解，防止被拉黑司机自助洗白
       const isExplicitApproval = (data?.status === '已通过' || data?.approvalStatus === '已通过');
-      const isExplicitApplication = col === 'squad_applications' && (data?.status === '待审核' || data?.status === '已通过');
 
-      if ((col === 'squad_members' && isExplicitApproval) || isExplicitApplication) {
+      if (col === 'squad_members' && isExplicitApproval) {
         // Auto-remove docId from removed_squad_members
         if (isMySQLEnabled && mysqlPool) {
           try {
@@ -2583,11 +2583,11 @@ function getClientIp(req: any): string {
         }
       }
 
-      // 1. If explicitly approving or applying, automatically unblacklist the driver
+      // 1. If explicitly approving, automatically unblacklist the driver
+      // 2026-10-20修复：申请（待审核）不解黑名单，只有审批通过才解，防止被拉黑司机自助洗白
       const isExplicitApproval = (data?.status === '已通过' || data?.approvalStatus === '已通过');
-      const isExplicitApplication = col === 'squad_applications' && (data?.status === '待审核' || data?.status === '已通过');
 
-      if ((col === 'squad_members' && isExplicitApproval) || isExplicitApplication) {
+      if (col === 'squad_members' && isExplicitApproval) {
         // Auto-remove docId from removed_squad_members
         if (isMySQLEnabled && mysqlPool) {
           try {

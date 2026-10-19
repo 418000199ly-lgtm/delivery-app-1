@@ -4236,7 +4236,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 dismissedIncomingOrderKeysRef.current.delete(orderKey);
                 persistDismissedKeys(); // 2026-10-17：delete 后同步持久化
                 // When driver explicitly claims an order from the hall, immediately accept and jump to trip planning
-                handleAcceptIncomingOrder(orderPayload);
+                // 2026-10-20修复：大厅已claim过，传claimed:true防二次claim
+                handleAcceptIncomingOrder(orderPayload, { claimed: true });
               }}
               onOpenMerchantValetPayment={(trip) => {
                 setMerchantValetPaymentTrip(trip);

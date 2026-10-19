@@ -852,7 +852,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           </div>
           <button 
             onClick={onDecline}
-            className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/20 hover:bg-black/30 border border-white/20 px-3.5 py-1 rounded-full transition-all cursor-pointer"
+            disabled={isAccepting}
+            className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/20 hover:bg-black/30 border border-white/20 px-3.5 py-1 rounded-full transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             取消订单
           </button>

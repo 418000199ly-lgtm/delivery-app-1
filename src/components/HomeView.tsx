@@ -2452,9 +2452,11 @@ export default function HomeView({
             serverMap.set(lp, la);
           } else {
             // 服务端有，检查状态是否坏了
+            // 2026-10-20修复：已拒绝是有效终态，不能被本地待审核覆盖（防死循环）
             const sst = String(serverApp.status || serverApp.approvalStatus || '').trim();
-            if (!['待审核', 'pending', '审核中', '已通过', 'approved', '通过'].includes(sst)) {
-              // 服务端状态坏了（NULL/空），用本地好状态替换
+            const validStatuses = ['待审核', 'pending', '审核中', '已通过', 'approved', '通过', '已拒绝', 'rejected', '审核未通过', '未通过', '已驳回'];
+            if (!validStatuses.includes(sst)) {
+              // 服务端状态坏了（NULL/空/未知），用本地好状态替换
               const idx = combinedApps.findIndex((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() === lp);
               if (idx >= 0) combinedApps[idx] = la;
             }
@@ -2556,13 +2558,15 @@ export default function HomeView({
           return;
         }
 
-        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId) || phone.includes('3747') || name.includes('3747')) {
+        if (allRemovedSet.has(phone) || (name && allRemovedSet.has(name)) || allRemovedSet.has(rawId)) {
           return; // 彻底跳过已被删除的司机
+          // 2026-10-20修复：删除'3747'硬编码过滤（误伤正常司机）
         }
 
-        if (isGenericDriverName(name, phone)) {
-          return; // 过滤无真实姓名或自动生成的司机
-        }
+        // 2026-10-20修复：删除通用名过滤（2026-10-19用户决定：管理后台必须显示所有司机）
+        // if (isGenericDriverName(name, phone)) {
+        //   return; // 过滤无真实姓名或自动生成的司机
+        // }
 
         if (phone && isApproved) {
           map.set(phone, {
