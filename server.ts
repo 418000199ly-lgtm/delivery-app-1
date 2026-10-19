@@ -1543,37 +1543,9 @@ function getClientIp(req: any): string {
       writeLocalJsonDb(dbData);
       console.log(`✓ [Database] Consolidated ${updatedCount} driver profiles into driver_users on startup.`);
 
-      if (isMySQLEnabled && mysqlPool) {
-        for (const phone of Object.keys(dbData.driver_users)) {
-          await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['driver_users', phone, JSON.stringify(dbData.driver_users[phone])]
-          ).catch(() => {});
-
-          if (dbData.squad_applications && dbData.squad_applications[phone]) {
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              ['squad_applications', phone, JSON.stringify(dbData.squad_applications[phone])]
-            ).catch(() => {});
-          }
-          if (dbData.squad_members && dbData.squad_members[phone]) {
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              ['squad_members', phone, JSON.stringify(dbData.squad_members[phone])]
-            ).catch(() => {});
-          }
-          if (dbData.online_applications && dbData.online_applications[phone]) {
-            await mysqlPool.query(
-              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-              ['online_applications', phone, JSON.stringify(dbData.online_applications[phone])]
-            ).catch(() => {});
-          }
-        }
-      }
+      // 2026-10-19 删除：不再把本地 local_db.json 回写 MySQL
+      // 根因：每次重启都会用本地旧数据覆盖 MySQL，导致已删除的 18695161718A 等复活、
+      // 已修复的"待审核"状态被旧值覆盖。MySQL 为唯一真相源，本地 JSON 只做合并读。
     } catch (e) {
       console.error('[Consolidation] Error during driver startup consolidation:', e);
     }

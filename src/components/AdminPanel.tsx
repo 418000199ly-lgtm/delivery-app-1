@@ -825,41 +825,15 @@ export default function AdminPanel({
           loadedUsers = items.map((i: any) => i?.data || i).filter(Boolean);
         }
 
-        const masterDeveloper = DEVELOPER_PHONE;
-        const squadToDelete = loadedSquad.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
-        const appsToDelete = loadedApps.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
-        const usersToDelete = loadedUsers.map((i: any) => String(i.phone || i.id || '').replace(/\D/g, '').trim()).filter((p: string) => p && p !== masterDeveloper);
-        const allToPurge = Array.from(new Set([...squadToDelete, ...appsToDelete, ...usersToDelete]));
-
-        if (allToPurge.length > 0) {
-          console.log(`[Admin Purge] Client-side purging ${allToPurge.length} old drivers/applicants from Aliyun server via REST APIs...`);
-          
-          for (const phone of allToPurge) {
-            ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations'].forEach((col) => {
-              fetch(`${baseUrl}/api/db/delete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                body: JSON.stringify({ col, id: phone, hardDelete: true })
-              }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-            });
-          }
-
-          setSquadMembersList([]);
-          setSquadAppsList([]);
-          setDriverUsersList([]);
-          
-          localStorage.setItem('dd_applicants_v2', '[]');
-          localStorage.setItem('dd_squad_members_v2', JSON.stringify([
-            { id: masterDeveloper, phone: masterDeveloper, phoneNumber: masterDeveloper, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
-          ]));
-          localStorage.setItem('cached_unified_drivers', JSON.stringify([
-            { id: masterDeveloper, phone: masterDeveloper, phoneNumber: masterDeveloper, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
-          ]));
-        } else {
-          setSquadMembersList(loadedSquad);
-          setSquadAppsList(loadedApps);
-          setDriverUsersList(loadedUsers);
-        }
+        // 2026-10-19 删除：管理后台加载时不再自动删除非开发者司机数据。
+        // 根因：此前每次打开管理后台都会静默 hardDelete 所有非 15509601222 的记录
+        // （driver_users/squad_members/squad_applications/online_applications/driver_locations），
+        // 导致司机刚提交的入队申请在管理员打开后台查看时被删掉——"管理员没收到申请"的真凶，
+        // 也是 10-18"非小队成员一会显示一会不显示"闪烁的根因。
+        // 清理数据只走管理后台显式清理接口（带二次确认），此处只做展示。
+        setSquadMembersList(loadedSquad);
+        setSquadAppsList(loadedApps);
+        setDriverUsersList(loadedUsers);
         if (resRemoved.status === 'fulfilled' && resRemoved.value.ok) {
           const json = await resRemoved.value.json();
           const phones = json?.data?.phones || json?.phones;

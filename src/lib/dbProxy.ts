@@ -63,13 +63,16 @@ export class ProxyQuerySnapshot {
 
 /** 获取认证请求头：短信登录后服务端签发的 token，用于 /api/db/* 写操作鉴权 */
 export function getAuthHeaders(): Record<string, string> {
+  // 2026-10-19: 所有请求带 X-App-Version 头，供服务端 V1.0 拦截识别
+  // V2.0 App 与管理后台（同一套构建）自动带版本，V1.0 老构建没这行会被拦
+  const headers: Record<string, string> = { 'X-App-Version': 'V2.0' };
   try {
     const token = localStorage.getItem('dd_auth_token');
     if (token) {
-      return { 'X-Auth-Token': token };
+      headers['X-Auth-Token'] = token;
     }
   } catch (_) {}
-  return {};
+  return headers;
 }
 
 /**

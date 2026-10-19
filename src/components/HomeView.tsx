@@ -1651,6 +1651,25 @@ export default function HomeView({
       ];
       localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedMembers));
 
+      // 2026-10-19修复：同步更新 dd_applicants_v2，防5秒轮询覆盖 squadMembers 后状态丢失跳回表单
+      // checkApprovalStatusRaw 优先读 dd_applicants_v2，这里必须写
+      try {
+        const existingApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+        const updatedApps = [
+          {
+            id: currentPhone,
+            phone: currentPhone,
+            name: freshName,
+            status: '待审核',
+            note: noteText,
+            city: effectiveCity || '银川市',
+            createdAt: Date.now()
+          },
+          ...existingApps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone)
+        ];
+        localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
+      } catch (_) {}
+
       // 4. 同步更新 squadMembers state
       setSquadMembers(prev => {
         const filtered = prev.filter(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() !== currentPhone);
@@ -2432,10 +2451,14 @@ export default function HomeView({
       }
 
       const appMap = new Map<string, any>();
+      // 2026-10-19修：同步时除开发者外，还必须保留当前登录用户自己的申请。
+      // 之前只留开发者，导致每次同步都用仅含开发者申请的列表覆盖 dd_applicants_v2，
+      // 当前用户的"待审核"申请被清空 → checkApprovalStatusRaw 找不到待审核 → 页面从审核中跳回表单。
+      const syncCurPhone = getCurrentPhone();
       apiApps.forEach(rawA => {
         const a = (rawA?.data && typeof rawA.data === 'object') ? { ...rawA.data, ...rawA, id: rawA.id || rawA.data?.id } : rawA;
         const p = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
-        if (p && p === DEVELOPER_PHONE) {
+        if (p && (p === DEVELOPER_PHONE || (syncCurPhone && p === syncCurPhone))) {
           appMap.set(p, { ...a, phone: p });
         }
       });
