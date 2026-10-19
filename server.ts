@@ -1101,32 +1101,9 @@ function getClientIp(req: any): string {
       const dbData = readLocalJsonDb();
       let modified = false;
 
-      // Ensure kicked generic driver phones are in removed_squad_members config
+      // Ensure removed_squad_members config exists (do not hardcode phones here)
       if (!dbData.config) dbData.config = {};
       if (!dbData.config.removed_squad_members) dbData.config.removed_squad_members = { phones: [] };
-      const removedPhones: string[] = dbData.config.removed_squad_members.phones || [];
-      const kickedPhones = [
-        '17866167770', // 魏秉金
-        '19995179865', // 张栋
-        '13099566633', // 李鑫
-        '18893028825', // 何威
-        '18795101111', // 尹柏学
-        '18095513011', // 杨海
-        '13895299147',
-        '17660453634',
-        '13812345678',
-        '13912345678',
-        '19995426058',
-        '15509601223',
-        '15555556666'
-      ];
-      kickedPhones.forEach(p => {
-        if (!removedPhones.includes(p)) {
-          removedPhones.push(p);
-          modified = true;
-        }
-      });
-      dbData.config.removed_squad_members.phones = removedPhones;
 
       // 1. In squad_members: ONLY 15509601222 is kept!
       if (dbData.squad_members) {
