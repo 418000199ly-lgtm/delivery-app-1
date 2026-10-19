@@ -715,10 +715,10 @@ export default function DispatchValetOrder({
           return parsed.filter((a: any) => {
             const fullKey = String(a?.phone || a?.id || '').trim();
             const p = fullKey.replace(/\D/g, '').trim();
-            if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
+            if (p === '15509601222') return false;
             if (fullKey.toUpperCase().endsWith('A') || a?.isMerchant || a?.accountType === 'merchant') return false;
             const name = String(a?.name || a?.applicantName || a?.driverName || '').trim();
-            if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
+            if (name.includes('商户') || name.includes('商家')) return false;
             if (isGenericDriverName(name, p) && a?.status !== '已拒绝') return false;
             return true;
           });
@@ -759,10 +759,10 @@ export default function DispatchValetOrder({
             if (item && (item.phone || item.id)) {
               const fullKey = String(item.phone || item.id || '').trim();
               const key = fullKey.replace(/\D/g, '').trim();
-              if (key === '15509601222' || key === '18695161718' || fullKey.includes('18695161718') || key.includes('718')) return;
+              if (key === '15509601222') return;
               if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
               const rawName = String(item.name || item.driverName || item.applicantName || '').trim();
-              if (rawName.includes('718') || rawName.includes('商户') || rawName.includes('商家')) return;
+              if (rawName.includes('商户') || rawName.includes('商家')) return;
               const isGeneric = isGenericDriverName(rawName, key);
               if (isGeneric && item.status !== '已拒绝') {
                 return;
@@ -782,11 +782,11 @@ export default function DispatchValetOrder({
           if (['app-1', 'app-2', 'app-3'].includes(a.id)) return false;
           const fullKey = String(a.phone || a.id || '').trim();
           const p = fullKey.replace(/\D/g, '').trim();
-          if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
+          if (p === '15509601222') return false;
           if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
           if (removedSquadSet.has(p)) return false;
           const name = String(a.name || a.applicantName || a.driverName || '').trim();
-          if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
+          if (name.includes('商户') || name.includes('商家')) return false;
           if (isGenericDriverName(name, p)) return false;
           return true;
         });
@@ -813,7 +813,7 @@ export default function DispatchValetOrder({
           const p = String(docSnap.id || data?.phone || '').trim();
           const cleanP = p.replace(/\D/g, '');
           const name = String(data?.name || data?.applicantName || data?.driverName || '').trim();
-          if (cleanP === '18695161718' || p.includes('18695161718') || cleanP.includes('718') || p.toUpperCase().endsWith('A') || name.includes('718') || name.includes('商户') || name.includes('商家')) {
+          if (p.toUpperCase().endsWith('A') || name.includes('商户') || name.includes('商家')) {
             deleteDoc(doc(db, 'squad_applications', docSnap.id)).catch(() => {});
             return;
           }
@@ -830,7 +830,7 @@ export default function DispatchValetOrder({
             const map = new Map<string, any>();
             list.forEach(item => {
               const key = String(item.phone || item.id).replace(/\D/g, '').trim();
-              if (key && key !== '15509601222' && !key.includes('718')) {
+              if (key && key !== '15509601222') {
                 const prevItem = map.get(key) || {};
                 const isPending = item.status === '待审核';
                 map.set(key, {
@@ -853,10 +853,10 @@ export default function DispatchValetOrder({
               if (['app-1', 'app-2', 'app-3'].includes(a.id)) return false;
               const fullKey = String(a.phone || a.id || '').trim();
               const p = fullKey.replace(/\D/g, '').trim();
-              if (p === '15509601222' || p === '18695161718' || fullKey.includes('18695161718') || p.includes('718')) return false;
+              if (p === '15509601222') return false;
               if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
               const name = String(a.name || a.applicantName || a.driverName || '').trim();
-              if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
+              if (name.includes('商户') || name.includes('商家')) return false;
               if (isGenericDriverName(name, p)) return a.status === '已拒绝';
               return true;
             });
@@ -1699,11 +1699,6 @@ export default function DispatchValetOrder({
         const data = d.data();
         const p = String(data?.phone || d.id || '').trim();
         const cleanP = p.replace(/\D/g, '');
-        if (cleanP === '18695161718' || p.includes('18695161718')) {
-          deleteDoc(doc(db, 'merchant_users', d.id)).catch(() => {});
-          deleteDoc(doc(db, 'merchant_accounts', d.id)).catch(() => {});
-          return;
-        }
         // 2026-10-12修复：phone和id都要检查A后缀
         const pUpper = p.toUpperCase();
         const idUpper = String(d.id || '').toUpperCase();
@@ -4622,11 +4617,6 @@ export default function DispatchValetOrder({
             const rawPhone = String(m.phone || m.id || '').trim();
             const cleanPhone = rawPhone.replace(/\D/g, '').trim();
 
-            // 彻底删除 18695161718A / 18695161718 商户记录
-            if (rawPhone.includes('18695161718') || cleanPhone === '18695161718') {
-              if (rawPhone.toUpperCase().endsWith('A') || m.role === '商户、商家') return;
-            }
-
             // 严格识别：只有带有 'A' 尾缀的才是商户；未带 'A' 的 15509601222 才是开发者司机！
             const isMerchant = rawPhone.toUpperCase().endsWith('A');
             const isMaster = !isMerchant && cleanPhone === '15509601222';
@@ -4687,9 +4677,6 @@ export default function DispatchValetOrder({
           const rawP = String(mu?.phone || mu?.id || '').trim();
           const rawId = String(mu?.id || '').trim();
           const cleanP = rawP.replace(/\D/g, '').trim();
-
-          // 彻底取消 18695161718A / 18695161718 显示
-          if (cleanP === '18695161718' || rawP.includes('18695161718')) return;
 
           // 必须是以 'A' 结尾的隐形/显式商户账号！纯数字手机号（如 18695161718、15509601222）在 App 点击商户代叫组件绝不作为商户账号！
           // 2026-10-12修复：phone和id都要检查A后缀

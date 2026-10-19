@@ -74,13 +74,20 @@ export function getAuthHeaders(): Record<string, string> {
 
 /**
  * M8修复：区分鉴权失败与网络错误
- * 401/403 → 清除本地token并抛出错误（调用方需处理重登录）
+ * 401 → 清除本地token并抛出错误（调用方需处理重登录）
+ * 403 → 只抛错显示原因，不清 token、不跳登录（P1-1修复 2026-10-19）
  * 网络错误 → 返回true保持乐观（本地已写）
  */
 function isAuthError(err: any): boolean {
   const msg = String(err?.message || '');
   const status = (err as any)?.status;
-  return status === 401 || status === 403 || msg.includes('401') || msg.includes('403');
+  return status === 401 || msg.includes('401');
+}
+
+function isForbiddenError(err: any): boolean {
+  const msg = String(err?.message || '');
+  const status = (err as any)?.status;
+  return status === 403 || msg.includes('403');
 }
 
 function clearAuthTokenOn401(): void {
@@ -235,6 +242,9 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
       clearAuthTokenOn401();
       throw err;
     }
+    if (isForbiddenError(err)) {
+      throw err;
+    }
     // Secondary simulation fallback to guarantee absolute offline stability
     const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
     if (DRIVER_COLLECTIONS.includes(docRef.collectionName) && cleanId !== DEVELOPER_PHONE) {
@@ -296,6 +306,9 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
       clearAuthTokenOn401();
       throw err;
     }
+    if (isForbiddenError(err)) {
+      throw err;
+    }
     console.warn('[dbProxy.setDoc] 网络错误，服务端写入失败（本地缓存已更新）:', (err as any)?.message || err);
     return false;
   }
@@ -343,6 +356,9 @@ export async function updateDoc(docRef: any, data: any) {
       clearAuthTokenOn401();
       throw err;
     }
+    if (isForbiddenError(err)) {
+      throw err;
+    }
     console.warn('[dbProxy.updateDoc] 网络错误，服务端写入失败（本地缓存已更新）:', (err as any)?.message || err);
     return false;
   }
@@ -375,6 +391,9 @@ export async function deleteDoc(docRef: any) {
     // M8修复：401/403清token并抛出，网络错误返回true保持乐观
     if (isAuthError(err)) {
       clearAuthTokenOn401();
+      throw err;
+    }
+    if (isForbiddenError(err)) {
       throw err;
     }
     return true;
@@ -415,8 +434,12 @@ export async function addDoc(collectionRef: any, data: any) {
     return { id: finalId };
   } catch (err) {
     // M8修复：addDoc失败直接抛出，不再返回假id
+    // P1-1修复 2026-10-19：403 只抛错不清 token
     if (isAuthError(err)) {
       clearAuthTokenOn401();
+    }
+    if (isForbiddenError(err)) {
+      throw err;
     }
     throw err;
   }
@@ -488,6 +511,9 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
     // 绝不能回退本地旧缓存（否则 401 后 App 会用 stale 数据渲染，造成状态污染）。
     if (isAuthError(err)) {
       clearAuthTokenOn401();
+      throw err;
+    }
+    if (isForbiddenError(err)) {
       throw err;
     }
     console.warn("Proxy DB Query falling back to local simulation:", err);
@@ -664,6 +690,9 @@ export async function clearCollection(colName: string) {
     // M8修复：401/403清token并抛出
     if (isAuthError(err)) {
       clearAuthTokenOn401();
+      throw err;
+    }
+    if (isForbiddenError(err)) {
       throw err;
     }
     console.warn("Proxy DB Clear Collection fell back to local storage:", err);
