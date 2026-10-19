@@ -9322,6 +9322,11 @@ function getClientIp(req: any): string {
       if (!/^1[3-9]\d{9}$/.test(cleanPhone)) {
         return res.status(400).json({ success: false, error: '手机号格式错误' });
       }
+      // 2026-10-20修复：商户（A后缀）免申请，直接拒绝
+      const rawPhone = String(phone || '').trim();
+      if (rawPhone.toUpperCase().endsWith('A')) {
+        return res.status(400).json({ success: false, error: '商户账号免申请，可直接使用' });
+      }
       // P1-3: 申请人必须为本人，防冒名
       const tokenPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
       if (cleanPhone !== tokenPhone && !(req as any).isAdmin) {

@@ -887,7 +887,6 @@ export default function MobileDispatchValetOrder({
             if (p === '15509601222') return false;
             if (fullKey.toUpperCase().endsWith('A') || a?.isMerchant || a?.accountType === 'merchant') return false;
             const name = String(a?.name || a?.applicantName || a?.driverName || '').trim();
-            if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
             if (isGenericDriverName(name, p) && a?.status !== '已拒绝') return false;
             return true;
           });
@@ -928,10 +927,9 @@ export default function MobileDispatchValetOrder({
             if (item && (item.phone || item.id)) {
               const fullKey = String(item.phone || item.id || '').trim();
               const key = fullKey.replace(/\D/g, '').trim();
-              if (key === '15509601222' || key.includes('718')) return;
+              if (key === '15509601222') return;
               if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
               const rawName = String(item.name || item.driverName || item.applicantName || '').trim();
-              if (rawName.includes('718') || rawName.includes('商户') || rawName.includes('商家')) return;
               const isGeneric = isGenericDriverName(rawName, key);
               if (isGeneric && item.status !== '已拒绝') {
                 return;
@@ -955,7 +953,6 @@ export default function MobileDispatchValetOrder({
           if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
           if (removedSquadSet.has(p)) return false;
           const name = String(a.name || a.applicantName || a.driverName || '').trim();
-          if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
           if (isGenericDriverName(name, p)) return false;
           return true;
         });
@@ -982,8 +979,9 @@ export default function MobileDispatchValetOrder({
           const p = String(docSnap.id || data?.phone || '').trim();
           const cleanP = p.replace(/\D/g, '');
           const name = String(data?.name || data?.applicantName || data?.driverName || '').trim();
-          if (p.toUpperCase().endsWith('A') || name.includes('718') || name.includes('商户') || name.includes('商家')) {
-            deleteDoc(doc(db, 'squad_applications', docSnap.id)).catch(() => {});
+          // 2026-10-20修复：只过滤显示，不自动删除（防误删正常司机）
+          // 商户（A后缀）由服务端 /api/squad-apply 直接拒绝，不入库
+          if (p.toUpperCase().endsWith('A')) {
             return;
           }
           list.push({
@@ -999,7 +997,8 @@ export default function MobileDispatchValetOrder({
             const map = new Map<string, any>();
             list.forEach(item => {
               const key = String(item.phone || item.id).replace(/\D/g, '').trim();
-              if (key && key !== '15509601222' && !key.includes('718')) {
+              // 2026-10-20修复：删除含'718'的过滤（误伤正常司机），只过滤开发者本人
+              if (key && key !== '15509601222') {
                 const prevItem = map.get(key) || {};
                 const isPending = item.status === '待审核';
                 map.set(key, {
@@ -1025,7 +1024,6 @@ export default function MobileDispatchValetOrder({
               if (p === '15509601222') return false;
               if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
               const name = String(a.name || a.applicantName || a.driverName || '').trim();
-              if (name.includes('718') || name.includes('商户') || name.includes('商家')) return false;
               if (isGenericDriverName(name, p)) return a.status === '已拒绝';
               return true;
             });

@@ -718,7 +718,7 @@ export default function DispatchValetOrder({
             if (p === '15509601222') return false;
             if (fullKey.toUpperCase().endsWith('A') || a?.isMerchant || a?.accountType === 'merchant') return false;
             const name = String(a?.name || a?.applicantName || a?.driverName || '').trim();
-            if (name.includes('商户') || name.includes('商家')) return false;
+            // 2026-10-20修复：删除按名字含'商户'过滤（误伤正常司机），只按A后缀识别商户
             if (isGenericDriverName(name, p) && a?.status !== '已拒绝') return false;
             return true;
           });
@@ -762,7 +762,6 @@ export default function DispatchValetOrder({
               if (key === '15509601222') return;
               if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
               const rawName = String(item.name || item.driverName || item.applicantName || '').trim();
-              if (rawName.includes('商户') || rawName.includes('商家')) return;
               const isGeneric = isGenericDriverName(rawName, key);
               if (isGeneric && item.status !== '已拒绝') {
                 return;
@@ -786,7 +785,6 @@ export default function DispatchValetOrder({
           if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
           if (removedSquadSet.has(p)) return false;
           const name = String(a.name || a.applicantName || a.driverName || '').trim();
-          if (name.includes('商户') || name.includes('商家')) return false;
           if (isGenericDriverName(name, p)) return false;
           return true;
         });
@@ -813,8 +811,8 @@ export default function DispatchValetOrder({
           const p = String(docSnap.id || data?.phone || '').trim();
           const cleanP = p.replace(/\D/g, '');
           const name = String(data?.name || data?.applicantName || data?.driverName || '').trim();
-          if (p.toUpperCase().endsWith('A') || name.includes('商户') || name.includes('商家')) {
-            deleteDoc(doc(db, 'squad_applications', docSnap.id)).catch(() => {});
+          // 2026-10-20修复：只过滤显示，不自动删除（防误删正常司机）
+          if (p.toUpperCase().endsWith('A')) {
             return;
           }
           list.push({
@@ -856,7 +854,6 @@ export default function DispatchValetOrder({
               if (p === '15509601222') return false;
               if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
               const name = String(a.name || a.applicantName || a.driverName || '').trim();
-              if (name.includes('商户') || name.includes('商家')) return false;
               if (isGenericDriverName(name, p)) return a.status === '已拒绝';
               return true;
             });
