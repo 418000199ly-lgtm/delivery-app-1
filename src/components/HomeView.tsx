@@ -2445,6 +2445,20 @@ export default function HomeView({
         }
       });
       const combinedApps = Array.from(appMap.values());
+      // 2026-10-20修复：合并本地待审核记录，防止刚提交的申请被服务端空列表覆盖
+      // 服务端同步有延迟，本地刚写的待审核不能丢
+      try {
+        const localApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
+        const serverPhones = new Set(combinedApps.map((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim()));
+        localApps.forEach((la: any) => {
+          const lp = String(la.phone || la.id || '').replace(/\D/g, '').trim();
+          const lst = String(la.status || la.approvalStatus || '').trim();
+          if (lp && ['待审核', 'pending', '审核中'].includes(lst) && !serverPhones.has(lp)) {
+            combinedApps.push(la);
+            serverPhones.add(lp);
+          }
+        });
+      } catch (_) {}
       try {
         localStorage.setItem('dd_applicants_v2', JSON.stringify(combinedApps));
       } catch (_) {}
