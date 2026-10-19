@@ -3650,7 +3650,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const userDocRef = doc(db, 'driver_users', userPhone);
         setDoc(userDocRef, {
           phoneNumber: userPhone,
-          vipExpiry: newSettings.vipExpiry || '',
+          // 2026-10-20修复：删除 vipExpiry 回写（只能经服务端充值接口修改，防本地旧值覆盖）
           customAppName: newSettings.customAppName || '',
           billingTemplateName: newSettings.billingTemplateName || '',
           voiceBroadcast: newSettings.voiceBroadcast || '',
