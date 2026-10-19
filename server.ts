@@ -1666,9 +1666,20 @@ function getClientIp(req: any): string {
     if (!info) {
       return res.status(401).json({ success: false, error: '登录已失效：令牌无效，请重新短信验证登录' });
     }
+    // 开发者不受限制（商户身份的开发者 15509601222A 也是开发者）
+    const devPhoneNorm = String(DEVELOPER_PHONE_SERVER || '').trim().toUpperCase();
+    const infoPhoneNorm = String(info.phone || '').trim().toUpperCase();
+    if (infoPhoneNorm === devPhoneNorm || infoPhoneNorm === devPhoneNorm + 'A') {
+      (req as any).authPhone = info.phone;
+      (req as any).isAdmin = true;
+      (req as any).userRole = 'developer';
+      (req as any).isManager = true;
+      return next();
+    }
     // V1.0 拦截（2026-10-19）：V1.0 的 App 不发送 appVersion 字段，V2.0 会发送 'V2.0'
     // V1.0 已强制升级，拒绝其所有写操作，防止旧数据污染数据库
     // 只拦写操作（POST/PUT/DELETE/PATCH），读操作放行以便 App 显示升级提示
+    // 开发者（管理后台）已在上面放行，不受影响
     const appVersion = String(req.body?.appVersion || (req.headers as any)?.['x-app-version'] || '').trim();
     const isWriteMethod = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(String(req.method || '').toUpperCase());
     const isAuthOrHealth = req.path.startsWith('/api/auth/') || req.path === '/api/health';
@@ -1680,16 +1691,6 @@ function getClientIp(req: any): string {
         needUpgrade: true,
         minVersion: 'V2.0'
       });
-    }
-    // 开发者不受限制（商户身份的开发者 15509601222A 也是开发者）
-    const devPhoneNorm = String(DEVELOPER_PHONE_SERVER || '').trim().toUpperCase();
-    const infoPhoneNorm = String(info.phone || '').trim().toUpperCase();
-    if (infoPhoneNorm === devPhoneNorm || infoPhoneNorm === devPhoneNorm + 'A') {
-      (req as any).authPhone = info.phone;
-      (req as any).isAdmin = true;
-      (req as any).userRole = 'developer';
-      (req as any).isManager = true;
-      return next();
     }
     // M10：从 squad_members 查操作者角色（同步读本地缓存）
     let userRole = 'normal';
