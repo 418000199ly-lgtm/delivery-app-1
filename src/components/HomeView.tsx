@@ -1633,26 +1633,9 @@ export default function HomeView({
       const updatedApps = [newApp, ...existingApps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone)];
       localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
 
-      // 3. 本地存储更新 dd_squad_members_v2
-      const savedMembers = localStorage.getItem('dd_squad_members_v2');
-      const existingMembers = savedMembers ? JSON.parse(savedMembers) : [];
-      const updatedMembers = [
-        {
-          id: currentPhone,
-          phone: currentPhone,
-          name: freshName,
-          role: '普通司机',
-          status: '待审核',
-          note: noteText,
-          city: effectiveCity || '银川市',
-          createdAt: Date.now()
-        },
-        ...existingMembers.filter((m: any) => String(m.phone || m.id || '').replace(/\D/g, '').trim() !== currentPhone)
-      ];
-      localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedMembers));
-
       // 2026-10-19修复：同步更新 dd_applicants_v2，防5秒轮询覆盖 squadMembers 后状态丢失跳回表单
       // checkApprovalStatusRaw 优先读 dd_applicants_v2，这里必须写
+      // 注意：不要写 dd_squad_members_v2，审批通过前不是成员，写了会导致状态来回跳
       try {
         const existingApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
         const updatedApps = [
@@ -1722,7 +1705,6 @@ export default function HomeView({
         // 服务端写入失败：回滚本地，提示用户
         try {
           localStorage.setItem('dd_applicants_v2', JSON.stringify(existingApps));
-          localStorage.setItem('dd_squad_members_v2', JSON.stringify(existingMembers));
         } catch (_) {}
         setIsSubmittingApply(false);
         submittingRef.current = false;
