@@ -1666,6 +1666,21 @@ function getClientIp(req: any): string {
     if (!info) {
       return res.status(401).json({ success: false, error: '登录已失效：令牌无效，请重新短信验证登录' });
     }
+    // V1.0 拦截（2026-10-19）：V1.0 的 App 不发送 appVersion 字段，V2.0 会发送 'V2.0'
+    // V1.0 已强制升级，拒绝其所有写操作，防止旧数据污染数据库
+    // 只拦写操作（POST/PUT/DELETE/PATCH），读操作放行以便 App 显示升级提示
+    const appVersion = String(req.body?.appVersion || (req.headers as any)?.['x-app-version'] || '').trim();
+    const isWriteMethod = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(String(req.method || '').toUpperCase());
+    const isAuthOrHealth = req.path.startsWith('/api/auth/') || req.path === '/api/health';
+    if (isWriteMethod && !isAuthOrHealth && !appVersion.startsWith('V2')) {
+      console.warn(`[V1Block] 拒绝 V1.0 写操作: 手机=${info.phone}, 路径=${req.path}, 版本=${appVersion || '(无)'}`);
+      return res.status(403).json({
+        success: false,
+        error: '请升级到 V2.0 版本后使用',
+        needUpgrade: true,
+        minVersion: 'V2.0'
+      });
+    }
     // 开发者不受限制（商户身份的开发者 15509601222A 也是开发者）
     const devPhoneNorm = String(DEVELOPER_PHONE_SERVER || '').trim().toUpperCase();
     const infoPhoneNorm = String(info.phone || '').trim().toUpperCase();
@@ -2505,7 +2520,7 @@ function getClientIp(req: any): string {
             name: name,
             role: finalData.role || finalData.userRole || existingUser.role || '普通司机',
             userRole: finalData.role || finalData.userRole || existingUser.userRole || '普通司机',
-            status: finalData.status || existingUser.status || '已通过',
+            status: finalData.status || existingUser.status || '未加入小队',
             is_squad_member: (col === 'squad_members' || finalData.status === '已通过' || finalData.is_squad_member === 1) ? 1 : (existingUser.is_squad_member ?? 0),
             city: finalData.city || existingUser.city || '银川市',
             vipExpiry: resolvedVip,
@@ -2727,7 +2742,7 @@ function getClientIp(req: any): string {
             name: name,
             role: finalData.role || finalData.userRole || existingUser.role || '普通司机',
             userRole: finalData.role || finalData.userRole || existingUser.userRole || '普通司机',
-            status: finalData.status || existingUser.status || '已通过',
+            status: finalData.status || existingUser.status || '未加入小队',
             is_squad_member: (col === 'squad_members' || finalData.status === '已通过' || finalData.is_squad_member === 1) ? 1 : (existingUser.is_squad_member ?? 0),
             city: finalData.city || existingUser.city || '银川市',
             vipExpiry: resolvedVip,
@@ -5628,7 +5643,6 @@ function getClientIp(req: any): string {
             dbData[col][cleanDriverPhone] = {
               ...dbData[col][cleanDriverPhone],
               isBusy: false,
-              status: 'idle',
               lastStatusUpdateTime: now
             };
           }
@@ -5800,7 +5814,6 @@ function getClientIp(req: any): string {
           dbData['driver_users'][assignedDriver] = {
             ...dbData['driver_users'][assignedDriver],
             isBusy: false,
-            status: 'idle',
             lastStatusUpdateTime: now
           };
         }
@@ -5808,7 +5821,6 @@ function getClientIp(req: any): string {
           dbData['driver_locations'][assignedDriver] = {
             ...dbData['driver_locations'][assignedDriver],
             isBusy: false,
-            status: 'idle',
             lastStatusUpdateTime: now
           };
         }
@@ -5816,7 +5828,6 @@ function getClientIp(req: any): string {
           dbData['squad_members'][assignedDriver] = {
             ...dbData['squad_members'][assignedDriver],
             isBusy: false,
-            status: 'idle',
             lastStatusUpdateTime: now
           };
         }
@@ -6081,7 +6092,6 @@ function getClientIp(req: any): string {
               dbData['driver_users'][timedOutDriverPhone] = {
                 ...dbData['driver_users'][timedOutDriverPhone],
                 isBusy: false,
-                status: 'idle',
                 lastStatusUpdateTime: now
               };
             }
@@ -6089,7 +6099,6 @@ function getClientIp(req: any): string {
               dbData['driver_locations'][timedOutDriverPhone] = {
                 ...dbData['driver_locations'][timedOutDriverPhone],
                 isBusy: false,
-                status: 'idle',
                 lastStatusUpdateTime: now
               };
             }
@@ -6097,7 +6106,6 @@ function getClientIp(req: any): string {
               dbData['squad_members'][timedOutDriverPhone] = {
                 ...dbData['squad_members'][timedOutDriverPhone],
                 isBusy: false,
-                status: 'idle',
                 lastStatusUpdateTime: now
               };
             }
