@@ -1638,6 +1638,10 @@ export default function HomeView({
         approvalStableRef.current = { val: false, count: 0 };
       } catch (_) {}
 
+      // 2026-10-20修复：提交新申请时重置 isReapplying，否则 checkPendingStatus 等全返回 false，
+      // 用户永远看不到"审核中"，只能看到申请表单
+      setIsReapplying(false);
+
       // 2026-10-19修复说明：上面已写 dd_applicants_v2（checkApprovalStatusRaw 优先读它）
       // 注意：不要写 dd_squad_members_v2，审批通过前不是成员，写了会导致状态来回跳
 
@@ -1771,33 +1775,16 @@ export default function HomeView({
       if (['已通过', 'approved', '通过'].includes(st)) {
         return true;
       }
+      // 在名单中但状态不是已通过/待审核（如已拒绝），明确不算通过
+      return false;
     }
 
-    // 2. 检查 localStorage dd_applicants_v2 中是否已通过审核
-    try {
-      const saved = localStorage.getItem('dd_applicants_v2');
-      if (saved) {
-        const apps = JSON.parse(saved);
-        const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
-        const appSt = String(myApp?.status || myApp?.approvalStatus || '').trim();
-        if (myApp && ['已通过', 'approved', '通过'].includes(appSt)) {
-          try {
-            localStorage.setItem(`dd_approved_${currentPhone}`, 'true');
-            localStorage.setItem(`dd_in_squad_${currentPhone}`, 'true');
-          } catch (_) {}
-          return true;
-        }
-      }
-    } catch (_) {}
+    // 2026-10-20修复：删除 localStorage dd_applicants_v2 的"已通过"兜底检查。
+    // 该检查会读到陈旧本地数据导致"审核通过"误判。现在只信服务端同步的 squadMembers state，
+    // 5秒轮询会及时更新，误判的代价远大于5秒延迟。
 
-    // 3. 检查是否处于小队
-    if (isDriverInSquad(currentPhone)) {
-      return true;
-    }
-
-    // 2026-10-18修：删除本地标记检查（dd_approved_*/dd_in_squad_*）。
-    // 这些标记一旦置 true，被踢/删除后不清掉，导致非成员被误判为成员，大厅来回闪。
-    // 现在只信服务端 squadMembers（5秒轮询）+ 申请人状态，防抖已处理闪烁，不需要本地标记兜底。
+    // 2026-10-20修复：删除 isDriverInSquad 兜底（它内部又查 localStorage，陈旧数据同上）。
+    // 默认拒绝：无明确已通过证据，一律不算通过。误报通过比延迟显示危害大得多。
     return false;
   };
 
