@@ -9349,6 +9349,14 @@ function getClientIp(req: any): string {
               return res.status(400).json({ success: false, error: '您已通过审核，无需重复提交' });
             }
           }
+          // 2026-10-20修复：审批后申请表已删除，需查 squad_members 防重复提交
+          const [mRows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['squad_members', cleanPhone]
+          );
+          if (Array.isArray(mRows) && mRows.length > 0) {
+            return res.status(400).json({ success: false, error: '您已是小队成员，无需重复提交' });
+          }
         }
       } catch (_) {}
       const appPayload = {

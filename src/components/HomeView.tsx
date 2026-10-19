@@ -2453,10 +2453,14 @@ export default function HomeView({
           } else {
             // 服务端有，检查状态是否坏了
             // 2026-10-20修复：已拒绝是有效终态，不能被本地待审核覆盖（防死循环）
+            // 但如果是用户刚重新提交的（本地时间戳在60秒内），则允许覆盖（新申请）
             const sst = String(serverApp.status || serverApp.approvalStatus || '').trim();
             const validStatuses = ['待审核', 'pending', '审核中', '已通过', 'approved', '通过', '已拒绝', 'rejected', '审核未通过', '未通过', '已驳回'];
-            if (!validStatuses.includes(sst)) {
-              // 服务端状态坏了（NULL/空/未知），用本地好状态替换
+            const localTs = Number(la.timestamp || la.createdAt || 0);
+            const isRecentSubmit = localTs > 0 && (Date.now() - localTs) < 60000;
+            const isReapplyAfterReject = isRecentSubmit && ['已拒绝', 'rejected', '审核未通过', '未通过', '已驳回'].includes(sst);
+            if (!validStatuses.includes(sst) || isReapplyAfterReject) {
+              // 服务端状态坏了（NULL/空/未知），或用户刚重新提交，用本地好状态替换
               const idx = combinedApps.findIndex((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() === lp);
               if (idx >= 0) combinedApps[idx] = la;
             }
