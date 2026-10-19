@@ -1633,25 +1633,8 @@ export default function HomeView({
       const updatedApps = [newApp, ...existingApps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone)];
       localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
 
-      // 2026-10-19修复：同步更新 dd_applicants_v2，防5秒轮询覆盖 squadMembers 后状态丢失跳回表单
-      // checkApprovalStatusRaw 优先读 dd_applicants_v2，这里必须写
+      // 2026-10-19修复说明：上面已写 dd_applicants_v2（checkApprovalStatusRaw 优先读它）
       // 注意：不要写 dd_squad_members_v2，审批通过前不是成员，写了会导致状态来回跳
-      try {
-        const existingApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-        const updatedApps = [
-          {
-            id: currentPhone,
-            phone: currentPhone,
-            name: freshName,
-            status: '待审核',
-            note: noteText,
-            city: effectiveCity || '银川市',
-            createdAt: Date.now()
-          },
-          ...existingApps.filter((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() !== currentPhone)
-        ];
-        localStorage.setItem('dd_applicants_v2', JSON.stringify(updatedApps));
-      } catch (_) {}
 
       // 4. 同步更新 squadMembers state
       setSquadMembers(prev => {

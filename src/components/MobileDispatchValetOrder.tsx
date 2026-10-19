@@ -1440,15 +1440,7 @@ export default function MobileDispatchValetOrder({
           approvalTime: new Date().toLocaleString()
         }, { merge: true }).catch(() => {});
 
-        setDoc(doc(db, 'squad_members', targetPhone), {
-          name,
-          phone: targetPhone,
-          status: '已拒绝',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          rejectionReasons: applicantObj?.selectedReasons || [],
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
+        // 2026-10-20修复：拒绝不写 squad_members（被拒绝不是成员），只更新申请表
       }
 
       const baseUrl = getBaseApiUrl();

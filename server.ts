@@ -9330,6 +9330,22 @@ function getClientIp(req: any): string {
       if (!cleanName) {
         return res.status(400).json({ success: false, error: '请填写真实姓名' });
       }
+      // 2026-10-20修复：已通过的用户不允许重复提交，防止覆盖已通过状态
+      try {
+        if (isMySQLEnabled && mysqlPool) {
+          const [rows] = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            ['squad_applications', cleanPhone]
+          );
+          if (Array.isArray(rows) && rows.length > 0) {
+            const existingData = JSON.parse((rows[0] as any).data || '{}');
+            const existingStatus = String(existingData.status || existingData.approvalStatus || '').trim();
+            if (['已通过', 'approved', '通过'].includes(existingStatus)) {
+              return res.status(400).json({ success: false, error: '您已通过审核，无需重复提交' });
+            }
+          }
+        }
+      } catch (_) {}
       const appPayload = {
         id: `app-${Date.now()}`,
         name: cleanName,
