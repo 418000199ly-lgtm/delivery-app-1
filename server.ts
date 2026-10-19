@@ -1677,13 +1677,13 @@ function getClientIp(req: any): string {
       return next();
     }
     // V1.0 拦截（2026-10-19）：V1.0 的 App 不发送 appVersion 字段，V2.0 会发送 'V2.0'
-    // V1.0 已强制升级，拒绝其所有写操作，防止旧数据污染数据库
-    // 只拦写操作（POST/PUT/DELETE/PATCH），读操作放行以便 App 显示升级提示
+    // V1.0 已强制升级，拒绝其通过 /api/db/* 的写操作，防止旧数据污染数据库
+    // 只拦 /api/db/* 通用数据接口（V1.0 污染主渠道）；其他业务接口（上传收款码等）
+    // 是 V2.0 专属，V1.0 不会调用，且 App 没发 appVersion，不能误拦
     // 开发者（管理后台）已在上面放行，不受影响
     const appVersion = String(req.body?.appVersion || (req.headers as any)?.['x-app-version'] || '').trim();
-    const isWriteMethod = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(String(req.method || '').toUpperCase());
-    const isAuthOrHealth = req.path.startsWith('/api/auth/') || req.path === '/api/health';
-    if (isWriteMethod && !isAuthOrHealth && !appVersion.startsWith('V2')) {
+    const isDbWrite = req.path.startsWith('/api/db/') && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(String(req.method || '').toUpperCase());
+    if (isDbWrite && !appVersion.startsWith('V2')) {
       console.warn(`[V1Block] 拒绝 V1.0 写操作: 手机=${info.phone}, 路径=${req.path}, 版本=${appVersion || '(无)'}`);
       return res.status(403).json({
         success: false,
