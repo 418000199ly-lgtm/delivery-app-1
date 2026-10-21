@@ -7,7 +7,7 @@ import {
   Clock
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
-import { db, collection, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
+import { db, collection, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName } from '../utils/nameResolver';
 
 interface SquadDriverListProps {
@@ -361,10 +361,11 @@ export default function SquadDriverList({
           const phone = String(data?.phone || docSnap.id || '').trim();
           const rawName = String(data?.name || data?.driverName || '').trim();
           const resolvedName = resolveDriverRealName(phone, rawName);
-          const isGeneric = isGenericDriverName(resolvedName, phone) || isGenericDriverName(rawName, phone) || /^司机\d+/.test(resolvedName) || /^司机\d+/.test(rawName);
+          // 第四轮修复（P1-10）：不再按通用名整人剔除——正式成员服务端名为通用名时在同伴名单里凭空消失；
+          // 显示格式不变（未入队通用名+手机号、哈勃脱敏照旧），只是不再整人过滤
           if (isMeMember(phone)) {
             if (resolvedName) setMySquadName(resolvedName);
-          } else if (phone && !false && !isGeneric) {
+          } else if (phone) {
             list.push({ id: docSnap.id, phone, name: resolvedName, ...data });
           }
         });
@@ -375,7 +376,7 @@ export default function SquadDriverList({
     const fetchBaotaSquad = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/squad/members`);
+        const res = await fetch(`${baseUrl}/api/squad/members`, { headers: { ...getAuthHeaders() } });
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.list)) {
@@ -388,9 +389,8 @@ export default function SquadDriverList({
               .filter((m: any) => {
                 const phone = String(m?.phone || m?.id || '').trim();
                 const rawName = String(m?.name || m?.driverName || '').trim();
-                const real = resolveDriverRealName(phone, rawName);
-                const isGeneric = isGenericDriverName(real, phone) || isGenericDriverName(rawName, phone) || /^司机\d+/.test(real) || /^司机\d+/.test(rawName);
-                return phone && !isMeMember(phone) && !false && !isGeneric;
+                // 第四轮修复（P1-10）：同上，不再按通用名剔除
+                return phone && !isMeMember(phone);
               })
               .map((m: any) => {
                 const phone = String(m?.phone || m?.id || '').trim();
@@ -440,7 +440,7 @@ export default function SquadDriverList({
     const fetchBaotaLocations = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/driver/locations`);
+        const res = await fetch(`${baseUrl}/api/driver/locations`, { headers: { ...getAuthHeaders() } });
         if (res.ok) {
           const data = await res.json();
           if (data && data.locations) {
@@ -496,7 +496,6 @@ export default function SquadDriverList({
           return;
         }
 
-        if (!isMe && (isGenericDriverName(d.rawRealName || d.name, cleanP))) return;
         const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
         const displayName = isMe
           ? currentDriverFullName
@@ -671,7 +670,7 @@ export default function SquadDriverList({
 
     candidateMap.forEach((driver) => {
       if (isMeMember(driver.phone)) return;
-      if (isGenericDriverName(driver.name, driver.phone) || isGenericDriverName(driver.rawRealName, driver.phone)) return;
+      // 第四轮修复（P1-10）：不再按通用名剔除候选司机（显示格式不变）
       
       // 状态判断：只有在线司机显示；如果下线，必须在哈勃开启了showOffline才显示
       if (!driver.isOnline && !showOfflineDrivers) return;

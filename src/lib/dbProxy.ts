@@ -391,7 +391,8 @@ export async function deleteDoc(docRef: any) {
     }
     return true;
   } catch (err) {
-    // M8修复：401/403清token并抛出，网络错误返回true保持乐观
+    // M8修复：401/403清token并抛出
+    // 第四轮修复（P1-1）：网络错误返回false（与setDoc一致的诚实契约），让调用方能检测服务端删除失败，避免"假成功"
     if (isAuthError(err)) {
       clearAuthTokenOn401();
       throw err;
@@ -399,7 +400,8 @@ export async function deleteDoc(docRef: any) {
     if (isForbiddenError(err)) {
       throw err;
     }
-    return true;
+    console.warn('[dbProxy.deleteDoc] 网络错误，服务端删除失败（本地缓存已移除）:', (err as any)?.message || err);
+    return false;
   }
 }
 
@@ -698,7 +700,8 @@ export async function clearCollection(colName: string) {
     if (isForbiddenError(err)) {
       throw err;
     }
-    console.warn("Proxy DB Clear Collection fell back to local storage:", err);
-    return true;
+    // 第四轮修复（P1-1）：网络错误返回false（与setDoc一致的诚实契约），调用方据此如实提示，不再假报清空成功
+    console.warn('[dbProxy.clearCollection] 网络错误，服务端清空失败（本地缓存已清理）:', (err as any)?.message || err);
+    return false;
   }
 }

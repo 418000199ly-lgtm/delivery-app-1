@@ -140,18 +140,26 @@ export default function HubbleManagerModal({
     };
 
     try {
+      // 第四轮修复（P2）：setDoc 返回值与 /api/hubble/authorize 的 res.ok 都要查，
+      // 任一失败都不更新本地名单、不弹成功，避免本地与服务端名单分叉
       if (db) {
-        await setDoc(doc(db, 'hubble_authorized_drivers', cleanPhone), newEntry);
+        const setOk = await setDoc(doc(db, 'hubble_authorized_drivers', cleanPhone), newEntry);
+        if (!setOk) {
+          showToast('开通失败：服务端写入未成功，请检查网络后重试');
+          return;
+        }
       }
       // Also post to Baota REST API if online
-      try {
-        const baseUrl = getBaseApiUrl();
-        await fetch(`${baseUrl}/api/hubble/authorize`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify(newEntry)
-        });
-      } catch (_) {}
+      const baseUrl = getBaseApiUrl();
+      const authRes = await fetch(`${baseUrl}/api/hubble/authorize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(newEntry)
+      });
+      if (!authRes.ok) {
+        showToast('开通失败：服务端授权接口返回异常，请重试');
+        return;
+      }
 
       const updated = [newEntry, ...authorizedList.filter((d) => d.phone !== cleanPhone)];
       setAuthorizedList(updated);
@@ -179,25 +187,30 @@ export default function HubbleManagerModal({
     setPendingDeleteDriver(null);
 
     try {
-      // 1. Instantly update local state & cache for instant UI feedback
+      // 第四轮修复（P2）：先做服务端删除并校验结果，全部成功后才更新本地名单；
+      // 失败时本地名单保持原样（等同回滚），不再无条件先删本地再弹成功
+      if (db) {
+        const delOk = await deleteDoc(doc(db, 'hubble_authorized_drivers', phone));
+        if (!delOk) {
+          showToast('取消失败：服务端删除未成功，请检查网络后重试');
+          return;
+        }
+      }
+
+      const baseUrl = getBaseApiUrl();
+      const revokeRes = await fetch(`${baseUrl}/api/hubble/revoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone })
+      });
+      if (!revokeRes.ok) {
+        showToast('取消失败：服务端撤销接口返回异常，请重试');
+        return;
+      }
+
       const filtered = authorizedList.filter((d) => d.phone !== phone);
       setAuthorizedList(filtered);
       safeSetItem('hubble_authorized_list_cache', JSON.stringify(filtered));
-
-      // 2. Delete from Cloud Firestore
-      if (db) {
-        await deleteDoc(doc(db, 'hubble_authorized_drivers', phone));
-      }
-
-      // 3. Revoke on Baota server if available
-      try {
-        const baseUrl = getBaseApiUrl();
-        await fetch(`${baseUrl}/api/hubble/revoke`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ phone })
-        });
-      } catch (_) {}
 
       showToast(`已成功取消 ${name} 的哈勃权限`);
     } catch (err) {

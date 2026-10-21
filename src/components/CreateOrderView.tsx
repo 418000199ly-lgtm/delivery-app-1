@@ -3,6 +3,7 @@ import { QrCode, Clock, RotateCw, CheckCircle2, Plus, Minus, Phone } from 'lucid
 import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats, DEFAULT_SLOTS } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
 import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
+import { subscribeSquadMembership } from '../lib/squadMembership';
 import { speakText } from '../utils/speech';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 import PassengerOrderView from './PassengerOrderView';
@@ -348,21 +349,33 @@ export default function CreateOrderView({
       };
 
       if (candidateIds.length > 0) {
-        // 2026-10-20修复：加鉴权头（服务端已要求鉴权）
+        // 2026-10-20 重构：true-cancel 改为等服务端裁决。旧逻辑发后即忘（.catch 吞错不等结果），
+        // 本地立即清行程关页面；服务端已有归属校验，拒绝时本地与服务端静默分叉。
+        // 现在任一候选 id 被服务端确认取消才继续本地收尾，全部失败则提示并保留行程。
+        let serverCancelled = false;
         try {
           const baseUrl = getBaseApiUrl();
           for (const targetId of candidateIds) {
-            fetch(`${baseUrl}/api/order/true-cancel`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-              body: JSON.stringify({
-                orderId: targetId,
-                driverPhone: userPhone,
-                reason: '司机已取消订单'
-              })
-            }).catch(() => {});
+            try {
+              const resp = await fetch(`${baseUrl}/api/order/true-cancel`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({
+                  orderId: targetId,
+                  driverPhone: userPhone,
+                  reason: '司机已取消订单'
+                })
+              });
+              const data = await resp.json().catch(() => ({}));
+              if (resp.ok && data.success) { serverCancelled = true; break; }
+            } catch (_) {}
           }
         } catch (_) {}
+        if (!serverCancelled) {
+          alert('取消失败：服务端未确认取消，请检查网络后重试');
+          setShowCancelConfirmModal(false);
+          return;
+        }
 
         try {
           const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
@@ -405,30 +418,10 @@ export default function CreateOrderView({
         } catch (_) {}
       }
 
-      // Clean up passenger_links and active_orders for this driver
+      // 司机忙碌状态复位（走统一上报通道）；passenger_links/active_orders 由服务端在取消时处理，
+      // 客户端不再直删（旧逻辑还附带两发无鉴权头的 db/delete，既会被新护栏拦截也可能误删进行中订单的链接）
       const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
       if (cleanUserPhone) {
-        try {
-          if (db) {
-            deleteDoc(doc(db, 'passenger_links', cleanUserPhone)).catch(() => {});
-            deleteDoc(doc(db, 'active_orders', cleanUserPhone)).catch(() => {});
-          }
-        } catch (_) {}
-        try {
-          const baseUrl = typeof window !== 'undefined' ? (window.location.origin.includes('localhost') ? 'http://localhost:3000' : window.location.origin) : '';
-          fetch(`${baseUrl}/api/db/delete`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'passenger_links', docId: cleanUserPhone })
-          }).catch(() => {});
-          fetch(`${baseUrl}/api/db/delete`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: 'active_orders', docId: cleanUserPhone })
-          }).catch(() => {});
-        } catch (_) {}
-
-        // Crucial: Instantly reset driver's busy status back to online & idle!
         reportDriverBusyStatus(cleanUserPhone, false, { currentView: 'home', isBusy: false });
       }
 
@@ -447,46 +440,13 @@ export default function CreateOrderView({
     onNavigateBack();
   };
 
-  // Dedicated back button handler for Arrived at Origin page: returns home and ensures order does NOT re-appear in hall
+  // 返回按钮只做导航，不再写订单状态。旧逻辑在返回时直写 merchant_orders 为
+  // dispatched/已接单并镜像本地缓存：订单若在此期间已被取消或改派，会被这次写"复活"成本人已接单。
+  // 订单状态只由服务端接口变更。
   const handleBackButtonClick = async () => {
     if (isMerchantValetOrder) {
       setShowCancelConfirmModal(true);
       return;
-    }
-    if (activeOnlineOrder) {
-      const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
-      if (orderId) {
-        try {
-          if (db) {
-            await setDoc(doc(db, 'merchant_orders', orderId), {
-              in_hall: false,
-              status: 'dispatched',
-              statusCategory: '已接单',
-              dispatchedDriverPhone: userPhone || activeOnlineOrder.dispatchedDriverPhone || ''
-            }, { merge: true });
-          }
-        } catch (e) {
-          console.error("Error updating merchant order state on back:", e);
-        }
-
-        try {
-          const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-          const updated = saved.map((o: any) => {
-            if (o.id === orderId || o.orderId === orderId) {
-              return {
-                ...o,
-                in_hall: false,
-                status: 'dispatched',
-                statusCategory: '已接单',
-                dispatchedDriverPhone: userPhone || o.dispatchedDriverPhone || ''
-              };
-            }
-            return o;
-          });
-          localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
-          window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
-        } catch (_) {}
-      }
     }
     onNavigateBack();
   };
@@ -582,73 +542,17 @@ export default function CreateOrderView({
     }, 3000);
   };
 
-  const [isTeamDriver, setIsTeamDriver] = useState<boolean>(() => {
-    if (!userPhone) return false;
-    if (userPhone === '15509601222') return true;
-    try {
-      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (savedRemoved) {
-        const removed = JSON.parse(savedRemoved);
-        if (Array.isArray(removed) && removed.includes(userPhone)) {
-          return false;
-        }
-      }
-    } catch (_) {}
+  const [isTeamDriver, setIsTeamDriver] = useState<boolean>(false);
 
-    try {
-      const saved = localStorage.getItem('dd_squad_members_v2');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const match = parsed.find((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
-          if (match) return isApprovedSquadMember(match);
-        }
-      }
-    } catch (e) {
-      console.error("Error checking local squad members:", e);
-    }
-    return false;
-  });
-
+  // 2026-10-20 重建：是否小队成员只认服务端统一状态模块（成员表/申请表/移除名单），
+  // 不读任何本地缓存；开发者恒为成员，被移出者恒为非成员，状态随服务端订阅回读。
   useEffect(() => {
     if (!userPhone) {
       setIsTeamDriver(false);
       return;
     }
-    if (userPhone === '15509601222') {
-      setIsTeamDriver(true);
-      return;
-    }
-
-    const checkLocal = () => {
-      try {
-        const saved = localStorage.getItem('dd_squad_members_v2');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            const match = parsed.find((m: any) => m.phone === userPhone || m.id === userPhone || (m.phone && String(m.phone).trim() === userPhone.trim()));
-            if (match) return isApprovedSquadMember(match);
-          }
-        }
-      } catch (e) {}
-      return false;
-    };
-
-    setIsTeamDriver(checkLocal());
-
-    if (db) {
-      const unsub = onSnapshot(doc(db, 'squad_members', userPhone), (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          setIsTeamDriver(isApprovedSquadMember({ ...data, phone: userPhone }));
-        } else {
-          setIsTeamDriver(checkLocal());
-        }
-      }, () => {
-        setIsTeamDriver(checkLocal());
-      });
-      return () => unsub();
-    }
+    const unsub = subscribeSquadMembership(userPhone, (st) => setIsTeamDriver(st.isMember));
+    return () => { try { unsub(); } catch (_) {} };
   }, [userPhone]);
 
   const [showPermissionPrompt, setShowPermissionPrompt] = useState(() => {
@@ -1648,7 +1552,7 @@ export default function CreateOrderView({
 
   const passengerScanUrl = (() => {
     const currentTs = qrTimestamp || Date.now();
-    const cleanDriverPhone = (userPhone || '18609518888').replace(/\s+/g, '').trim();
+    const cleanDriverPhone = (userPhone || '').replace(/\s+/g, '').trim();
     const isVip = checkVipActive(settings?.vipExpiry);
     const effectiveBrandName = (isVip && settings?.customAppName?.trim() && settings.customAppName.trim() !== 'XX代驾')
       ? settings.customAppName.trim()
@@ -1815,14 +1719,7 @@ export default function CreateOrderView({
           if (db) {
             deleteDoc(doc(db, 'passenger_links', cleanPhone)).catch(() => {});
           }
-          try {
-            const baseUrl = getBaseApiUrl();
-            fetch(`${baseUrl}/api/db/delete`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ collection: 'passenger_links', docId: cleanPhone })
-            }).catch(() => {});
-          } catch (_) {}
+          // 2026-10-21 第三轮：原有一发无 token 的 /api/db/delete 冗余调用已删（恒 401 被吞），上方 deleteDoc 已完成同一删除
         }
         return;
       }
@@ -2274,13 +2171,18 @@ export default function CreateOrderView({
                 if (activeOnlineOrder) {
                   const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
                   if (orderId) {
+                    // 2026-10-21 第二轮修复：到达状态改走服务端 /api/order/progress。
+                    // 旧直写 merchant_orders 的目标是订单号、过不了服务端本人归属校验，状态从未落库
+                    // （司机端本地看得到、服务端与派单台收不到）。失败只记日志不拦行程，本地更新照旧在下方。
                     try {
-                      if (db) {
-                        await setDoc(doc(db, 'merchant_orders', orderId), {
-                          status: 'arrived',
-                          statusCategory: '司机到达',
-                          arrivedAt: Date.now()
-                        }, { merge: true });
+                      const resp = await fetch(`${getBaseApiUrl()}/api/order/progress`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                        body: JSON.stringify({ orderId, stage: 'arrived' })
+                      });
+                      if (!resp.ok) {
+                        const d = await resp.json().catch(() => ({}));
+                        console.error("Error updating merchant order to arrived:", d?.error || resp.status);
                       }
                     } catch (e) {
                       console.error("Error updating merchant order to arrived:", e);
@@ -2311,16 +2213,20 @@ export default function CreateOrderView({
               if (activeOnlineOrder) {
                 const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
                 if (orderId) {
-                  // Run Firestore sync asynchronously without blocking UI transition
-                  if (db) {
-                    setDoc(doc(db, 'merchant_orders', orderId), {
-                      status: 'serving',
-                      statusCategory: '服务中',
-                      servingAt: Date.now()
-                    }, { merge: true }).catch(e => {
-                      console.error("Error updating merchant order to serving:", e);
-                    });
-                  }
+                  // 2026-10-21 第二轮修复：服务中状态改走服务端 /api/order/progress（理由同 arrived 处）。
+                  // 保持不阻塞 UI 跳转：异步发出，失败记日志。
+                  fetch(`${getBaseApiUrl()}/api/order/progress`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                    body: JSON.stringify({ orderId, stage: 'serving' })
+                  }).then(async (resp) => {
+                    if (!resp.ok) {
+                      const d = await resp.json().catch(() => ({}));
+                      console.error("Error updating merchant order to serving:", d?.error || resp.status);
+                    }
+                  }).catch(e => {
+                    console.error("Error updating merchant order to serving:", e);
+                  });
 
                   try {
                     const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
@@ -2690,7 +2596,7 @@ export default function CreateOrderView({
 
              <div className="flex-1 pt-6 overflow-y-auto">
                <PassengerOrderView
-                 driverPhone={userPhone || '18609518888'}
+                 driverPhone={userPhone || ''}
                  onClose={() => {
                    setShowSimulatedScanner(false);
                  }}

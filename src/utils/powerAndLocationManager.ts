@@ -86,10 +86,11 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
     window.dispatchEvent(new CustomEvent('driver_status_changed', { detail: { phone: cleanPhone, isBusy } }));
   } catch (_) {}
 
+  // 2026-10-21 第二轮修复(P1)：payload 不再带 status。忙闲只用 isBusy 表达——
+  // driver_users/squad_members 的 status 是成员资格字段，写 busy/idle 会覆写它（服务端已根治，客户端此处是同型残留）。
   const payload = {
     phone: cleanPhone,
     isBusy,
-    status: isBusy ? 'busy' : 'idle',
     lastStatusUpdateTime: Date.now(),
     ...(extra || {})
   };
@@ -120,22 +121,8 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
     setDoc(doc(db, 'driver_locations', cleanPhone), payload, { merge: true })
       .then(resetGpsFail).catch((e) => logGpsFail('driver_locations', e));
 
-    // 严密防线：已被移出小队的司机绝不向 squad_members 写入，防止已删除成员被意外复活
-    let isRemoved = false;
-    try {
-      const savedR = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
-      if (savedR && JSON.parse(savedR).includes(cleanPhone)) isRemoved = true;
-    } catch (_) {}
-    const isInSquad = cleanPhone === '15509601222' || (!isRemoved && (
-      typeof window !== 'undefined' && (
-        localStorage.getItem(`dd_approved_${cleanPhone}`) === 'true' ||
-        localStorage.getItem(`dd_in_squad_${cleanPhone}`) === 'true'
-      )
-    ));
-
-    if (isInSquad && !isRemoved) {
-      setDoc(doc(db, 'squad_members', cleanPhone), payload, { merge: true }).catch(() => {});
-    }
+    // 2026-10-21 第二轮修复(P1)：不再向 squad_members 写忙闲/状态。成员表 status 只由审批状态机维护，
+    // 忙闲权威在 driver_locations/driver_users 的 isBusy（上方两写已覆盖），成员表 GPS 副本一并停更。
   } catch (_) {}
 
   // 2. 立即上报中国大陆阿里云 REST API
@@ -147,7 +134,6 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
       body: JSON.stringify({
         phone: cleanPhone,
         isBusy,
-        status: isBusy ? 'busy' : 'idle',
         timestamp: Date.now()
       })
     }).catch(() => {});
@@ -340,22 +326,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).then(() => markGpsUploadSuccess()).catch(() => {});
     setDoc(doc(db, 'driver_locations', userPhone), payload, { merge: true }).then(() => markGpsUploadSuccess()).catch(() => {});
 
-    // 严密防线：已被移出小队的司机绝不向 squad_members 写入，防止已删除成员被意外复活
-    let isRemovedLoc = false;
-    try {
-      const savedR = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
-      if (savedR && JSON.parse(savedR).includes(userPhone)) isRemovedLoc = true;
-    } catch (_) {}
-    const isInSquadLoc = userPhone === '15509601222' || (!isRemovedLoc && (
-      typeof window !== 'undefined' && (
-        localStorage.getItem(`dd_approved_${userPhone}`) === 'true' ||
-        localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true'
-      )
-    ));
-
-    if (isInSquadLoc && !isRemovedLoc) {
-      setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(() => {});
-    }
+    // 2026-10-21 第二轮修复(P1)：定位不再合并写 squad_members（理由同状态同步处）。
 
     // 2. 直连宝塔 REST 接口
     try {

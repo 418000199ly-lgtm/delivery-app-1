@@ -1061,11 +1061,15 @@ export default function SettingsView({
                               } catch (_) {}
 
                               const baseUrl = getBaseApiUrl();
-                              fetch(`${baseUrl}/api/upload-wechat-qr`, {
+                              // 2026-10-21 第三轮：此前发完不管、失败也照常庆祝；改为等结果，失败明确提示
+                              const upRes = await fetch(`${baseUrl}/api/upload-wechat-qr`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                                 body: JSON.stringify({ phone: targetPhone, imageBase64: selectedImgUrl })
-                              }).catch(() => {});
+                              }).catch(() => null);
+                              if (!upRes || !upRes.ok) {
+                                alert('⚠️ 微信收款码已保存在本机，但同步到服务器失败（代叫订单可能展示不到新码），请稍后在设置里重新上传');
+                              }
                             }
                           } else {
                             onUpdateSettings({ ...settings, alipayQrCode: selectedImgUrl });

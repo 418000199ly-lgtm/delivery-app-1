@@ -194,7 +194,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     if (!targetOrderId) return;
     const driverPhone = (() => {
       try {
-        const p = localStorage.getItem('dd_driver_phone') || localStorage.getItem('driverPhone') || '';
+        const p = localStorage.getItem('dd_driver_phone') || localStorage.getItem('driverPhone') || localStorage.getItem('dd_user_phone') || '';
         return String(p).replace(/\D/g, '');
       } catch (_) { return ''; }
     })();
@@ -237,7 +237,9 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         queryParams.set('_t', String(Date.now()));
 
         const resp = await fetch(`${baseUrl}/api/dispatch/countdown?${queryParams.toString()}`, {
-          cache: 'no-store'
+          cache: 'no-store',
+          // 2026-10-20：倒计时接口已加鉴权（防未登录凭订单号窥探接单司机手机号），轮询必须带登录头，否则恒 401
+          headers: { ...getAuthHeaders() }
         });
 
         if (resp.ok && isMounted && mySeq === seq) {
@@ -378,49 +380,10 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   
   // Dynamic random price if not specified
   const [approxPrice] = useState<any>(() => {
-    if (isDestinationEmpty) return '40';
     if (order.approxPrice !== undefined) return order.approxPrice;
-    
-    if (onlineBillingRules && onlineBillingRules.slots && onlineBillingRules.slots.length > 0) {
-      try {
-        const tripDist = 6 + Math.random() * 8; // Random estimated distance 6-14km
-        const activeHour = new Date().getHours();
-        let activeSlot = onlineBillingRules.slots[0];
-        
-        for (const slot of onlineBillingRules.slots) {
-          const [startH] = slot.startTime.split(':').map(Number);
-          const [endH] = slot.endTime.split(':').map(Number);
-          
-          if (startH > endH) {
-            if (activeHour >= startH || activeHour <= endH) {
-              activeSlot = slot;
-              break;
-            }
-          } else if (activeHour >= startH && activeHour <= endH) {
-            activeSlot = slot;
-            break;
-          }
-        }
-        
-        const base = activeSlot.startingPrice;
-        const freeKm = activeSlot.includedDistance;
-        const interval = activeSlot.distanceInterval || 1;
-        const increase = activeSlot.priceIncrease ?? activeSlot.unitPricePerKm ?? 5;
-        
-        let distanceCost = 0;
-        if (tripDist > freeKm) {
-          distanceCost = Math.ceil((tripDist - freeKm) / interval) * increase;
-        }
-        
-        return base + distanceCost;
-      } catch (e) {
-        console.warn('Error calculating approxPrice with onlineBillingRules, falling back:', e);
-      }
-    }
-    
-    const prices = [34, 38, 45, 52, 68, 75, 88];
-    const randomIndex = Math.floor(Math.random() * prices.length);
-    return prices[randomIndex];
+    // 2026-10-20 重构：订单没有真实价格时不再随机编造（旧逻辑用 6-14km 随机里程套计费表、
+    // 或从随机价表抽价、或写死 40 元），统一返回未知，页头按既有逻辑显示「自行协商」
+    return '未知';
   });
 
   // Find current active slot starting price from onlineBillingRules locked to the order timestamp
@@ -748,7 +711,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         try {
           const vResp = await fetch(
             `${getBaseApiUrl()}/api/dispatch/countdown?orderId=${encodeURIComponent(rawOrderId)}&driverPhone=${encodeURIComponent(cleanUserPhone)}&_t=${Date.now()}`,
-            { cache: 'no-store' }
+            { cache: 'no-store', headers: { ...getAuthHeaders() } }
           );
           verified = await vResp.json().catch(() => null);
         } catch (_) { /* 核实失败则走重试路径 */ }
@@ -851,7 +814,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
             </span>
           </div>
           <button 
-            onClick={onDecline}
+            onClick={() => safeDecline('user')}
             disabled={isAccepting}
             className="font-bold text-white text-xs sm:text-sm hover:opacity-85 active:scale-95 bg-black/20 hover:bg-black/30 border border-white/20 px-3.5 py-1 rounded-full transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >

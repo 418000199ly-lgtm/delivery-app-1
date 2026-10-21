@@ -13,7 +13,7 @@ import {
   Navigation
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
-import { db, collection, doc, onSnapshot, getBaseApiUrl } from '../lib/dbProxy';
+import { db, collection, doc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
 import { scheduleResumeTask } from '../utils/resumeCoordinator';
 import SquadDriverList from './SquadDriverList';
@@ -437,7 +437,7 @@ export default function NearbyMapView({
     const fetchBaotaSquad = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/squad/members`);
+        const res = await fetch(`${baseUrl}/api/squad/members`, { headers: { ...getAuthHeaders() } });
         if (res.ok) {
           const data = await res.json();
           if (data && Array.isArray(data.list)) {
@@ -451,9 +451,10 @@ export default function NearbyMapView({
               return phone && !isMeMember(phone, name);
             });
             setSquadList(filtered);
-            try {
-              localStorage.setItem('dd_squad_members_v2', JSON.stringify(data.list));
-            } catch (_) {}
+            // 2026-10-20根治：不再把 /api/squad/members 整表写回 dd_squad_members_v2 共享缓存。
+            // 该接口会把无 status 的档案壳盖成"已通过"，整表写入后，报单页等读缓存的组件
+            // 会把待审核司机误判为小队成员（报单转单按钮一会显示一会消失的根因）。
+            // 成员缓存由 HomeView 同步统一维护，本页只用自己的 squadList 展示。
           }
         }
       } catch (_) {}
@@ -486,7 +487,7 @@ export default function NearbyMapView({
       if (document.hidden) return; // Background render throttling (Save battery)
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/driver/locations`);
+        const res = await fetch(`${baseUrl}/api/driver/locations`, { headers: { ...getAuthHeaders() } });
         if (res.ok) {
           const data = await res.json();
           if (data && data.locations) {
@@ -714,7 +715,7 @@ export default function NearbyMapView({
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
-      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || isGenericDriverName(name, phone)) return;
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
       const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
       const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
       const rawOnline = member.isOnline === undefined ? true : Boolean(member.isOnline === true || member.isOnline === 'true');
@@ -743,7 +744,7 @@ export default function NearbyMapView({
       if (!liveLoc) return;
       const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
       const name = String(liveLoc.driverName || liveLoc.name || '').trim();
-      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone) || isGenericDriverName(name, phone)) return;
+      if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
 
       const existing = candidateDriversMap.get(phone);
       // P0-7修复(2026-10-14)：无真实GPS时用已有的真实坐标，没有则跳过，绝不用假坐标（铁律）
@@ -786,7 +787,7 @@ export default function NearbyMapView({
 
     // 严格按地图渲染规则过滤：只有具备真实GPS且状态符合哈勃设置的司机才加入地图显示
     candidateDriversMap.forEach((driver) => {
-      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone) || isGenericDriverName(driver.name, driver.phone)) return;
+      if (isMeMember(driver.phone, driver.name) || removedPhones.includes(driver.phone)) return;
       // 必须有真实有效GPS坐标
       if (!driver.lat || !driver.lng || isNaN(driver.lat) || isNaN(driver.lng) || driver.lat === 0 || driver.lng === 0) return;
 

@@ -173,8 +173,10 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
             signal: controller.signal
           });
           clearTimeout(timeoutId);
-          if (res.ok || res.status === 400 || res.status === 403 || res.status === 500) {
-            return await res.json();
+          if (res.ok || res.status === 400 || res.status === 403 || res.status === 429 || res.status === 500) {
+            // 第四轮修复（P1-16）：429也要读回响应体，并把状态码带给调用方原样展示锁定/受限提示
+            const j = await res.json();
+            return { ...j, _status: res.status };
           }
         } catch (err) {
           lastError = err;
@@ -197,6 +199,9 @@ export default function LoginView({ onLoginSuccess }: LoginViewProps) {
         await registerDeviceSession(phoneTrimmed);
         onLoginSuccess(phoneTrimmed);
         return;
+      } else if ((data as any)._status === 429) {
+        // 第四轮修复（P1-16）：服务端锁定（错误5次锁30分钟）/24小时受限均为429，原样展示服务端提示，不再误报"网络连接超时"
+        setErrorMsg(data.error || '❌ 操作过于频繁，请稍后再试');
       } else {
         const rawError = data.error || '验证码校验未通过';
         if (rawError.includes('isv.ValidateFail') || rawError.includes('400') || rawError.includes('验证失败')) {

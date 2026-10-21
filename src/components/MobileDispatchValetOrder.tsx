@@ -431,7 +431,7 @@ export default function MobileDispatchValetOrder({
       const timeToken = Date.now();
       
       // Query dedicated /api/get-wechat-qr first
-      fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(activePhone)}&channel=web&_t=${timeToken}`, { cache: 'no-store' })
+      fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(activePhone)}&channel=web&_t=${timeToken}`, { cache: 'no-store', headers: { ...getAuthHeaders() } })
         .then(res => res.ok ? res.json() : null)
         .then(json => {
           if (isMounted && json && json.success && json.url && typeof json.url === 'string' && json.url.trim()) {
@@ -757,21 +757,24 @@ export default function MobileDispatchValetOrder({
     setSelectedOrderDetail(null);
 
     // 2. Call server clear-all API to purge MySQL, JSON DB, and Aliyun server orders
+    // 第四轮修复（P1-13）：clear-all/clearCollection/逐条删除的结果都要查，有失败如实提示，不许假报"已彻底清空"
+    let clearFailed = false;
     const baseUrl = getBaseApiUrl();
     try {
-      await fetch(`${baseUrl}/api/orders/clear-all`, {
+      const clearAllRes = await fetch(`${baseUrl}/api/orders/clear-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }
       });
-    } catch (_) {}
+      if (!clearAllRes.ok) clearFailed = true;
+    } catch (_) { clearFailed = true; }
 
     // 3. Clear backend collections
     try {
-      await clearCollection('merchant_orders');
-      await clearCollection('valet_orders');
-      await clearCollection('orders');
-      await clearCollection('passenger_links');
-      await clearCollection('active_orders');
+      if (!(await clearCollection('merchant_orders'))) clearFailed = true;
+      if (!(await clearCollection('valet_orders'))) clearFailed = true;
+      if (!(await clearCollection('orders'))) clearFailed = true;
+      if (!(await clearCollection('passenger_links'))) clearFailed = true;
+      if (!(await clearCollection('active_orders'))) clearFailed = true;
 
       const allDocIds = new Set<string>();
       allDispatchedOrders.forEach((item: any) => {
@@ -794,17 +797,20 @@ export default function MobileDispatchValetOrder({
         }
       }
 
-      const deletePromises: Promise<void>[] = [];
+      const deletePromises: Promise<boolean>[] = [];
       allDocIds.forEach((docId) => {
         deletePromises.push((async () => {
           try {
-            await deleteDoc(doc(db, 'merchant_orders', docId));
-            await deleteDoc(doc(db, 'valet_orders', docId));
-          } catch (_) {}
+            const okA = await deleteDoc(doc(db, 'merchant_orders', docId));
+            const okB = await deleteDoc(doc(db, 'valet_orders', docId));
+            return okA && okB;
+          } catch (_) { return false; }
         })());
       });
-      await Promise.all(deletePromises);
+      const deleteResults = await Promise.all(deletePromises);
+      if (deleteResults.some(r => !r)) clearFailed = true;
     } catch (err) {
+      clearFailed = true;
       console.warn('Error clearing merchant_orders collection:', err);
     }
 
@@ -838,7 +844,11 @@ export default function MobileDispatchValetOrder({
     window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
     window.dispatchEvent(new CustomEvent('valet_orders_updated'));
     window.dispatchEvent(new CustomEvent('orders_cleared'));
-    onShowToast('🧹 本地和阿里云服务器所有订单记录已彻底清空！');
+    if (clearFailed) {
+      onShowToast('⚠️ 清空未完全成功：部分服务端订单删除失败（本地已清空），请检查网络后重试');
+    } else {
+      onShowToast('🧹 本地和阿里云服务器所有订单记录已彻底清空！');
+    }
   };
 
   // Copy applicant phone helper
@@ -1109,95 +1119,52 @@ export default function MobileDispatchValetOrder({
 
   const pendingApplicantCount = applicants.filter(a => a.status === '待审核').length;
 
-  const handleApproveApplicant = (id: string, name: string) => {
+  const handleApproveApplicant = async (id: string, name: string) => {
     if (!canReviewApplicants) {
       onShowToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核');
       return;
     }
 
     const applicantObj = applicants.find(a => a.id === id);
-    const targetPhone = String(applicantObj?.phone || applicantObj?.id || id || '').trim();
+    const targetPhone = String(applicantObj?.phone || applicantObj?.id || id || '').replace(/\D/g, '').trim();
     const currentAdminName = (adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机') ? adminProfile.name : '吴彦祖';
     const currentAdminRole = adminProfile.role || userRole || '开发者司机';
+    if (!targetPhone) {
+      onShowToast('❌ 申请人手机号缺失，无法审批');
+      return;
+    }
 
-    // 0. Remove from removedMemberPhones so approved driver is active immediately
-    const cleanTargetPhone = String(targetPhone || '').replace(/\D/g, '').trim();
-    const targetNameStr = String(name || applicantObj?.name || applicantObj?.applicantName || '').trim();
-    const targetIdStr = String(id || applicantObj?.id || '').trim();
-
-    setRemovedMemberPhones(prev => {
-      const updated = prev.filter(p => {
-        const pStr = String(p).trim();
-        if (!pStr) return false;
-        if (cleanTargetPhone && (pStr === cleanTargetPhone || pStr.replace(/\D/g, '') === cleanTargetPhone)) return false;
-        if (targetPhone && pStr === targetPhone) return false;
-        if (targetIdStr && pStr === targetIdStr) return false;
-        if (targetNameStr && pStr === targetNameStr) return false;
-        return true;
-      });
-      try {
-        localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
-      } catch (_) {}
-      if (db) {
-        setDoc(doc(db, 'config', 'removed_squad_members'), { phones: updated }, { merge: true }).catch(() => {});
-      }
+    // 2026-10-20 重建：只调服务端 approve 专用接口。写成员表、删申请、removed 名单划名、
+    // VIP/接单授权保留全部由服务端完成；失败必须报错，不再本地散弹写库、不再假报成功。
+    try {
       const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/set`, {
+      const resp = await fetch(`${baseUrl}/api/squad-member/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({ collection: 'config', docId: 'removed_squad_members', data: { phones: updated } })
-      }).catch(() => {});
-      return updated;
-    });
-
-    // 1. Update applicants status
-    setApplicants(prev => prev.map(a => (a.id === id || a.phone === targetPhone) ? { 
-      ...a, 
-      status: '已通过',
-      approvedBy: currentAdminName,
-      approvedRole: currentAdminRole,
-      approvalTime: new Date().toLocaleString()
-    } : a));
-
-    // 2. Instantly update squadMembers state ("秒自动更新到团队管理页面的全部成员列表里")
-    setSquadMembers(prev => {
-      const exists = prev.some(m => m.phone === targetPhone || m.id === id);
-      if (exists) {
-        return prev.map(m => (m.phone === targetPhone || m.id === id) ? {
-          ...m,
-          name,
-          role: '普通司机',
-          userRole: '普通司机',
-          status: '已通过',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          note: applicantObj?.note || '',
-          updatedAt: Date.now()
-        } : m);
-      }
-      return [
-        ...prev,
-        {
-          id: id || targetPhone,
+        body: JSON.stringify({
           phone: targetPhone,
-          name,
-          role: '普通司机',
-          userRole: '普通司机',
-          status: '已通过',
+          name: name,
           approvedBy: currentAdminName,
           approvedRole: currentAdminRole,
           note: applicantObj?.note || '',
-          city: userTeamCity || currentCity || '银川市',
-          createdAt: Date.now()
-        }
-      ];
-    });
+          city: userTeamCity || currentCity || '银川市'
+        })
+      });
+      const rj = await resp.json().catch(() => null);
+      if (!resp.ok || !rj?.success) {
+        throw new Error(rj?.error || `HTTP ${resp.status}`);
+      }
+    } catch (e: any) {
+      onShowToast(`❌ 审批失败：${e?.message || '网络错误'}，请重试`);
+      return;
+    }
 
-    // Sync to local storage immediately
-    try {
-      const savedMembers = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-      const mIdx = savedMembers.findIndex((m: any) => String(m.phone || m.id).trim() === targetPhone);
-      const newMemberItem = {
+    // 服务端已落库：本地仅做即时显示刷新（名单本身也会随服务端订阅回读）
+    setRemovedMemberPhones(prev => prev.filter(p => String(p).replace(/\D/g, '').trim() !== targetPhone));
+    setApplicants(prev => prev.filter(a => a.id !== id && String(a.phone || a.id || '').replace(/\D/g, '').trim() !== targetPhone));
+    setSquadMembers(prev => {
+      const exists = prev.some(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() === targetPhone);
+      const displayDoc: any = {
         id: targetPhone,
         phone: targetPhone,
         name,
@@ -1208,260 +1175,95 @@ export default function MobileDispatchValetOrder({
         approvedRole: currentAdminRole,
         note: applicantObj?.note || '',
         city: userTeamCity || currentCity || '银川市',
-        createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      if (mIdx >= 0) savedMembers[mIdx] = { ...savedMembers[mIdx], ...newMemberItem };
-      else savedMembers.push(newMemberItem);
-      localStorage.setItem('dd_squad_members_v2', JSON.stringify(savedMembers));
-
-      const savedApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-      const aIdx = savedApps.findIndex((a: any) => String(a.phone || a.id).trim() === targetPhone);
-      if (aIdx >= 0) {
-        savedApps[aIdx] = {
-          ...savedApps[aIdx],
-          status: '已通过',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          approvalTime: new Date().toLocaleString()
-        };
+      if (exists) {
+        return prev.map(m => String(m.phone || m.id || '').replace(/\D/g, '').trim() === targetPhone ? { ...m, ...displayDoc } : m);
       }
-      localStorage.setItem('dd_applicants_v2', JSON.stringify(savedApps));
-
-      localStorage.setItem(`dd_squad_member_${targetPhone}`, JSON.stringify(newMemberItem));
-      localStorage.setItem(`dd_approved_${targetPhone}`, 'true');
-    } catch (_) {}
+      return [...prev, displayDoc];
+    });
 
     window.dispatchEvent(new CustomEvent('squad_member_approved', { detail: { phone: targetPhone, name } }));
-    window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { approvedPhone: targetPhone, name } }));
 
-    // 3. Save to Firestore & HTTP API Backend
-    if (targetPhone) {
-      if (db) {
-        setDoc(doc(db, 'squad_applications', targetPhone), {
-          status: '已通过',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          approvalTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
-
-        // 2026-10-20修复：审批前先从黑名单移除，否则 squad_members 写入会被服务端拦截丢弃
-        try {
-          getDoc(doc(db, 'config', 'removed_squad_members')).then((rmSnap: any) => {
-            if (rmSnap.exists()) {
-              const rmData = rmSnap.data();
-              const phones = Array.isArray(rmData?.phones) ? rmData.phones : [];
-              const cleanTarget = String(targetPhone).replace(/\D/g, '').trim();
-              const filtered = phones.filter((p: any) => String(p).replace(/\D/g, '').trim() !== cleanTarget);
-              if (filtered.length !== phones.length) {
-                setDoc(doc(db, 'config', 'removed_squad_members'), { phones: filtered }, { merge: true }).catch(() => {});
-              }
-            }
-          }).catch(() => {});
-        } catch (_) {}
-
-        setDoc(doc(db, 'squad_members', targetPhone), {
-          name,
-          phone: targetPhone,
-          role: '普通司机',
-          status: '已通过',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          note: applicantObj?.note || '',
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
-
-        setDoc(doc(db, 'driver_users', targetPhone), {
-          driverName: name,
-          userRole: '普通司机',
-          role: '普通司机',
-          status: '已通过',
-          lastUpdatedTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
+    // 通过审批后，把该司机保存在本机的微信收款码同步到服务器（收款码功能，与成员状态无关）
+    try {
+      let appQr = '';
+      const userSettingsStr = localStorage.getItem(`dd_settings_${targetPhone}`);
+      if (userSettingsStr) {
+        const parsed = JSON.parse(userSettingsStr);
+        appQr = (parsed?.wechatQrCode || '').trim();
       }
-
-      const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          collection: 'squad_applications',
-          docId: targetPhone,
-          data: {
-            status: '已通过',
-            approvedBy: currentAdminName,
-            approvedRole: currentAdminRole,
-            approvalTime: new Date().toLocaleString()
-          }
-        })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          collection: 'squad_members',
-          docId: targetPhone,
-          data: {
-            name,
-            phone: targetPhone,
-            role: '普通司机',
-            status: '已通过',
-            approvedBy: currentAdminName,
-            approvedRole: currentAdminRole,
-            note: applicantObj?.note || '',
-            lastUpdatedTime: new Date().toLocaleString()
-          }
-        })
-      }).catch(() => {});
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          collection: 'driver_users',
-          docId: targetPhone,
-          data: {
-            driverName: name,
-            name,
-            phone: targetPhone,
-            phoneNumber: targetPhone,
-            userRole: '普通司机',
-            role: '普通司机',
-            status: '已通过',
-            city: userTeamCity || currentCity || '银川市',
-            vipExpiry: applicantObj?.vipExpiry || '待开通',
-            lastUpdatedTime: new Date().toLocaleString()
-          }
-        })
-      }).catch(() => {});
-
-      // 只要通过审批加入小队后保存在软件 app 里的二维码立即自动上传中国大陆阿里云服务器宝塔面板
-      try {
-        let appQr = '';
-        const userSettingsStr = localStorage.getItem(`dd_settings_${targetPhone}`);
-        if (userSettingsStr) {
-          const parsed = JSON.parse(userSettingsStr);
-          appQr = (parsed?.wechatQrCode || '').trim();
-          // P0-6修复(2026-10-14)：只取微信码，支付宝码绝不上传/不展示为微信码（铁律）
+      if (!appQr) {
+        appQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) ||
+                 localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`) || '').trim();
+      }
+      if (appQr) {
+        const baseUrl = getBaseApiUrl();
+        const qrPayload = { id: targetPhone, phone: targetPhone, qrCode: appQr, wechatQrCode: appQr, updatedAt: Date.now() };
+        for (const colName of ['dispatch_qrs', 'dispatch_qrcodes']) {
+          fetch(`${baseUrl}/api/db/set`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ collection: colName, docId: targetPhone, data: qrPayload })
+          }).catch(() => {});
         }
-        if (!appQr) {
-          appQr = (localStorage.getItem(`dd_dispatch_wechat_qr_${targetPhone}`) ||
-                   localStorage.getItem(`dd_dispatch_fee_qr_${targetPhone}`) ||
-                   localStorage.getItem('dd_user_wechat_qr') ||
-                   localStorage.getItem('dd_dispatch_wechat_qr') || '').trim();
+        if (db) {
+          setDoc(doc(db, 'dispatch_qrs', targetPhone), qrPayload, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'driver_users', targetPhone), { wechatQrCode: appQr, qrCode: appQr }, { merge: true }).catch(() => {});
         }
-
-        if (appQr) {
-          const qrPayload = {
-            id: targetPhone,
-            phone: targetPhone,
-            qrCode: appQr,
-            wechatQrCode: appQr,
-            updatedAt: Date.now()
-          };
-          for (const colName of ['dispatch_qrs', 'dispatch_qrcodes', 'driver_users']) {
-            fetch(`${baseUrl}/api/db/set`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-              body: JSON.stringify({ collection: colName, docId: targetPhone, data: qrPayload })
-            }).catch(() => {});
-          }
-          if (db) {
-            setDoc(doc(db, 'dispatch_qrs', targetPhone), qrPayload, { merge: true }).catch(() => {});
-            setDoc(doc(db, 'driver_users', targetPhone), { wechatQrCode: appQr, qrCode: appQr }, { merge: true }).catch(() => {});
-          }
-        }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
 
     onShowToast(`🎉 【${currentAdminName} (${currentAdminRole})】已成功通过【${name}】的加入申请！`);
   };
 
-  const handleRejectApplicant = (id: string, name: string) => {
+  const handleRejectApplicant = async (id: string, name: string) => {
     if (!canReviewApplicants) {
       onShowToast('⚠️ 您暂无审批权限，仅【开发者司机、城市老板司机、城市管理司机、城市派单员司机】可以审核');
       return;
     }
 
     const applicantObj = applicants.find(a => a.id === id);
-    const targetPhone = applicantObj?.phone || '';
+    const targetPhone = String(applicantObj?.phone || applicantObj?.id || id || '').replace(/\D/g, '').trim();
     const currentAdminName = (adminProfile.name && adminProfile.name !== '代驾司机' && adminProfile.name !== '在线代驾司机') ? adminProfile.name : '吴彦祖';
     const currentAdminRole = adminProfile.role || userRole || '开发者司机';
+    if (!targetPhone) {
+      onShowToast('❌ 申请人手机号缺失，无法拒绝');
+      return;
+    }
+    const reason = (Array.isArray(applicantObj?.selectedReasons) && applicantObj.selectedReasons.length > 0)
+      ? applicantObj.selectedReasons.join('、')
+      : '申请信息不符合小队要求，请完善后重新申请。';
 
-    // 1. Update applicants status
-    setApplicants(prev => prev.map(a => a.id === id ? { 
-      ...a, 
-      status: '已拒绝',
-      approvedBy: currentAdminName,
-      approvedRole: currentAdminRole,
-      approvalTime: new Date().toLocaleString()
-    } : a));
-
-    // 2. Instantly update squadMembers state
-    setSquadMembers(prev => {
-      const exists = prev.some(m => m.phone === targetPhone || m.id === id);
-      if (exists) {
-        return prev.map(m => (m.phone === targetPhone || m.id === id) ? {
-          ...m,
-          name,
-          status: '已拒绝',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          rejectionReasons: applicantObj?.selectedReasons || [],
-          updatedAt: Date.now()
-        } : m);
-      }
-      return [
-        ...prev,
-        {
-          id: id || targetPhone,
-          phone: targetPhone,
-          name,
-          role: '普通司机',
-          status: '已拒绝',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          note: applicantObj?.note || '',
-          rejectionReasons: applicantObj?.selectedReasons || [],
-          createdAt: Date.now()
-        }
-      ];
-    });
-
-    // 3. Save to Firestore & HTTP API
-    if (targetPhone) {
-      if (db) {
-        setDoc(doc(db, 'squad_applications', targetPhone), {
-          status: '已拒绝',
-          approvedBy: currentAdminName,
-          approvedRole: currentAdminRole,
-          rejectionReasons: applicantObj?.selectedReasons || [],
-          approvalTime: new Date().toLocaleString()
-        }, { merge: true }).catch(() => {});
-
-        // 2026-10-20修复：拒绝不写 squad_members（被拒绝不是成员），只更新申请表
-      }
-
+    // 2026-10-20 重建：只调服务端 reject 专用接口（申请置已拒绝+原因，记录保留），
+    // 不写成员表（被拒绝不是成员）；失败必须报错，不再假报成功。
+    try {
       const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/set`, {
+      const resp = await fetch(`${baseUrl}/api/squad-member/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          collection: 'squad_applications',
-          docId: targetPhone,
-          data: {
-            status: '已拒绝',
-            approvedBy: currentAdminName,
-            approvedRole: currentAdminRole,
-            rejectionReasons: applicantObj?.selectedReasons || [],
-            approvalTime: new Date().toLocaleString()
-          }
-        })
-      }).catch(() => {});
+        body: JSON.stringify({ phone: targetPhone, reason })
+      });
+      const rj = await resp.json().catch(() => null);
+      if (!resp.ok || !rj?.success) {
+        throw new Error(rj?.error || `HTTP ${resp.status}`);
+      }
+    } catch (e: any) {
+      onShowToast(`❌ 拒绝失败：${e?.message || '网络错误'}，请重试`);
+      return;
     }
+
+    setApplicants(prev => prev.map(a => (a.id === id || String(a.phone || a.id || '').replace(/\D/g, '').trim() === targetPhone) ? {
+      ...a,
+      status: '已拒绝',
+      rejectionReason: reason,
+      rejectedBy: currentAdminName,
+      rejectionTime: new Date().toLocaleString()
+    } : a));
 
     onShowToast(`❌ 【${currentAdminName} (${currentAdminRole})】已拒绝【${name}】的加入申请`);
   };
-  
+
   // Management Team Modal states
   const [memberSearchQuery, setMemberSearchQuery] = useState('');
   const [memberCategoryTab, setMemberCategoryTab] = useState<'小队正式成员' | '管理层' | '司机' | '商户、商家'>('小队正式成员');
@@ -1512,40 +1314,46 @@ export default function MobileDispatchValetOrder({
     try {
       const targetId = activeOrderId || (allDispatchedOrders.length > 0 ? allDispatchedOrders[0].id : null);
       if (targetId) {
-        const cancelPayload = {
-          status: 'cancelled',
-          in_hall: false,
-          statusCategory: '已取消',
-          isCancelled: true,
-          cancelledAt: Date.now(),
-          cancelledBy: 'merchant',
-          cancelledByRole: 'merchant',
-          cancelReason: '商户已手动取消代叫订单'
-        };
+        const assignedDriverPhone = dispatchResult?.driver?.phone ? String(dispatchResult.driver.phone).replace(/\D/g, '').trim() : '';
 
-        // 1. Update Firestore merchant_orders
-        try {
-          await setDoc(doc(db, 'merchant_orders', targetId), cancelPayload, { merge: true });
-        } catch (e) {
-          console.warn('Failed to update merchant_orders cancel status', e);
+        // 2026-10-20 重构：取消必须先经服务端 /api/order/cancel 裁决，成功后才清本地显示。
+        // 旧逻辑纯客户端直写 merchant_orders/passenger_links/active_orders 三处 cancelled、根本不调服务端，
+        // 不管订单是否已被接单/服务中，单方面宣布取消，与司机侧状态分叉。
+        const cancelResp = await fetch(`${getBaseApiUrl()}/api/order/cancel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({
+            orderId: targetId,
+            driverPhone: assignedDriverPhone,
+            reason: '商户已手动取消代叫订单',
+            cancelledBy: 'merchant'
+          })
+        });
+        if (!cancelResp.ok) {
+          const errData = await cancelResp.json().catch(() => ({}));
+          const msg = `取消失败：${errData.error || '服务端拒绝，请刷新后重试'}`;
+          if (onShowToast) onShowToast(msg);
+          else alert(msg);
+          return;
         }
 
-        // 2. Update passenger_links and active_orders if dispatched, and reset driver busy status
-        const assignedDriverPhone = dispatchResult?.driver?.phone ? String(dispatchResult.driver.phone).replace(/\D/g, '').trim() : '';
         if (assignedDriverPhone) {
-          try {
-            await setDoc(doc(db, 'passenger_links', assignedDriverPhone), cancelPayload, { merge: true });
-            await setDoc(doc(db, 'active_orders', assignedDriverPhone), cancelPayload, { merge: true });
-          } catch (e) {}
           reportDriverBusyStatus(assignedDriverPhone, false, { currentView: 'home', isBusy: false });
         }
 
-        // 3. Clear from localStorage
+        // 本地缓存仅作显示同步（服务端已落库取消状态与司机侧通知）
         try {
+          const cancelLocal = {
+            status: 'cancelled',
+            in_hall: false,
+            statusCategory: '已取消',
+            isCancelled: true,
+            cancelledAt: Date.now()
+          };
           const savedLocal = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
           const updated = savedLocal.map((o: any) => {
             if (o.id === targetId || o.orderNo === targetId) {
-              return { ...o, ...cancelPayload };
+              return { ...o, ...cancelLocal };
             }
             return o;
           });
@@ -1565,10 +1373,8 @@ export default function MobileDispatchValetOrder({
       }
     } catch (err) {
       console.error('Cancel order error:', err);
+      if (onShowToast) onShowToast('取消失败：网络异常，请重试');
       setShowCancelConfirmDialog(false);
-      if (onClose) {
-        onClose();
-      }
     }
   };
 
@@ -1649,11 +1455,11 @@ export default function MobileDispatchValetOrder({
       cancelReason: '管理员取消订单'
     };
 
+    // 2026-10-20 重构：先问服务端、成功后才动本地。旧顺序先本地直写 cancelled，服务端调用还是发后即忘、
+    // 响应成败从不检查，服务端拒绝时本地已翻成已取消且无回滚，与司机侧状态分叉。
+    // 服务端取消成功时已同步订单状态与司机侧取消通知，客户端不再重复直写三处。
     try {
-      if (db) {
-        await setDoc(doc(db, 'merchant_orders', targetDocId), adminCancelPayload, { merge: true });
-      }
-      fetch(`${baseUrl}/api/order/cancel`, {
+      const cancelResp = await fetch(`${baseUrl}/api/order/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({
@@ -1663,39 +1469,20 @@ export default function MobileDispatchValetOrder({
           reason: '管理员取消订单',
           cancelledBy: 'admin'
         })
-      }).catch(() => {});
+      });
+      if (!cancelResp.ok) {
+        const errData = await cancelResp.json().catch(() => ({}));
+        alert(errData.error || '取消失败');
+        return;
+      }
     } catch (e) {
-      console.error("Error setting merchant order to cancelled:", e);
+      console.error("Error cancelling order via server:", e);
+      alert('取消失败：网络异常，请重试');
+      return;
     }
 
-    // 2. Notify assigned driver via passenger_links and active_orders so driver App instantly triggers cancellation and resets busy status
-    const cancelPayload = {
-      ...adminCancelPayload,
-      orderId: targetDocId,
-      orderNo: targetOrderNo
-    };
-
     if (cleanDriverPhone) {
-      try {
-        if (db) {
-          await setDoc(doc(db, 'passenger_links', cleanDriverPhone), cancelPayload, { merge: true });
-          await setDoc(doc(db, 'active_orders', cleanDriverPhone), cancelPayload, { merge: true });
-        }
-      } catch (_) {}
-      try {
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'passenger_links', docId: cleanDriverPhone, data: cancelPayload })
-        }).catch(() => {});
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'active_orders', docId: cleanDriverPhone, data: cancelPayload })
-        }).catch(() => {});
-      } catch (_) {}
-
-      // Crucial: Instantly reset assigned driver's busy status so they can immediately receive new orders
+      // 本地即时复位司机忙碌显示（服务端状态已由取消接口处理）
       reportDriverBusyStatus(cleanDriverPhone, false, { currentView: 'home', isBusy: false });
     }
 
@@ -2021,8 +1808,14 @@ export default function MobileDispatchValetOrder({
       return;
     }
 
-    // 1. Update globally across in-memory registry, localStorage, REST API, and dbProxy collections
-    await updateDriverGlobalName(targetPhone, finalName);
+    // 1. 服务端改名 + 本地缓存同步；服务端拒绝时明确报错并中止，不再本地假更新后报成功
+    try {
+      await updateDriverGlobalName(targetPhone, finalName);
+    } catch (e: any) {
+      onShowToast(`❌ 改名失败：${e?.message || '服务端拒绝'}`);
+      setEditingMemberPhone(null);
+      return;
+    }
 
     // Sync adminProfile if editing self
     if (targetPhone === userPhone || (isCurrentDev && targetPhone === '15509601222')) {
@@ -2061,35 +1854,41 @@ export default function MobileDispatchValetOrder({
 
     const targetPhone = String(targetMember.phone || targetMember.id || '').replace(/\D/g, '').trim();
     const targetName = resolveDriverRealName(targetPhone, targetMember.name || targetMember.driverName);
+    if (!targetPhone) {
+      onShowToast('❌ 目标成员手机号无效');
+      return;
+    }
 
-    // Update local React state immediately so UI updates without external database/network dependency
-    setSquadMembers(prev => {
-      const exists = prev.some(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone);
-      let updatedList = [];
-      if (exists) {
-        updatedList = prev.map(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone ? { ...m, name: targetName, driverName: targetName, role: newRole, userRole: newRole, status: '已通过', approvalStatus: '已通过' } : m);
-      } else {
-        updatedList = [...prev, { ...targetMember, phone: targetPhone, name: targetName, driverName: targetName, role: newRole, userRole: newRole, status: '已通过', approvalStatus: '已通过' }];
+    // 2026-10-20 重构：只调专用接口 /api/squad-member/set-role，服务端成功后才更新本地显示。
+    // 旧逻辑先在本地把人强置「已通过」并置 dd_approved_/dd_in_squad_ 标记，再多路并发散写且全部吞错恒报成功——
+    // 新服务端护栏下多数写会被 403 静默吞掉，界面却显示已改：假成功 + 本地伪造已通过（且手机端旧逻辑连 set-role 都没调）。
+    try {
+      const resp = await fetch(`${getBaseApiUrl()}/api/squad-member/set-role`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone: targetPhone, role: newRole })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.success) {
+        onShowToast(`❌ 角色修改失败：${data.error || '服务端拒绝'}`);
+        return;
       }
+    } catch (e) {
+      onShowToast('❌ 角色修改失败：网络异常，请重试');
+      return;
+    }
+
+    // 服务端已落库：只同步本地显示的角色字段，不触碰成员状态
+    setSquadMembers(prev => {
+      const updatedList = prev.map(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone ? { ...m, role: newRole, userRole: newRole } : m);
       try {
         localStorage.setItem('dd_squad_members_v2', JSON.stringify(updatedList));
         const updatedMemberObj = updatedList.find(m => String(m.phone || m.id).replace(/\D/g, '').trim() === targetPhone);
         if (updatedMemberObj) {
           localStorage.setItem(`dd_squad_member_${targetPhone}`, JSON.stringify(updatedMemberObj));
-          localStorage.setItem(`dd_approved_${targetPhone}`, 'true');
-          localStorage.setItem(`dd_in_squad_${targetPhone}`, 'true');
         }
       } catch (_) {}
       return updatedList;
-    });
-
-    // Also sync to applicants list if present
-    setApplicants(prev => {
-      const updated = prev.map(a => (String(a.phone || a.id).replace(/\D/g, '').trim() === targetPhone) ? { ...a, name: targetName, driverName: targetName, role: newRole, userRole: newRole, status: '已通过', approvalStatus: '已通过' } : a);
-      try {
-        localStorage.setItem('dd_applicants_v2', JSON.stringify(updated));
-      } catch (_) {}
-      return updated;
     });
 
     if (userPhone && String(userPhone).replace(/\D/g, '').trim() === targetPhone) {
@@ -2099,75 +1898,8 @@ export default function MobileDispatchValetOrder({
       } catch (_) {}
     }
 
-    try {
-      if (targetPhone) {
-        const fullPayload = {
-          id: targetPhone,
-          phone: targetPhone,
-          name: targetName,
-          driverName: targetName,
-          realName: targetName,
-          role: newRole,
-          userRole: newRole,
-          status: '已通过',
-          approvalStatus: '已通过',
-          lastUpdatedTime: new Date().toLocaleString()
-        };
-
-        if (db) {
-          setDoc(doc(db, 'squad_members', targetPhone), fullPayload, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'driver_users', targetPhone), {
-            ...fullPayload,
-            status: '已加入小队'
-          }, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'squad_applications', targetPhone), fullPayload, { merge: true }).catch(() => {});
-        }
-
-        const baseUrl = getBaseApiUrl();
-
-        fetch(`${baseUrl}/api/admin/update-driver-role`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ phone: targetPhone, role: newRole })
-        }).catch(() => {});
-
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({
-            collection: 'squad_members',
-            docId: targetPhone,
-            data: fullPayload
-          })
-        }).catch(() => {});
-
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({
-            collection: 'driver_users',
-            docId: targetPhone,
-            data: {
-              ...fullPayload,
-              status: '已加入小队'
-            }
-          })
-        }).catch(() => {});
-
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({
-            collection: 'squad_applications',
-            docId: targetPhone,
-            data: fullPayload
-          })
-        }).catch(() => {});
-
-        window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { phone: targetPhone, role: newRole, name: targetName } }));
-        window.dispatchEvent(new CustomEvent('user_role_updated', { detail: { phone: targetPhone, role: newRole } }));
-      }
-    } catch (_) {}
+    window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { phone: targetPhone, role: newRole, name: targetName } }));
+    window.dispatchEvent(new CustomEvent('user_role_updated', { detail: { phone: targetPhone, role: newRole } }));
 
     onShowToast(`🎉 已成功将【${targetName}】的角色修改为：${newRole}`);
   };
@@ -2182,8 +1914,13 @@ export default function MobileDispatchValetOrder({
     const finalName = trimmed.slice(0, 8); // Max 8 Chinese characters
     const targetPhone = userPhone || '15509601222';
 
-    // 1. Update globally
-    await updateDriverGlobalName(targetPhone, finalName);
+    // 1. 服务端改名 + 本地缓存同步；失败弹错并中止（保留编辑态便于重试）
+    try {
+      await updateDriverGlobalName(targetPhone, finalName);
+    } catch (e: any) {
+      onShowToast(`❌ 改名失败：${e?.message || '服务端拒绝'}`);
+      return;
+    }
     setAdminProfile(prev => ({ ...prev, name: finalName }));
 
     // 2. Update local squadMembers and applicants state
@@ -2217,16 +1954,8 @@ export default function MobileDispatchValetOrder({
           const data = docSnap.data();
           const docId = String(docSnap.id || '').trim();
           if (data) {
-            // Identify and purge ghost docs that have no real location, no real phone, or are dummy placeholder docs
-            const hasLocation = Boolean(data.originName || data.startLocation || data.passengerAddress || data.destinationName || data.destination);
-            const isPhoneId = Boolean(docId.match(/^1[3-9]\d{9}$/));
-            const isGhost = (!hasLocation && !data.passengerPhone) || (isPhoneId && !hasLocation);
-            if (isGhost) {
-              try {
-                deleteDoc(doc(db, 'merchant_orders', docId)).catch(() => {});
-              } catch (_) {}
-              return;
-            }
+            // 第四轮修复（P0-3）：删除"启发式删幽灵单"逻辑——字段形态不合的真实订单曾被打开派单台瞬间误删，
+            // 订阅回调只做展示组装，绝不再凭本地猜测删除服务端订单
 
             const isCancelled = data.status === 'cancelled' || data.statusCategory === '已取消' || data.statusCategory === '订单已取消';
             list.push({
@@ -2646,15 +2375,7 @@ export default function MobileDispatchValetOrder({
 
         if (db) {
           setDoc(doc(db, 'driver_users', userPhone), locData, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'squad_members', userPhone), {
-            lat,
-            lng,
-            city: currentCity || '银川市',
-            lastLocationTime: Date.now(),
-            lastUpdatedTime: timeStr,
-            isOnline: true,
-            status: '已通过'
-          }, { merge: true }).catch(() => {});
+          // 2026-10-20 重构：位置上报不再写 squad_members（旧逻辑顺带写 status:'已通过' 自封成员资格）
           setDoc(doc(db, 'driver_locations', userPhone), {
             phone: userPhone,
             lat,
@@ -2671,22 +2392,6 @@ export default function MobileDispatchValetOrder({
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: locData, merge: true })
-        }).catch(() => {});
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({
-            collection: 'squad_members',
-            docId: userPhone,
-            data: {
-              lat,
-              lng,
-              city: currentCity || '银川市',
-              lastLocationTime: Date.now(),
-              lastUpdatedTime: timeStr
-            },
-            merge: true
-          })
         }).catch(() => {});
 
         try {
@@ -2714,91 +2419,8 @@ export default function MobileDispatchValetOrder({
   }, [userPhone, squadMembers, squadPhones, adminProfile, userRole, currentCity, passengerCoords]);
 
   // Requirement 4: 选单大厅里20分钟没有司机接单则自动取消订单
-  useEffect(() => {
-    const parseOrderTime = (ord: any): number => {
-      if (!ord) return 0;
-      let t = 0;
-      if (typeof ord.timestamp === 'number') t = ord.timestamp;
-      else if (ord.timestamp) t = Number(ord.timestamp) || new Date(ord.timestamp).getTime() || 0;
-      else if (typeof ord.createdAt === 'number') t = ord.createdAt;
-      else if (ord.createdAt) t = Number(ord.createdAt) || new Date(ord.createdAt).getTime() || 0;
-      else if (typeof ord.createTime === 'number') t = ord.createTime;
-      else if (ord.createTime) t = Number(ord.createTime) || new Date(ord.createTime).getTime() || 0;
-
-      // Handle seconds timestamp by converting to milliseconds (10 digits)
-      if (t > 0 && t < 10000000000) {
-        t = t * 1000;
-      }
-      return isNaN(t) ? 0 : t;
-    };
-
-    const check20MinHallTimeout = async () => {
-      const now = Date.now();
-      const TIMEOUT_20_MIN = 20 * 60 * 1000; // 20分钟 = 1,200,000毫秒
-
-      setAllDispatchedOrders(prevOrders => {
-        let changed = false;
-        const updatedList = prevOrders.map(ord => {
-          const isHallOrder = ord.status === 'hall' || ord.statusCategory === '呼叫中' || ord.status === 'submitted';
-          const isNotFinal = ord.status !== 'cancelled' && ord.status !== 'completed' && ord.status !== 'claimed';
-          const orderTime = parseOrderTime(ord);
-          const orderAge = orderTime > 0 ? (now - orderTime) : 0;
-
-          // Only cancel if order timestamp is valid (>0) and actually older than 20 minutes
-          if (isHallOrder && isNotFinal && orderTime > 0 && orderAge >= TIMEOUT_20_MIN) {
-            changed = true;
-            const cancelledData = {
-              ...ord,
-              status: 'cancelled',
-              statusCategory: '已取消',
-              cancelReason: '选单大厅20分钟无人接单，系统自动取消',
-              cancelledAt: now
-            };
-
-            if (db && ord.id) {
-              setDoc(doc(db, 'merchant_orders', ord.id), {
-                status: 'cancelled',
-                statusCategory: '已取消',
-                cancelReason: '选单大厅20分钟无人接单，系统自动取消',
-                cancelledAt: now
-              }, { merge: true }).catch(() => {});
-            }
-
-            return cancelledData;
-          }
-          return ord;
-        });
-
-        if (changed) {
-          try {
-            const localSaved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-            const updatedSaved = localSaved.map((item: any) => {
-              const isHallOrder = item.status === 'hall' || item.statusCategory === '呼叫中';
-              const orderTime = parseOrderTime(item);
-              const orderAge = orderTime > 0 ? (now - orderTime) : 0;
-              if (isHallOrder && item.status !== 'cancelled' && orderTime > 0 && orderAge >= TIMEOUT_20_MIN) {
-                return {
-                  ...item,
-                  status: 'cancelled',
-                  statusCategory: '已取消',
-                  cancelReason: '选单大厅20分钟无人接单，系统自动取消'
-                };
-              }
-              return item;
-            });
-            localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updatedSaved));
-            window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
-          } catch (_) {}
-        }
-
-        return updatedList;
-      });
-    };
-
-    check20MinHallTimeout();
-    const timer = setInterval(check20MinHallTimeout, 10000); // 每10秒检查一次
-    return () => clearInterval(timer);
-  }, []);
+  // 2026-10-20 重构：删除客户端「大厅 20 分钟无人接单自动取消」（与网页派单台同口径）：
+  // 超时取消是服务端决策，大厅单由服务端按 hallAt 做 24 小时清理。
 
   // Helper to calculate member ID: developer default 888888, first management member 000001, subsequent squad members 000002, 000003, etc.
   const getSquadMemberId = (phone: string | null) => {
@@ -3257,9 +2879,7 @@ export default function MobileDispatchValetOrder({
         const baseUrl = getBaseApiUrl();
         const uploadRes = await fetch(`${baseUrl}/api/upload-wechat-qr`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({ phone: activePhone, imageBase64: pngDataUrl, channel: 'web' })
         });
 
@@ -3277,51 +2897,9 @@ export default function MobileDispatchValetOrder({
           localStorage.setItem(userKeyWeb, uploadData.url);
           localStorage.setItem(`dd_dispatch_wechat_qr_${activePhone}`, uploadData.url);
 
-          // Save to Baota Node DB for Mainland China server
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({
-              col: 'web_valet_qrs',
-              id: activePhone,
-              data: {
-                qrCode: uploadData.url,
-                wechatQrCode: uploadData.url,
-                channel: 'web',
-                dispatchedByPhone: activePhone,
-                updatedAt: new Date().toISOString()
-              }
-            })
-          }).catch(() => {});
+          // （服务端上传接口已把 URL 写进 web_valet_qrs/dispatch_qrs_web 等集合，客户端不再重复双写）
 
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({
-              col: 'dispatch_qrs_web',
-              id: activePhone,
-              data: {
-                qrCode: uploadData.url,
-                wechatQrCode: uploadData.url,
-                channel: 'web',
-                dispatchedByPhone: activePhone,
-                updatedAt: new Date().toISOString()
-              }
-            })
-          }).catch(() => {});
-
-          if (db) {
-            try {
-              await setDoc(doc(db, 'web_valet_qrs', activePhone), {
-                qrCode: uploadData.url,
-                dispatchedByPhone: activePhone,
-                channel: 'web',
-                updatedAt: new Date().toISOString()
-              }, { merge: true });
-            } catch (_) {}
-          }
-
-          // Sync newly uploaded QR code to all existing merchant orders
+                    // Sync newly uploaded QR code to all existing merchant orders
           try {
             const rawOrders = localStorage.getItem('dd_merchant_orders_v2');
             if (rawOrders) {
@@ -3357,24 +2935,9 @@ export default function MobileDispatchValetOrder({
       localStorage.setItem(userKeyWeb, pngDataUrl);
       localStorage.setItem(`dd_dispatch_wechat_qr_${activePhone}`, pngDataUrl);
 
-      const baseUrl = getBaseApiUrl();
-      fetch(`${baseUrl}/api/db/set`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-        body: JSON.stringify({
-          col: 'web_valet_qrs',
-          id: activePhone,
-          data: {
-            qrCode: pngDataUrl,
-            wechatQrCode: pngDataUrl,
-            channel: 'web',
-            dispatchedByPhone: activePhone,
-            updatedAt: new Date().toISOString()
-          }
-        })
-      }).catch(() => {});
+      // 2026-10-21 第三轮：兜底不再把 base64 原文写进 web_valet_qrs 集合假报保存（见下方提示）
 
-      // Sync fallback QR to local merchant orders
+            // Sync fallback QR to local merchant orders
       try {
         const rawOrders = localStorage.getItem('dd_merchant_orders_v2');
         if (rawOrders) {
@@ -3396,7 +2959,7 @@ export default function MobileDispatchValetOrder({
         window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
       } catch (_) {}
 
-      onShowToast('✓ 代叫费微信收款码已保存（格式PNG）');
+      onShowToast('⚠️ 收款码仅保存在本机，服务器同步失败，请检查网络/登录状态后重新上传');
     } catch (err) {
       console.error('Failed to compress QR image:', err);
       alert('图片处理失败，请重试');
@@ -3919,6 +3482,9 @@ export default function MobileDispatchValetOrder({
         dispatchedDriverPhone: '',
         dispatchedDriverName: ''
       };
+      // 第四轮修复（P0-2）：只有服务端明确返回 success 才算下单成功，失败原因留存以便如实提示
+      let serverConfirmed = false;
+      let serverFailMsg = '';
       const syncRemote = async () => {
         const baseUrl = getBaseApiUrl();
         try {
@@ -3943,6 +3509,7 @@ export default function MobileDispatchValetOrder({
           if (resp.ok) {
             const resData = await resp.json();
             if (resData.success) {
+              serverConfirmed = true;
               if (resData.isHall) {
                 finalAssignedDriver = null;
                 if (chosenPhone && db && !isTargetingCurrentDriver) {
@@ -3983,13 +3550,29 @@ export default function MobileDispatchValetOrder({
                   window.dispatchEvent(new CustomEvent('trigger_incoming_order', { detail: payloadWithServerDriver }));
                 }
               }
+            } else {
+              serverFailMsg = resData.error || '服务端拒绝了本次下单';
             }
+          } else {
+            serverFailMsg = `服务器返回异常（HTTP ${resp.status}），订单未创建`;
           }
-        } catch (_) {
-          // 网络异常：保持默认 hall 状态，不产生幽灵派单
+        } catch (err: any) {
+          // 第四轮修复（P0-2）：网络异常不再静默吞掉假装进大厅，记录失败原因供下方如实提示
+          serverFailMsg = '网络异常，无法连接服务器，订单未创建';
+          console.warn('[Dispatch] /api/dispatch/nearest 请求失败:', err?.message || err);
         }
       };
       await syncRemote();
+
+      // 第四轮修复（P0-2）：服务端未明确确认成功时，绝不写本地订单、绝不弹成功，
+      // 否则商户以为单已发出、乘客干等，实际服务端根本没建单
+      if (!serverConfirmed) {
+        clearTimeout(safetyTimer);
+        setIsDispatching(false);
+        setButtonState('idle');
+        onShowToast(`❌ 下单失败：${serverFailMsg || '服务端未确认成功，请检查网络后重试'}`);
+        return;
+      }
 
       // 3. 一次性持久化最终订单状态（本地列表），与服务端保持一致
       if (!isTransferOrder || chosenDriver) {
@@ -5505,17 +5088,18 @@ export default function MobileDispatchValetOrder({
                                 type="button"
                                 onClick={async () => {
                                   const targetPhone = member.phone;
-                                  setRemovedMemberPhones(prev => {
-                                    const updated = Array.from(new Set([...prev, targetPhone].filter(Boolean)));
-                                    try {
-                                      localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
-                                    } catch (_) {}
-                                    return updated;
-                                  });
+                                  // 第四轮修复（P1-12）：商户号带A后缀，写进 dd_removed_squad_phones_v2 后
+                                  // 读取时会去掉非数字字符，把同号纯数字司机误打入 removed 名单，故绝不能再写；
+                                  // 且 deleteDoc 结果必查，失败如实提示、不弹"已解绑"
                                   if (db && targetPhone) {
+                                    let delOk = false;
                                     try {
-                                      await deleteDoc(doc(db, 'merchant_users', targetPhone));
-                                    } catch (_) {}
+                                      delOk = await deleteDoc(doc(db, 'merchant_users', targetPhone));
+                                    } catch (_) { delOk = false; }
+                                    if (!delOk) {
+                                      onShowToast(`❌ 解绑失败：服务端删除未成功，请检查网络后重试 (${targetPhone})`);
+                                      return;
+                                    }
                                   }
                                   setMerchantUsers(prev => prev.filter(m => m.phone !== targetPhone));
                                   onShowToast(`🗑️ 已解绑并移除商户/商家 (${targetPhone})`);
@@ -5693,6 +5277,24 @@ export default function MobileDispatchValetOrder({
 
                                   const cleanTargetPhone = String(targetPhone || targetId || '').replace(/\D/g, '').trim();
 
+                                  // 2026-10-20 重建：先调服务端 remove 专用接口，成功后才更新本地显示；
+                                  // 删成员/申请/职位、档案置未加入小队、加入 removed 名单全部由服务端完成，
+                                  // 本地不再散弹删表（旧写法会造成双存储分叉，且通用删表已被服务端拦下）。
+                                  try {
+                                    const removeResp = await fetch(`${getBaseApiUrl()}/api/squad-member/remove`, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                                      body: JSON.stringify({ phone: cleanTargetPhone, adminPhone: userPhone || '' })
+                                    });
+                                    const removeJson = await removeResp.json().catch(() => null);
+                                    if (!removeResp.ok || !removeJson?.success) {
+                                      throw new Error(removeJson?.error || `HTTP ${removeResp.status}`);
+                                    }
+                                  } catch (removeErr: any) {
+                                    onShowToast(`❌ 删除失败：${removeErr?.message || '网络错误'}，请重试`);
+                                    return;
+                                  }
+
                                   // 1. Mark as removed locally in state & localStorage
                                   setRemovedMemberPhones(prev => {
                                     const updated = Array.from(new Set([
@@ -5728,72 +5330,7 @@ export default function MobileDispatchValetOrder({
                                     return updated;
                                   });
 
-                                  // 3. Delete from Firestore & HTTP REST API database & Reset userRole
-                                  const resetRoleData = { role: '普通司机', userRole: '普通司机', teamRole: '', status: '未加入小队' };
-                                  if (targetPhone && targetPhone !== '15509601222') {
-                                    try {
-                                      await deleteDoc(doc(db, 'squad_members', targetPhone));
-                                      await deleteDoc(doc(db, 'squad_applications', targetPhone));
-                                      await setDoc(doc(db, 'driver_users', targetPhone), resetRoleData, { merge: true });
-                                    } catch (e) {
-                                      console.error(e);
-                                    }
-                                  }
-                                  if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
-                                    try {
-                                      await deleteDoc(doc(db, 'squad_members', targetId));
-                                      await deleteDoc(doc(db, 'squad_applications', targetId));
-                                      await setDoc(doc(db, 'driver_users', targetId), resetRoleData, { merge: true });
-                                    } catch (e) {
-                                      console.error(e);
-                                    }
-                                  }
-
-                                  const baseUrl = getBaseApiUrl();
-                                  if (targetPhone && targetPhone !== '15509601222') {
-                                    fetch(`${baseUrl}/api/db/set`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'driver_users', id: targetPhone, data: resetRoleData, collection: 'driver_users', docId: targetPhone, merge: true })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'squad_members', id: targetPhone, collection: 'squad_members', docId: targetPhone })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'squad_applications', id: targetPhone, collection: 'squad_applications', docId: targetPhone })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'driver_locations', id: targetPhone, collection: 'driver_locations', docId: targetPhone })
-                                    }).catch(() => {});
-                                  }
-                                  if (targetId && targetId !== targetPhone && targetId !== '15509601222') {
-                                    fetch(`${baseUrl}/api/db/set`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'driver_users', id: targetId, data: resetRoleData, collection: 'driver_users', docId: targetId, merge: true })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'squad_members', id: targetId, collection: 'squad_members', docId: targetId })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'squad_applications', id: targetId, collection: 'squad_applications', docId: targetId })
-                                    }).catch(() => {});
-                                    fetch(`${baseUrl}/api/db/delete`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                      body: JSON.stringify({ col: 'driver_locations', id: targetId, collection: 'driver_locations', docId: targetId })
-                                    }).catch(() => {});
-                                  }
+                                  // 服务端删除已在上方专用接口完成，本地不再散弹删表
 
                                   // Sync removed_squad_members to cloud config for multi-device sync
                                   const updatedRemoved = cleanTargetPhone 
@@ -5829,14 +5366,7 @@ export default function MobileDispatchValetOrder({
                                     }
                                   } catch (_) {}
 
-                                  if (db) {
-                                    setDoc(doc(db, 'config', 'removed_squad_members'), { phones: updatedRemoved }, { merge: true }).catch(() => {});
-                                  }
-                                  fetch(`${baseUrl}/api/db/set`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                    body: JSON.stringify({ col: 'config', id: 'removed_squad_members', data: { phones: updatedRemoved }, collection: 'config', docId: 'removed_squad_members', merge: true })
-                                  }).catch(() => {});
+                                  // removed 名单由服务端 remove 接口维护，本地不再回写云端
 
                                   window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { removedPhone: targetPhone, removedList: updatedRemoved } }));
 

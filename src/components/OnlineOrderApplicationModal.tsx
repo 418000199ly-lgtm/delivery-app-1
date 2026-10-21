@@ -16,7 +16,6 @@ import {
 import { ChauffeurSettings } from '../types';
 import { db, doc, getDoc, onSnapshot, setDoc } from '../lib/dbProxy';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
-import { resolveAndSyncDuplicateNames } from '../utils/nameResolver';
 
 interface OnlineOrderApplicationModalProps {
   userPhone: string;
@@ -62,6 +61,14 @@ export default function OnlineOrderApplicationModal({
     let isSquadApproved = false;
 
     const computeFinalState = () => {
+      // 第四轮修复（P1-26）：申请单本身被拒（rejected/已拒绝）必须优先呈现被拒，
+      // 不许被 team_members/driver_users/squad_members 的历史痕迹 OR 成"已通过"
+      const rawAppStatus = String(appDataCache?.status || '');
+      if (appDataCache && (rawAppStatus === 'rejected' || rawAppStatus === '已拒绝')) {
+        setOnlineApp({ id: userPhone, ...appDataCache, status: 'rejected' });
+        setLoadingApp(false);
+        return;
+      }
       const isApprovedOverall = Boolean(
         (appDataCache && appDataCache.status === 'approved') ||
         isTeamApproved ||
@@ -188,7 +195,8 @@ export default function OnlineOrderApplicationModal({
     
     setSubmittingApp(true);
     try {
-      await setDoc(doc(db, 'online_applications', userPhone), {
+      // 第四轮修复（P1-26）：检查 setDoc 返回值，服务端写入失败不许弹"提交成功"假提示
+      const submitOk = await setDoc(doc(db, 'online_applications', userPhone), {
         driverPhone: userPhone,
         driverName: name,
         driverGender: gender,
@@ -205,8 +213,10 @@ export default function OnlineOrderApplicationModal({
         updatedAt: new Date().toISOString()
       });
 
-      // Run real-time naming conflict suffix resolution
-      await resolveAndSyncDuplicateNames();
+      if (!submitOk) {
+        alert("⚠️ 提交失败：服务端写入未成功（可能网络异常或登录已失效），请检查网络后重新提交！");
+        return;
+      }
 
       alert("🎉 申请提交成功！各项资料已实时安全同步至决策大盘运营管理后台，等待管理员审批核对，可在后台「审批功能」页查看其处理状态。");
     } catch (err: any) {

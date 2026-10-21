@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ArrowLeft, MapPin, Phone, Info, CheckCircle2 } from 'lucide-react';
-import { db, doc, setDoc, getDocs, collection, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
+import { getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { geocodeAddress, calculateHaversineDistanceKm, formatDistance, DEFAULT_YINCHUAN_COORDS, isValidCoords } from '../utils/geocoding';
 import { speakText } from '../utils/speech';
 import { hasValidLicense } from '../utils/nameResolver';
@@ -99,206 +99,20 @@ export default function ReportTransferOrderModal({
         }
       }
 
-      // 2. Fetch candidate drivers from all sources
-      // 2. Fetch candidate drivers strictly from squad_members collection
-      const squadPhones = new Set<string>();
-      const driverMap = new Map<string, any>();
-
-      // A. Read squad_members
-      try {
-        const squadSnap = await getDocs(collection(db, 'squad_members'));
-        squadSnap.forEach(d => {
-          if (d.id && d.data()) {
-            const cleanId = String(d.id).replace(/\D/g, '').trim();
-            if (cleanId) {
-              squadPhones.add(cleanId);
-              driverMap.set(cleanId, { phone: cleanId, ...d.data() });
-            }
-          }
-        });
-      } catch (_) {}
-
-      // B. Fallback to local storage squad list if needed
-      try {
-        const savedSq = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-        if (Array.isArray(savedSq)) {
-          savedSq.forEach((m: any) => {
-            const p = typeof m === 'string' ? m : (m?.phone || m?.userPhone || m?.id);
-            const cleanP = String(p || '').replace(/\D/g, '').trim();
-            if (cleanP) {
-              squadPhones.add(cleanP);
-              if (!driverMap.has(cleanP)) {
-                driverMap.set(cleanP, { phone: cleanP, ...(typeof m === 'object' ? m : {}) });
-              }
-            }
-          });
-        }
-      } catch (_) {}
-
-      // C. Fallback to API if driverMap is empty
-      if (driverMap.size === 0) {
-        try {
-          const baseUrl = getBaseApiUrl();
-          const res = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
-          if (res.ok) {
-            const json = await res.json();
-            const rawList = Array.isArray(json) ? json : (json?.docs || json?.data || []);
-            rawList.forEach((item: any) => {
-              const dId = item?.id ? String(item.id).replace(/\D/g, '').trim() : '';
-              if (dId) {
-                squadPhones.add(dId);
-                driverMap.set(dId, { phone: dId, ...(item.data || item) });
-              }
-            });
-          }
-        } catch (_) {}
-      }
-
-      // Read removed squad members blacklist
-      const removedSet = new Set<string>();
-      try {
-        const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
-        if (savedRemoved) {
-          const parsed = JSON.parse(savedRemoved);
-          if (Array.isArray(parsed)) parsed.forEach((p: any) => removedSet.add(String(p).replace(/\D/g, '').trim()));
-        }
-      } catch (_) {}
-
-      // Always include master developer
-      squadPhones.add('15509601222');
-      if (!driverMap.has('15509601222')) {
-        driverMap.set('15509601222', { phone: '15509601222', name: '吴彦祖', role: '开发者司机', status: '已通过' });
-      }
-
-      // Purge any removed drivers from squadPhones and driverMap (except master developer)
-      removedSet.forEach(p => {
-        if (p !== '15509601222') {
-          squadPhones.delete(p);
-          driverMap.delete(p);
-        }
-      });
-
-      // D. Read driver_locations for real-time online status and GPS
-      try {
-        const locSnap = await getDocs(collection(db, 'driver_locations'));
-        locSnap.forEach(d => {
-          if (d.id && d.data()) {
-            const cleanId = String(d.id).replace(/\D/g, '').trim();
-            if (cleanId && driverMap.has(cleanId)) {
-              const existing = driverMap.get(cleanId) || {};
-              driverMap.set(cleanId, { ...existing, ...d.data(), phone: cleanId });
-            }
-          }
-        });
-      } catch (_) {}
-
-      // Filter candidates (Strictly EXCLUDING current reporter driver and strictly squad members only!)
-      const candidates: Array<{ phone: string; name: string; lat: number; lng: number; distKm: number }> = [];
-
+      // 2026-10-20 重构：删除整套本地候选司机计算（拉成员表/位置表、在本地按授权/心跳/空闲/3 公里选人）。
+      // 派单早已 100% 由服务端 /api/report-transfer/dispatch 决定，本地名单从不参与决策，
+      // 留着只会与服务端规则漂移。此处只保留请求需要的本人手机号与起点坐标。
+      // 起点坐标兜底不再用银川中心点占位（曾致误派单）：无有效坐标传 0，由服务端解析或标记位置未知。
       const cleanUserPhone = String(userPhone || '').replace(/\D/g, '').trim();
-      // 报单转单测距起点：严格以当前转单司机的实时GPS经纬度为起点！
-      const originLat = isValidCoords(reporterLat, reporterLng) 
-        ? reporterLat 
-        : (isValidCoords(pLat, pLng) ? pLat : DEFAULT_YINCHUAN_COORDS.lat);
-      const originLng = isValidCoords(reporterLat, reporterLng) 
-        ? reporterLng 
-        : (isValidCoords(pLat, pLng) ? pLng : DEFAULT_YINCHUAN_COORDS.lng);
-
-      driverMap.forEach((data, rawPhone) => {
-        if (!data || data.isBanned) return;
-
-        const targetPhone = String(rawPhone || data.phone || '').replace(/\D/g, '').trim();
-
-        // 1. 绝不能派给自己！同时也排除乘客手机号（若正好是某个注册账户）
-        if (!targetPhone || targetPhone.length !== 11) return;
-        if (targetPhone === cleanUserPhone) return;
-        if (targetPhone === cleanPhone) return;
-
-        // 2. 排除纯商家/商户角色（商家不能作为司机接单）
-        const dRole = String(data.role || data.userRole || data.approvedRole || '').trim();
-        if ((dRole.includes('商户') || dRole.includes('商家')) && !dRole.includes('司机') && !dRole.includes('管理')) {
-          return;
-        }
-
-        // 3. 必须属于小队成员（小队普通司机、城市派单员司机、城市管理司机、城市老板司机、开发者司机）
-        const isSquadDriver = squadPhones.has(targetPhone) || targetPhone === '15509601222';
-        if (!isSquadDriver) return;
-
-        const allowedRoles = ['开发者司机', '开发者', '总指挥官', '城市老板司机', '城市老板', '城市管理司机', '城市管理', '城市派单员司机', '城市派单员', '普通司机', '队员', '小队长'];
-        const hasAllowedRole = allowedRoles.some(r => dRole.includes(r)) || dRole === '' || targetPhone === '15509601222';
-        if (!hasAllowedRole) return;
-
-        // 4. 必须审核通过（未被拒绝或待审核或未加入小队）
-        const st = String(data.status || data.approvalStatus || '已通过').trim();
-        if (['已拒绝', 'rejected', '拒绝', '待审核', '未加入小队'].includes(st)) {
-          return;
-        }
-
-        // 5. 严格验证是否【上线】！
-        // 关键：必须明确 isOnline === true，绝对不可使用 onlineOrdersEnabled（其仅代表权限设置，不代表当前处于上线听单状态）！
-        const isOnline = data.isOnline === true || data.isOnline === 'true';
-        if (!isOnline) return;
-
-        // 2026-10-15 P1-4：候选人必须有有效接单授权（与服务端一致）
-        if (!hasValidLicense(data.licenseExpiry)) return;
-
-        // 6. 心跳活跃时间检查（Heartbeat Check）
-        // 上线司机每20秒上报一次位置；如果心跳超过5分钟（300秒）未更新，判定为已离线/掉线
-        const lastTime = Number(data.lastLocationTime || 0);
-        if (lastTime > 0 && (Date.now() - lastTime > 5 * 60 * 1000)) {
-          return;
-        }
-
-        // 7. 必须处于【空闲】状态（未在服务中/无正在进行中的行程与订单）
-        const isBusy = data.isBusy === true || data.isBusy === 'true' || Boolean(data.hasActiveOrder) || data.currentStatus === 'serving' || Boolean(data.currentTrip);
-        if (isBusy) return;
-
-        // 8. 必须拥有真实、有效的当前GPS经纬度坐标！
-        // 关键：绝对不能用银川默认坐标填充！缺失坐标视为无法计算距离并排除！
-        const dLat = Number(data.lat);
-        const dLng = Number(data.lng);
-        if (!isValidCoords(dLat, dLng)) {
-          return;
-        }
-
-        // 9. 计算与报单转单起点（或发单司机）之间的直线距离
-        const distKm = calculateHaversineDistanceKm(originLat, originLng, dLat, dLng);
-
-        // 10. 严格限制在直线距离 3.0 公里之内！
-        if (distKm <= 3.0) {
-          const dName = (data.driverName && data.driverName !== '代驾司机' && data.driverName !== '在线代驾司机') 
-            ? data.driverName 
-            : (data.name && data.name !== '代驾司机' && data.name !== '在线代驾司机') 
-              ? data.name 
-              : `司机${targetPhone.slice(-4)}`;
-
-          candidates.push({
-            phone: targetPhone,
-            name: dName,
-            lat: dLat,
-            lng: dLng,
-            distKm
-          });
-        }
-      });
+      const originLat = isValidCoords(reporterLat, reporterLng)
+        ? reporterLat
+        : (isValidCoords(pLat, pLng) ? pLat : 0);
+      const originLng = isValidCoords(reporterLat, reporterLng)
+        ? reporterLng
+        : (isValidCoords(pLat, pLng) ? pLng : 0);
 
       const orderId = 'RT' + Date.now();
       const baseUrl = getBaseApiUrl();
-
-      const myQrCode = (userPhone ? (
-        localStorage.getItem(`dd_dispatch_wechat_qr_${userPhone}`) || 
-        localStorage.getItem(`dd_dispatch_fee_qr_${userPhone}`) || 
-        (() => {
-          try {
-            const s = localStorage.getItem(`dd_settings_${userPhone}`) || localStorage.getItem('dd_settings');
-            if (s) {
-              const parsed = JSON.parse(s);
-              return parsed?.wechatQrCode || '';
-            }
-          } catch (_) {}
-          return '';
-        })()
-      ) : '') || '';
 
       let chosenDriver: any = null;
 
@@ -310,14 +124,12 @@ export default function ReportTransferOrderModal({
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({
-            orderId: orderId,
-            reporterPhone: cleanUserPhone,
+            // 2026-10-20 重构：订单号、发起人身份、收款码全部由服务端生成/绑定 token/按上传文件推导，客户端不再自带
             passengerPhone: cleanPhone,
             pickupName: currentPickup,
             pickupDetail: pickupDetail,
             pickupLat: originLat,
-            pickupLng: originLng,
-            paymentQrCode: myQrCode
+            pickupLng: originLng
           })
         });
 
@@ -368,51 +180,8 @@ export default function ReportTransferOrderModal({
         });
       } else {
         // No driver within 3km -> Enter Order Lobby (选单大厅)
-        const reporterPhoneNum = cleanUserPhone || (userPhone ? String(userPhone).replace(/\D/g, '').trim() : '');
-        const hallOrderPayload = {
-          id: orderId,
-          orderId: orderId,
-          passengerPhone: cleanPhone,
-          startLocation: currentPickup,
-          destination: '',
-          status: 'hall',
-          statusCategory: '等待接单',
-          in_hall: true,
-          timestamp: Date.now(),
-          createdAt: Date.now(),
-          isValetOrder: true,
-          isPlatformDispatch: true,
-          orderRemark: '报单转单',
-          orderType: '报单转单',
-          type: '报单转单',
-          passengerLat: pLat,
-          passengerLng: pLng,
-          lat: pLat,
-          lng: pLng,
-          startLat: pLat,
-          startLng: pLng,
-          approxPrice: '未知',
-          scheduledTime: '现在出发',
-          needScooter: false,
-          merchantPhone: reporterPhoneNum,
-          reporterPhone: reporterPhoneNum,
-          dispatchedByPhone: reporterPhoneNum,
-          dispatchedBy: reporterPhoneNum,
-          creatorPhone: reporterPhoneNum,
-          userPhone: reporterPhoneNum,
-          paymentQrCode: myQrCode,
-          merchantPaymentQrCode: myQrCode,
-          merchantName: '报单转单'
-        };
-
-        if (db) {
-          await setDoc(doc(db, 'merchant_orders', orderId), hallOrderPayload).catch(() => {});
-        }
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'merchant_orders', docId: orderId, data: hallOrderPayload })
-        }).catch(() => {});
+        // 2026-10-20 重构：大厅单已由服务端在返回 isHall 时按服务端订单号落库，
+        // 客户端不再自造订单号双写（旧逻辑写出一张幽灵大厅单，与服务端真单并存、抢单口径混乱）
 
         window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
 

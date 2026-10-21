@@ -389,14 +389,15 @@ export function useAuthenticatedQrUrl(rawUrl: string | undefined | null): string
         setUrl(formatted);
         return;
       }
-      const needsAuth = formatted.includes('/uploads/qrcodes');
+      // 2026-10-21 第三轮：qrs 目录已与 qrcodes 同守卫，同样要带 token 拉取
+      const needsAuth = formatted.includes('/uploads/qrcodes') || formatted.includes('/uploads/qrs');
       if (!needsAuth) {
         setUrl(formatted);
         return;
       }
       try {
         const token = typeof window !== 'undefined'
-          ? (localStorage.getItem('dd_auth_token') || localStorage.getItem('admin_session_token') || '')
+          ? (localStorage.getItem('dd_auth_token') || '') // 2026-10-21 第三轮：删已废弃的 admin_session_token 兜底（现行只用 dd_auth_token）
           : '';
         const resp = await fetch(formatted, {
           headers: token ? { 'X-Auth-Token': token } : {},

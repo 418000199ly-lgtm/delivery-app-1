@@ -315,81 +315,22 @@ export async function updateDriverGlobalName(phone: string, newName: string): Pr
     } catch (_) {}
   }
 
-  // 3. Persist to Alibaba Cloud Baota REST API & MySQL
-  // 2026-10-12改用改名专用通道（不走鉴权，确保服务端同步）
-  try {
-    const baseUrl = getBaseApiUrl();
-    fetch(`${baseUrl}/api/squad-member/rename`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ phone: cleanPhone, name: finalName })
-    }).catch(() => {});
-    // 保留旧接口兼容
-    fetch(`${baseUrl}/api/driver/name`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({ phone: cleanPhone, name: finalName })
-    }).catch(() => {});
-  } catch (_) {}
-
-  // 4. Update dbProxy / Firestore collections
-  try {
-    const timeStr = new Date().toLocaleString();
-    const updatePayload = {
-      name: finalName,
-      driverName: finalName,
-      realName: finalName,
-      applicantName: finalName,
-      lastUpdatedTime: timeStr
-    };
-    setDoc(doc(db, 'driver_users', cleanPhone), updatePayload, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'driver_locations', cleanPhone), { driverName: finalName, name: finalName }, { merge: true }).catch(() => {});
-    setDoc(doc(db, 'online_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
-
-    let isRemovedName = false;
-    try {
-      const savedR = typeof window !== 'undefined' ? localStorage.getItem('dd_removed_squad_phones_v2') : null;
-      if (savedR && JSON.parse(savedR).includes(cleanPhone)) isRemovedName = true;
-    } catch (_) {}
-    
-    let isMemberInLocalList = false;
-    try {
-      const savedM = typeof window !== 'undefined' ? localStorage.getItem('dd_squad_members_v2') : null;
-      if (savedM) {
-        const list = JSON.parse(savedM);
-        if (Array.isArray(list)) {
-          isMemberInLocalList = list.some((m: any) => String(m.phone || m.id).replace(/\D/g, '').trim() === cleanPhone);
-        }
-      }
-    } catch (_) {}
-
-    const isInSquadName = cleanPhone === '15509601222' || isMemberInLocalList || (!isRemovedName && (
-      typeof window !== 'undefined' && (
-        localStorage.getItem(`dd_approved_${cleanPhone}`) === 'true' ||
-        localStorage.getItem(`dd_in_squad_${cleanPhone}`) === 'true'
-      )
-    ));
-
-    if (isInSquadName && !isRemovedName) {
-      if (db) {
-        setDoc(doc(db, 'squad_members', cleanPhone), updatePayload, { merge: true }).catch(() => {});
-        setDoc(doc(db, 'squad_applications', cleanPhone), updatePayload, { merge: true }).catch(() => {});
-      }
-      try {
-        const baseUrl = getBaseApiUrl();
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_members', docId: cleanPhone, data: updatePayload })
-        }).catch(() => {});
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_applications', docId: cleanPhone, data: updatePayload })
-        }).catch(() => {});
-      } catch (_) {}
-    }
-  } catch (_) {}
+  // 3. 服务端改名：只调专用接口 /api/squad-member/rename（服务端六集合 existing-only 同步、带目标保护）。
+  // 2026-10-20 重构：删原第 4 段五路 setDoc 直写与两路 /api/db/set——新服务端护栏下成员/申请表直写必被拒、
+  // 其余集合直写会给无文档的人建成只有姓名的壳，且全部吞错造成"改了名"的假象；
+  // 同时删对 /api/driver/name 的重复调用（那是仅限本人/开发者的另一套口径，管理人员给他人改名必 403 被吞）。
+  // 本地注册（第 1、2 段）已先行生效：HomeView 提交申请时申请人不是管理人员、此调用必然 403，
+  // 但申请姓名随 squad-apply 请求体上送、本地注册不受影响，由调用方 .catch 记录；派单台调用方收到抛错后弹错中止。
+  const baseUrl = getBaseApiUrl();
+  const renameResp = await fetch(`${baseUrl}/api/squad-member/rename`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+    body: JSON.stringify({ phone: cleanPhone, name: finalName })
+  }).catch((e: any) => { throw new Error(e?.message || '网络异常，改名未提交'); });
+  const renameData: any = await renameResp.json().catch(() => ({}));
+  if (!renameResp.ok || !renameData?.success) {
+    throw new Error(renameData?.error || `改名失败（HTTP ${renameResp.status}）`);
+  }
 
   return finalName;
 }
@@ -700,91 +641,8 @@ export function getBaseName(name: string): string {
   return match ? match[1] : trimmed;
 }
 
-/**
- * Scans all online applications, groups duplicate names, and resolves suffixes ('A', 'B', 'C'...)
- * based on their registration order (createdAt). It then updates the Firestore documents in
- * both `online_applications` and `driver_users` to keep everything in real-time sync.
- */
-export async function resolveAndSyncDuplicateNames(): Promise<void> {
-  try {
-    const q = collection(db, 'online_applications');
-    const snapshot = await getDocs(q);
-    const docsList: any[] = [];
-    
-    snapshot.forEach((docSnap) => {
-      docsList.push({ id: docSnap.id, ...docSnap.data() });
-    });
-
-    if (docsList.length === 0) return;
-
-    // Group documents by their normalized base name
-    const groups: { [key: string]: any[] } = {};
-    docsList.forEach(app => {
-      const name = app.driverName || '未命名';
-      const base = getBaseName(name);
-      if (!groups[base]) {
-        groups[base] = [];
-      }
-      groups[base].push(app);
-    });
-
-    // Process each name group
-    for (const base of Object.keys(groups)) {
-      const list = groups[base];
-      
-      if (list.length > 1) {
-        // There are duplicates! Sort chronologically by registration time (createdAt)
-        list.sort((a, b) => {
-          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          if (timeA !== timeB) return timeA - timeB;
-          return a.id.localeCompare(b.id);
-        });
-
-        for (let i = 0; i < list.length; i++) {
-          const app = list[i];
-          const expectedName = base + String.fromCharCode(65 + i); // 65 is 'A', then 'B', 'C'...
-          
-          if (app.driverName !== expectedName) {
-            // Update in online_applications
-            const appRef = doc(db, 'online_applications', app.id);
-            await setDoc(appRef, {
-              driverName: expectedName,
-              updatedAt: new Date().toISOString()
-            }, { merge: true });
-
-            // Sync with driver_users if approved
-            const driverRef = doc(db, 'driver_users', app.id);
-            await setDoc(driverRef, {
-              driverName: expectedName,
-              updatedAt: new Date().toISOString()
-            }, { merge: true });
-          }
-        }
-      } else {
-        // Only a single driver has this base name. Remove any trailing A-Z suffix if present
-        const app = list[0];
-        if (app.driverName !== base) {
-          // Update in online_applications
-          const appRef = doc(db, 'online_applications', app.id);
-          await setDoc(appRef, {
-            driverName: base,
-            updatedAt: new Date().toISOString()
-            }, { merge: true });
-
-          // Sync with driver_users
-          const driverRef = doc(db, 'driver_users', app.id);
-          await setDoc(driverRef, {
-            driverName: base,
-            updatedAt: new Date().toISOString()
-          }, { merge: true });
-        }
-      }
-    }
-  } catch (error) {
-    console.error("Error resolving duplicate driver names:", error);
-  }
-}
+// 2026-10-21 第三轮：resolveAndSyncDuplicateNames 已删除——它绕过 /api/squad-member/rename 的
+// 目标保护与审计日志、批量改写他人姓名（重名加后缀/单人剥后缀），与"入队真名以申请/审批为准"口径冲突。
 
 /**
  * Picks the authoritative VIP expiry date string among candidate dates/strings in precedence order.

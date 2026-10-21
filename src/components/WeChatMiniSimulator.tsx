@@ -513,49 +513,12 @@ export default function WeChatMiniSimulator({ currentDriverPhone, onTriggerToast
 
     setSubmitting(true);
     
-    // Slight coordinates offset to place order near center
-    const lat = 38.487193 + (Math.random() - 0.5) * 0.005;
-    const lng = 106.230912 + (Math.random() - 0.5) * 0.005;
-
+    // 2026-10-21 第三轮：模拟器只做本地演示——不再写真实 passenger_links、不再自造占位坐标、
+    // 也不再调 /api/submit 真建单（该接口已下线）
     try {
-      // Setup passenger link model in native dbProxy
-      const docRef = doc(db, 'passenger_links', targetDriver.trim());
-      await setDoc(docRef, {
-        passengerPhone: passengerPhone.trim(),
-        startLocation: startPoint.trim() + (isRainy ? ' (雨雪天加急)' : ''),
-        destination: destination.trim() || '无需终点，听从分配',
-        status: 'submitted',
-        timestamp: Date.now(),
-        passengerLat: lat,
-        passengerLng: lng
-      });
-
+      await new Promise(r => setTimeout(r, 600));
       setOrderStatus('success');
-      onTriggerToast('🎉 微信小程序下单成功！司机端已同步发出强震动及播报语音！');
-    } catch (err: any) {
-      console.error('WeChat ordering proxy error:', err);
-      // Fallback post
-      try {
-        const response = await fetch(`${getBaseApiUrl()}/api/submit`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            driverPhone: targetDriver.trim(),
-            passengerPhone: passengerPhone.trim(),
-            startLocation: startPoint.trim() + (isRainy ? ' (雨雪天加急)' : ''),
-            destination: destination.trim() || '无需终点，听从分配'
-          })
-        });
-        const resData = await response.json();
-        if (resData.success) {
-          setOrderStatus('success');
-          onTriggerToast('🎉 微信小程序下单成功 (阿里云宝塔 API 专线)！');
-        } else {
-          alert('下单通道响应异常，请核实后台配置。');
-        }
-      } catch (e: any) {
-        alert('小程序连线提交失败: ' + e.message);
-      }
+      onTriggerToast('🎉 （模拟）微信小程序下单成功！司机端已同步发出强震动及播报语音！');
     } finally {
       setSubmitting(false);
     }
@@ -959,9 +922,10 @@ Page({
 
     this.setData({ submitting: true });
 
-    // 微信小程序直接向中国大陆阿里云宝塔 API 服务器发起 REST POST 下单
+    // 微信小程序向中国大陆阿里云宝塔 API 服务器发起 REST POST，通知司机有乘客扫码下单
+    // （现行口径：/api/qr-phone-notify 只通知不建单；旧 /api/submit 已下线）
     wx.request({
-      url: '${getBaseApiUrl()}/api/submit',
+      url: '${getBaseApiUrl()}/api/qr-phone-notify',
       method: 'POST',
       header: {
         'content-type': 'application/json'
@@ -3213,30 +3177,11 @@ Page({
 
                                   setIsSubmittingReg(true);
                                   try {
-                                    await setDoc(doc(db, 'online_applications', registerPhone), {
-                                      id: registerPhone,
-                                      driverPhone: registerPhone,
-                                      driverName: driverRegName.trim(),
-                                      idCardNumber: driverRegIdCard.trim(),
-                                      city: driverRegCompany.trim(),
-                                      driverGender: driverRegGender === 'male' ? '男' : '女',
-                                      driverAge: calculatedAge,
-                                      jobType: driverRegJobType === 'full' ? '全职' : '兼职',
-                                      emergencyContact: driverRegEmergencyContact.trim(),
-                                      emergencyPhone: driverRegEmergencyPhone.trim(),
-                                      idCardFront: driverRegIdPhoto,
-                                      idCardBack: driverRegIdPhotoBack,
-                                      driverLicenseFront: driverRegLicensePhoto,
-                                      driverLicenseBack: driverRegLicensePhoto, // duplicate
-                                      drivingYears: calculatedDrivingYears,
-                                      licenseType: driverRegLicenseType,
-                                      licenseIssueDate: driverRegIssueDate,
-                                      status: 'pending',
-                                      updatedAt: new Date().toISOString()
-                                    });
+                                    // 2026-10-21 第三轮：模拟器只做本地演示，不再把模拟注册（含身份证号）写进真实 online_applications
+                                    await new Promise(r => setTimeout(r, 600));
 
                                     setIsSubmittingReg(false);
-                                    onTriggerToast(`🎉 提交成功！手机号 ${registerPhone} 的申请已录入，等待平台审批开通听单。`);
+                                    onTriggerToast(`🎉 （模拟）提交成功！手机号 ${registerPhone} 的申请已模拟录入，等待平台审批开通听单。`);
                                     
                                     // Enter success page state
                                     setDriverRegStep('success');

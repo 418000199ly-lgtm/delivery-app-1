@@ -324,38 +324,18 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
       return;
     }
 
-    // Determine final passenger latitude and longitude (starting point coords)
-    let pLat = passengerCoords?.lat || null;
-    let pLng = passengerCoords?.lng || null;
-
-    if (!pLat && driverCoords) {
-      // Simulate real-life situation by offsetting slightly from driver coordinates
-      const offsetLat = 0.0012 + Math.random() * 0.0016;
-      const offsetLng = 0.0012 + Math.random() * 0.0016;
-      pLat = driverCoords.lat + (Math.random() > 0.5 ? offsetLat : -offsetLat);
-      pLng = driverCoords.lng + (Math.random() > 0.5 ? offsetLng : -offsetLng);
-    }
-
-    if (!pLat) {
-      pLat = 38.487193;
-      pLng = 106.230912;
-    }
+    // 乘客坐标只用真实定位；拿不到就不传（由司机侧确认），
+    // 绝不用司机坐标随机偏移或写死市中心坐标冒充（曾致按假位置派单/计价）
+    const pLat = passengerCoords?.lat || null;
+    const pLng = passengerCoords?.lng || null;
 
     const cleanDriverPhone = driverPhone ? driverPhone.replace(/\s+/g, '').trim() : '';
 
-    const dbWritePromise = setDoc(doc(db, 'passenger_links', cleanDriverPhone), {
-      passengerPhone: passengerPhone.trim(),
-      startLocation: startLocation.trim(),
-      destination: destination.trim() || '由司机根据现场口头协商规划行程',
-      status: 'submitted',
-      timestamp: Date.now(),
-      passengerLat: pLat,
-      passengerLng: pLng
-    });
-
     try {
-      // Direct fast local API submit for maximum speed and instant response
-      const response = await fetch(`${getBaseApiUrl()}/api/submit`, {
+      // 2026-10-20 重构：与乘客网页版同口径，只调 /api/qr-phone-notify 通知司机有乘客扫码，
+      // 不建单、不派单，由司机在 App 内确认后创建订单（非 VIP 司机由服务端在该接口拦截）。
+      // 旧逻辑先直写 passenger_links、再调 /api/submit 建单派单，且失败时用本地假数据照样显示成功，一并废除。
+      const response = await fetch(`${getBaseApiUrl()}/api/qr-phone-notify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -365,34 +345,19 @@ export default function PassengerOrderView({ driverPhone, onClose, onUnlockAdmin
           passengerPhone: passengerPhone.trim(),
           startLocation: startLocation.trim(),
           destination: destination.trim(),
-          passengerLat: pLat,
-          passengerLng: pLng
+          ...(pLat && pLng ? { passengerLat: pLat, passengerLng: pLng } : {})
         })
       });
-      const resData = await response.json();
-      if (resData.success) {
+      const resData = await response.json().catch(() => ({}));
+      if (response.ok && resData.success) {
         setStatus('success');
       } else {
-        throw new Error(resData.error || '提交接口返回失败');
+        alert(`提交失败：${resData.error || '司机暂时无法接收，请联系司机或稍后再试'}`);
+        setStatus('idle');
       }
     } catch (submitErr: any) {
-      console.warn('Fast API submit failed, attempting fallback local storage and setDoc...', submitErr);
-      try {
-        const fallbackPayload = {
-          passengerPhone: passengerPhone.trim(),
-          startLocation: startLocation.trim(),
-          destination: destination.trim(),
-          status: 'submitted',
-          timestamp: Date.now(),
-          passengerLat: pLat,
-          passengerLng: pLng
-        };
-        localStorage.setItem(`mock_db_passenger_links_${cleanDriverPhone}`, JSON.stringify(fallbackPayload));
-        await dbWritePromise;
-        setStatus('success');
-      } catch (fallbackErr: any) {
-        setStatus('success');
-      }
+      alert('提交失败：网络异常，请检查网络后重试');
+      setStatus('idle');
     } finally {
       setSubmitting(false);
     }

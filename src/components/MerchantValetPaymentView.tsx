@@ -20,7 +20,10 @@ export default function MerchantValetPaymentView({
   onNavigateBack,
   onFinishTrip
 }: MerchantValetPaymentViewProps) {
-  const [dispatcherQr, setDispatcherQr] = useState<string>('');
+  // 第四轮修复（P1-24）：服务端轮询结果单独存放，不再与订单自带码/本地缓存混装，
+  // 保证"服务端码优先、服务端明确无码时不用本地旧码兜底"可以落实
+  const [serverQr, setServerQr] = useState<string>('');
+  const [serverChecked, setServerChecked] = useState<boolean>(false);
 
   const orderMerchantPhone = (
     (trip as any)?.merchantPhone ||
@@ -65,39 +68,13 @@ export default function MerchantValetPaymentView({
   useEffect(() => {
     let isMounted = true;
 
-    // Prioritize direct QR attached to the order if present
-    const initialDirectQr = (trip as any)?.paymentQrCode || (trip as any)?.merchantPaymentQrCode || (trip as any)?.qrCode || (trip as any)?.wechatQrCode || '';
-    if (initialDirectQr && initialDirectQr.trim()) {
-      setDispatcherQr(initialDirectQr);
-    }
-
-    if (!initialDirectQr && targetMerchantPhone) {
-      if (isWebChannel) {
-        const webCached = localStorage.getItem(`dd_web_valet_wechat_qr_${targetMerchantPhone}`) ||
-                          localStorage.getItem(`dd_dispatch_wechat_qr_${targetMerchantPhone}`) ||
-                          localStorage.getItem(`dd_dispatch_fee_qr_${targetMerchantPhone}`);
-        if (webCached) {
-          setDispatcherQr(webCached);
-        }
-      } else {
-        const appCached = localStorage.getItem(`dd_app_valet_wechat_qr_${targetMerchantPhone}`) ||
-                          localStorage.getItem(`dd_dispatch_wechat_qr_${targetMerchantPhone}`) ||
-                          (() => {
-                            try {
-                              const s = localStorage.getItem(`dd_settings_${targetMerchantPhone}`);
-                              if (s) return JSON.parse(s)?.wechatQrCode || '';
-                            } catch (_) {}
-                            return '';
-                          })();
-        if (appCached) {
-          setDispatcherQr(appCached);
-        }
-      }
-    }
+    // 第四轮修复（P1-24）：不再用订单自带码/本地缓存给服务端结果状态播种，
+    // 首轮轮询完成前的展示由下方 rawQr 的兜底链负责，服务端结果一到立即接管
 
     // High-availability Baota Node DB API polling for Mainland China direct server storage (No Firebase)
     const queryBaotaQr = async () => {
       if (!isMounted || !targetMerchantPhone) return;
+      let gotServerResponse = false; // 本轮是否至少收到一次服务端 HTTP 回话（区分"服务端明确无码"与"纯网络失败")
       const baseUrl = getBaseApiUrl();
       const timeToken = Date.now();
       const orderId = (trip as any)?.orderId || (trip as any)?.orderNumber || trip?.id;
@@ -110,10 +87,12 @@ export default function MerchantValetPaymentView({
         const orderIdParam = orderId ? `&orderId=${encodeURIComponent(String(orderId))}` : '';
         const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetMerchantPhone)}&channel=${isWebChannel ? 'web' : 'app'}${orderIdParam}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
         clearTimeout(timeoutId);
+        gotServerResponse = true;
         if (res.ok) {
           const json = await res.json();
           if (isMounted && json?.success && json?.url && typeof json.url === 'string' && json.url.trim()) {
-            setDispatcherQr(json.url);
+            setServerQr(json.url);
+            setServerChecked(true);
             if (isWebChannel) {
               localStorage.setItem(`dd_web_valet_wechat_qr_${targetMerchantPhone}`, json.url);
             } else {
@@ -136,11 +115,13 @@ export default function MerchantValetPaymentView({
           const timeoutId = setTimeout(() => controller.abort(), 2000);
           const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetMerchantPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
           clearTimeout(timeoutId);
+          gotServerResponse = true;
           if (res.ok) {
             const json = await res.json();
             const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
             if (isMounted && foundQr && typeof foundQr === 'string' && foundQr.trim()) {
-              setDispatcherQr(foundQr);
+              setServerQr(foundQr);
+              setServerChecked(true);
               if (isWebChannel) {
                 localStorage.setItem(`dd_web_valet_wechat_qr_${targetMerchantPhone}`, foundQr);
               } else {
@@ -150,6 +131,13 @@ export default function MerchantValetPaymentView({
             }
           }
         } catch (_) {}
+      }
+
+      // 第四轮修复（P1-24）：本轮所有来源都查完仍无码、且服务端确有回话 => 服务端明确无码，
+      // 清掉此前轮询到的旧码，后续展示不再用本地缓存旧码兜底（防止付到已更换/已删除的码）
+      if (isMounted && gotServerResponse) {
+        setServerChecked(true);
+        setServerQr('');
       }
     };
 
@@ -244,14 +232,22 @@ export default function MerchantValetPaymentView({
     return '';
   })();
 
-  // Multi-tier fallback chain strictly isolated per order and sender phone number
+  // 第四轮修复（P1-24）：优先级改为服务端轮询码 > 订单自带码/本地缓存（仅在服务端尚未回话时兜底展示）；
+  // 服务端明确无码（serverChecked）后，订单旧码与本地缓存旧码一律不再展示，防止付错人
   const rawQr = (
-    tripDirectQr ||
-    dispatcherQr ||
-    localDispatchedByQr ||
+    serverQr ||
+    (serverChecked ? '' : (tripDirectQr || localDispatchedByQr)) ||
     (isCreatorSelf ? driverOwnQr : '') ||
     ''
   ).trim();
+
+  // 第四轮修复（P1-25）：订单没带代叫费字段时不许编造默认金额（如12元），无金额就明确不展示数字
+  const displayFee = (() => {
+    const v = (trip as any)?.dispatchFee ?? (trip as any)?.valetFee;
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  })();
 
   // P0(2026-10-16)：/uploads/qrcodes 需 X-Auth-Token 鉴权，普通 <img> 发不出 header 会 401 空白，
   // 改用带鉴权的 blob URL 加载
@@ -314,10 +310,16 @@ export default function MerchantValetPaymentView({
               </div>
 
               <div className="mb-3 flex items-baseline justify-center" data-purpose="price-display">
-                <span className="text-xl font-bold text-[#1a1c1c] mr-1">¥</span>
-                <span className="text-3xl sm:text-4xl font-black text-[#1a1c1c] tracking-tight font-sans [font-variant-numeric:normal] [font-feature-settings:'zero'_0]">
-                  {((trip as any)?.dispatchFee || (trip as any)?.valetFee || 12).toFixed(2)}
-                </span>
+                {displayFee !== null ? (
+                  <>
+                    <span className="text-xl font-bold text-[#1a1c1c] mr-1">¥</span>
+                    <span className="text-3xl sm:text-4xl font-black text-[#1a1c1c] tracking-tight font-sans [font-variant-numeric:normal] [font-feature-settings:'zero'_0]">
+                      {displayFee.toFixed(2)}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-base font-bold text-gray-500">金额以派单台设置为准</span>
+                )}
               </div>
 
               {/* QR Code Container */}

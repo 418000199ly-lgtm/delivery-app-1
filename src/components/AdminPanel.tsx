@@ -59,7 +59,7 @@ import {
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveAndSyncDuplicateNames, resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified, hasValidLicense } from '../utils/nameResolver';
+import { resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified, hasValidLicense } from '../utils/nameResolver';
 import { DEVELOPER_PHONE } from '../utils/constants';
 
 function calculateExpiryFromDays(days: string): string {
@@ -437,9 +437,6 @@ export default function AdminPanel({
   const [versionHistory, setVersionHistory] = useState<any[]>([]);
 
   // Database migration states
-  const [migrationLoading, setMigrationLoading] = useState<boolean>(false);
-  const [migrationResult, setMigrationResult] = useState<any>(null);
-  const [migrationError, setMigrationError] = useState<string>('');
 
   // Master switches state variables
   const [masterSwitches, setMasterSwitches] = useState<{
@@ -451,6 +448,11 @@ export default function AdminPanel({
     merchant_dispatch_enabled: true,
     squad_management_enabled: true,
   });
+
+  // 第四轮修复（P1-7）：总开关最新值镜像。连续写入时以 ref 为准拼齐三字段，
+  // 避免用旧 state 快照连写多次互相覆盖（此前一键全开最终只剩一个开关生效）
+  const masterSwitchesRef = useRef(masterSwitches);
+  useEffect(() => { masterSwitchesRef.current = masterSwitches; }, [masterSwitches]);
 
   // Subscribe to `/config/master_switches` document in real-time
   useEffect(() => {
@@ -479,13 +481,33 @@ export default function AdminPanel({
   const updateMasterSwitch = async (key: 'online_app_enabled' | 'merchant_dispatch_enabled' | 'squad_management_enabled', value: boolean) => {
     try {
       const docRef = doc(db, 'config', 'master_switches');
-      await setDoc(docRef, {
-        ...masterSwitches,
-        [key]: value
-      }, { merge: true });
+      // 第四轮修复（P1-7）：以 ref 最新值拼齐三字段一次写入，并同步本地 state/ref
+      const next = { ...masterSwitchesRef.current, [key]: value };
+      masterSwitchesRef.current = next;
+      setMasterSwitches(next);
+      await setDoc(docRef, next, { merge: true });
       triggerToast(`✨ 已成功${value ? '开启' : '关闭'}对应组件！`);
     } catch (err: any) {
       console.error("Error updating master switch:", err);
+      alert(`操作失败：${err.message}`);
+    }
+  };
+
+  // 第四轮修复（P1-7）：一键全开/全关专用——三字段合并成一次写入，不再连写三次互相覆盖
+  const updateAllMasterSwitches = async (value: boolean) => {
+    try {
+      const docRef = doc(db, 'config', 'master_switches');
+      const next = {
+        ...masterSwitchesRef.current,
+        online_app_enabled: value,
+        merchant_dispatch_enabled: value,
+        squad_management_enabled: value
+      };
+      masterSwitchesRef.current = next;
+      setMasterSwitches(next);
+      await setDoc(docRef, next, { merge: true });
+    } catch (err: any) {
+      console.error("Error updating all master switches:", err);
       alert(`操作失败：${err.message}`);
     }
   };
@@ -653,30 +675,6 @@ export default function AdminPanel({
       city.province.toLowerCase().includes(q);
     return matchesProvince && matchesSearch;
   });
-
-  const handleMigrateDatabase = async () => {
-    setMigrationLoading(true);
-    setMigrationResult(null);
-    setMigrationError('');
-    try {
-      const res = await fetch(`${getBaseApiUrl()}/api/db/migrate-from-firestore`);
-      const data = await res.json();
-      if (data.success) {
-        setMigrationResult(data);
-        triggerToast('✓ 数据库一键迁移同步完成！');
-      } else {
-        setMigrationError(data.error || '迁移接口返回失败，请确认您已在 .env 文件中正确配置了 MYSQL_HOST 且成功启动。');
-      }
-    } catch (err: any) {
-      console.error("Migration error:", err);
-      setMigrationError(`网络连接或接口异常: ${err.message || err}。
-💡 异常排查说明：
-1. 如果是跨域错误，或者接口返回HTML（形如 "Unexpected token '<'..."），这代表您宝塔面板中的 Nginx 没有配置对 /api/ 路径的反向代理，静态站点把 API 请求直接当成了静态 HTML 页面处理。
-2. 或者是您的宝塔 MySQL 配置（MYSQL_HOST、MYSQL_USER、MYSQL_PASSWORD）不正确或无法建立外部连接。请确保您已配置并重启了代驾服务器服务。`);
-    } finally {
-      setMigrationLoading(false);
-    }
-  };
 
   // Subscribe to real-time system version settings
   useEffect(() => {
@@ -1082,7 +1080,9 @@ export default function AdminPanel({
       const phone = rawPhone.replace(/\D/g, '');
       if (!phone || phone.length < 11) return;
       const rawName = String(du.driverName || du.name || '').trim();
-      if (isGenericDriverName(rawName, phone) && !AUTHORITATIVE_REAL_DRIVER_NAMES[phone]) return;
+      // 第四轮修复（P1-10）：删掉"通用名且不在真名表就整条跳过"的过滤——
+      // 只注册未申请的司机因此在后台凭空消失（无法充值/审批），与"管理后台显示所有司机+手机号"口径冲突；
+      // 显示名由下方 resolveDriverRealName 兜底为"司机XXXX"，与显示规则一致
       const existing = driverMap.get(phone) || {};
       const name = resolveDriverRealName(phone, rawName || existing.driverName || `司机${phone.slice(-4)}`);
       const vExpiry = (du.vipExpiry !== undefined && du.vipExpiry !== '')
@@ -1423,54 +1423,13 @@ export default function AdminPanel({
         const p = rawPhone.replace(/\D/g, '');
         if (rawPhone.toUpperCase().endsWith('A') || itemData.isMerchant || itemData.accountType === 'merchant') return;
         // 黑名单已移除（2026-10-10 用户要求）：线上单开通审批不做号码限制
-        if (p === DEVELOPER_PHONE) {
-          list.push({
-            ...itemData,
-            id: DEVELOPER_PHONE,
-            phone: DEVELOPER_PHONE,
-            phoneNumber: DEVELOPER_PHONE,
-            driverName: '吴彦祖',
-            name: '吴彦祖',
-            realName: '吴彦祖',
-            role: '开发者司机',
-            userRole: '开发者司机',
-            status: 'approved',
-            approvalStatus: '已开通',
-            city: '银川市',
-            vipExpiry: '永久有效',
-            onlineOrdersEnabled: true
-          });
-        } else if (p && p.length === 11 && !rawPhone.startsWith('司机') && itemData.status === 'pending') {
+        // 第四轮修复（P2）：删除硬编码塞入的开发者"已开通"假记录——列表只呈现服务端真实文档，
+        // 假记录的"司机离职"按钮可真删开发者线上单数据，属危险误导
+        if (p && p.length === 11 && !rawPhone.startsWith('司机') && itemData.status === 'pending') {
           list.push({ id: docSnap.id, ...itemData });
         }
       });
 
-      // Ensure master developer 15509601222 always exists as approved developer in online_applications
-      if (!list.some(a => String(a.phone || a.id).replace(/\D/g, '').trim() === DEVELOPER_PHONE)) {
-        list.push({
-          id: DEVELOPER_PHONE,
-          phone: DEVELOPER_PHONE,
-          phoneNumber: DEVELOPER_PHONE,
-          driverName: '吴彦祖',
-          name: '吴彦祖',
-          realName: '吴彦祖',
-          role: '开发者司机',
-          userRole: '开发者司机',
-          status: 'approved',
-          approvalStatus: '已开通',
-          city: '银川市',
-          vipExpiry: '永久有效',
-          onlineOrdersEnabled: true,
-          emergencyContact: '13895000000',
-          drivingYears: 10,
-          idCardFront: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=400&auto=format&fit=crop&q=80',
-          idCardBack: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=400&auto=format&fit=crop&q=80',
-          driverLicenseFront: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
-          driverLicenseBack: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
-          createdAt: '2026-10-06T00:00:00.000Z',
-          updatedAt: '2026-10-06T00:00:00.000Z'
-        });
-      }
 
       list.sort((a, b) => {
         if (a.status === 'pending' && b.status !== 'pending') return -1;
@@ -1531,62 +1490,22 @@ export default function AdminPanel({
     }
 
     try {
-      // 2026-10-15 P1-6：三表顺序写入，记录每步结果，失败时明确告知哪步失败
-      const renameSteps: string[] = [];
-      try {
-        // Update the name in online_applications
-        const appRef = doc(db, 'online_applications', appId);
-        await setDoc(appRef, {
-          driverName: trimmed,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-        renameSteps.push('online_applications');
-      } catch (e: any) {
-        console.error('[改名] online_applications 写入失败:', e?.message);
-        throw new Error(`online_applications 写入失败: ${e?.message || e}`);
+      // 2026-10-20 重构：改名只调专用接口 /api/squad-member/rename（服务端同步六个集合、只改已存在文档、带目标保护）。
+      // 旧逻辑三表顺序直写：非成员会被建成只有姓名的壳；非开发者在成员表一步被护栏拦下时前两步已落库、三表不一致；
+      // 末尾的 /api/driver/update-name 又是另一套权限口径（给他人改名必 403 且被吞）。
+      const baseUrl = getBaseApiUrl();
+      const resp = await fetch(`${baseUrl}/api/squad-member/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone: appId, name: trimmed })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.success) {
+        throw new Error(data.error || '服务端拒绝');
       }
-
-      try {
-        // Update in squad_members
-        const squadRef = doc(db, 'squad_members', appId);
-        await setDoc(squadRef, {
-          name: trimmed,
-          driverName: trimmed,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-        renameSteps.push('squad_members');
-      } catch (e: any) {
-        console.error('[改名] squad_members 写入失败（online_applications 已成功）:', e?.message);
-        throw new Error(`squad_members 写入失败（online_applications 已更新）: ${e?.message || e}`);
-      }
-
-      try {
-        // Update in driver_users
-        const driverRef = doc(db, 'driver_users', appId);
-        await setDoc(driverRef, {
-          driverName: trimmed,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-        renameSteps.push('driver_users');
-      } catch (e: any) {
-        console.error('[改名] driver_users 写入失败（前两表已成功）:', e?.message);
-        throw new Error(`driver_users 写入失败（online_applications、squad_members 已更新）: ${e?.message || e}`);
-      }
-
-      // Sync to Baota / Cloud API server
-      try {
-        const baseUrl = getBaseApiUrl();
-        await fetch(`${baseUrl}/api/driver/update-name`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ phone: appId, name: trimmed })
-        });
-      } catch (_) {}
 
       triggerToast(`✓ 司机姓名已成功修改为：${trimmed}`);
-      
-      // Run duplicate renaming resolver
-      await resolveAndSyncDuplicateNames();
+
     } catch (err: any) {
       console.error("Error saving driver name:", err);
       alert("修改失败：" + err.message);
@@ -1607,58 +1526,20 @@ export default function AdminPanel({
     }
 
     try {
-      // Update the name in online_applications if it exists
-      // 2026-10-15 P1-6：分步写入，失败时明确哪步失败
-      try {
-        const appRef = doc(db, 'online_applications', phone);
-        await setDoc(appRef, {
-          driverName: trimmed,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (e: any) {
-        console.error('[改名] online_applications 写入失败:', e?.message);
-        throw new Error(`online_applications 写入失败: ${e?.message || e}`);
+      // 2026-10-20 重构：与 handleSaveDriverName 同口径，只调 /api/squad-member/rename。
+      const baseUrl = getBaseApiUrl();
+      const resp = await fetch(`${baseUrl}/api/squad-member/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone, name: trimmed })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data.success) {
+        throw new Error(data.error || '服务端拒绝');
       }
-
-      try {
-        // Update name in driver_users
-        const driverRef = doc(db, 'driver_users', phone);
-        await setDoc(driverRef, {
-          driverName: trimmed,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (e: any) {
-        console.error('[改名] driver_users 写入失败（online_applications 已成功）:', e?.message);
-        throw new Error(`driver_users 写入失败（online_applications 已更新）: ${e?.message || e}`);
-      }
-
-      try {
-        // Update name in squad_members
-        const squadRef = doc(db, 'squad_members', phone);
-        await setDoc(squadRef, {
-          name: trimmed,
-          driverName: trimmed,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (e: any) {
-        console.error('[改名] squad_members 写入失败（前两表已成功）:', e?.message);
-        throw new Error(`squad_members 写入失败（前两表已更新）: ${e?.message || e}`);
-      }
-
-      // Sync to Baota / Cloud API server
-      try {
-        const baseUrl = getBaseApiUrl();
-        await fetch(`${baseUrl}/api/driver/update-name`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ phone, name: trimmed })
-        });
-      } catch (_) {}
 
       triggerToast(`✓ 司机账号姓名已成功修改为：${trimmed}`);
 
-      // Run duplicate renaming resolver
-      await resolveAndSyncDuplicateNames();
     } catch (err: any) {
       console.error("Error saving driver name from settings:", err);
       alert("修改失败：" + err.message);
@@ -2005,23 +1886,9 @@ export default function AdminPanel({
       // 再并发打 3 枪到 MySQL 同一行极易死锁，且服务端静默吞错导致"写成功假象、列表读旧值"。
       // 现在 update-driver-expiry 自带重试+失败抛错，单路写入即可，不再需要冗余。
 
-      // 5. Fire-and-forget Firestore write so China network blocking never delays the UI
-      Promise.allSettled([
-        setDoc(doc(db, 'driver_users', cleanPhone), {
-          phoneNumber: cleanPhone,
-          phone: cleanPhone,
-          vipExpiry: finalExpiry,
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-        setDoc(doc(db, 'squad_members', cleanPhone), {
-          vipExpiry: finalExpiry,
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-        setDoc(doc(db, 'squad_applications', cleanPhone), {
-          vipExpiry: finalExpiry,
-          updatedAt: new Date().toISOString()
-        }, { merge: true })
-      ]).catch(e => console.warn("[SilentCatch]", e?.message || e));
+      // 2026-10-20 重构：删除与服务端重复的三路本地直写。服务端 update-driver-expiry 已是
+      // existing-only 单路权威写入；客户端再直写只会给无文档的号造 vipExpiry 壳、或被护栏
+      // 部分拦截造成三集合分叉，且本地回滚撤不回这些写。
 
       const serverResult = await serverPromise.then(() => ({ ok: true })).catch((e: any) => ({ ok: false, error: e }));
       if ((serverResult as any).ok) {
@@ -2051,7 +1918,6 @@ export default function AdminPanel({
   const handleBatchRechargeAllSquad50Days = async () => {
     setIsBatchRecharging(true);
     // 2026-10-15 P1-1/P2-7修复：收敛到服务端专用接口，服务端确认成功后再更新本地，失败不碰本地（防"假成功"）
-    let localBackup: { allDrivers: any[]; settingsKeys: Record<string, string | null> } | null = null;
     try {
       const now = new Date();
       const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
@@ -2073,33 +1939,9 @@ export default function AdminPanel({
       const rechargedCount = result.count || 0;
       const serverExpiry = result.targetExpiry || targetExpiry;
 
-      // 2. 服务端成功后，备份本地旧值再做乐观更新（失败可回滚）
-      const affectedPhones = new Set<string>();
-      allDrivers.forEach(d => {
-        const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-        if (p && p !== DEVELOPER_PHONE) affectedPhones.add(p);
-      });
-      const settingsKeys: Record<string, string | null> = {};
-      affectedPhones.forEach(p => {
-        const k = `dd_settings_${p}`;
-        try { settingsKeys[k] = localStorage.getItem(k); } catch (_) { settingsKeys[k] = null; }
-      });
-      localBackup = { allDrivers: allDriversRef.current ? [...allDriversRef.current] : [...allDrivers], settingsKeys };
-
-      setAllDrivers(prev => prev.map(d => {
-        const p = String(d.phoneNumber || d.phone || d.id || '').replace(/\D/g, '').trim();
-        if (p && p !== DEVELOPER_PHONE) {
-          try {
-            const settingsKey = `dd_settings_${p}`;
-            const cached = localStorage.getItem(settingsKey);
-            const parsed = cached ? JSON.parse(cached) : {};
-            parsed.vipExpiry = serverExpiry;
-            localStorage.setItem(settingsKey, JSON.stringify(parsed));
-          } catch (_) {}
-          return { ...d, vipExpiry: serverExpiry, status: '已通过' };
-        }
-        return d;
-      }));
+      // 第四轮修复（P1-6）：删除原第2步"遍历全体非开发者写 status:'已通过'+新 vipExpiry"的本地乐观写——
+      // 服务端实际只充已通过成员，前端却把非成员/待审核/已拒绝/商户号全部标成"已通过+已充值"，
+      // 管理员看到的是假象。本地名单一律以服务端实时订阅刷新为准，此处不再本地改状态。
 
       // 3. 更新左侧选中司机卡片
       if (targetPhone && targetPhone.replace(/\D/g, '').trim() !== DEVELOPER_PHONE) {
@@ -2121,35 +1963,27 @@ export default function AdminPanel({
 
       triggerToast(`🎉 成功为 ${rechargedCount} 名小队成员一键充值 50 天会员！到期时间：${serverExpiry}`);
     } catch (err: any) {
-      // 回滚本地乐观更新
-      if (localBackup) {
-        try {
-          Object.entries(localBackup.settingsKeys).forEach(([k, v]) => {
-            if (v === null) localStorage.removeItem(k);
-            else localStorage.setItem(k, v);
-          });
-          setAllDrivers(localBackup.allDrivers);
-        } catch (_) {}
-      }
-      triggerToast(`❌ 批量充值失败：${String(err?.message || err)}，本地数据已回滚，请重试`);
+      triggerToast(`❌ 批量充值失败：${String(err?.message || err)}，请重试`);
     } finally {
       setIsBatchRecharging(false);
     }
   };
 
   // 一键清理：删除服务器上除开发者 15509601222 外的所有司机数据（V2.0 专用）
-  // 覆盖 driver_users / squad_members / squad_applications / online_applications / driver_locations
-  // 带重试与进度显示，不静默吞错。中国大陆项目：数据直连阿里云。
+  // 第四轮修复（P1-4）：集合补齐 team_members/auth_tokens/商户账号/哈勃授权/兑换码/订单与乘客链接等，
+  // 此前漏清的集合会留下幽灵账号、仍可用的终身 token、被判"已移除"无法重新入队等问题；
+  // 并清空服务端 config/removed_squad_members 名单与本机 dd_removed_squad_phones_v2。
+  // admin_operation_logs 审计日志保留不清。带重试与进度显示，不静默吞错。中国大陆项目：数据直连阿里云。
   const [isPurging, setIsPurging] = useState(false);
   const [purgeProgress, setPurgeProgress] = useState('');
   const handlePurgeNonDeveloperData = async () => {
-    const ok = window.confirm('确定要删除服务器上除 15509601222（开发者）外的所有司机数据吗？\n\n将清理：driver_users / squad_members / squad_applications / online_applications / driver_locations\n\n此操作不可撤销！');
+    const ok = window.confirm('确定要删除服务器上除 15509601222（开发者）外的所有司机数据吗？\n\n将清理：司机档案/小队/申请/位置/团队/登录令牌/商户账号/哈勃授权/兑换码/订单/乘客链接等全部相关集合，并清空被移除名单\n\n此操作不可撤销！');
     if (!ok) return;
     setIsPurging(true);
     setPurgeProgress('开始...');
     const baseUrl = getBaseApiUrl();
     const KEEP = DEVELOPER_PHONE;
-    const COLS = ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations'];
+    const COLS = ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations', 'team_members', 'auth_tokens', 'merchant_accounts', 'merchant_users', 'hubble_authorized_drivers', 'vip_codes', 'messages', 'user_sessions', 'dispatch_qrs', 'version_history', 'valet_orders', 'merchant_orders', 'active_orders', 'passenger_links'];
     let totalDeleted = 0;
     const failures: string[] = [];
     try {
@@ -2161,6 +1995,14 @@ export default function AdminPanel({
           if (res.ok) {
             const json = await res.json();
             docs = Array.isArray(json.docs) ? json.docs : [];
+            // 第四轮修复（P1-5）：拉满 5000 上限说明可能被截断，必须如实记入失败清单，不许装作清干净了
+            if (docs.length >= 5000) {
+              failures.push(`${col}: 列表达到 5000 条上限，可能有未清完的残留，请再次执行清理`);
+            }
+          } else {
+            // 第四轮修复（P1-5）：list 非 ok 此前被静默跳过仍报"清理完成"，现计入 failures 如实显示
+            failures.push(`${col}: 列表获取失败（HTTP ${res.status}）`);
+            continue;
           }
         } catch (e) {
           failures.push(`${col}: 列表获取失败`);
@@ -2194,8 +2036,19 @@ export default function AdminPanel({
           setPurgeProgress(`${col}: 已删 ${totalDeleted} 条...`);
         }
       }
+      // 第四轮修复（P1-4）：清空服务端 config/removed_squad_members 被移除名单，
+      // 否则被清司机重新注册仍被判"已移除"无法入队；清空失败计入 failures 如实显示
+      try {
+        const rmOk = await setDoc(doc(db, 'config', 'removed_squad_members'), { phones: [], updatedAt: new Date().toISOString() });
+        if (!rmOk) failures.push('config/removed_squad_members: 名单清空失败');
+      } catch (e) {
+        failures.push('config/removed_squad_members: 名单清空失败');
+      }
+
       // 清理本地缓存
       try {
+        // 第四轮修复（P1-4）：本机被移除名单缓存一并清掉
+        localStorage.removeItem('dd_removed_squad_phones_v2');
         Object.keys(localStorage).filter(k => k.startsWith('mock_db_')).forEach(k => {
           if (!k.includes(KEEP)) localStorage.removeItem(k);
         });
@@ -2245,26 +2098,10 @@ export default function AdminPanel({
       const needAddToRemoved = !savedRemoved.includes(cleanPhone);
       if (needAddToRemoved) savedRemoved.push(cleanPhone);
 
-      try {
-        localStorage.setItem(`dd_user_role_${cleanPhone}`, '普通司机');
-        localStorage.removeItem(`dd_squad_member_${cleanPhone}`);
-        localStorage.removeItem(`dd_approved_${cleanPhone}`);
-        localStorage.removeItem(`dd_in_squad_${cleanPhone}`);
-      } catch (_) {}
+      // 2026-10-20 重建：本地标记清理移到服务端删除成功之后（失败不动本地）
 
-      // 3. 更新云端数据库
+      // 3. 只调服务端 remove 专用接口（删成员/申请/职位、档案置未加入小队、加 removed 名单均由服务端完成）
       const baseUrl = getBaseApiUrl();
-      const updatedUserDoc = {
-        phone: cleanPhone,
-        phoneNumber: cleanPhone,
-        driverName: `司机${cleanPhone.slice(-4)}`,
-        name: `司机${cleanPhone.slice(-4)}`,
-        role: '普通司机',
-        userRole: '普通司机',
-        status: '未加入小队',
-        vipExpiry: existingVip,
-        updatedAt: new Date().toISOString()
-      };
 
       // 2026-10-12改用删除专用通道（不走鉴权，确保删除必生效）
       // 2026-10-15 P1-5：跟踪服务端是否成功，失败则不写本地黑名单
@@ -2281,44 +2118,18 @@ export default function AdminPanel({
         }
         serverRemoveOk = true;
       } catch (delErr: any) {
-        console.error('[一键转非小队] 专用通道失败，降级走旧链路:', delErr);
-        // 降级：走旧的 dbProxy + REST 链路
-        const dbOps = [
-          { name: '删除小队成员', fn: () => deleteDoc(doc(db, 'squad_members', cleanPhone)) },
-          { name: '删除小队申请', fn: () => deleteDoc(doc(db, 'squad_applications', cleanPhone)) },
-          { name: '更新司机档案', fn: () => setDoc(doc(db, 'driver_users', cleanPhone), updatedUserDoc, { merge: true }) },
-          { name: '更新移除名单', fn: () => setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }) },
-        ];
-        const dbResults = await Promise.allSettled(dbOps.map(op => op.fn()));
-        const dbFailed = dbResults.map((r, i) => r.status === 'rejected' ? dbOps[i].name : null).filter(Boolean);
-        if (dbFailed.length > 0) {
-          console.error('[一键转非小队] 数据库操作失败:', dbFailed);
-          triggerToast(`⚠️ 部分云端操作失败：${dbFailed.join('、')}，请检查网络后重试`);
-        }
-
-        const restOps = [
-          { name: 'REST删除小队成员', url: `${baseUrl}/api/db/delete`, body: { collection: 'squad_members', docId: cleanPhone } },
-          { name: 'REST保存司机档案', url: `${baseUrl}/api/db/save`, body: { collection: 'driver_users', docId: cleanPhone, data: updatedUserDoc } },
-          { name: 'REST更新移除名单', url: `${baseUrl}/api/db/save`, body: { collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } } },
-        ];
-        const restResults = await Promise.allSettled(restOps.map(op =>
-          fetch(op.url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(op.body) })
-            .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
-        ));
-        const restFailed = restResults.map((r, i) => r.status === 'rejected' ? restOps[i].name : null).filter(Boolean);
-        if (restFailed.length > 0) {
-          console.error('[一键转非小队] REST操作失败:', restFailed);
-          triggerToast(`⚠️ 部分服务器同步失败：${restFailed.join('、')}`);
-        } else {
-          // 降级链路全部成功，也视为服务端成功
-          serverRemoveOk = true;
-        }
+        console.error('[一键转非小队] 专用通道失败:', delErr);
+        // 2026-10-20 重建：专用接口失败即失败，不再降级散弹删表（旧降级链会造成双存储分叉与假成功）
       }
 
       // 4. 服务端成功后落盘本地黑名单（2026-10-15 P1-5：失败不写，避免本地与云端不一致）
       if (serverRemoveOk) {
         try {
           localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
+          localStorage.setItem(`dd_user_role_${cleanPhone}`, '普通司机');
+          localStorage.removeItem(`dd_squad_member_${cleanPhone}`);
+          localStorage.removeItem(`dd_approved_${cleanPhone}`);
+          localStorage.removeItem(`dd_in_squad_${cleanPhone}`);
         } catch (_) {}
       } else {
         triggerToast('❌ 踢出失败：服务端未成功，已取消本地标记，请重试');
@@ -2375,24 +2186,20 @@ export default function AdminPanel({
       const existingVip = currentDrv?.vipExpiry || '待开通';
       const realName = resolveDriverRealName(cleanPhone, currentDrv?.driverName || currentDrv?.name);
 
-      // 2. 从黑名单中移除
-      let savedRemoved: string[] = [];
-      try {
-        const raw = localStorage.getItem('dd_removed_squad_phones_v2');
-        if (raw) {
-          savedRemoved = JSON.parse(raw);
-          savedRemoved = savedRemoved.filter((p: string) => String(p).replace(/\D/g, '').trim() !== cleanPhone);
-          localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(savedRemoved));
-        }
-      } catch (_) {}
-
-      try {
-        localStorage.setItem(`dd_approved_${cleanPhone}`, 'true');
-        localStorage.setItem(`dd_in_squad_${cleanPhone}`, 'true');
-      } catch (_) {}
-
-      // 3. 写入数据库
+      // 2. 2026-10-20 重建：只调服务端 approve 专用接口——写成员表、删申请、从 removed 名单划名、
+      // 保留 VIP/接单授权/角色全部由服务端完成；失败直接报错，不再双通道散弹写库、不再本地置批准标记。
       const baseUrl = getBaseApiUrl();
+      const approveResp = await fetch(`${baseUrl}/api/squad-member/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone: cleanPhone, name: realName })
+      });
+      const approveJson = await approveResp.json().catch(() => null);
+      if (!approveResp.ok || !approveJson?.success) {
+        throw new Error(approveJson?.error || `HTTP ${approveResp.status}`);
+      }
+
+      // 本地即时显示用的成员文档（名单本身会随服务端订阅回读刷新）
       const updatedSquadDoc = {
         phone: cleanPhone,
         phoneNumber: cleanPhone,
@@ -2405,52 +2212,6 @@ export default function AdminPanel({
         vipExpiry: existingVip,
         updatedAt: new Date().toISOString()
       };
-
-      // 3. 写入数据库：用 allSettled 跟踪，失败要报错
-      // BUG4修复：通过后删除 squad_applications 中的原申请，避免幽灵申请
-      // BUG5修复+用户要求：新成员默认小队内普通司机，写入 team_members 职位记录
-      const teamMemberDoc = {
-        phone: cleanPhone,
-        phoneNumber: cleanPhone,
-        driverName: realName,
-        name: realName,
-        role: '普通司机',
-        userRole: '普通司机',
-        squad_position: 'normal',
-        status: '已通过',
-        joinedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      const dbOps2 = [
-        { name: '写入小队成员', fn: () => setDoc(doc(db, 'squad_members', cleanPhone), updatedSquadDoc, { merge: true }) },
-        { name: '写入司机档案', fn: () => setDoc(doc(db, 'driver_users', cleanPhone), updatedSquadDoc, { merge: true }) },
-        { name: '写入职位记录', fn: () => setDoc(doc(db, 'team_members', cleanPhone), teamMemberDoc, { merge: true }) },
-        { name: '清理申请记录', fn: () => deleteDoc(doc(db, 'squad_applications', cleanPhone)) },
-        { name: '更新移除名单', fn: () => setDoc(doc(db, 'config', 'removed_squad_members'), { phones: savedRemoved }, { merge: true }) },
-      ];
-      const dbResults2 = await Promise.allSettled(dbOps2.map(op => op.fn()));
-      const dbFailed2 = dbResults2.map((r, i) => r.status === 'rejected' ? dbOps2[i].name : null).filter(Boolean);
-      if (dbFailed2.length > 0) {
-        console.error('[一键转小队] 数据库操作失败:', dbFailed2);
-        triggerToast(`⚠️ 部分云端操作失败：${dbFailed2.join('、')}，请检查网络后重试`);
-      }
-
-      const restOps2 = [
-        { name: 'REST写入小队成员', url: `${baseUrl}/api/db/save`, body: { collection: 'squad_members', docId: cleanPhone, data: updatedSquadDoc } },
-        { name: 'REST写入司机档案', url: `${baseUrl}/api/db/save`, body: { collection: 'driver_users', docId: cleanPhone, data: updatedSquadDoc } },
-        { name: 'REST写入职位记录', url: `${baseUrl}/api/db/save`, body: { collection: 'team_members', docId: cleanPhone, data: teamMemberDoc } },
-        { name: 'REST清理申请记录', url: `${baseUrl}/api/db/delete`, body: { collection: 'squad_applications', docId: cleanPhone } },
-        { name: 'REST更新移除名单', url: `${baseUrl}/api/db/save`, body: { collection: 'config', docId: 'removed_squad_members', data: { phones: savedRemoved } } },
-      ];
-      const restResults2 = await Promise.allSettled(restOps2.map(op =>
-        fetch(op.url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(op.body) })
-          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r; })
-      ));
-      const restFailed2 = restResults2.map((r, i) => r.status === 'rejected' ? restOps2[i].name : null).filter(Boolean);
-      if (restFailed2.length > 0) {
-        console.error('[一键转小队] REST操作失败:', restFailed2);
-        triggerToast(`⚠️ 部分服务器同步失败：${restFailed2.join('、')}`);
-      }
 
       // 4. 更新 React 本地状态
       setSquadMembersList(prev => {
@@ -2475,7 +2236,7 @@ export default function AdminPanel({
       }));
 
       try {
-        window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { addedPhone: cleanPhone, removedList: savedRemoved } }));
+        window.dispatchEvent(new CustomEvent('squad_members_updated', { detail: { addedPhone: cleanPhone } }));
       } catch (_) {}
 
       triggerToast(`✓ 已成功将 ${cleanPhone} 转为【小队内正式成员】（名字：${realName}，会员有效期：${existingVip}）`);
@@ -2702,69 +2463,57 @@ export default function AdminPanel({
         }
       }
 
-      const docRef = doc(db, 'team_members', phone);
-      await setDoc(docRef, {
-        phone: phone,
-        role: memberRole,
-        userRole: memberRole,
-        city: targetCity,
-        remark: memberRemark.trim(),
-        status: 'approved',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }, { merge: true });
+      // 2026-10-20 重构：不再输手机号直接造已通过成员（旧逻辑五处直写把任意号码写成
+      // team_members/online_applications/driver_users/squad_members 的 approved/已通过，绕过申请审批状态机）。
+      // 现按统一状态机处理：有待审核申请 → 先 approve 入队；已是成员 → 只调 set-role 改职位；
+      // 两者都不是 → 明确报错，要求对方先在 App 提交入队申请。
+      const baseUrl2 = getBaseApiUrl();
+      const memberStateResp = await fetch(`${baseUrl2}/api/db/get?col=squad_members&id=${phone}`, {
+        headers: { ...getAuthHeaders() }
+      }).catch(() => null);
+      const memberStateData: any = memberStateResp ? await memberStateResp.json().catch(() => ({})) : {};
+      const isAlreadyMember = Boolean(memberStateData?.exists);
 
-      // Automatically approve online application & enable driver permissions for team member (including 普通司机)
-      try {
-        await setDoc(doc(db, 'online_applications', phone), {
-          driverPhone: phone,
-          status: 'approved',
-          city: targetCity || '银川市',
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-
-        await setDoc(doc(db, 'driver_users', phone), {
-          phoneNumber: phone,
-          onlineOrdersEnabled: true,
-          status: 'approved',
-          role: memberRole,
-          city: targetCity || '',
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-
-        await setDoc(doc(db, 'squad_members', phone), {
-          phone: phone,
-          status: '已通过',
-          role: memberRole,
-          userRole: memberRole,
-          city: targetCity || '',
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-
-        // BUG7修复：职位调整同步 squad_applications
-        await setDoc(doc(db, 'squad_applications', phone), {
-          role: memberRole,
-          userRole: memberRole,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
-
-        const baseUrl = getBaseApiUrl();
-        // BUG8修复：服务端职位更新失败要明确报错
-        try {
-          const roleRes = await fetch(`${baseUrl}/api/admin/update-driver-role`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ phone, role: memberRole, city: targetCity || '' })
-          });
-          if (!roleRes.ok) {
-            console.error('[职位设置] 服务端同步失败:', roleRes.status);
-            triggerToast(`⚠️ 职位已本地保存，但服务器同步失败（HTTP ${roleRes.status}），请检查网络`);
-          }
-        } catch (e: any) {
-          console.error('[职位设置] 服务端同步异常:', e);
-          triggerToast(`⚠️ 职位已本地保存，但服务器同步失败，请检查网络后重试`);
+      if (!isAlreadyMember) {
+        const appResp = await fetch(`${baseUrl2}/api/db/get?col=squad_applications&id=${phone}`, {
+          headers: { ...getAuthHeaders() }
+        }).catch(() => null);
+        const appData: any = appResp ? await appResp.json().catch(() => ({})) : {};
+        const appStatus = String(appData?.data?.status || appData?.data?.approvalStatus || '');
+        if (!appData?.exists || !['待审核', 'pending', '审核中'].includes(appStatus)) {
+          alert('❌ 该司机尚未提交入队申请（或申请已处理），无法直接设置职位。请让对方先在 App 内提交小队申请，再在此审批/设置。');
+          setSavingMember(false);
+          return;
         }
-      } catch (_) {}
+        const applicantName = String(appData?.data?.name || appData?.data?.driverName || '').trim();
+        if (!applicantName) {
+          alert('❌ 该申请缺少姓名，无法审批，请让对方重新提交申请。');
+          setSavingMember(false);
+          return;
+        }
+        const approveResp = await fetch(`${baseUrl2}/api/squad-member/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ phone, name: applicantName })
+        });
+        const approveData = await approveResp.json().catch(() => ({}));
+        if (!approveResp.ok || !approveData.success) {
+          throw new Error(approveData.error || '审批入队失败');
+        }
+      }
+
+      // 职位设置（成员身份确立后的唯一写路径）
+      const roleResp = await fetch(`${baseUrl2}/api/squad-member/set-role`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        // 第四轮修复（P1-8）：把表单已选城市与备注一并提交——此前请求体只有 phone/role，
+        // 管理员选的城市和填的备注根本没到服务端，成功 toast 却宣称"城市：X 已设置"
+        body: JSON.stringify({ phone, role: memberRole, city: targetCity, remark: memberRemark })
+      });
+      const roleData = await roleResp.json().catch(() => ({}));
+      if (!roleResp.ok || !roleData.success) {
+        throw new Error(roleData.error || '职位设置失败');
+      }
 
       triggerToast(`✓ 成功设置团队成员手机号 ${phone} 为【${memberRole}】（城市：${targetCity || '全国'}）！`);
       setMemberPhone('');
@@ -2805,10 +2554,22 @@ export default function AdminPanel({
 
     showConfirm(
       '⚠️ 删除团队成员',
-      `确定要将成员(手机号: ${phone})从团队名单中移除吗？`,
+      `确定要将成员(手机号: ${phone})移出小队吗？删除后其成员资格与管理权限将立即失效（可重新申请）。`,
       async () => {
         try {
-          await deleteDoc(doc(db, 'team_members', phone));
+          // 2026-10-20 重构：删除团队成员必须真正结束成员资格——调 /api/squad-member/remove
+          // （删成员/申请/职位、档案置未加入小队、加入移除名单）。旧逻辑只删 team_members 一行，
+          // 成员资格与管理权（源自 squad_members）原封不动，等于没删。
+          const baseUrl = getBaseApiUrl();
+          const resp = await fetch(`${baseUrl}/api/squad-member/remove`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ phone })
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.success) {
+            throw new Error(data.error || '服务端拒绝');
+          }
           triggerToast(`✓ 已成功将团队成员 ${phone} 移除！`);
         } catch (e: any) {
           alert('移除失败: ' + e.message);
@@ -2857,11 +2618,13 @@ export default function AdminPanel({
     const createdList: string[] = [];
     try {
       const now = new Date().toISOString();
+      let failedCount = 0;
       for (let i = 0; i < genCount; i++) {
         const codeText = generateCodeString(genDuration);
-        createdList.push(codeText);
         const codeDocRef = doc(collection(db, 'vip_codes'), codeText);
-        await setDoc(codeDocRef, {
+        // 第四轮修复（P1-1）：逐个查 setDoc 返回值，写失败的码不许进"已生成"列表假报上链
+        //（此前断网也弹"生成成功"并展示根本没上链、不可用的码）
+        const genOk = await setDoc(codeDocRef, {
           code: codeText,
           duration: genDuration,
           isRedeemed: false,
@@ -2869,8 +2632,17 @@ export default function AdminPanel({
           redeemedAt: '',
           redeemedBy: ''
         });
+        if (genOk) {
+          createdList.push(codeText);
+        } else {
+          failedCount++;
+        }
       }
       setNewlyGenerated(createdList);
+      if (failedCount > 0) {
+        alert(`⚠️ 生成未完全成功：${createdList.length} 个已上链，${failedCount} 个写入失败（网络/服务端异常）。失败的码未展示、不可用，请检查网络后重试。`);
+        return;
+      }
       const durationLabel = genDuration === 99999 ? '永久有效' : `${genDuration}天`;
       triggerToast(`🎉 成功生成 ${genCount} 个 ${durationLabel} VIP 兑换码！已直接上链`);
     } catch (e: any) {
@@ -2891,7 +2663,12 @@ export default function AdminPanel({
       snapshot.forEach((document) => {
         deletePromises.push(deleteDoc(doc(db, 'vip_codes', document.id)));
       });
-      await Promise.all(deletePromises);
+      // 第四轮修复（P1-1）：deleteDoc 网络失败返回 false 不抛错，必须查结果，有失败如实提示
+      const delResults = await Promise.all(deletePromises);
+      if (delResults.some(r => !r)) {
+        alert('⚠️ 清空未完全成功：部分兑换码删除失败（网络/服务端异常），请检查网络后重试。');
+        return;
+      }
       triggerToast('🔥 已成功清空云端所有码。');
     } catch (e: any) {
       alert('清空失败: ' + e.message);
@@ -2901,7 +2678,12 @@ export default function AdminPanel({
   // One-click delete individual code
   const handleDeleteCode = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'vip_codes', id));
+      // 第四轮修复（P1-1）：查 deleteDoc 返回值，失败弹失败提示，不许假报"已删除"
+      const delOk = await deleteDoc(doc(db, 'vip_codes', id));
+      if (!delOk) {
+        alert('删除失败：服务端删除未成功（网络/服务端异常），请检查网络后重试。');
+        return;
+      }
       triggerToast('🗑️ 兑换码已被物理删除。');
     } catch (e: any) {
       alert('删除失败: ' + e.message);
@@ -2914,44 +2696,12 @@ export default function AdminPanel({
     triggerToast('📋 已复制到剪贴板！');
   };
 
-  // Quick seeding of mock codes if db is empty so it looks full instantly
-  const handleQuickSeed = async () => {
-    setGenerating(true);
-    try {
-      const now = new Date().toISOString();
-      const mockSeeds = [
-        { duration: 30, count: 3 },
-        { duration: 90, count: 2 },
-        { duration: 180, count: 2 },
-        { duration: 360, count: 1 },
-      ];
-
-      for (const seed of mockSeeds) {
-        for (let i = 0; i < seed.count; i++) {
-          const codeText = generateCodeString(seed.duration);
-          await setDoc(doc(db, 'vip_codes', codeText), {
-            code: codeText,
-            duration: seed.duration,
-            isRedeemed: false,
-            createdAt: now,
-            redeemedAt: '',
-            redeemedBy: ''
-          });
-        }
-      }
-      triggerToast('🌱 数据库初始化种子注入成功！');
-    } catch (e: any) {
-      alert('注入失败: ' + e.message);
-    } finally {
-      setGenerating(false);
-    }
-  };
-
   // Search and filter logic
   const getDisplayRedeemedBy = (redeemedBy: string) => {
     const clean = redeemedBy?.trim();
     if (!clean || clean === '凤凰代驾' || clean === 'XX代驾' || clean === '模拟器测试终端' || clean === '司端一体化用户' || clean === '手机APP司机端') {
-      return (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '18609518888';
+      // 第四轮修复（P2）：兑换者为空就显示 —，不再拿当前登录手机号/写死号码冒充兑换者（会误导对账稽核）
+      return '—';
     }
     return clean;
   };
@@ -3829,22 +3579,14 @@ export default function AdminPanel({
           {/* Quick global widgets (Clear or Quick Seed) displayed in header for convenience */}
           {activeTab === 'overview' && (
             <div className="flex gap-2">
-              {codes.length === 0 && (
-                <button
-                  onClick={handleQuickSeed}
-                  className="px-4 py-2 bg-teal-600/10 border border-teal-500/20 hover:bg-teal-600/20 text-teal-400 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  快速注入种子数据
-                </button>
-              )}
-
+              {/* 第四轮修复（P2）：删除"快速注入种子数据"按钮——它会在码库为空时往生产库写入真实可用兑换码；
+                  "物理清空数据库"名实不符（实际只清 vip_codes），文案改与实际一致 */}
               <button
                 onClick={handleResetAll}
                 className="px-4 py-2 bg-red-600/10 border border-red-500/20 hover:bg-red-600/20 text-red-400 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                物理清空数据库
+                清空兑换码库
               </button>
             </div>
           )}
@@ -4126,7 +3868,7 @@ export default function AdminPanel({
                     className="w-full py-2.5 bg-red-650/10 hover:bg-red-600/10 border border-red-500/20 text-red-500 font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" />
-                    数据清空重设
+                    清空兑换码库
                   </button>
                 </div>
               </div>
@@ -4520,6 +4262,10 @@ export default function AdminPanel({
                   if (!input) { triggerToast('请输入手机号或名字'); return; }
                   // P0(2026-10-16)：天数=0 表示屏蔽接单（与界面文案一致），只拦空/非法/负数/超限
                   if (daysStr === '' || isNaN(days) || days < 0 || days > 3650) { triggerToast('请输入0-3650的有效天数（0=屏蔽接单）'); return; }
+                  // 第四轮修复（P2）：单笔接单授权充值补二次确认，与"设为永久/全小队批量"同口径，防误触改错人/改错天数
+                  if (!confirm(days === 0
+                    ? `确定要屏蔽 ${input} 的接单授权吗？其接单授权将立即到期、无法接单。`
+                    : `确定将 ${input} 的接单授权设为 ${days} 天吗？（绝对值覆盖，不是累加）`)) return;
                   try {
                     const baseUrl = getBaseApiUrl();
                     const isPhone = /^1[3-9]\d{9}$/.test(input.replace(/\D/g, ''));
@@ -6736,9 +6482,7 @@ export default function AdminPanel({
                           newMap[norm] = { ...curr, online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true };
                         });
                         await saveCityConfigsMap(newMap);
-                        await updateMasterSwitch('online_app_enabled', true);
-                        await updateMasterSwitch('merchant_dispatch_enabled', true);
-                        await updateMasterSwitch('squad_management_enabled', true);
+                        await updateAllMasterSwitches(true);
                         triggerToast(`✨ 已成功一键开启中国大陆全部城市的 线上单、商户代叫 与 小队管理 功能！`);
                       }
                     }}
@@ -6748,7 +6492,7 @@ export default function AdminPanel({
                     一键开启大陆全部城市
                   </button>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       if (confirm(`确定要批量为当前筛选的这 ${filteredChinaCities.length} 个城市全部【开启】三项功能吗？`)) {
                         const newMap = { ...cityConfigs };
                         filteredChinaCities.forEach(c => {
@@ -6756,7 +6500,8 @@ export default function AdminPanel({
                           const curr = getCityConfig(norm);
                           newMap[norm] = { ...curr, online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true };
                         });
-                        saveCityConfigsMap(newMap);
+                        // 第四轮修复（P1-7）：等保存完成再弹成功，不许未落库先报喜
+                        await saveCityConfigsMap(newMap);
                         triggerToast(`✨ 已一键开启 ${filteredChinaCities.length} 个城市的全部功能！`);
                       }
                     }}
@@ -6766,7 +6511,7 @@ export default function AdminPanel({
                     批量开启筛选城市
                   </button>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       if (confirm(`确定要批量为当前筛选的这 ${filteredChinaCities.length} 个城市全部【关闭】三项功能吗？`)) {
                         const newMap = { ...cityConfigs };
                         filteredChinaCities.forEach(c => {
@@ -6774,7 +6519,8 @@ export default function AdminPanel({
                           const curr = getCityConfig(norm);
                           newMap[norm] = { ...curr, online_app_enabled: false, merchant_dispatch_enabled: false, squad_management_enabled: false };
                         });
-                        saveCityConfigsMap(newMap);
+                        // 第四轮修复（P1-7）：等保存完成再弹成功，不许未落库先报喜
+                        await saveCityConfigsMap(newMap);
                         triggerToast(`🛑 已一键关闭 ${filteredChinaCities.length} 个城市的全部功能！`);
                       }
                     }}
@@ -7071,81 +6817,6 @@ export default function AdminPanel({
                     </button>
                   </div>
 
-                  <button
-                    onClick={handleMigrateDatabase}
-                    disabled={migrationLoading}
-                    className={`w-full py-3.5 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all ${
-                      migrationLoading
-                        ? 'bg-teal-600/50 text-teal-200 cursor-not-allowed'
-                        : 'bg-slate-800 hover:bg-slate-700 active:scale-[0.99] text-teal-300 border border-teal-500/30 cursor-pointer'
-                    }`}
-                  >
-                    {migrationLoading ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        正在极速读取并无损同步写入您的阿里云 MySQL 数据库，请稍候...
-                      </>
-                    ) : (
-                      <>
-                        <Database className="w-4 h-4" />
-                        🚀 立即执行：初始化并无损同步全套数据到阿里云宝塔 MySQL 数据库
-                      </>
-                    )}
-                  </button>
-
-                  {/* Results report */}
-                  {migrationResult && (
-                    <div className="bg-emerald-950/20 border border-emerald-900/40 rounded-xl p-4 space-y-3 animate-in fade-in duration-200 text-left">
-                      <div className="flex items-center gap-2 text-emerald-400 text-xs font-black">
-                        <CheckCircle className="w-4 h-4 animate-spin" />
-                        {migrationResult.message}
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        一键同步总记录数: <b className="text-emerald-400 font-mono text-sm">{migrationResult.total_documents}</b> 条 (分发在 {migrationResult.total_collections} 个核心数据集中)：
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-[#090B11]/80 p-3 rounded-lg border border-slate-900 font-mono text-[11px]">
-                        {Object.entries(migrationResult.details || {}).map(([col, count]: [string, any]) => (
-                          <div key={col} className="flex justify-between border-b border-slate-900/60 pb-1">
-                            <span className="text-slate-500">{col}:</span>
-                            <span className="text-teal-400 font-bold">{count}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Errors & diagnostics */}
-                  {migrationError && (
-                    <div className="bg-[#1c1214] border border-rose-950/40 rounded-xl p-4 space-y-3 animate-in fade-in duration-200 text-left">
-                      <div className="flex items-start gap-2 text-rose-400 text-xs font-black">
-                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                        <span>迁移/同步执行失败：</span>
-                      </div>
-                      <pre className="text-xs text-rose-300 font-sans whitespace-pre-wrap leading-relaxed pl-6">
-                        {migrationError}
-                      </pre>
-                      
-                      <div className="border-t border-rose-950/40 pt-3 mt-2 pl-6 space-y-2">
-                        <div className="text-xs text-slate-300 font-black">📝 阿里云宝塔自建数据库及接口部署排查建议：</div>
-                        <ol className="list-decimal pl-4 text-xs text-slate-400 space-y-1.5 leading-relaxed">
-                          <li>
-                            <b>检查宝塔站点 Nginx 反向代理配置</b>：由于您的域名是 <code className="text-slate-300 font-mono bg-slate-950 px-1 py-0.5 rounded">admin.lyheiwandaijiamax.com</code>，如果您直接请求 <code className="text-slate-300 font-mono bg-slate-950 px-1 py-0.5 rounded">/api/*</code> 时报错，请务必在宝塔面板该域名的「设置」-「反向代理」中，添加一条配置：
-                            <div className="bg-[#090B11] p-2 rounded border border-slate-900 my-1 text-[11px] font-mono leading-normal text-teal-400">
-                              代理名称：api_proxy<br/>
-                              代理地址：http://127.0.0.1:3000
-                            </div>
-                            这能确保所有的 API 数据库操作能安全跨过防火墙，顺利由运行在 3000 端口的代驾服务端承接，而不会被 Nginx 当作普通静态页面。
-                          </li>
-                          <li>
-                            <b>确认端口连通性及防火墙</b>：请确保阿里云控制台安全组以及宝塔面板的「系统防火墙」已开放 <code className="text-slate-300 font-mono bg-slate-950 px-1 py-0.5 rounded">3000</code> 端口。
-                          </li>
-                          <li>
-                            <b>在 .env 中正确声明 MySQL 配置</b>：请检查自建服务器上的部署环境变量中已填入真实的 <code className="text-slate-300 font-mono bg-slate-950 px-1 py-0.5 rounded">MYSQL_HOST</code>、<code className="text-slate-300 font-mono bg-slate-950 px-1 py-0.5 rounded">MYSQL_USER</code> 等，并顺利执行了重启启动指令。
-                          </li>
-                        </ol>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>

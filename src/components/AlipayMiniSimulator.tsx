@@ -95,51 +95,10 @@ export const AlipayMiniSimulator: React.FC<AlipayMiniSimulatorProps> = ({
       }
       const expiryStr = newExpiry.toISOString().replace('T', ' ').substring(0, 19);
 
-      // Update localStorage dd_squad_members_v2
-      try {
-        const saved = localStorage.getItem('dd_squad_members_v2');
-        let list = saved ? JSON.parse(saved) : [];
-        if (!Array.isArray(list)) list = [];
-        let found = false;
-        list = list.map((m: any) => {
-          if (m.phone === phone || m.id === phone) {
-            found = true;
-            return {
-              ...m,
-              isVip: true,
-              vipStatus: '已开通VIP',
-              vipExpiryDate: expiryStr,
-              lastRenewAt: new Date().toISOString().replace('T', ' ').substring(0, 19)
-            };
-          }
-          return m;
-        });
-        if (!found) {
-          list.push({
-            id: phone,
-            phone: phone,
-            name: `司机${phone.slice(-4)}`,
-            isVip: true,
-            vipStatus: '已开通VIP',
-            vipExpiryDate: expiryStr,
-            role: '队员',
-            status: '已通过'
-          });
-        }
-        localStorage.setItem('dd_squad_members_v2', JSON.stringify(list));
-      } catch (e) {}
+      // 2026-10-21 第三轮：模拟器只动本地演示状态，不再写真实 squad_members，
+      // 也不再往共享的 dd_squad_members_v2 缓存里塞自封"已通过+VIP"的假成员条目
 
-      // Update db Proxy if available
-      if (db) {
-        setDoc(doc(db, 'squad_members', phone), {
-          isVip: true,
-          vipStatus: '已开通VIP',
-          vipExpiryDate: expiryStr,
-          lastRenewAt: new Date().toISOString().replace('T', ' ').substring(0, 19)
-        }, { merge: true }).catch(() => {});
-      }
-
-      setVipExpiryDate(expiryStr);
+            setVipExpiryDate(expiryStr);
       setVipsRemainingDays(prev => prev + selectedDays);
       setPayStep('success');
 

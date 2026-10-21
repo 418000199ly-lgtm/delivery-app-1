@@ -15,7 +15,6 @@ import PaymentQRView from './components/PaymentQRView';
 import MerchantValetPaymentView from './components/MerchantValetPaymentView';
 import CreateOrderView from './components/CreateOrderView';
 import PassengerOrderView from './components/PassengerOrderView';
-import WeChatAuthMobile from './components/WeChatAuthMobile';
 import WeChatMiniSimulator from './components/WeChatMiniSimulator';
 import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName, getHighPrecisionLocationName, calculateHaversineDistanceKm } from './utils/locationResolver';
@@ -37,6 +36,7 @@ import AdminPanel from './components/AdminPanel';
 import LoginView from './components/LoginView';
 import MobileDispatchValetOrder from './components/MobileDispatchValetOrder';
 import { db, doc, onSnapshot, setDoc, deleteDoc, collection, getDoc, getBaseApiUrl, getAuthHeaders } from './lib/dbProxy';
+import { subscribeSquadMembership, SquadMembershipState } from './lib/squadMembership';
 import { IncomingOrderOverlay } from './components/IncomingOrderOverlay';
 import { speakText, initAudioUnlock } from './utils/speech';
 import { 
@@ -189,11 +189,27 @@ class AppErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundary
   }
 }
 
+// 第四轮修复（P0-4）：账号绑定字段——收款码/VIP/接单授权/纠偏开关只属于本账号，
+// 绝不许经共享 dd_settings 串到下一个登录的账号（乘客会把钱付给上一个司机）
+const ACCOUNT_BOUND_SETTING_FIELDS = ['wechatQrCode', 'alipayQrCode', 'vipExpiry', 'licenseExpiry', 'deviationMitigation'];
+const stripAccountBoundSettings = (obj: any) => {
+  if (!obj || typeof obj !== 'object') return obj;
+  const out = { ...obj };
+  ACCOUNT_BOUND_SETTING_FIELDS.forEach(k => { delete out[k]; });
+  return out;
+};
+// 把共享 dd_settings 里的账号绑定字段剥离后写回（登出/强制清理时调用）
+const sanitizeSharedSettingsStorage = () => {
+  try {
+    const raw = localStorage.getItem('dd_settings');
+    if (raw) {
+      localStorage.setItem('dd_settings', JSON.stringify(stripAccountBoundSettings(JSON.parse(raw))));
+    }
+  } catch (_) {}
+};
+
 export default function App() {
-  // Support WeChat mobile authorization route directly
-  if (typeof window !== 'undefined' && window.location.pathname === '/wechat-login-mobile') {
-    return <WeChatAuthMobile />;
-  }
+  // 2026-10-21 第三轮：/wechat-login-mobile 微信授权页已随服务端三接口一并下线（死流程）
 
   // --- 1. Persistent State Management ---
   const lastCalibratedPhoneRef = useRef<string | null>(null);
@@ -220,10 +236,12 @@ export default function App() {
     try {
       const phone = typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : null;
       const key = phone ? `dd_settings_${phone}` : 'dd_settings';
-      const cached = typeof window !== 'undefined' ? (localStorage.getItem(key) || localStorage.getItem('dd_settings')) : null;
+      const perPhoneCached = (typeof window !== 'undefined' && phone) ? localStorage.getItem(key) : null;
+      const cached = typeof window !== 'undefined' ? (perPhoneCached || localStorage.getItem('dd_settings')) : null;
       if (cached) {
         const loaded = JSON.parse(cached);
-        return { ...DEFAULT_SETTINGS, ...loaded };
+        // 第四轮修复（P0-4）：走共享 dd_settings 兜底（本号无独立设置）时剥离上一个账号的绑定字段，防收款码串号
+        return { ...DEFAULT_SETTINGS, ...((phone && !perPhoneCached) ? stripAccountBoundSettings(loaded) : loaded) };
       }
     } catch (_) {}
     return { ...DEFAULT_SETTINGS };
@@ -421,6 +439,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return false;
   });
 
+  // 第四轮修复（P1-9）：传给 AdminPanel 的管理门禁除本地标记外，还必须是开发者号码登录才为真；
+  // 此前仅凭 localStorage.isAdminAuthenticated 一个键，任何司机在自己设备上置 true 即可打开完整后台界面
+  const effectiveIsAdminAuthenticated = Boolean(
+    isAdminAuthenticated &&
+    (String(userPhone || '').trim() === '15509601222' || String(userPhone || '').trim() === '15509601222A')
+  );
+
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
 
   // Version management states at the root level of the app
@@ -463,6 +488,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             ['dd_user_phone', 'dd_auth_token', 'isAdminAuthenticated', 'admin_session_token', 'admin_session_ts'].forEach(k => {
               try { localStorage.removeItem(k); } catch (_) {}
             });
+            // 第四轮修复（P0-4）：401 强制清理时同步剥离共享 dd_settings 的账号绑定字段并清账号残留，防换号串收款码
+            sanitizeSharedSettingsStorage();
+            try {
+              localStorage.removeItem('dd_squad_members_v2');
+              if (phone) {
+                localStorage.removeItem(`dd_vip_expiry_${phone}`);
+                localStorage.removeItem(`dd_vip_expiry_time_${phone}`);
+                localStorage.removeItem(`dd_qr_deleted_${phone}`);
+              }
+            } catch (_) {}
             alert('⚠️ 登录已失效，请重新短信登录。');
             window.location.reload();
           }
@@ -590,6 +625,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const [isInSquad, setIsInSquad] = useState(false);
 
+  // 2026-10-20 重建：本人小队状态只认服务端统一模块（成员表/申请表/移除名单）
+  const [myMembership, setMyMembership] = useState<SquadMembershipState | null>(null);
+  useEffect(() => {
+    if (!userPhone) { setMyMembership(null); return; }
+    const unsub = subscribeSquadMembership(userPhone, (st) => setMyMembership(st));
+    return () => { try { unsub(); } catch (_) {} };
+  }, [userPhone]);
+
+  // isInSquad 与统一状态保持一致（服务端已通过才算在队，不再按“文档存在”判定）
+  useEffect(() => {
+    setIsInSquad(myMembership?.isMember === true);
+  }, [myMembership]);
+
   useEffect(() => {
     if (!userPhone) {
       setIsInSquad(false);
@@ -597,7 +645,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     }
     const docRef = doc(db, 'squad_members', userPhone);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      setIsInSquad(docSnap.exists());
+      // 2026-10-20 重建：isInSquad 改由统一模块状态驱动，此处不再按文档存在判定
     }, (error) => {
       console.error("Error subscribing to squad member state:", error);
     });
@@ -826,27 +874,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const isCurrentUserRemoved = () => {
     if (!userPhone || userPhone === DEVELOPER_PHONE) return false;
-    try {
-      const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (savedR && JSON.parse(savedR).includes(userPhone)) return true;
-    } catch (_) {}
-    return false;
+    // 2026-10-20 重建：是否被移出只认服务端 removed 名单（统一模块状态），不读本地缓存
+    return myMembership?.isRemoved === true;
   };
 
   const isUserSquadMember = () => {
     if (!userPhone) return false;
     if (userPhone === DEVELOPER_PHONE) return true;
-    if (isCurrentUserRemoved()) return false;
-    try {
-      if (localStorage.getItem(`dd_approved_${userPhone}`) === 'true') return true;
-      if (localStorage.getItem(`dd_in_squad_${userPhone}`) === 'true') return true;
-      const saved = localStorage.getItem('dd_squad_members_v2');
-      if (saved) {
-        const members = JSON.parse(saved);
-        return members.some((m: any) => String(m.phone || m.id).replace(/\D/g, '').trim() === userPhone.trim());
-      }
-    } catch (_) {}
-    return false;
+    // 2026-10-20 重建：成员判定只认服务端统一状态，不再读本地标记/缓存名单
+    return myMembership?.isMember === true;
   };
 
   const loggedInMember = teamMembers.find(m => m.phone === userPhone);
@@ -893,15 +929,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }, []);
 
   // State to check if driver is approved squad member or management team member
-  const [isSquadApprovedOrManagement, setIsSquadApprovedOrManagement] = useState<boolean>(() => {
-    try {
-      const phone = localStorage.getItem('dd_user_phone') || '';
-      if (phone === DEVELOPER_PHONE) return true;
-      if (phone && localStorage.getItem(`dd_approved_${phone}`) === 'true') return true;
-      if (phone && localStorage.getItem(`dd_in_squad_${phone}`) === 'true') return true;
-    } catch (_) {}
-    return false;
-  });
+  const [isSquadApprovedOrManagement, setIsSquadApprovedOrManagement] = useState<boolean>(false);
+
+  // 2026-10-20 重建：该状态以统一模块为准——正式成员，或成员文档带管理角色/职位时为 true；
+  // 不再由本地标记播种。旧同步 effect 保留（兼管 removed 名单缓存与 VIP 同步），
+  // 其与成员语义冲突的“申请不存在置 false”已在下方 unsub3 处中和。
+  useEffect(() => {
+    if (!userPhone) { setIsSquadApprovedOrManagement(false); return; }
+    if (userPhone === DEVELOPER_PHONE) { setIsSquadApprovedOrManagement(true); return; }
+    if (!myMembership) return;
+    const role = String(myMembership.member?.role || myMembership.member?.userRole || '');
+    const pos = String(myMembership.member?.squad_position || '');
+    const isMgmt = ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机', '总指挥官', '开发者'].includes(role) || ['boss', 'manager', 'dispatcher', 'developer'].includes(pos);
+    setIsSquadApprovedOrManagement(myMembership.isMember || isMgmt);
+  }, [myMembership, userPhone]);
 
   useEffect(() => {
     if (!userPhone) {
@@ -1027,7 +1068,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
       if (!snap.exists()) {
         if (userPhone !== DEVELOPER_PHONE) {
-          setIsSquadApprovedOrManagement(false);
+          // 2026-10-20 重建：申请记录不存在不再置 false（审批通过后申请会被删除，曾与成员状态对打导致误判非成员）
           try {
             localStorage.removeItem(`dd_approved_${userPhone}`);
             localStorage.removeItem(`dd_in_squad_${userPhone}`);
@@ -1360,14 +1401,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         body: JSON.stringify({ collection: 'driver_users', docId: targetPhone, data: offlinePayload, merge: true })
       }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
-      if (isUserSquadMember()) {
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_members', docId: targetPhone, data: offlinePayload, merge: true })
-        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
-
       fetch(`${baseUrl}/api/driver/location`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -1518,7 +1551,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       if (db) {
         setDoc(doc(db, 'driver_locations', userPhone), offlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         setDoc(doc(db, 'driver_users', userPhone), offlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-        setDoc(doc(db, 'squad_members', userPhone), offlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
       }
       try {
         const baseUrl = getBaseApiUrl();
@@ -1540,6 +1572,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       localStorage.removeItem('dd_online_session_time');
       localStorage.removeItem('dd_user_phone');
       localStorage.removeItem('dd_settings');
+      // 第四轮修复（P0-4）：补清此前漏清的账号残留——管理态、成员名单缓存、本号 VIP/删码标记，防换号串数据
+      localStorage.removeItem('isAdminAuthenticated');
+      localStorage.removeItem('dd_squad_members_v2');
+      if (userPhone) {
+        localStorage.removeItem(`dd_vip_expiry_${userPhone}`);
+        localStorage.removeItem(`dd_vip_expiry_time_${userPhone}`);
+        localStorage.removeItem(`dd_qr_deleted_${userPhone}`);
+      }
       localStorage.removeItem('dd_user_role');
       localStorage.removeItem('dd_login_ts');
       localStorage.removeItem('dd_auth_token');
@@ -1584,6 +1624,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     setIsOnline(false);
     setUserPhone(null);
+    // 第四轮修复（P1-18）：登出同步清内存态，防同次运行换号后顶着上个账号的行程/在线单给新号上报忙碌
+    setCurrentTrip(null);
+    setActiveOnlineOrder(null);
+    setIsAdminAuthenticated(false);
     setSquadRole('普通司机');
     setIsSquadApprovedOrManagement(false);
     setIsInSquad(false);
@@ -1602,9 +1646,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   useEffect(() => {
     const handleTokenExpired = () => {
       try {
+        const expiredPhone = localStorage.getItem('dd_user_phone');
         localStorage.removeItem('dd_auth_token');
         localStorage.removeItem('dd_user_phone');
+        // 第四轮修复（P0-4）：强制登出同样剥离共享 dd_settings 的账号绑定字段并清账号残留，防换号串收款码
+        sanitizeSharedSettingsStorage();
+        localStorage.removeItem('isAdminAuthenticated');
+        localStorage.removeItem('dd_squad_members_v2');
+        if (expiredPhone) {
+          localStorage.removeItem(`dd_vip_expiry_${expiredPhone}`);
+          localStorage.removeItem(`dd_vip_expiry_time_${expiredPhone}`);
+          localStorage.removeItem(`dd_qr_deleted_${expiredPhone}`);
+        }
       } catch (_) {}
+      setIsAdminAuthenticated(false);
       setUserPhone(null);
       setCurrentView('login');
       // 2026-10-17：去掉"登录已失效"toast，用户反馈一直弹很烦。跳登录页即可。
@@ -1691,11 +1746,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
 
       const settingsKey = `dd_settings_${userPhone}`;
-      const cachedSettings = localStorage.getItem(settingsKey) || localStorage.getItem('dd_settings');
+      const perPhoneSettings = localStorage.getItem(settingsKey);
+      const cachedSettings = perPhoneSettings || localStorage.getItem('dd_settings');
       if (cachedSettings) {
         try {
           const parsed = JSON.parse(cachedSettings);
-          setSettings(prev => ({ ...DEFAULT_SETTINGS, ...prev, ...parsed }));
+          // 第四轮修复（P0-4）：走共享 dd_settings 兜底时剥离上一个账号的绑定字段（收款码/VIP/接单授权/纠偏），防串号
+          const safeParsed = perPhoneSettings ? parsed : stripAccountBoundSettings(parsed);
+          setSettings(prev => ({ ...DEFAULT_SETTINGS, ...prev, ...safeParsed }));
         } catch (_) {
           setSettings({
             ...DEFAULT_SETTINGS,
@@ -2059,9 +2117,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       };
 
       setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      if (isUserSquadMember()) {
-        setDoc(doc(db, 'squad_members', userPhone), payload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
 
       // Realtime report online/offline status to Aliyun/Baota server API
       const baseUrl = getBaseApiUrl();
@@ -2071,13 +2126,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: payload, merge: true })
       }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
-      if (isUserSquadMember()) {
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: payload, merge: true })
-        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
     }
   }, [isOnline, userPhone]);
 
@@ -3509,7 +3557,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     // 滑动上线/下线即时上报阿里云（2026-10-11）
     try {
       const baseUrl = getBaseApiUrl();
-      const hasGps = !!(driverCoords?.lat && driverCoords?.lng);
+      // 第四轮修复（P1-22）：冷启动无缓存时 driverCoords 是银川中心占位默认值（38.4830,106.2350），
+      // 不是真实定位，不许当真 GPS 上报（否则刚上线司机按市中心位置被派单/算距离）
+      const isPlaceholderCoords = driverCoords?.lat === 38.4830 && driverCoords?.lng === 106.2350;
+      const hasGps = !!(driverCoords?.lat && driverCoords?.lng) && !isPlaceholderCoords;
       const payload: any = {
         phone: userPhone,
         driverName: userPhone,
@@ -3557,8 +3608,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const resolvedSelfName = resolveDriverRealName(userPhone, settings.driverName, settings);
       const city = settings?.city || '银川市';
       // 直接使用真实GPS坐标，无GPS时已在上方拦截（2026-10-10修复，不再用城市中心冒充）
-      const currentLat = driverCoords?.lat || 0;
-      const currentLng = driverCoords?.lng || 0;
+      // 第四轮修复（P1-22）：占位默认坐标（38.4830,106.2350）不是真实定位，
+      // 同步在线状态时坐标置 0（未知），不许把市中心假坐标写进 driver_users/driver_locations
+      const isPlaceholderCoordsOnline = driverCoords?.lat === 38.4830 && driverCoords?.lng === 106.2350;
+      const currentLat = isPlaceholderCoordsOnline ? 0 : (driverCoords?.lat || 0);
+      const currentLng = isPlaceholderCoordsOnline ? 0 : (driverCoords?.lng || 0);
 
       const onlinePayload = {
         phone: userPhone,
@@ -3577,9 +3631,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       setDoc(doc(db, 'driver_users', userPhone), onlinePayload, { merge: true }).catch((e) => {
         console.error("Failed to sync isOnline toggle to Firestore driver_users:", e);
       });
-      if (isUserSquadMember() && !isCurrentUserRemoved()) {
-        setDoc(doc(db, 'squad_members', userPhone), onlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
       setDoc(doc(db, 'driver_locations', userPhone), onlinePayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
       const baseUrl = getBaseApiUrl();
@@ -3608,13 +3659,6 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: onlinePayload, merge: true })
       }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      if (isUserSquadMember()) {
-        fetch(`${baseUrl}/api/db/set`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-          body: JSON.stringify({ collection: 'squad_members', docId: userPhone, data: onlinePayload, merge: true })
-        }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-      }
       fetch(`${baseUrl}/api/db/set`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
@@ -3668,8 +3712,15 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           wechatQrCode: newSettings.wechatQrCode || '',
           qrCode: newSettings.wechatQrCode || '',
           updatedAt: new Date().toISOString()
-        }, { merge: true }).catch(err => {
+        }, { merge: true }).then((settingsSyncOk) => {
+          // 第四轮修复（P1-20）：设置整表回写失败必须让用户可见——setDoc 网络失败返回 false 不抛错，
+          // 此前只有 catch 里一句 console.error，整批设置被服务端拒收时界面还全显示"已保存"
+          if (!settingsSyncOk) {
+            triggerToast('⚠️ 设置保存失败：服务端同步未成功，请检查网络后重试');
+          }
+        }).catch(err => {
           console.error("Error syncing user settings update to Firestore:", err);
+          triggerToast('⚠️ 设置保存失败：服务端同步未成功，请检查网络后重试');
         });
 
         // Sync to dispatch_qrs collection for cross-driver 报单转单 payment QR code resolution
@@ -4005,52 +4056,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             onClearOnlineOrder={() => setActiveOnlineOrder(null)}
             onStartTrip={handleStartTrip}
             onNavigateBack={async () => {
-              if (activeOnlineOrder) {
-                const orderId = activeOnlineOrder.id || activeOnlineOrder.orderId;
-                if (orderId) {
-                  let isCancelled = false;
-                  try {
-                    const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-                    const match = saved.find((o: any) => o.id === orderId || o.orderId === orderId || (o.orderNo && activeOnlineOrder?.orderNo && o.orderNo === activeOnlineOrder?.orderNo));
-                    if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
-                      isCancelled = true;
-                    }
-                  } catch (_) {}
-
-                  if (!isCancelled) {
-                    try {
-                      if (db) {
-                        await setDoc(doc(db, 'merchant_orders', orderId), {
-                          in_hall: false,
-                          status: 'dispatched',
-                          statusCategory: '已接单',
-                          dispatchedDriverPhone: userPhone || activeOnlineOrder.dispatchedDriverPhone || ''
-                        }, { merge: true });
-                      }
-                    } catch (e) {
-                      console.error("Error updating merchant order status on navigate back:", e);
-                    }
-
-                    try {
-                      const saved = JSON.parse(localStorage.getItem('dd_merchant_orders_v2') || '[]');
-                      const updated = saved.map((o: any) => {
-                        if (o.id === orderId || o.orderId === orderId) {
-                          return {
-                            ...o,
-                            in_hall: false,
-                            status: 'dispatched',
-                            statusCategory: '已接单',
-                            dispatchedDriverPhone: userPhone || o.dispatchedDriverPhone || ''
-                          };
-                        }
-                        return o;
-                      });
-                      localStorage.setItem('dd_merchant_orders_v2', JSON.stringify(updated));
-                      window.dispatchEvent(new CustomEvent('merchant_orders_updated'));
-                    } catch (_) {}
-                  }
-                }
-              }
+              // 2026-10-20 重构：返回只做导航与本地清理，不再直写 merchant_orders 为 dispatched/已接单
+              // （与 CreateOrderView 返回按钮同口径：导航写状态可复活已被取消/改派的订单）
               setActiveOnlineOrder(null);
               setCurrentView('home');
 
@@ -4347,7 +4354,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             userPhone={userPhone}
             userRole={userRole}
             userTeamCity={userTeamCity}
-            isAdminAuthenticated={isAdminAuthenticated}
+            isAdminAuthenticated={effectiveIsAdminAuthenticated}
             setIsAdminAuthenticated={setIsAdminAuthenticated}
           />
         </div>
@@ -4364,7 +4371,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             userPhone={userPhone}
             userRole={userRole}
             userTeamCity={userTeamCity}
-            isAdminAuthenticated={isAdminAuthenticated}
+            isAdminAuthenticated={effectiveIsAdminAuthenticated}
             setIsAdminAuthenticated={setIsAdminAuthenticated}
           />
         </div>
@@ -4569,7 +4576,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                   userPhone={userPhone}
                   userRole={userRole}
                   userTeamCity={userTeamCity}
-                  isAdminAuthenticated={isAdminAuthenticated}
+                  isAdminAuthenticated={effectiveIsAdminAuthenticated}
                   setIsAdminAuthenticated={setIsAdminAuthenticated}
                 />
               </div>

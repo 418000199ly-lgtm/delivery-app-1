@@ -911,12 +911,8 @@ export default function AdminBillingRules({ onShowToast }: AdminBillingRulesProp
         setActiveBillingMode('system_default');
         setTimeBasedConfig(defaultTimeBased);
         
-        setDoc(configDocRef, {
-          activeTemplateName: '线上二维码开单',
-          templates: defaultTemplates,
-          activeBillingMode: 'system_default',
-          timeBasedConfig: defaultTimeBased
-        }).catch(err => console.error('Error seeding default online billing config:', err));
+        // 第四轮修复（P2）：配置文档不存在时只在本地展示默认模板，不再自动写回云端；
+        // 只有用户显式保存时才落库，避免误开页面即改生产计费库
       }
       setLoading(false);
     });
@@ -936,16 +932,21 @@ export default function AdminBillingRules({ onShowToast }: AdminBillingRulesProp
       const modeToSave = newBillingMode !== undefined ? newBillingMode : activeBillingMode;
       const timeBasedToSave = newTimeBasedConfig !== undefined ? newTimeBasedConfig : timeBasedConfig;
       
-      await setDoc(configDocRef, {
+      const saveOk = await setDoc(configDocRef, {
         activeTemplateName: newActive,
         templates: newTemplates,
         activeBillingMode: modeToSave,
         timeBasedConfig: timeBasedToSave
       });
+      if (!saveOk) {
+        // 第四轮修复（P2）：本组件没有任何本地落盘，失败就是失败，不许再谎称"已保存至本地"
+        onShowToast('❌ 计费配置保存失败：服务端写入未成功，请检查网络后重试');
+        return false;
+      }
       return true;
     } catch (err) {
       console.error('Failed to save online billing config:', err);
-      onShowToast('❌ 计费配置同步至云端失败，已保存至本地');
+      onShowToast('❌ 计费配置保存失败：服务端写入未成功，请检查网络后重试');
       return false;
     }
   };

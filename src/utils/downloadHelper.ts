@@ -2,6 +2,7 @@
  * Binary-safe download helper for browser/iframe environments.
  * Prevents iframe sandbox interception and ensures full 26MB+ binary ZIP archive is downloaded.
  */
+import { getAuthHeaders } from '../lib/dbProxy';
 export async function downloadDeployZip(filename = 'daijia_deploy.zip', onStatus?: (msg: string) => void): Promise<void> {
   const notify = (msg: string) => {
     if (onStatus) onStatus(msg);
@@ -25,7 +26,9 @@ export async function downloadDeployZip(filename = 'daijia_deploy.zip', onStatus
       try {
         const res = await fetch(url, {
           method: 'GET',
-          cache: 'no-store'
+          cache: 'no-store',
+          // 第四轮修复：下载接口服务端已加开发者鉴权，请求必须带鉴权头
+          headers: { ...getAuthHeaders() }
         });
 
         if (res.ok) {

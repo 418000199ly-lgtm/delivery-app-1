@@ -10,3 +10,6 @@ coverage/
 # 本地测试数据库（冒烟测试生成，永不提交）
 local_db.json
 local_db.json.bak
+
+# 部署包是构建产物，永不提交（2026-10-21 第四轮清理：旧包曾内含种子 local_db.json，误部署会覆盖生产镜像）
+*.zip
