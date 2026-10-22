@@ -186,13 +186,12 @@ export default function MerchantValetPaymentView({
     })()
   ) : '';
 
+  // 2026-10-22 第八轮：代叫费页兜底只认 merchantPaymentQrCode（下单人的码，全链稳定）。
+  // paymentQrCode/qrCode/wechatQrCode 在派单成功时被服务端改写成接单司机的车费码，
+  // 旧兜底把它们排在前面：服务端查码返回前会闪现司机自己的码，缺下单人字段的单还会
+  // 一直错显。用户铁律：谁下单显示谁的微信收款二维码。
   const tripDirectQr = (
-    (trip as any)?.paymentQrCode ||
     (trip as any)?.merchantPaymentQrCode ||
-    (trip as any)?.qrCode ||
-    (trip as any)?.wechatQrCode ||
-    (trip as any)?.wechatClean ||
-    (trip as any)?.dispatcherQr ||
     ''
   ).toString().trim();
 

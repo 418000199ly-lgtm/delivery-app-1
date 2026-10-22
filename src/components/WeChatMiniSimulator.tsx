@@ -100,7 +100,8 @@ interface WeChatMiniSimulatorProps {
 
 export default function WeChatMiniSimulator({ currentDriverPhone, onTriggerToast }: WeChatMiniSimulatorProps) {
   // Simulator Interactive States
-  const [targetDriver, setTargetDriver] = useState(currentDriverPhone || '18609518888');
+  // 2026-10-22 第五轮 P2-9：删除 18609518888 死代码兜底，未登录时目标司机为空
+  const [targetDriver, setTargetDriver] = useState(currentDriverPhone || '');
   const [passengerPhone, setPassengerPhone] = useState('13988889999');
   const [startPoint, setStartPoint] = useState('（和平巷）颐和家园');
   const [destination, setDestination] = useState('');
@@ -2218,30 +2219,13 @@ Page({
                                   return;
                                 }
                                 setIsSendingCode(true);
-                                try {
-                                  const res = await fetch(`${getBaseApiUrl()}/api/sms/send`, {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ phone: registerPhone.trim() })
-                                  });
-                                  const data = await res.json();
-                                  setIsSendingCode(false);
-                                  if (data.success) {
-                                    setRegisterCountdown(60);
-                                    if (data.mode === 'simulated' && false) {
-                                      setSentCode(data.code || '');
-                                      onTriggerToast(`📱 [测试环境模拟短信] 验证码为: ${data.code}，请填入。`);
-                                    } else {
-                                      setSentCode('REAL_SMS');
-                                      onTriggerToast('✓ 真实验证码已发送！请查收您的手机短信。');
-                                    }
-                                  } else {
-                                    onTriggerToast(`❌ 发送失败: ${data.error || '短信接口异常'}`);
-                                  }
-                                } catch (err: any) {
-                                  setIsSendingCode(false);
-                                  onTriggerToast('❌ 发送失败: 无法连接网络/服务器');
-                                }
+                                // 2026-10-22 第五轮 P2-11：模拟器只是演示壳，删除调真实 /api/sms/send 的路径
+                                // （会真发短信、消耗短信额度），改为本地生成验证码模拟，不触达真实短信通道。
+                                const simCode = String(Math.floor(1000 + Math.random() * 9000));
+                                setSentCode(simCode);
+                                setRegisterCountdown(60);
+                                setIsSendingCode(false);
+                                onTriggerToast('📱 [模拟短信] 验证码为: ' + simCode + '，请填入（本地模拟，不发送真实短信）。');
                               }}
                               disabled={registerCountdown > 0 || isSendingCode}
                               className={`font-black text-[11px] px-3 py-1 rounded-lg transition-all ${
@@ -2270,24 +2254,15 @@ Page({
                                 return;
                               }
                               setIsVerifyingCode(true);
-                              try {
-                                const res = await fetch(`${getBaseApiUrl()}/api/sms/verify`, {
-                                  method: 'POST',
-                                  headers: { 'Content-Type': 'application/json' },
-                                  body: JSON.stringify({ phone: registerPhone.trim(), code: registerCode.trim() })
-                                });
-                                const data = await res.json();
-                                setIsVerifyingCode(false);
-                                if (data.success) {
-                                  onTriggerToast('✓ 手机验证通过！请继续填写基本信息。');
-                                  setDriverRegStep('form');
-                                } else {
-                                  onTriggerToast(`⚠️ 校验失败: ${data.error || '验证码不正确'}`);
-                                }
-                              } catch (err: any) {
-                                setIsVerifyingCode(false);
-                                onTriggerToast('⚠️ 校验异常: 无法连接服务器');
+                              // 2026-10-22 第五轮 P2-11：与发送侧配套，删除调真实 /api/sms/verify 的路径，
+                              // 改为与本地模拟验证码比对（sentCode 由发送侧本地生成）。
+                              if (sentCode && registerCode.trim() === sentCode) {
+                                onTriggerToast('✓ 手机验证通过！请继续填写基本信息。');
+                                setDriverRegStep('form');
+                              } else {
+                                onTriggerToast('⚠️ 校验失败: 验证码不正确（请先点「发送验证码」获取模拟码）');
                               }
+                              setIsVerifyingCode(false);
                             }}
                             disabled={isVerifyingCode}
                             className="w-full text-white font-black py-2.5 rounded-full text-sm shadow-md tracking-wider transform transition-transform active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1"

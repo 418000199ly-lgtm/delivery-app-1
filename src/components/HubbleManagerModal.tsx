@@ -14,7 +14,7 @@ import {
   Search,
   ExternalLink
 } from 'lucide-react';
-import { db, collection, doc, setDoc, deleteDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
+import { db, collection, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { safeSetItem } from '../utils/safeStorage';
 
 interface HubbleManagerModalProps {
@@ -140,24 +140,18 @@ export default function HubbleManagerModal({
     };
 
     try {
-      // 第四轮修复（P2）：setDoc 返回值与 /api/hubble/authorize 的 res.ok 都要查，
-      // 任一失败都不更新本地名单、不弹成功，避免本地与服务端名单分叉
-      if (db) {
-        const setOk = await setDoc(doc(db, 'hubble_authorized_drivers', cleanPhone), newEntry);
-        if (!setOk) {
-          showToast('开通失败：服务端写入未成功，请检查网络后重试');
-          return;
-        }
-      }
-      // Also post to Baota REST API if online
+      // 第六轮修复（A9）：授权改单通道——只调服务端 /api/hubble/authorize，不再先 setDoc 直写
+      // 再调接口的双通道写（旧实现第二步失败时第一笔已落库，提示与实际状态不一致）。
+      // 以上接口结果为准：ok 且 success 不为 false 才更新本地名单并提示成功。
       const baseUrl = getBaseApiUrl();
       const authRes = await fetch(`${baseUrl}/api/hubble/authorize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify(newEntry)
       });
-      if (!authRes.ok) {
-        showToast('开通失败：服务端授权接口返回异常，请重试');
+      const authJson = await authRes.json().catch(() => ({}));
+      if (!authRes.ok || (authJson && authJson.success === false)) {
+        showToast(`开通失败：${(authJson && authJson.error) || '服务端授权接口返回异常'}，请重试`);
         return;
       }
 
@@ -187,24 +181,17 @@ export default function HubbleManagerModal({
     setPendingDeleteDriver(null);
 
     try {
-      // 第四轮修复（P2）：先做服务端删除并校验结果，全部成功后才更新本地名单；
-      // 失败时本地名单保持原样（等同回滚），不再无条件先删本地再弹成功
-      if (db) {
-        const delOk = await deleteDoc(doc(db, 'hubble_authorized_drivers', phone));
-        if (!delOk) {
-          showToast('取消失败：服务端删除未成功，请检查网络后重试');
-          return;
-        }
-      }
-
+      // 第六轮修复（A9）：撤权同样改单通道——只调服务端 /api/hubble/revoke，
+      // 不再先 deleteDoc 直删再调接口；以接口结果为准，失败时本地名单保持原样。
       const baseUrl = getBaseApiUrl();
       const revokeRes = await fetch(`${baseUrl}/api/hubble/revoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ phone })
       });
-      if (!revokeRes.ok) {
-        showToast('取消失败：服务端撤销接口返回异常，请重试');
+      const revokeJson = await revokeRes.json().catch(() => ({}));
+      if (!revokeRes.ok || (revokeJson && revokeJson.success === false)) {
+        showToast(`取消失败：${(revokeJson && revokeJson.error) || '服务端撤销接口返回异常'}，请重试`);
         return;
       }
 

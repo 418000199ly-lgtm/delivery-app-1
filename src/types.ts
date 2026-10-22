@@ -167,4 +167,25 @@ export function checkVipActive(vipExpiry?: string): boolean {
   }
 }
 
+// 2026-10-22 第五轮 P2-10：VIP 门禁优先信服务端同步值。
+// App 的服务端同步路径（轮询 driver_users / db_doc_updated 事件）每次拿到服务端
+// vipExpiry 时都会留痕到 dd_vip_expiry_<手机号>；该留痕只由服务端数据写入口写入，
+// 与可被本地编辑的 dd_settings 分离。门禁判定优先用留痕值，留痕不存在（尚未同步）
+// 时才回退 settings 里的值作显示兜底，避免改本地 dd_settings 短暂放行 VIP 功能。
+export function getServerSyncedVipExpiry(phone?: string | null): string | null {
+  try {
+    const p = String(phone || '').replace(/\D/g, '').trim();
+    if (!p || typeof window === 'undefined') return null;
+    const v = localStorage.getItem(`dd_vip_expiry_${p}`);
+    return v === null ? null : v;
+  } catch {
+    return null;
+  }
+}
+
+export function checkVipActiveServerSynced(phone?: string | null, settingsVipExpiry?: string): boolean {
+  const synced = getServerSyncedVipExpiry(phone);
+  return checkVipActive(synced !== null ? synced : settingsVipExpiry);
+}
+
 

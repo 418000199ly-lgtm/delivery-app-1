@@ -5,7 +5,6 @@ import { getTimeSlotForTime } from '../utils/billingUtils';
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { geocodeAddress, isValidCoords, calculateHaversineDistanceKm, formatDistance, calculateOrderDriverDistance } from '../utils/geocoding';
 import { isOrderAlreadyEnded } from '../utils/orderValidation';
-import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 import { getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 
 interface IncomingOrderOverlayProps {
@@ -119,6 +118,11 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
   // 2026-10-17新增：服务端同步"首次接受"标记。同一订单的服务端秒数严格单调不增，
   // 首次同步无条件接受，之后阻断上跳与单次下跳>3秒的脏数据（修复 5→60→4）。
   const syncedOnceRef = React.useRef<boolean>(false);
+  // 2026-10-22 第五轮 C-P5/P2-6：回前台强制重对齐入口（由倒计时主 effect 注册）、
+  // 同步失败累计计数与「网络异常」提示位 state
+  const syncCountdownRef = React.useRef<(() => void) | null>(null);
+  const countdownFailCountRef = React.useRef(0);
+  const [countdownNetError, setCountdownNetError] = useState(false);
   // P1-6修复(2026-10-13)：onDecline幂等，多路径(轮询/取消监听/手动)只执行一次
   const declinedRef = React.useRef<boolean>(false);
   // P1(2026-10-15)：API成功返回后永久忽略prop的serverCountdown（防旧单prop致33→59跳变）
@@ -177,7 +181,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       setTimeLeft(prev => (Math.abs(prev - v) > 2 ? v : prev));
       if (v <= 0 && !isAcceptingRef.current) {
         const curOrder = orderRef.current as any;
-        const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+        const orderAgeMs = (() => { const rawTsAge = Number(curOrder?.timestamp || curOrder?.dispatchedAt || 0); return rawTsAge > 0 ? Date.now() - rawTsAge : Number.POSITIVE_INFINITY; })();
         if (orderAgeMs > 25000) {
           console.log(`[PopupKiller] 分支A-prop同步v<=0 (订单${Math.round(orderAgeMs/1000)}秒) 关闭弹窗`); try{(window as any).__popupKillerBranch='A-prop同步';}catch(_){}
           safeDecline('timeout');
@@ -228,6 +232,18 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     // 2026-10-12重构：每秒只从服务器取数，不做本地递减。
     // 用递增序号丢弃乱序到达的旧响应，杜绝 33→41 这类上跳。
     let seq = 0;
+    // 2026-10-22 第五轮 P2-6：同步成败记账。成功清零并撤下提示；失败累计，连续>=3 次亮「网络异常」
+    // 提示位。只影响提示显示，不改变任何服务端裁决逻辑。
+    const noteSyncSuccess = () => {
+      countdownFailCountRef.current = 0;
+      setCountdownNetError(false);
+    };
+    const noteSyncFailure = () => {
+      countdownFailCountRef.current += 1;
+      if (countdownFailCountRef.current >= 3 && isMounted) {
+        setCountdownNetError(true);
+      }
+    };
     const syncWithServerCountdown = async () => {
       const mySeq = ++seq;
       try {
@@ -242,7 +258,11 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           headers: { ...getAuthHeaders() }
         });
 
+        if (!resp.ok && isMounted && mySeq === seq) {
+          noteSyncFailure();
+        }
         if (resp.ok && isMounted && mySeq === seq) {
+          noteSyncSuccess();
           const data = await resp.json();
           const curOrder: any = orderRef.current;
           if (data && data.success) {
@@ -260,7 +280,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               // 合法进大厅，此处inHall必为竞态脏读（如派单写入与轮询交错）。放行则弹窗闪退，
               // 用户感知为"没弹过"。改为继续轮询，下次拿到真实状态再决策。
               if (data.inHall) {
-                const inHallAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                const inHallAgeMs = (() => { const rawTsAge = Number(curOrder?.timestamp || curOrder?.dispatchedAt || 0); return rawTsAge > 0 ? Date.now() - rawTsAge : Number.POSITIVE_INFINITY; })();
                 if (inHallAgeMs > 25000) {
                   setTimeLeft(0);
                   console.log(`[Overlay] inHall确认(订单已${Math.round(inHallAgeMs/1000)}秒)，关闭弹窗`);
@@ -270,7 +290,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
                 console.log(`[Overlay] 新单(${Math.round(inHallAgeMs/1000)}秒)inHall疑似脏读，继续轮询不关闭`);
                 return;
               }
-              const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+              const orderAgeMs = (() => { const rawTsAge = Number(curOrder?.timestamp || curOrder?.dispatchedAt || 0); return rawTsAge > 0 ? Date.now() - rawTsAge : Number.POSITIVE_INFINITY; })();
               // 严密防抖防闪保护：刚刚创建下单25秒内的派单，绝不误触超时拒单
               if (orderAgeMs > 25000) {
                 setTimeLeft(0);
@@ -313,7 +333,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
               }
               // 2026-10-15 P1-1：拒单决策只用被接受的服务端值，脏数据不触发拒单
               if (accepted && v <= 0 && !isAcceptingRef.current) {
-                const orderAgeMs = Date.now() - (Number(curOrder?.timestamp || curOrder?.dispatchedAt || Date.now()));
+                const orderAgeMs = (() => { const rawTsAge = Number(curOrder?.timestamp || curOrder?.dispatchedAt || 0); return rawTsAge > 0 ? Date.now() - rawTsAge : Number.POSITIVE_INFINITY; })();
                 if (orderAgeMs > 25000) {
                   // 延迟到 effect 外处理，避免在 setState 更新函数中产生副作用
                   setTimeout(() => {
@@ -326,9 +346,14 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           }
         }
       } catch (_) {
-        // 网络异常时保持上次服务器数字，不本地递减造假
+        // 网络异常时保持上次服务器数字，不本地递减造假；
+        // 2026-10-22 第五轮 P2-6：失败不再全吞，累计计数驱动「网络异常」提示位
+        noteSyncFailure();
       }
     };
+
+    // 2026-10-22 第五轮 C-P5：把本 effect 的同步函数注册给回前台监听（重置守卫基准后强制重拉）
+    syncCountdownRef.current = syncWithServerCountdown;
 
     // 立即执行首次服务器对齐
     syncWithServerCountdown();
@@ -360,16 +385,25 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     };
   }, [targetOrderId, cleanDriverPhone]);
 
-  // 2026-10-17：弹窗挂载不再上报忙碌。原因：挂载即标忙会导致接单时服务端isBusy检查409自锁。
-  // 派单时服务端已校验不忙；接单成功后服务端claim会置忙；拒单/超时卸载时清闲。
+  // 2026-10-22 第五轮 C-P5：切后台期间 1 秒轮询会被浏览器节流/挂起，单调守卫基准随之失真。
+  // 回到前台时重置「首次接受」标记与同步时间基准，并强制重拉一次 countdown 无条件接受服务端值；
+  // 单调守卫仅在同一可见周期内生效。
   useEffect(() => {
-    return () => {
-      const p = userPhone || localStorage.getItem('dd_user_phone') || '';
-      if (p) {
-        try { reportDriverBusyStatus(p, false, { currentView: 'incoming_overlay', isBusy: false }); } catch (_) {}
-      }
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      syncedOnceRef.current = false;
+      lastServerSyncRef.current = Date.now();
+      try { syncCountdownRef.current?.(); } catch (_) {}
     };
-  }, [userPhone]);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  // 2026-10-22 第七轮：原「弹窗卸载时无条件上报 isBusy=false」已删除。
+  // 竞速根源：接单成功同一帧里 activeOnlineOrder 置忙与本弹窗卸载同时发生，卸载抢先
+  // 报 false 会把刚接单的行程忙碌冲掉，司机在服务端看起来空闲、可能被再派一单。
+  // 忙闲自此统一由 App 层 effect 按 currentTrip / activeOnlineOrder 推导上报，本组件
+  // 不再经手；弹窗占用本身由服务端「未决派单」判定，也不靠客户端 isBusy。
 
   // Parse details with fallbacks
   const startLocation = order.startLocation || '位置未知';
@@ -426,7 +460,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     if (order.distanceText) {
       return order.distanceText;
     }
-    return '300米';
+    // 2026-10-22 第五轮 P2-5：无真实距离时显示「未知」，不再编造 300 米（与全项目口径一致）
+    return '未知';
   }, [
     order.passengerLat,
     order.passengerLng,
@@ -472,7 +507,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
       try {
         // 2026-10-17：25秒内新单不响应取消检查。商户组件下单时本地默认写hall/取消态，
         // 服务端返回前轮询到会误杀弹窗。25秒后服务端状态已稳定，再检查不迟。
-        const orderAgeMs = Date.now() - (Number((order as any)?.timestamp || (order as any)?.dispatchedAt || Date.now()));
+        // 2026-10-22 第五轮 P2-7：双时间戳缺失时年龄按无穷大处理（不再 fallback Date.now() 恒 0 导致取消检查永不执行）
+        const orderAgeMs = (() => { const rawTsAge2 = Number((order as any)?.timestamp || (order as any)?.dispatchedAt || 0); return rawTsAge2 > 0 ? Date.now() - rawTsAge2 : Number.POSITIVE_INFINITY; })();
         if (orderAgeMs < 25000) return;
         const latestRaw = localStorage.getItem('dd_latest_cancelled_order');
         if (latestRaw) {
@@ -769,7 +805,8 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         return Math.round(num) === num ? String(num) : String(num.toFixed(1));
       }
     }
-    return '40';
+    // 2026-10-22 第五轮 P2-5：无真实价格时显示「未知」，不再编造 40 元
+    return '未知';
   })();
 
   const modeBadgeText = (() => {
@@ -938,6 +975,13 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           </span>
         </div>
         
+        {/* 2026-10-22 第五轮 P2-6：倒计时同步连续失败>=3 次时的网络异常提示位（仅提示，不影响服务端裁决） */}
+        {countdownNetError && (
+          <div className="w-full flex justify-center items-center pb-1">
+            <span className="text-[11px] font-bold text-amber-600">网络异常，倒计时同步中断，正在重连…</span>
+          </div>
+        )}
+
         {/* Single Action Button (Image q3: Full width Red 确认接单) */}
         <div className="w-full mt-1.5">
           <button 

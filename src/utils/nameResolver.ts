@@ -118,23 +118,26 @@ export function canClearListPermission(role: string, phone?: string): boolean {
  * 硬编码黑名单已删除（2026-10-10）：用户要求取消号码限制，改由服务端"已删除司机"标记控制
  */
 
-export function getRemovedSquadSet(): Set<string> {
-  const set = new Set<string>();
-  if (typeof window !== 'undefined') {
-    try {
-      const raw = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          parsed.forEach((p: any) => {
-            const clean = String(p || '').replace(/\D/g, '').trim();
-            if (clean) set.add(clean);
-          });
-        }
-      }
-    } catch (_) {}
+// 第六轮修复（G-P3）：被移除名单改为纯服务端来源。旧实现直读本机 localStorage
+// dd_removed_squad_phones_v2 参与成员判定——本机残留会让服务端已恢复的成员在本机
+// 仍被判为已移除，各设备口径不一致。现在名单只由订阅/拉取服务端
+// config/removed_squad_members 的代码调用 syncRemovedSquadPhones 同步进内存缓存，
+// getRemovedSquadSet 只返回该服务端缓存的副本，本机缓存不再参与判定。
+let serverRemovedSquadCache = new Set<string>();
+
+export function syncRemovedSquadPhones(phones: any): void {
+  const next = new Set<string>();
+  if (Array.isArray(phones)) {
+    phones.forEach((p: any) => {
+      const clean = String(p || '').replace(/\D/g, '').trim();
+      if (clean) next.add(clean);
+    });
   }
-  return set;
+  serverRemovedSquadCache = next;
+}
+
+export function getRemovedSquadSet(): Set<string> {
+  return new Set(serverRemovedSquadCache);
 }
 
 /**
@@ -190,9 +193,10 @@ export function isOfficialSquadMember(drv: any, removedSet?: Set<string>): boole
     return false;
   }
 
-  if (isGenericDriverName(rawName, p) && !AUTHORITATIVE_REAL_DRIVER_NAMES[p]) {
-    return false;
-  }
+  // 第六轮修复（G-P3）：删除「通用名判非成员」分支。成员与否只认服务端事实
+  // （status 明确已通过 + 不在服务端 removed 名单 + 小队标志），名字是否为通用名
+  // 不再参与判定；AUTHORITATIVE_REAL_DRIVER_NAMES 不再用于在成员判定里救人/判人，
+  // 开发者常驻仅由上方 15509601222 专门分支承担。
 
   // 必须是明确审核通过并属于小队的成员（通过 collection、is_squad_member、inSquad 等标志判定）
   const hasSquadFlag = Boolean(

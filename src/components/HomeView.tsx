@@ -392,6 +392,10 @@ export default function HomeView({
     }
   });
 
+  // 2026-10-22 第五轮 P2-2：待审批角标只数服务端订阅快照（下方 squad_applications
+  // onSnapshot 回读时刷新 serverAppsSnapshotRef），不再数本地镜像
+  // dd_applicants_v2/dd_squad_applications_v2（镜像会被幽灵回注污染，见 C-P2）。
+  const serverAppsSnapshotRef = useRef<any[]>([]);
   const calculatePendingApplicants = () => {
     try {
       const isMock = (id: string, phone: string, name: string) => {
@@ -405,32 +409,18 @@ export default function HomeView({
         );
       };
 
-      const allApps: any[] = [];
-      try {
-        const savedApps = localStorage.getItem('dd_applicants_v2');
-        if (savedApps) {
-          const parsed = JSON.parse(savedApps);
-          if (Array.isArray(parsed)) allApps.push(...parsed);
-        }
-      } catch (_) {}
-      try {
-        const savedApps2 = localStorage.getItem('dd_squad_applications_v2');
-        if (savedApps2) {
-          const parsed = JSON.parse(savedApps2);
-          if (Array.isArray(parsed)) allApps.push(...parsed);
-        }
-      } catch (_) {}
-
       const pendingMap = new Map<string, any>();
-      allApps.forEach((app: any) => {
+      (serverAppsSnapshotRef.current || []).forEach((app: any) => {
         if (!app) return;
-        const phone = String(app.phone || app.id || '').replace(/\D/g, '').trim();
+        const rawKey = String(app.phone || app.id || '').trim();
+        // 显式排除商户 A 后缀账号：去非数字后会与开发者同键，必须在清洗前排除
+        if (rawKey.toUpperCase().endsWith('A') || app.isMerchant || app.accountType === 'merchant') return;
+        const phone = rawKey.replace(/\D/g, '').trim();
         const id = String(app.id || '').trim();
         const name = String(app.name || app.driverName || app.applicantName || '').trim();
         if (isMock(id, phone, name)) return;
         const st = String(app.status || app.approvalStatus || '').trim();
-        // 仅当状态为待审核（未审批）时才计数；若审批通过（已通过）或审批拒绝（已拒绝），则不计入
-        // 用统一 helper，兼容 待审核/pending/审核中 三种历史值
+        // 宽口径归一（待审核/pending/审核中），与首页/后台/派单台统一
         if (isSquadAppPending(st)) {
           const key = phone || id;
           if (key) pendingMap.set(key, app);
@@ -449,8 +439,9 @@ export default function HomeView({
     const currentPhone = getCurrentPhone();
     if (currentPhone === DEVELOPER_PHONE) return true;
 
-    const storedRole = typeof window !== 'undefined' ? localStorage.getItem('dd_user_role') : null;
-    let activeRole = storedRole || userRole || '普通司机';
+    // 2026-10-22 第五轮 P2-3：角标可见性只认服务端事实——下方 squadMembers（服务端订阅）里
+    // 本人的 role 覆盖 + 服务端同步的 userRole prop，不再先读本地 dd_user_role（可被本地残留污染）。
+    let activeRole = userRole || '普通司机';
 
     const squadMemberObj = (squadMembers || []).find((m: any) => {
       const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
@@ -499,48 +490,20 @@ export default function HomeView({
     // 0. 已被移出的司机绝不是小队成员！
     if (isDriverRemoved(phone)) return false;
 
-    // 1. 检查 squadMembers 列表中是否有该司机且审核通过
-    let squadList: any[] = [];
-    try {
-      if (typeof squadMembers !== 'undefined' && Array.isArray(squadMembers)) {
-        squadList = squadMembers;
-      } else if (typeof window !== 'undefined') {
-        const saved = localStorage.getItem('dd_squad_members_v2');
-        squadList = saved ? JSON.parse(saved) : [];
-      }
-    } catch (_) {}
-
+    // 2026-10-22 第五轮 P2-4：只认服务端成员事实——订阅回读的 squadMembers 状态，
+    // 以及本人统一成员口径 myMembership；删除读 dd_squad_members_v2、
+    // 凭 dd_applicants_v2「已通过」算在队的两步本地判定（与 isDriverRemoved 的服务端口径对齐）。
+    const squadList: any[] = Array.isArray(squadMembers) ? squadMembers : [];
     const inList = squadList.some((m: any) => {
       const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
       const st = String(m?.status || m?.approvalStatus || '').trim();
-      // 2026-10-12修复：状态为空不再算在小队，必须有明确的"已通过"状态
-      // 之前 (!st || ...) 导致无状态的脏数据被误判为成员，造成选单大厅来回跳
+      // 2026-10-12 口径保留：状态为空不算在队，必须有明确的"已通过"状态
       return p === phone && ['已通过', 'approved', '通过'].includes(st);
     });
     if (inList) return true;
 
-    // 2. 检查 localStorage dd_squad_members_v2 中是否有该司机且审核通过
-    try {
-      const savedM = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
-      const inSaved = savedM.some((m: any) => {
-        const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
-        const st = String(m?.status || m?.approvalStatus || '').trim();
-        // 2026-10-12修复：同上，空状态不算通过
-        return p === phone && ['已通过', 'approved', '通过'].includes(st);
-      });
-      if (inSaved) return true;
-    } catch (_) {}
-
-    // 3. 检查 localStorage dd_applicants_v2 中是否有该司机且审核通过
-    try {
-      const savedA = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-      const inApps = savedA.some((a: any) => {
-        const p = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
-        const st = String(a?.status || a?.approvalStatus || '').trim();
-        return p === phone && ['已通过', 'approved', '通过'].includes(st);
-      });
-      if (inApps) return true;
-    } catch (_) {}
+    const currentPhone = (getCurrentPhone() || '').trim();
+    if (phone === currentPhone && myMembership?.isMember === true) return true;
 
     return false;
   };
@@ -1888,42 +1851,11 @@ export default function HomeView({
     if (isReapplying) return false;
     const currentPhone = getCurrentPhone();
     if (!currentPhone) return false;
-
-    // 0. 若已被从小队中删除/移除，不显示未通过，直接返回 false 允许重新申请
-    let removedList: string[] = removedMemberPhones || [];
-    try {
-      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          removedList = Array.from(new Set([...removedList, ...parsed]));
-        }
-      }
-    } catch (_) {}
-
-    if (removedList.some(p => String(p).replace(/\D/g, '').trim() === currentPhone)) {
-      return false;
-    }
-
-    try {
-      const saved = localStorage.getItem('dd_applicants_v2');
-      if (saved) {
-        const apps = JSON.parse(saved);
-        const myApp = apps.find((a: any) => String(a.phone || a.id).replace(/\D/g, '').trim() === currentPhone);
-        const myAppSt = String(myApp?.status || myApp?.approvalStatus || '').trim();
-        if (myApp && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(myAppSt)) {
-          return true;
-        }
-      }
-    } catch (_) {}
-
-    const member = squadMembers.find((m: any) => String(m.phone || m.id).trim() === currentPhone);
-    const memberSt = String(member?.status || member?.approvalStatus || '').trim();
-    if (member && ['已拒绝', '审核未通过', '未通过', '已驳回', 'rejected'].includes(memberSt)) {
-      return true;
-    }
-
-    return false;
+    if (checkApprovalStatus()) return false;
+    // 2026-10-22 第五轮 C-P3：与 checkPendingStatus/checkApprovalStatusRaw 同口径，
+    // 只认服务端统一状态（myMembership）的被拒相位；不再读本地镜像 dd_applicants_v2
+    // 与本地 removed 名单判定，镜像陈旧/污染时被拒页不再误显、漏显。
+    return myMembership?.phase === 'rejected';
   };
 
   const renderRejectedResultView = (onCloseModal: () => void) => (
@@ -2257,44 +2189,9 @@ export default function HomeView({
         }
       });
       const combinedApps = Array.from(appMap.values());
-      // 2026-10-20修复：合并本地待审核记录，防止刚提交的申请被服务端空列表或坏状态覆盖
-      // 服务端同步有延迟，本地刚写的待审核不能丢；服务端坏状态（NULL）不能覆盖本地好状态
-      try {
-        const localApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-        const serverMap = new Map();
-        combinedApps.forEach((a: any) => {
-          const p = String(a.phone || a.id || '').replace(/\D/g, '').trim();
-          if (p) serverMap.set(p, a);
-        });
-        localApps.forEach((la: any) => {
-          const lp = String(la.phone || la.id || '').replace(/\D/g, '').trim();
-          const lst = String(la.status || la.approvalStatus || '').trim();
-          if (!lp || !['待审核', 'pending', '审核中'].includes(lst)) return;
-          const serverApp = serverMap.get(lp);
-          if (!serverApp) {
-            // 服务端没有，直接加
-            combinedApps.push(la);
-            serverMap.set(lp, la);
-          } else {
-            // 服务端有，检查状态是否坏了
-            // 2026-10-20修复：已拒绝是有效终态，不能被本地待审核覆盖（防死循环）
-            // 但如果是用户刚重新提交的（本地时间戳在60秒内），则允许覆盖（新申请）
-            const sst = String(serverApp.status || serverApp.approvalStatus || '').trim();
-            const validStatuses = ['待审核', 'pending', '审核中', '已通过', 'approved', '通过', '已拒绝', 'rejected', '审核未通过', '未通过', '已驳回'];
-            const localTs = Number(la.timestamp || la.createdAt || 0);
-            const isRecentSubmit = localTs > 0 && (Date.now() - localTs) < 60000;
-            const isReapplyAfterReject = isRecentSubmit && ['已拒绝', 'rejected', '审核未通过', '未通过', '已驳回'].includes(sst);
-            if (!validStatuses.includes(sst) || isReapplyAfterReject) {
-              // 服务端状态坏了（NULL/空/未知），或用户刚重新提交，用本地好状态替换
-              const idx = combinedApps.findIndex((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() === lp);
-              if (idx >= 0) combinedApps[idx] = la;
-            }
-          }
-        });
-      } catch (_) {}
-      try {
-        localStorage.setItem('dd_applicants_v2', JSON.stringify(combinedApps));
-      } catch (_) {}
+      // 2026-10-22 第五轮 C-P2：删除「合并本地待审核记录」回注段与本函数的镜像写回——
+      // combinedApps 只用服务端快照（供下方 removed 豁免等逻辑消费）；
+      // dd_applicants_v2 镜像改由 squad_applications 订阅单一写回（单向、为空也写），消除双写者竞写。
       try {
         setPendingSquadApplicantCount(calculatePendingApplicants());
       } catch (_) {}
@@ -2614,36 +2511,12 @@ export default function HomeView({
           }
           apps.push({ ...data, id: docSnap.id, phone: p || data?.phone });
         });
-        // 2026-10-20修复：合并本地待审核，防止 onSnapshot 覆盖丢失刚提交的申请
+        // 2026-10-22 第五轮 C-P2：删除本地待审核回注合并段——快照只用服务端数据；
+        // 镜像改为服务端快照的单向写回（为空也照写、清零），并刷新角标计数依据的订阅快照。
+        serverAppsSnapshotRef.current = apps;
         try {
-          const localApps = JSON.parse(localStorage.getItem('dd_applicants_v2') || '[]');
-          const appPhones = new Set(apps.map((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim()));
-          const validAppStatuses = ['待审核', 'pending', '审核中', '已通过', 'approved', '通过', '已拒绝', 'rejected', '审核未通过', '未通过', '已驳回'];
-          localApps.forEach((la: any) => {
-            const lp = String(la.phone || la.id || '').replace(/\D/g, '').trim();
-            const lst = String(la.status || la.approvalStatus || '').trim();
-            if (!lp || !['待审核', 'pending', '审核中'].includes(lst)) return;
-            if (!appPhones.has(lp)) {
-              apps.push(la);
-              appPhones.add(lp);
-            } else {
-              // 2026-10-20根治：服务端该申请的状态为空/无法识别时（记录曾被档案数据覆盖丢失 status），
-              // 不许冲掉本地待审核，保留本地版本，避免"审核中↔申请表单"来回闪。
-              const sIdx = apps.findIndex((a: any) => String(a.phone || a.id || '').replace(/\D/g, '').trim() === lp);
-              if (sIdx >= 0) {
-                const sst = String(apps[sIdx].status || apps[sIdx].approvalStatus || '').trim();
-                if (!validAppStatuses.includes(sst)) {
-                  apps[sIdx] = la;
-                }
-              }
-            }
-          });
+          localStorage.setItem('dd_applicants_v2', JSON.stringify(apps));
         } catch (_) {}
-        if (apps.length > 0) {
-          try {
-            localStorage.setItem('dd_applicants_v2', JSON.stringify(apps));
-          } catch (_) {}
-        }
         try {
           setPendingSquadApplicantCount(calculatePendingApplicants());
         } catch (_) {}
@@ -3768,78 +3641,9 @@ export default function HomeView({
         }
       }
 
-      const driverSnapshot = await getDocs(collection(db, 'driver_users'));
-      const squadSnapshot = await getDocs(collection(db, 'squad_members'));
-      const teamSnapshot = await getDocs(collection(db, 'team_members'));
-
-      const squadPhones = squadSnapshot.docs.map(d => d.id);
-      const managementPhones = teamSnapshot.docs
-        .filter(d => ['开发者司机', '城市老板司机', '城市管理司机', '城市派单员司机'].includes(d.data().role))
-        .map(d => d.data().phone);
-
-      const activeDrivers: any[] = [];
-      
-      driverSnapshot.forEach((doc) => {
-        const data = doc.data();
-        if (data && !data.isBanned) {
-          const phone = doc.id;
-          const isManagement = managementPhones.includes(phone) || phone === DEVELOPER_PHONE || phone === userPhone;
-          const isApprovedAndInSquad = (data.onlineOrdersEnabled || data.isOnline) && squadPhones.includes(phone);
-
-          if (isManagement || isApprovedAndInSquad) {
-            activeDrivers.push({
-              phone: doc.id,
-              name: resolveDriverRealName(doc.id, data.driverName || data.name),
-              lat: Number(data.lat) || finalCoords!.lat,
-              lng: Number(data.lng) || finalCoords!.lng,
-              onlineOrdersEnabled: !!data.onlineOrdersEnabled || !!data.isOnline
-            });
-          }
-        }
-      });
-
-      // Ensure the current driver themselves is always included as an active candidate to guarantee successful dispatch simulation
-      const fallbackPhone = userPhone || '18609518888';
-      const fallbackName = (settings as any).driverName || (settings as any).name || '司机';
-      if (!activeDrivers.some(d => d.phone === fallbackPhone)) {
-        activeDrivers.push({
-          phone: fallbackPhone,
-          name: fallbackName,
-          lat: (driverCoords as any)?.lat || finalCoords.lat,
-          lng: (driverCoords as any)?.lng || finalCoords.lng,
-          onlineOrdersEnabled: true
-        });
-      }
-
-      // Filter for those online and not on obsolete V1.0 version
-      let candidates = activeDrivers.filter(d => {
-        const isEn = d.onlineOrdersEnabled;
-        const rawVer = (d.version || d.appVersion || d.driverVersion || d.sysVersion || '').trim().toUpperCase();
-        const isObsolete = rawVer === 'V1.0' || rawVer.startsWith('V1.0');
-        return isEn && !isObsolete;
-      });
-
-      // Permanently target the currently logged-in real driver (userPhone) to ensure they receive the order popup if online
-      const targetPhone = userPhone || '18609518888';
-      let closestDriver = candidates.find(d => d.phone === targetPhone);
-      
-      // If target driver is offline or not in online candidates
-      if (!closestDriver && !isOnline) {
-        alert("⚠️ 派单失败：您当前处于【下线/离线状态】，无法接收任何后台或自主派单！\n\n请先在首页底部【右滑上线】，开启上线听单状态后再试。");
-        return;
-      }
-
-      if (!closestDriver) {
-        closestDriver = {
-          phone: targetPhone,
-          name: (settings as any).driverName || (settings as any).name || '司机',
-          lat: (driverCoords as any)?.lat || finalCoords.lat,
-          lng: (driverCoords as any)?.lng || finalCoords.lng,
-          onlineOrdersEnabled: true
-        };
-      }
-
-      const minDistance = calculateDistance(finalCoords.lat, finalCoords.lng, closestDriver.lat, closestDriver.lng);
+      // 2026-10-22 第五轮 P2-9：删除本地定向选人死代码段——原逻辑拉全量快照在本地组装
+      // 候选人、永久定向当前司机并带 18609518888 陌生号兜底，其选人结果自派单改走
+      // 服务端后已无人消费。派单一律走下方 /api/dispatch/nearest（服务端统一校验授权/审批/距离）。
       
       const orderPayload = {
         passengerPhone: dispatchPhone.trim() || '系统自主派单',

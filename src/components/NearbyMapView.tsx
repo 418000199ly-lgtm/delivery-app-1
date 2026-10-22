@@ -126,9 +126,11 @@ export default function NearbyMapView({
   const [devToast, setDevToast] = useState<string | null>(null);
   const toastTimerRef = useRef<any>(null);
 
+  // 第六轮修复：初始定位禁用银川中心占位坐标(38.487167,106.23091)冒充真实GPS（定位铁律雷区）。
+  // 无真实坐标时用 0 表示位置未知，等 driverCoords/本地缓存/高德定位回填；0 坐标不会被渲染成标记。
   const [gpsLocation, setGpsLocation] = useState<{ lng: number; lat: number }>({
-    lng: driverCoords?.lng || 106.23091,
-    lat: driverCoords?.lat || 38.487167
+    lng: driverCoords?.lng || 0,
+    lat: driverCoords?.lat || 0
   });
 
   const [removedPhones, setRemovedPhones] = useState<string[]>(() => {
@@ -329,8 +331,8 @@ export default function NearbyMapView({
       (currentDriverName && trimmed.includes(currentDriverName.toLowerCase()));
 
     if (isSearchingMe) {
-      const myLng = gpsLocation.lng || driverCoords?.lng || 106.23091;
-      const myLat = gpsLocation.lat || driverCoords?.lat || 38.487167;
+      const myLng = gpsLocation.lng || driverCoords?.lng || 0;
+      const myLat = gpsLocation.lat || driverCoords?.lat || 0;
       if (mapInstanceRef.current && myLng && myLat) {
         mapInstanceRef.current.setZoomAndCenter(17, [myLng, myLat]);
         setHubbleSearchFeedback(`已定位至司机: ${currentDriverName} (我)`);
@@ -425,7 +427,9 @@ export default function NearbyMapView({
           const name = String(data?.name || data?.driverName || '').trim();
           if (isMeMember(phone, name)) {
             if (name) setMySquadName(name);
-          } else if (phone && name && !isMeMember(phone, name)) {
+          } else if (phone && !isMeMember(phone, name)) {
+            // 第六轮修复：与 HTTP /api/squad/members 口径对齐——无名成员也进名单，
+            // 旧逻辑要求 name 非空，两路数据源轮流覆盖 squadList 时无名成员会闪烁消失。
             list.push({ id: docSnap.id, phone, name, ...data });
           }
         });
@@ -739,6 +743,28 @@ export default function NearbyMapView({
     });
 
     // 叠加实时定位 (realtimeLocations)
+    // 第六轮修复一：定位叠加必须先验成员身份。/api/driver/locations 返回全量司机定位
+    // （含非成员/待审核，仅排除 removed），旧逻辑把任何有定位的人都画上地图，
+    // 违反「地图只显示小队内司机」口径——非成员条目直接跳过（成员集以 squadList 为准）。
+    const memberPhoneSet = new Set<string>();
+    squadList.forEach((member) => {
+      const p = String(member.phone || member.id || '').replace(/\D/g, '').trim();
+      if (p) memberPhoneSet.add(p);
+    });
+    // 定位时间字段与服务端 /api/driver/locations 的 cutoff 口径对齐（旧客户端链漏了
+    // onlineSessionTime/locationTimestamp/updatedAt，订阅路径下过期判定会失效）。
+    const pickUploadTime = (loc: any, fallback: number): number => {
+      if (loc.onlineSessionTime) return Number(loc.onlineSessionTime);
+      if (loc.lastLocationTime) return Number(loc.lastLocationTime);
+      if (loc.locationTimestamp) return Number(loc.locationTimestamp);
+      if (loc.timestamp) return Number(loc.timestamp);
+      if (loc.lastUpdatedTime) return new Date(loc.lastUpdatedTime).getTime();
+      if (loc.updatedAt !== undefined && loc.updatedAt !== null && loc.updatedAt !== '') {
+        const n = Number(loc.updatedAt);
+        return isNaN(n) ? new Date(loc.updatedAt).getTime() : n;
+      }
+      return fallback;
+    };
     Object.keys(realtimeLocations).forEach((phoneKey) => {
       const liveLoc = realtimeLocations[phoneKey];
       if (!liveLoc) return;
@@ -746,7 +772,15 @@ export default function NearbyMapView({
       const name = String(liveLoc.driverName || liveLoc.name || '').trim();
       if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
 
-      const existing = candidateDriversMap.get(phone);
+      // 第六轮修复二：服务端对无哈勃权限者会把定位的键与 phone 脱敏为 138****1234 形式，
+      // 清洗后不是 11 位手机号、无法与成员身份对齐。这类条目按原始键作匿名标记保留
+      // （名字已被服务端打成“某师傅”、坐标与忙闲状态真实），严禁把清洗出的残缺数字
+      // 当身份——同号段两名司机清洗后同号，旧逻辑会在 Map 里互相覆盖、把一个人画没。
+      const isMaskedEntry = phone.length !== 11;
+      if (!isMaskedEntry && !memberPhoneSet.has(phone) && !candidateDriversMap.has(phone)) return;
+      const candidateKey = isMaskedEntry ? String(phoneKey) : phone;
+
+      const existing = candidateDriversMap.get(candidateKey);
       // P0-7修复(2026-10-14)：无真实GPS时用已有的真实坐标，没有则跳过，绝不用假坐标（铁律）
       const liveLat = Number(liveLoc.lat);
       const liveLng = Number(liveLoc.lng);
@@ -754,12 +788,8 @@ export default function NearbyMapView({
       if (!hasLiveGps && !existing) return; // 无任何真实坐标则跳过
       const lat = hasLiveGps ? liveLat : existing!.lat;
       const lng = hasLiveGps ? liveLng : existing!.lng;
-      const uploadTime = liveLoc.lastLocationTime 
-        ? Number(liveLoc.lastLocationTime)
-        : (liveLoc.timestamp
-          ? Number(liveLoc.timestamp)
-          : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || 0)));
-      
+      const uploadTime = pickUploadTime(liveLoc, existing?.uploadTime || 0);
+
       const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
       const rawIsOnline = liveLoc.isOnline !== undefined
         ? Boolean(liveLoc.isOnline === true || liveLoc.isOnline === 'true')
@@ -769,12 +799,13 @@ export default function NearbyMapView({
       const isBusy = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
         : (existing?.isBusy || false);
-      
-      const candidateName = existing?.name || name || '';
-      const resolvedName = resolveDriverRealName(phone, candidateName);
 
-      candidateDriversMap.set(phone, {
-        phone,
+      const candidateName = existing?.name || name || '';
+      // 脱敏条目不走 resolveDriverRealName（会把假号写入全局真名注册表），名字用服务端给的“某师傅”
+      const resolvedName = isMaskedEntry ? (candidateName || '某师傅') : resolveDriverRealName(phone, candidateName);
+
+      candidateDriversMap.set(candidateKey, {
+        phone: candidateKey,
         name: resolvedName,
         lat,
         lng,
@@ -802,7 +833,11 @@ export default function NearbyMapView({
         if (!hubbleFilters.showOffline) return;
       }
 
-      const rawName = resolveDriverRealName(driver.phone, driver.name);
+      // 脱敏条目（键为 138****1234 形式）的 driver.phone 不是真实手机号，
+      // 不再走 resolveDriverRealName（会污染全局真名注册表），直接用已存的“某师傅”
+      const rawName = String(driver.phone || '').replace(/\D/g, '').length === 11
+        ? resolveDriverRealName(driver.phone, driver.name)
+        : (driver.name || '某师傅');
       // P0(2026-10-14): 显示真名必须同时满足：有哈勃权限 AND 开启了显示全名开关
       // 否则权限被开发者收回后，本地残留的 showFullName=true 会导致继续泄露所有人真名
       const displayName = (hasHubblePermission && hubbleFilters.showFullName) ? rawName : formatDriverMaskedName(rawName);
@@ -833,7 +868,8 @@ export default function NearbyMapView({
     squadList,
     realtimeLocations,
     removedPhones,
-    hubbleFilters
+    hubbleFilters,
+    hasHubblePermission
   ]);
 
   // Synchronize renderedMapDrivers state with activeMapDrivers
@@ -948,7 +984,8 @@ export default function NearbyMapView({
 
   // Center map on current GPS location
   const handleRecenter = () => {
-    if (mapInstanceRef.current) {
+    // 第六轮修复：无真实GPS（坐标为0）时不回中，避免地图跳到 (0,0) 海面
+    if (mapInstanceRef.current && gpsLocation.lng && gpsLocation.lat) {
       mapInstanceRef.current.setZoomAndCenter(15.5, [gpsLocation.lng, gpsLocation.lat]);
     }
   };

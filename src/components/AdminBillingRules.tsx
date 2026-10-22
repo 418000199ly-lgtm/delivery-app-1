@@ -829,26 +829,11 @@ export default function AdminBillingRules({ onShowToast }: AdminBillingRulesProp
         setTemplates(data.templates || []);
         setActiveBillingMode(data.activeBillingMode || 'system_default');
         if (data.timeBasedConfig) {
-          setTimeBasedConfig(prev => {
-            const merged = { ...prev, ...data.timeBasedConfig };
-            let needsUpdate = false;
-            if (!Array.isArray(merged.polygonCoords) || merged.polygonCoords.length !== 119) {
-              merged.polygonCoords = DEFAULT_YINCHUAN_COORDS;
-              needsUpdate = true;
-            }
-            if (needsUpdate) {
-              setTimeout(() => {
-                setDoc(configDocRef, {
-                  ...data,
-                  timeBasedConfig: {
-                    ...data.timeBasedConfig,
-                    polygonCoords: DEFAULT_YINCHUAN_COORDS
-                  }
-                }).catch(err => console.error('Error auto-migrating coordinates:', err));
-              }, 500);
-            }
-            return merged;
-          });
+          // 第六轮修复（A-P1）：打开页面只读展示，围栏（polygonCoords）原样透传。
+          // 删除旧逻辑：点数≠119 即自动 setDoc 把生产围栏覆盖为默认银川多边形且不验写结果——
+          // 管理员只是打开页面就会无声改掉围栏。围栏仅在管理员显式编辑并保存时才随表单提交
+          // （persistOnlineConfig，保留原有写结果校验）。
+          setTimeBasedConfig(prev => ({ ...prev, ...data.timeBasedConfig }));
         }
       } else {
         // Populate default template in database if not set

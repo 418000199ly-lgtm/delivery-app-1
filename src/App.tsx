@@ -638,6 +638,33 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setIsInSquad(myMembership?.isMember === true);
   }, [myMembership]);
 
+  const myMembershipRef = useRef<SquadMembershipState | null>(null);
+  useEffect(() => { myMembershipRef.current = myMembership; }, [myMembership]);
+
+  // 2026-10-22 第五轮 C-P4：三路来单（主订阅 / 后台通知 / 自定义事件）统一接单授权门。
+  // 此前主通道无拦截、通知路读本地 settings 字段、自定义事件路 settings 未加载时 fail-open，
+  // 三路三种口径。统一规则：
+  // - 数据源只认服务端同步事实：统一成员快照 myMembership（成员文档 licenseExpiry），
+  //   成员文档缺该字段时回退服务端轮询同步进 settings 的 licenseExpiry；
+  // - 天数口径与服务端 getLicenseDaysRemaining 对齐（calculateDaysFromExpiry 日期差，到期日当天=0 天）；
+  // - 成员快照未加载完成 → fail-closed 先不弹，等订阅回读后后续触发再评估；
+  // - 非成员（商户等）不受接单授权门限制；正式成员 ≤0 天静默不弹（日志留痕）。
+  const evaluateIncomingLicenseGate = (): boolean => {
+    const st = myMembershipRef.current;
+    if (!st || !st.loaded) {
+      console.log('[License] 成员状态未同步完成，暂不弹窗新来单（fail-closed）');
+      return false;
+    }
+    if (!st.isMember) return true;
+    const lic = (st.member?.licenseExpiry ?? (settingsRef.current as any)?.licenseExpiry) as string | undefined;
+    const days = calculateDaysFromExpiry(lic);
+    if (days !== '永久' && Number(days) <= 0) {
+      console.log('[License] 接单授权剩余 0 天，不弹窗新来单');
+      return false;
+    }
+    return true;
+  };
+
   useEffect(() => {
     if (!userPhone) {
       setIsInSquad(false);
@@ -1047,25 +1074,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
     });
 
-    // 3. 同时监听 squad_applications 审批结果 (审批通过后秒级生效)
+    // 3. 同时监听 squad_applications 文档存否（仅用于申请消失时清理本地旧标记）
+    // 2026-10-22 第五轮 P2-11：申请文档里的「已通过」不再点亮管理入口标志——
+    // 残留的已通过申请文档曾可单独点亮 isSquadApprovedOrManagement；该标志只认服务端
+    // 成员/管理事实（myMembership 统一口径 effect + unsub2 成员文档监听）。
     const unsub3 = onSnapshot(doc(db, 'squad_applications', userPhone), (snap) => {
-      if (snap.exists()) {
-        const app = snap.data();
-        if (userPhone !== DEVELOPER_PHONE) {
-          const st = app?.status || '';
-          if (['已通过', 'approved', '通过'].includes(st)) {
-            checkAndSetApproved(true);
-            try {
-              const savedR = localStorage.getItem('dd_removed_squad_phones_v2');
-              if (savedR) {
-                const list = JSON.parse(savedR).filter((p: string) => p !== userPhone);
-                localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(list));
-              }
-            } catch (_) {}
-            return;
-          }
-        }
-      }
       if (!snap.exists()) {
         if (userPhone !== DEVELOPER_PHONE) {
           // 2026-10-20 重建：申请记录不存在不再置 false（审批通过后申请会被删除，曾与成员状态对打导致误判非成员）
@@ -1109,6 +1122,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                         try {
                           safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
                           safeSetItem('dd_settings', JSON.stringify(updated));
+                          // 2026-10-22 第五轮 P2-10：同步留痕服务端 VIP 值，供 VIP 功能门禁优先采信
+                          safeSetItem(`dd_vip_expiry_${userPhone}`, freshVip);
+                          safeSetItem(`dd_vip_expiry_time_${userPhone}`, Date.now().toString());
                         } catch (_) {}
                         return updated;
                       }
@@ -1352,8 +1368,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }, [userPhone, isOnline, isSquadApprovedOrManagement, settings?.city, settings?.driverName, currentTrip, stats?.todayOrders, currentView, sysVersion, incomingOrder, activeOnlineOrder]);
 
   // Synchronize driver busy / idle status to Mainland China Aliyun server, Firestore & local state
-  // 2026-10-17：去掉 incomingOrder 和 create_order。弹窗/报单页不再置忙，防接单409自锁。
-  // 真正忙碌只看 currentTrip（服务中）/ activeOnlineOrder（有进行中订单）。
+  // 2026-10-22 第七轮新口径：司机「占用」由服务端统一计算 = 未决派单 ∨ 报单心跳(isReporting) ∨ 行程 isBusy。
+  // 本 effect 只上报行程维度的 isBusy（currentTrip 服务中 / activeOnlineOrder 有进行中订单）；
+  // 来单弹窗与报单页不再经手 isBusy——弹窗占用靠服务端的未决派单记录判定、报单占用靠下方
+  // isReporting 心跳，因此不存在旧设计「自己标忙又被自己的忙碌挡住接单」的 409 自锁。
   useEffect(() => {
     if (!userPhone) return;
     const isBusy = Boolean(currentTrip || activeOnlineOrder);
@@ -1362,6 +1380,35 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       currentView: incomingOrder ? 'incoming_overlay' : currentView
     });
   }, [userPhone, currentTrip, currentView, incomingOrder, activeOnlineOrder, settings?.driverName]);
+
+  // 2026-10-22 第七轮：自助报单占用上报（isReporting 心跳，App 层统一处理）。
+  // 判定：停留在报单页（currentView==='create_order'）且无进行中订单、无行程 = 司机在用自己
+  // 渠道报单，视为占用——服务端据 isReporting + reportingAt（45 秒内有心跳）过滤派单、
+  // 附近地图据此显示忙碌（红）。进入即报、停留每 15 秒续报；离开报单页（返回首页）或接单
+  // 流程接管（activeOnlineOrder 出现）时 effect 清理立即报 false 恢复空闲（绿）；
+  // App 被杀来不及报 false 时靠服务端 45 秒过期兜底。本上报只写 isReporting，绝不写 isBusy。
+  const isSelfReporting = currentView === 'create_order' && !activeOnlineOrder && !currentTrip;
+  useEffect(() => {
+    if (!userPhone || !isSelfReporting) return;
+    const cleanPhone = String(userPhone).replace(/\D/g, '').trim();
+    if (!cleanPhone) return;
+    const reportReporting = (on: boolean) => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        fetch(`${baseUrl}/api/driver/status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+          body: JSON.stringify({ phone: cleanPhone, isReporting: on, currentView: 'create_order', timestamp: Date.now() })
+        }).catch(() => {});
+      } catch (_) {}
+    };
+    reportReporting(true);
+    const heartbeat = setInterval(() => reportReporting(true), 15000);
+    return () => {
+      clearInterval(heartbeat);
+      reportReporting(false);
+    };
+  }, [userPhone, isSelfReporting]);
 
   // Helper to execute offline state transition and push to Mainland China Aliyun Baota backend
   const executeDirectOffline = (reason: string) => {
@@ -2159,6 +2206,90 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   const lastAlertedOrderTimeRef = useRef<number>(0);
   const handledCancelledOrderKeysRef = useRef<Set<string>>(new Set());
 
+  // 2026-10-22 第七轮：三路来单共用弹单判定（主订阅 processIncomingData / 背景通知 / trigger_incoming_order）。
+  // 此前三路各写一套、二三路缺行程/视图拦截与新鲜度，且新单会直接顶替正在倒计时的旧弹窗，
+  // 一名司机可能同时被两笔订单弹窗。统一收口到 evaluateIncomingPopupGate，并用 ref 读最新
+  // 状态（二三路所在 effect 依赖只有 userPhone，闭包里的 state 必然过期）。
+  const incomingOrderRef = useRef<any>(null);
+  useEffect(() => { incomingOrderRef.current = incomingOrder; }, [incomingOrder]);
+  const currentTripRef = useRef<any>(null);
+  useEffect(() => { currentTripRef.current = currentTrip; }, [currentTrip]);
+  const currentViewRef = useRef<string>(currentView);
+  useEffect(() => { currentViewRef.current = currentView; }, [currentView]);
+  // 2026-10-22 第七轮收尾：被占用/视图/行程拦下的来单没有重投路径（订阅只在文档变化时回调，
+  // 文档不动就永不重送，二维码自助单会被静默吞掉）。gate 拦截时置此标志，弹窗关闭或回到
+  // 首页时由下方重查 effect 单次重读 passenger_links 并重走全套判定（含新鲜度，过期单自灭）。
+  const blockedIncomingRecheckRef = useRef<boolean>(false);
+  const processIncomingDataRef = useRef<((data: any) => Promise<void>) | null>(null);
+
+  // 判定顺序：占用防顶替优先——异单无论何种状态都不能冲掉/顶替正在倒计时的弹窗；
+  // 同单更新则继续走完结/拒收检查，由既有路径关闭弹窗。reason='occupied' 时调用方必须
+  // 静默（不弹窗、不提醒、不动现有弹窗）；其余 reason 调用方沿用旧处置（清弹窗/清缓存）。
+  const evaluateIncomingPopupGate = async (data: any): Promise<{ ok: boolean; reason?: string }> => {
+    if (!data) return { ok: false, reason: 'empty' };
+    const rawTime = Number(data.timestamp || data.updatedAt || 0);
+    const orderKey = String(data.orderId || data.id || data.orderNo || `${data.passengerPhone || 'p'}_${rawTime || 0}`).trim();
+
+    // 占用防顶替：已有弹窗且不是同一单（含任一侧缺 id 的保守情形）→ 拦下
+    const cur = incomingOrderRef.current;
+    if (cur) {
+      const curKey = String(cur.orderId || cur.id || cur.orderNo || '').trim();
+      if (!curKey || !orderKey || curKey !== orderKey) {
+        blockedIncomingRecheckRef.current = true;
+        return { ok: false, reason: 'occupied' };
+      }
+    }
+
+    // 已完结 / 已取消 / 已被他人接单
+    const ended = await isOrderAlreadyEnded(data, userPhone);
+    if (ended) return { ok: false, reason: 'ended' };
+
+    // 已拒收 / 已超时，不再重弹（2026-10-13：防延迟到达把旧单重新弹出来又自动关闭）
+    if (orderKey && dismissedIncomingOrderKeysRef.current.has(orderKey)) {
+      return { ok: false, reason: 'dismissed' };
+    }
+
+    // 行程中不打扰
+    if (currentTripRef.current) { blockedIncomingRecheckRef.current = true; return { ok: false, reason: 'in_trip' }; }
+
+    // 关键视图不打扰：导航 / 计费 / 收款 / 报单页与接单后流程页（create_order 一身二用，同口径）
+    const v = currentViewRef.current;
+    if (v === 'navigation' || v === 'cost' || v === 'payment_qr' || v === 'create_order') {
+      blockedIncomingRecheckRef.current = true;
+      return { ok: false, reason: 'blocked_view' };
+    }
+
+    // 接单授权门（三路统一口径，见 evaluateIncomingLicenseGate：未同步 fail-closed、0 天不弹）
+    if (!evaluateIncomingLicenseGate()) return { ok: false, reason: 'license' };
+
+    // 5 分钟新鲜度：时间戳缺失按新鲜处理（与主通道旧口径一致），明确过期才拦
+    if (rawTime && !isNaN(rawTime) && rawTime <= Date.now() - 300000) {
+      return { ok: false, reason: 'stale' };
+    }
+
+    return { ok: true };
+  };
+
+  // 待重查：弹窗已关闭且回到首页时，单次重读本人 passenger_links 并重走主通道判定。
+  // 先清标志再重查防自循环；重查内部仍走 gate，仍被拦会再次置标志等下一次时机。
+  useEffect(() => {
+    if (!blockedIncomingRecheckRef.current) return;
+    if (incomingOrder) return;
+    if (currentView !== 'home') return;
+    const cleanPhone = String(userPhone || '').replace(/\D/g, '').trim();
+    if (!cleanPhone || !processIncomingDataRef.current) return;
+    blockedIncomingRecheckRef.current = false;
+    (async () => {
+      try {
+        const snap = await getDoc(doc(db, 'passenger_links', cleanPhone));
+        if (snap && snap.exists()) {
+          const d = snap.data();
+          if (d) await processIncomingDataRef.current?.(d);
+        }
+      } catch (_) {}
+    })();
+  }, [incomingOrder, currentView, userPhone]);
+
   // Initialize native background notification system and register app resume listeners
   useEffect(() => {
     initNotificationSystem();
@@ -2166,38 +2297,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     const cleanup = registerBackgroundOrderListeners(async (order) => {
       if (order) {
-        // Validate if order is already completed / cancelled / ended
-        const ended = await isOrderAlreadyEnded(order, userPhone);
-        if (ended) {
-          clearPendingOrderCache();
-          setIncomingOrder(null);
-          triggerToast('⚠️ 该订单已完结或已被接单，无需重复查看');
-          return;
-        }
-        // 2026-10-13修复：后台通知通道补"已拒收不再重弹"检查。
-        // 延迟到达的后台通知会把已拒收/已超时的旧单重新弹出来，随后轮询发现过期又自动关闭，
-        // 外观正是"自动弹出→自动关闭"。与 processIncomingData 的检查保持一致。
-        const bgOrderKey = String(order.orderId || order.id || order.orderNo || '').trim();
-        if (bgOrderKey && dismissedIncomingOrderKeysRef.current.has(bgOrderKey)) {
-          setIncomingOrder(null);
-          return;
-        }
-        // 2026-10-15接单授权前端拦截：无授权不弹窗（纵深防御，服务端也拦）
-        // 2026-10-15 P1-3/P1-4/P1-5：用 hasValidLicense 统一口径；用 settingsRef 读最新值（避免闭包冻结）；undefined视为无授权即拦截（fail-closed）
-        const curSettings = settingsRef.current;
-        const licExpiry = (curSettings as any)?.licenseExpiry;
-        const hasLicense = hasValidLicense(licExpiry);
-        // P1(2026-10-15)：fail-closed——settings未加载时不弹窗，防无授权司机在启动1-2秒窗口内收到单
-        if (!curSettings) {
-          console.log('[License] settings未加载，暂不弹窗新来单');
-          setIncomingOrder(null);
-          return;
-        }
-        // 只拦截已审批入队成员；未入队的不受影响（商户等）
-        const isSquadMember = !!((curSettings as any)?.isSquadMember || (curSettings as any)?.squadStatus === '已通过');
-        if (isSquadMember && !hasLicense) {
-          console.log('[License] 无接单授权，不弹窗新来单');
-          setIncomingOrder(null);
+        // 2026-10-22 第七轮：背景通知通道改走三路共用判定 evaluateIncomingPopupGate
+        // （占用防顶替/完结/拒收/行程/视图/授权/新鲜度同一口径，定义见上方）。
+        // 此前本通道缺行程与视图拦截、缺新鲜度：延迟到达的通知能在行程中、报单页弹窗，
+        // 还能顶替正在倒计时的异单弹窗。现统一拦截：被拦一律静默、不动现有弹窗
+        // （唯 ended 沿用旧处置：清待接缓存并提示）。
+        const gate = await evaluateIncomingPopupGate(order);
+        if (!gate.ok) {
+          if (gate.reason === 'ended') {
+            clearPendingOrderCache();
+            setIncomingOrder(null);
+            triggerToast('⚠️ 该订单已完结或已被接单，无需重复查看');
+          }
           return;
         }
         setIncomingOrder(order);
@@ -2213,29 +2324,17 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
         dismissedIncomingOrderKeysRef.current.delete(orderKey);
         persistDismissedKeys(); // 2026-10-17：delete 后同步持久化，否则重启后旧 key 复活导致无法重弹
-        // 2026-10-15接单授权前端拦截：无授权不弹窗
-        // 2026-10-15 P1-3/P1-4/P1-5：用 hasValidLicense 统一口径；用 settingsRef 读最新值；undefined视为无授权即拦截（fail-closed）
-        const curSettings2 = settingsRef.current;
-        const licExpiry2 = (curSettings2 as any)?.licenseExpiry;
-        const hasLicense2 = hasValidLicense(licExpiry2);
-        if (curSettings2 && !hasLicense2) {
-          console.log('[License] 无接单授权，不弹窗新来单(custom)');
+        // 2026-10-22 第七轮：自定义事件通道改走三路共用判定 evaluateIncomingPopupGate。
+        // 此前本通道无条件弹窗+语音提醒：无行程/视图拦截、无新鲜度，异单可顶替正在
+        // 倒计时的弹窗。现统一拦截，被拦一律静默（不弹窗、不提醒、不动现有弹窗）；
+        // 完结校验已含在判定内（此前弹窗后异步补验再关，外观「弹出→自动关闭」，已删）。
+        const gate = await evaluateIncomingPopupGate(data);
+        if (!gate.ok) {
           return;
         }
         // Instant synchronous render of incoming order overlay with zero delay & zero homepage flashing
         setIncomingOrder(data);
         triggerBackgroundOrderAlert(data);
-
-        // Async non-blocking verification for non-valet orders
-        if (!data.isDirectClaim && !data.isValetOrder) {
-          isOrderAlreadyEnded(data, userPhone).then(ended => {
-            if (ended) {
-              clearPendingOrderCache();
-              setIncomingOrder(null);
-              triggerToast('⚠️ 该订单已完结，无需重复接单');
-            }
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-        }
       }
     };
     window.addEventListener('trigger_incoming_order', handleCustomTrigger);
@@ -2260,26 +2359,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     }
 
     const processIncomingData = async (data: any) => {
+      // 镜像给待重查 effect（定义在本 effect 内，外部只能经 ref 调用）
       if (data && (data.status === 'submitted' || data.passengerPhone)) {
         const rawTime = Number(data.timestamp || data.updatedAt || 0);
         const orderKey = data.orderId || data.id || data.orderNo || `${data.passengerPhone || 'p'}_${rawTime || 0}`;
 
-        // Validate if order is already completed / cancelled / ended
-        const ended = await isOrderAlreadyEnded(data, userPhone);
-        if (ended) {
-          clearPendingOrderCache();
-          setIncomingOrder(null);
-          return;
-        }
-
-        // Guarantee popup only shows once per order if dismissed
-        if (dismissedIncomingOrderKeysRef.current.has(orderKey)) {
-          setIncomingOrder(null);
-          return;
-        }
-
-        // Do not interrupt driver if driver is already serving an active trip or creating order
-        if (currentTrip || currentView === 'navigation' || currentView === 'cost' || currentView === 'payment_qr' || currentView === 'create_order') {
+        // 2026-10-22 第七轮：主通道改走三路共用判定 evaluateIncomingPopupGate
+        // （完结/拒收/行程/视图/授权/新鲜度同一口径，定义见背景通知 effect 上方）。
+        // 新增占用防顶替（occupied）：已有异单弹窗正在 60 秒倒计时时，新单静默跳过——
+        // 不替换弹窗、不清掉弹窗、不触发任何提醒，防一名司机同时被两笔订单弹窗；
+        // 代叫分支与非代叫分支同受此保护（旧逻辑：代叫异单直接顶替、非代叫强杀弹窗拽页）。
+        // 其余拦截原因沿用旧处置（清弹窗；ended 另清待接缓存）。
+        const gate = await evaluateIncomingPopupGate(data);
+        if (!gate.ok) {
+          if (gate.reason === 'occupied') {
+            console.log('[Incoming] 已有新来单弹窗倒计时中，异单静默跳过（防双单）:', orderKey);
+            return;
+          }
+          if (gate.reason === 'ended') {
+            clearPendingOrderCache();
+          }
           setIncomingOrder(null);
           return;
         }
@@ -2364,6 +2463,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
 
     // 1. Primary Baota DB Proxy realtime listener (handles low-latency updates via dbProxy)
+    processIncomingDataRef.current = processIncomingData;
     const docRef = doc(db, 'passenger_links', cleanPhone);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -2417,9 +2517,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                   speakText(voiceMsg);
                 } catch (_) {}
               }
-            } else if (incomingOrder) {
-              const incId = String(incomingOrder.id || incomingOrder.orderId || '').trim();
-              const incNo = String(incomingOrder.orderNo || '').trim();
+            } else if (incomingOrderRef.current) {
+              // 2026-10-22 第七轮：读 ref 取最新弹窗单（本 effect 依赖不含 incomingOrder，闭包值会过期）
+              const incId = String(incomingOrderRef.current.id || incomingOrderRef.current.orderId || '').trim();
+              const incNo = String(incomingOrderRef.current.orderNo || '').trim();
               const isMatchInc = Boolean(cancelId && (cancelId === incId || cancelId === incNo));
               if (isMatchInc) {
                 setIncomingOrder(null);
@@ -2501,9 +2602,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                   speakText(voiceMsg);
                 } catch (_) {}
               }
-            } else if (incomingOrder) {
-              const incId = String(incomingOrder.id || incomingOrder.orderId || '').trim();
-              const incNo = String(incomingOrder.orderNo || '').trim();
+            } else if (incomingOrderRef.current) {
+              // 2026-10-22 第七轮：读 ref 取最新弹窗单（本 effect 依赖不含 incomingOrder，闭包值会过期）
+              const incId = String(incomingOrderRef.current.id || incomingOrderRef.current.orderId || '').trim();
+              const incNo = String(incomingOrderRef.current.orderNo || '').trim();
               const isMatchInc = Boolean(cancelId && (cancelId === incId || cancelId === incNo));
               if (isMatchInc) {
                 setIncomingOrder(null);
@@ -2525,7 +2627,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       unsubscribe();
       unsubscribeActive();
     };
-  }, [userPhone, currentView, isOnline, activeOnlineOrder]);
+  }, [userPhone, currentView, isOnline, activeOnlineOrder, currentTrip]);
 
   // Listen for real-time cancellation of driver's active online order or active trip
   useEffect(() => {
@@ -2892,6 +2994,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const existingDeclined = Array.isArray(incomingOrder.declinedDriverPhones) ? incomingOrder.declinedDriverPhones : [];
       const existingTimeout = Array.isArray(incomingOrder.timeoutDriverPhones) ? incomingOrder.timeoutDriverPhones : [];
 
+      // 2026-10-22 第五轮 P2-8：本地名单按 reason 分开写——主动拒单只进 declined 名单，
+      // 超时/未上屏只进 timeout 名单，不再不分原因同时写入两份名单（与上方注释口径对齐：
+      // 超时不进永久屏蔽）。服务端交互不变，仍走下方 /api/order/to-hall。
       const updateData = {
         status: 'hall',
         in_hall: true,
@@ -2901,8 +3006,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         claimedDriverPhone: '',
         claimedDriverName: '',
         driverName: '',
-        declinedDriverPhones: Array.from(new Set([...existingDeclined, cleanUserPhone].filter(Boolean))),
-        timeoutDriverPhones: Array.from(new Set([...existingTimeout, cleanUserPhone].filter(Boolean))),
+        declinedDriverPhones: isUserDecline
+          ? Array.from(new Set([...existingDeclined, cleanUserPhone].filter(Boolean)))
+          : existingDeclined,
+        timeoutDriverPhones: isUserDecline
+          ? existingTimeout
+          : Array.from(new Set([...existingTimeout, cleanUserPhone].filter(Boolean))),
         lastDeclinedAt: Date.now()
       };
 
@@ -3969,7 +4078,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     if ((currentView !== 'create_order' && currentView !== 'navigation' && currentView !== 'cost' && currentView !== 'payment_qr') && ((mobileActiveTab === 'passenger' || mobileActiveTab === 'qr_expired' || mobileActiveTab === 'vip_blocked') || (mobileActiveTab !== 'app' && mobileActiveTab !== 'dispatch_valet' && passengerDriverPhone))) {
       return (
         <PassengerOrderView 
-          driverPhone={passengerDriverPhone || userPhone || '18609518888'}
+          driverPhone={passengerDriverPhone || userPhone || ''}
           forceView={
             mobileActiveTab === 'qr_expired' 
               ? 'qr_expired' 

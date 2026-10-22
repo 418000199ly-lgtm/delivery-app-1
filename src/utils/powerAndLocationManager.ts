@@ -73,7 +73,10 @@ interface LocationReporterConfig {
 /**
  * 实时上报司机忙碌/空闲状态至中国大陆阿里云服务器与数据库
  * @param userPhone 司机手机号
- * @param isBusy 是否忙碌/接单状态 (true = 忙碌/做单/来单弹窗/报单中, false = 空闲接单)
+ * @param isBusy 是否行程忙碌 (true = 行程中/有进行中订单, false = 空闲接单)
+ *   2026-10-22 第七轮：来单弹窗与自助报单不再经 isBusy 表达占用——司机占用由服务端
+ *   统一计算（未决派单 ∨ isReporting 心跳 ∨ 行程 isBusy）；弹窗占用靠未决派单记录、
+ *   报单占用走 /api/driver/status 的 isReporting 心跳（App 层上报），本函数只管行程忙碌。
  * @param extra 额外参数 (例如 driverName, currentView 等)
  */
 export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean, extra?: any) {

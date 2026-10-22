@@ -51,7 +51,7 @@ import {
 } from 'lucide-react';
 import driverAvatar from '../assets/images/driver_avatar_1784017528877.jpg';
 import { DRIVER_AVATAR_BASE64, DRIVER_MASCOT_BASE64 } from '../assets/images/driverImageConstants';
-import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, formatDriverMaskedName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
+import { getFormattedDispatcherName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, formatDriverMaskedName, updateDriverGlobalName, formatMaskedPhone, formatMemberDisplayPhone, isPhoneMaskedForUser, clearDriverCachedName, registerDriverCustomName, isOfficialSquadMember, getRemovedSquadSet, isSquadAppPending, syncRemovedSquadPhones, getAllowedAssignableRoles, canDeleteTargetMember, getRoleLevel, canClearListPermission } from '../utils/nameResolver';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 
 // 2026-10-11晚：从高德逆地理结果提取详细地址（如"北京东路465号"），用于起点下方小字展示
@@ -300,6 +300,30 @@ interface MobileDispatchValetOrderProps {
   isOnline?: boolean;
   driverCoords?: { lat: number; lng: number } | null;
   onClose?: () => void;
+}
+
+// 2026-10-22 第五轮 C-P1/P2-1：申请名单双源（HTTP 轮询 / onSnapshot）统一归一口径。
+// 只做：按手机号去重、排除开发者本人与商户（A 后缀）、名字解析；
+// 不再按通用名 / removed 过滤——以服务端列表为准（2026-10-19 裁定：名单必须显示所有司机）。
+// 待审批计数统一走 nameResolver 的 isSquadAppPending 宽口径，不再精确匹配 '待审核'。
+function normalizeApplicantsList(items: any[]): any[] {
+  const map = new Map<string, any>();
+  (Array.isArray(items) ? items : []).forEach((item: any) => {
+    if (!item) return;
+    const fullKey = String(item.phone || item.id || '').trim();
+    const key = fullKey.replace(/\D/g, '').trim();
+    if (!key) return;
+    if (['app-1', 'app-2', 'app-3'].includes(String(item.id || ''))) return;
+    if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
+    if (key === '15509601222') return;
+    map.set(key, {
+      ...item,
+      id: item.id || key,
+      phone: key,
+      name: resolveDriverRealName(key, item.name || item.driverName || item.applicantName || '')
+    });
+  });
+  return Array.from(map.values());
 }
 
 export default function MobileDispatchValetOrder({ 
@@ -891,15 +915,7 @@ export default function MobileDispatchValetOrder({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          return parsed.filter((a: any) => {
-            const fullKey = String(a?.phone || a?.id || '').trim();
-            const p = fullKey.replace(/\D/g, '').trim();
-            if (p === '15509601222') return false;
-            if (fullKey.toUpperCase().endsWith('A') || a?.isMerchant || a?.accountType === 'merchant') return false;
-            const name = String(a?.name || a?.applicantName || a?.driverName || '').trim();
-            if (isGenericDriverName(name, p) && a?.status !== '已拒绝') return false;
-            return true;
-          });
+          return normalizeApplicantsList(parsed);
         }
       }
     } catch (_) {}
@@ -910,7 +926,7 @@ export default function MobileDispatchValetOrder({
     try {
       localStorage.setItem('dd_applicants_v2', JSON.stringify(applicants));
       window.dispatchEvent(new CustomEvent('squad_applicants_updated', { 
-        detail: { count: applicants.filter(a => a.status === '待审核').length } 
+        detail: { count: applicants.filter(a => isSquadAppPending(a?.status || a?.approvalStatus)).length } 
       }));
     } catch (_) {}
   }, [applicants]);
@@ -922,59 +938,20 @@ export default function MobileDispatchValetOrder({
     const fetchAppsHttp = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const map = new Map<string, any>();
-
+        // 2026-10-22 第五轮 P2-1：HTTP 路只负责拉取+归一，与 onSnapshot 路共用
+        // normalizeApplicantsList；删除原 map 构建 + removed/通用名过滤段（口径与快照路不一致是角标跳动根源）。
+        let rawApps: any[] = [];
         const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (resApps.ok) {
           const jsonApps = await resApps.json();
-          let rawApps: any[] = [];
           if (Array.isArray(jsonApps)) {
             rawApps = jsonApps.map((item: any) => (item?.data ? { id: item.id, phone: item.id, ...item.data } : item)).filter(Boolean);
           } else if (jsonApps && Array.isArray(jsonApps.docs)) {
             rawApps = jsonApps.docs.map((d: any) => (d ? { id: d.id, phone: d.id, ...(d.data || {}) } : null)).filter(Boolean);
           }
-          rawApps.forEach((item: any) => {
-            if (item && (item.phone || item.id)) {
-              const fullKey = String(item.phone || item.id || '').trim();
-              const key = fullKey.replace(/\D/g, '').trim();
-              if (key === '15509601222') return;
-              if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
-              const rawName = String(item.name || item.driverName || item.applicantName || '').trim();
-              const isGeneric = isGenericDriverName(rawName, key);
-              if (isGeneric && item.status !== '已拒绝') {
-                return;
-              }
-              map.set(key, {
-                ...item,
-                phone: key,
-                name: resolveDriverRealName(key, rawName)
-              });
-            }
-          });
         }
-
-        const removedSquadSet = getRemovedSquadSet();
-        const mergedList = Array.from(map.values()).filter((a: any) => {
-          if (!a || (!a.phone && !a.id)) return false;
-          if (['app-1', 'app-2', 'app-3'].includes(a.id)) return false;
-          const fullKey = String(a.phone || a.id || '').trim();
-          const p = fullKey.replace(/\D/g, '').trim();
-          if (p === '15509601222') return false;
-          if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
-          if (removedSquadSet.has(p)) return false;
-          const name = String(a.name || a.applicantName || a.driverName || '').trim();
-          if (isGenericDriverName(name, p)) return false;
-          return true;
-        });
-
-        if (mergedList.length === 0) {
-          setApplicants([]);
-          try {
-            localStorage.setItem('dd_applicants_v2', '[]');
-          } catch (_) {}
-        } else {
-          setApplicants(mergedList);
-        }
+        // 空数组也照常 setApplicants 清空；镜像写回统一由 [applicants] effect 负责
+        setApplicants(normalizeApplicantsList(rawApps));
       } catch (_) {}
     };
 
@@ -986,59 +963,16 @@ export default function MobileDispatchValetOrder({
         const list: any[] = [];
         snapshot.forEach((docSnap) => {
           const data = docSnap.data();
-          const p = String(docSnap.id || data?.phone || '').trim();
-          const cleanP = p.replace(/\D/g, '');
-          const name = String(data?.name || data?.applicantName || data?.driverName || '').trim();
-          // 2026-10-20修复：只过滤显示，不自动删除（防误删正常司机）
-          // 商户（A后缀）由服务端 /api/squad-apply 直接拒绝，不入库
-          if (p.toUpperCase().endsWith('A')) {
-            return;
-          }
           list.push({
             id: docSnap.id,
             phone: docSnap.id,
             ...data
           });
         });
-        if (list.length === 0) {
-          setApplicants([]);
-        } else {
-          setApplicants(prev => {
-            const map = new Map<string, any>();
-            list.forEach(item => {
-              const key = String(item.phone || item.id).replace(/\D/g, '').trim();
-              // 2026-10-20修复：删除含'718'的过滤（误伤正常司机），只过滤开发者本人
-              if (key && key !== '15509601222') {
-                const prevItem = map.get(key) || {};
-                const isPending = item.status === '待审核';
-                map.set(key, {
-                  ...prevItem,
-                  ...item,
-                  phone: key,
-                  name: resolveDriverRealName(key, item.name || item.driverName || item.applicantName || prevItem.name),
-                  approvedBy: isPending ? '' : (item.approvedBy || prevItem.approvedBy || ''),
-                  approvedRole: isPending ? '' : (item.approvedRole || prevItem.approvedRole || ''),
-                  approvalTime: isPending ? '' : (item.approvalTime || prevItem.approvalTime || ''),
-                  rejectedBy: isPending ? '' : (item.rejectedBy || prevItem.rejectedBy || ''),
-                  rejectedRole: isPending ? '' : (item.rejectedRole || prevItem.rejectedRole || ''),
-                  rejectionTime: isPending ? '' : (item.rejectionTime || prevItem.rejectionTime || ''),
-                  selectedReasons: isPending ? [] : (item.selectedReasons || prevItem.selectedReasons || [])
-                });
-              }
-            });
-            return Array.from(map.values()).filter((a: any) => {
-              if (!a) return false;
-              if (['app-1', 'app-2', 'app-3'].includes(a.id)) return false;
-              const fullKey = String(a.phone || a.id || '').trim();
-              const p = fullKey.replace(/\D/g, '').trim();
-              if (p === '15509601222') return false;
-              if (fullKey.toUpperCase().endsWith('A') || a.isMerchant || a.accountType === 'merchant') return false;
-              const name = String(a.name || a.applicantName || a.driverName || '').trim();
-              if (isGenericDriverName(name, p)) return a.status === '已拒绝';
-              return true;
-            });
-          });
-        }
+        // 2026-10-22 第五轮 P2-1：与 HTTP 路共用同一归一口径。
+        // 删除原 merge 逻辑：它按 pending 把 approvedBy/approvedRole/approvalTime/rejectedBy 等
+        // 审批痕迹字段清空——会把已审批记录的操作人信息抹掉，无业务意义，一并删除。
+        setApplicants(normalizeApplicantsList(list));
       });
     }
 
@@ -1117,7 +1051,7 @@ export default function MobileDispatchValetOrder({
     };
   }, [currentCity]);
 
-  const pendingApplicantCount = applicants.filter(a => a.status === '待审核').length;
+  const pendingApplicantCount = applicants.filter(a => isSquadAppPending(a?.status || a?.approvalStatus)).length;
 
   const handleApproveApplicant = async (id: string, name: string) => {
     if (!canReviewApplicants) {
@@ -2156,6 +2090,10 @@ export default function MobileDispatchValetOrder({
         if (resCfg.ok) {
           const jsonCfg = await resCfg.json();
           const pList = jsonCfg?.data?.phones || jsonCfg?.phones;
+          // 2026-10-22 跨批次同步：nameResolver 的 getRemovedSquadSet() 已改为只读模块级服务端缓存
+          // （不再读 localStorage），这里是本页从服务端拿到 removed 名单的点，顺手同步进缓存供全页消费；
+          // 空数组也同步（服务端清空时缓存同步清零）。
+          if (Array.isArray(pList)) syncRemovedSquadPhones(pList);
           if (Array.isArray(pList) && pList.length > 0) {
             setRemovedMemberPhones(prev => {
               const updated = Array.from(new Set([...prev, ...pList.map((p: any) => String(p).trim()).filter(Boolean)]));
@@ -2907,7 +2845,7 @@ export default function MobileDispatchValetOrder({
               if (Array.isArray(parsed)) {
                 let changed = false;
                 parsed.forEach((o: any) => {
-                  if (o && (o.merchantPhone === activePhone || o.dispatchedByPhone === activePhone || o.creatorPhone === activePhone || !o.paymentQrCode)) {
+                  if (o && (o.merchantPhone === activePhone || o.dispatchedByPhone === activePhone || o.creatorPhone === activePhone)) {
                     o.paymentQrCode = uploadData.url;
                     o.merchantPaymentQrCode = uploadData.url;
                     changed = true;
@@ -2945,7 +2883,7 @@ export default function MobileDispatchValetOrder({
           if (Array.isArray(parsed)) {
             let changed = false;
             parsed.forEach((o: any) => {
-              if (o && (o.merchantPhone === activePhone || o.dispatchedByPhone === activePhone || o.creatorPhone === activePhone || !o.paymentQrCode)) {
+              if (o && (o.merchantPhone === activePhone || o.dispatchedByPhone === activePhone || o.creatorPhone === activePhone)) {
                 o.paymentQrCode = pngDataUrl;
                 o.merchantPaymentQrCode = pngDataUrl;
                 changed = true;

@@ -59,7 +59,7 @@ import {
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
 import AdminBillingRules from './AdminBillingRules';
-import { resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, getRemovedSquadSet, isMerchantAccountUnified, hasValidLicense } from '../utils/nameResolver';
+import { resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, syncRemovedSquadPhones, isMerchantAccountUnified, hasValidLicense } from '../utils/nameResolver';
 import { DEVELOPER_PHONE } from '../utils/constants';
 
 function calculateExpiryFromDays(days: string): string {
@@ -364,6 +364,10 @@ export default function AdminPanel({
   const isUserEditingDaysRef = useRef<boolean>(false);
   const isUserEditingDateRef = useRef<boolean>(false);
   const isSavingExpiryRef = useRef<boolean>(false);
+  // 第六轮修复（A10）：保存会员有效期的防覆盖保护改为按司机粒度——
+  // phone -> 保护截止时间戳。订阅回调只对保护窗口内的那名司机保留本地乐观 vipExpiry，
+  // 其余司机照常刷新，不再整表冻结 10 秒。
+  const savingExpiryGuardRef = useRef<Map<string, number>>(new Map());
   const lastAuthoritativeSavedExpiryRef = useRef<string | null>(null);
   const lastQueriedPhoneRef = useRef<string>('');
   const [allDrivers, setAllDrivers] = useState<any[]>(() => {
@@ -403,16 +407,9 @@ export default function AdminPanel({
   });
   const [squadAppsList, setSquadAppsList] = useState<any[]>([]);
   const [merchantAccountsList, setMerchantAccountsList] = useState<any[]>([]);
-  const [removedSquadPhones, setRemovedSquadPhones] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch (_) {}
-    return [];
-  });
+  // 第六轮修复（G-P3）：被移除名单初始值不再取本机 localStorage——本机缓存不参与判定，
+  // 名单只由下方服务端预加载/订阅（config/removed_squad_members）填充。
+  const [removedSquadPhones, setRemovedSquadPhones] = useState<string[]>([]);
   const [driverSearchQuery, setDriverSearchQuery] = useState('');
   const [adminCitySearch, setAdminCitySearch] = useState('');
   const [driverTabCategory, setDriverTabCategory] = useState<'squad' | 'nonsquad' | 'merchant' | 'all'>('squad');
@@ -423,6 +420,31 @@ export default function AdminPanel({
   // Helper to strictly identify official squad members dynamically based on server squad_members DB
   const checkIsOfficialSquadMember = (drv: any) => {
     return isOfficialSquadMember(drv);
+  };
+
+  // 第六轮修复（A10）：订阅回调应用新列表时，只对正在保存有效期的那名司机
+  // （savingExpiryGuardRef 保护窗口内）保留本地乐观 vipExpiry，其余行原样采用服务端数据。
+  const applyExpirySaveGuard = (prevList: any[], incoming: any[]): any[] => {
+    const nowTs = Date.now();
+    let hasActive = false;
+    savingExpiryGuardRef.current.forEach((until) => { if (until > nowTs) hasActive = true; });
+    if (!hasActive) return incoming;
+    const prevByPhone = new Map<string, any>();
+    (prevList || []).forEach((d: any) => {
+      const p = String(d?.phone || d?.phoneNumber || d?.id || '').replace(/\D/g, '').trim();
+      if (p) prevByPhone.set(p, d);
+    });
+    return (incoming || []).map((d: any) => {
+      const p = String(d?.phone || d?.phoneNumber || d?.id || '').replace(/\D/g, '').trim();
+      const until = p ? savingExpiryGuardRef.current.get(p) : undefined;
+      if (p && until && until > nowTs) {
+        const local = prevByPhone.get(p);
+        if (local && local.vipExpiry !== undefined && local.vipExpiry !== d.vipExpiry) {
+          return { ...d, vipExpiry: local.vipExpiry };
+        }
+      }
+      return d;
+    });
   };
 
   // Version management states
@@ -837,6 +859,8 @@ export default function AdminPanel({
           const phones = json?.data?.phones || json?.phones;
           if (Array.isArray(phones)) {
             setRemovedSquadPhones(phones);
+            // 第六轮修复（G-P3）：同步进 nameResolver 的服务端名单缓存，供 isOfficialSquadMember 默认判定使用
+            syncRemovedSquadPhones(phones);
             try {
               localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
             } catch (_) {}
@@ -876,9 +900,8 @@ export default function AdminPanel({
         }
       });
       // 2026-10-12修复：保存会员有效期期间不覆盖本地乐观更新，防止轮询用旧数据(2026-11-20)覆盖新值
-      if (!isSavingExpiryRef.current) {
-        setDriverUsersList(list);
-      }
+      // 第六轮修复（A10）：不再整表跳过刷新——只对正在保存的那名司机保留本地乐观 vipExpiry
+      setDriverUsersList(prev => applyExpirySaveGuard(prev, list));
     }, (err) => {
       console.error("Error subscribing to driver_users in admin panel:", err);
     });
@@ -890,9 +913,8 @@ export default function AdminPanel({
         list.push({ id: doc.id, ...doc.data() });
       });
       // 2026-10-12修复：保存会员有效期期间不覆盖本地乐观更新
-      if (!isSavingExpiryRef.current) {
-        setSquadMembersList(list);
-      }
+      // 第六轮修复（A10）：同上，只保护正在保存的那名司机，其余照常刷新
+      setSquadMembersList(prev => applyExpirySaveGuard(prev, list));
     }, (err) => {
       console.error("Error subscribing to squad_members in admin panel:", err);
     });
@@ -904,9 +926,8 @@ export default function AdminPanel({
         list.push({ id: doc.id, ...doc.data() });
       });
       // 2026-10-12修复：保存会员有效期期间不覆盖本地乐观更新
-      if (!isSavingExpiryRef.current) {
-        setSquadAppsList(list);
-      }
+      // 第六轮修复（A10）：同上，只保护正在保存的那名司机，其余照常刷新
+      setSquadAppsList(prev => applyExpirySaveGuard(prev, list));
     }, (err) => {
       console.error("Error subscribing to squad_applications in admin panel:", err);
     });
@@ -931,6 +952,8 @@ export default function AdminPanel({
         const data = snap.data();
         if (data && Array.isArray(data.phones)) {
           setRemovedSquadPhones(data.phones);
+          // 第六轮修复（G-P3）：订阅到服务端名单即同步进 nameResolver 服务端缓存
+          syncRemovedSquadPhones(data.phones);
           try {
             localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(data.phones));
           } catch (_) {}
@@ -950,6 +973,8 @@ export default function AdminPanel({
       fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }).then(r => r.json()).then(res => {
         if (res && res.data && Array.isArray(res.data.phones)) {
           setRemovedSquadPhones(res.data.phones);
+          // 第六轮修复（G-P3）：同步进 nameResolver 的服务端名单缓存
+          syncRemovedSquadPhones(res.data.phones);
           try {
             localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(res.data.phones));
           } catch (_) {}
@@ -991,8 +1016,9 @@ export default function AdminPanel({
       return '待开通';
     };
 
+    // 第六轮修复（G-P3）：被移除名单只认服务端订阅数据（removedSquadPhones），
+    // 不再合并本机 localStorage 缓存参与判定，避免本机残留让已恢复成员被误判移除。
     const activeRemoved = new Set([
-      ...Array.from(getRemovedSquadSet()),
       ...(removedSquadPhones || []).map((p: any) => String(p || '').replace(/\D/g, '').trim()),
     ].filter(Boolean));
     activeRemoved.delete(DEVELOPER_PHONE);
@@ -1018,8 +1044,10 @@ export default function AdminPanel({
         name: name,
         role: m.role || m.userRole || (phone === DEVELOPER_PHONE ? '开发者司机' : '普通司机'),
         userRole: m.role || m.userRole || (phone === DEVELOPER_PHONE ? '开发者司机' : '普通司机'),
-        status: '已通过',
-        approvalStatus: '已通过',
+        // 第六轮修复（A3）：不再给 squad_members 全员无条件盖「已通过」——透传文档自身
+        // status/approvalStatus，缺失即为空，是否正式成员交由 isOfficialSquadMember 按事实判定。
+        status: m.status || '',
+        approvalStatus: m.approvalStatus || '',
         is_squad_member: 1,
         inSquad: true,
         isSquadMember: true,
@@ -1425,8 +1453,17 @@ export default function AdminPanel({
         // 黑名单已移除（2026-10-10 用户要求）：线上单开通审批不做号码限制
         // 第四轮修复（P2）：删除硬编码塞入的开发者"已开通"假记录——列表只呈现服务端真实文档，
         // 假记录的"司机离职"按钮可真删开发者线上单数据，属危险误导
-        if (p && p.length === 11 && !rawPhone.startsWith('司机') && itemData.status === 'pending') {
-          list.push({ id: docSnap.id, ...itemData });
+        // 第六轮修复（A4）：订阅改为收全状态文档（旧实现只收 pending，导致统计卡与
+        // 「已开通/已驳回」页签恒为 0、无法回查已处理申请）。status 在此归一化为
+        // pending/approved/rejected 三值（兼容历史中文值），统计、页签、列表与此同源分组。
+        if (p && p.length === 11) {
+          const rawStatus = String(itemData.status || '').trim();
+          const normStatus = (rawStatus === 'approved' || rawStatus === '已通过' || rawStatus === '已开通')
+            ? 'approved'
+            : (rawStatus === 'rejected' || rawStatus === '已拒绝' || rawStatus === '已驳回')
+              ? 'rejected'
+              : 'pending';
+          list.push({ id: docSnap.id, ...itemData, status: normStatus });
         }
       });
 
@@ -1561,29 +1598,23 @@ export default function AdminPanel({
     }
     
     try {
-      // 1+2. 并行写入两张表，用 allSettled 跟踪每项结果（2026-10-10修复）
-      const results = await Promise.allSettled([
-        // 1. Update Application status to Approved
-        setDoc(doc(db, 'online_applications', phone), {
-          ...app,
-          status: 'approved',
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-        // 2. 同步或下发该司机的线上开单可用设置与开通接单城市
-        setDoc(doc(db, 'driver_users', phone), {
-          phoneNumber: phone,
-          onlineOrdersEnabled: true,
-          city: app.city || '',
-          driverName: app.driverName || '',
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-      ]);
-      const failed = results
-        .map((r, i) => ({ r, name: i === 0 ? 'online_applications' : 'driver_users' }))
-        .filter(x => x.r.status === 'rejected');
-      if (failed.length > 0) {
-        const reasons = failed.map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message || '未知错误'}`).join('；');
-        triggerToast(`⚠️ 部分写入失败：${reasons}`);
+      // 第六轮修复（A5）：线上单审批改走服务端专用接口 POST /api/online-application/approve。
+      // 旧实现客户端直写 online_applications.status + driver_users.onlineOrdersEnabled 两表：
+      // 非豁免身份时服务端会剥离状态字段但仍返回 200，出现「提示成功、实际没生效」的假成功。
+      // 现在以服务端响应 r.ok && j.success 为准，失败如实报错；404 说明服务端版本过旧、无此接口。
+      const baseUrl = getBaseApiUrl();
+      const resp = await fetch(`${baseUrl}/api/online-application/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone })
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.status === 404 && !String(j.error || '').includes('不存在')) {
+        triggerToast('⚠️ 服务端版本过旧：线上单审批接口不存在，请先升级服务端后再审批');
+        return;
+      }
+      if (!resp.ok || !j.success) {
+        triggerToast(`⚠️ 批准失败：${j.error || `服务端返回 ${resp.status}`}`);
         return;
       }
 
@@ -1614,28 +1645,21 @@ export default function AdminPanel({
     const finalReason = reason.trim() || '信息资质核验存在偏差，身份证人像页或驾驶执照文字存在模糊遮挡等情况，请重新选取高清合规证照提交。';
 
     try {
-      // 1+2. 并行写入两张表，用 allSettled 跟踪每项结果（2026-10-10修复）
-      const results = await Promise.allSettled([
-        // 1. Update Application status to Rejected
-        setDoc(doc(db, 'online_applications', phone), {
-          ...app,
-          status: 'rejected',
-          rejectionReason: finalReason,
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-        // 2. Clear Driver User settings toggle state
-        setDoc(doc(db, 'driver_users', phone), {
-          phoneNumber: phone,
-          onlineOrdersEnabled: false,
-          updatedAt: new Date().toISOString()
-        }, { merge: true }),
-      ]);
-      const failed = results
-        .map((r, i) => ({ r, name: i === 0 ? 'online_applications' : 'driver_users' }))
-        .filter(x => x.r.status === 'rejected');
-      if (failed.length > 0) {
-        const reasons = failed.map(x => `${x.name}: ${(x.r as PromiseRejectedResult).reason?.message || '未知错误'}`).join('；');
-        triggerToast(`⚠️ 部分写入失败：${reasons}`);
+      // 第六轮修复（A5）：驳回同样改走服务端专用接口 POST /api/online-application/reject，
+      // 以 r.ok && j.success 为准，失败如实报错，不再客户端直写两表冒充成功。
+      const baseUrl = getBaseApiUrl();
+      const resp = await fetch(`${baseUrl}/api/online-application/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone, reason: finalReason })
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (resp.status === 404 && !String(j.error || '').includes('不存在')) {
+        triggerToast('⚠️ 服务端版本过旧：线上单审批接口不存在，请先升级服务端后再审批');
+        return;
+      }
+      if (!resp.ok || !j.success) {
+        triggerToast(`⚠️ 驳回失败：${j.error || `服务端返回 ${resp.status}`}`);
         return;
       }
 
@@ -1723,6 +1747,8 @@ export default function AdminPanel({
       } catch (_) { return null; }
     })();
     const doRollback = () => {
+      // 第六轮修复（A10）：回滚时同步撤销该司机的订阅保护，恢复正常刷新
+      savingExpiryGuardRef.current.delete(cleanPhone);
       if (!rollbackSnapshot) return;
       try {
         Object.entries(rollbackSnapshot.ls).forEach(([k, v]) => {
@@ -1746,6 +1772,8 @@ export default function AdminPanel({
     // 1. Instantly lock and optimistically update all local UI states (0 millisecond lag, absolute rollback prevention)
     lastAuthoritativeSavedExpiryRef.current = finalExpiry;
     isSavingExpiryRef.current = true;
+    // 第六轮修复（A10）：登记单司机保护窗口（10 秒），订阅回调只保护这名司机，不再整表冻结
+    savingExpiryGuardRef.current.set(cleanPhone, Date.now() + 10000);
     isUserEditingDaysRef.current = false;
     isUserEditingDateRef.current = false;
 
@@ -1876,9 +1904,13 @@ export default function AdminPanel({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({ phone: cleanPhone, vipExpiry: finalExpiry })
-      }).then(r => {
+      }).then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json().catch(() => ({}));
+        const j = await r.json().catch(() => ({}));
+        // 第六轮修复（A8）：必须验响应体 success，不能只看 HTTP 状态就丢弃响应体报成功；
+        // 与其它充值口径一致——服务端 200 + success:false 同样判失败，走下方回滚路径。
+        if (j && (j as any).success === false) throw new Error((j as any).error || '服务端返回失败');
+        return j;
       });
 
       // 2026-10-16修复：去掉与 update-driver-expiry 重复的 3 路并发 /api/db/set。
@@ -1906,10 +1938,11 @@ export default function AdminPanel({
       console.error('更新会员到期时间异常:', e);
       triggerToast(`❌ 更新会员有效期失败：${e?.message || '网络异常'}，本地已回滚，请重试`);
     } finally {
-      // Keep guard active for 10 seconds to let all background polling settle safely
-      setTimeout(() => {
-        isSavingExpiryRef.current = false;
-      }, 10000);
+      // 第六轮修复（A10）：全局保存标志立即释放，名单订阅不再整段冻结 10 秒；
+      // 防旧数据覆盖改由 savingExpiryGuardRef 的单司机 10 秒保护窗口承担，到期自动失效并清理。
+      isSavingExpiryRef.current = false;
+      const guardPhone = cleanPhone;
+      setTimeout(() => { savingExpiryGuardRef.current.delete(guardPhone); }, 10000);
     }
   };
 
@@ -1983,7 +2016,8 @@ export default function AdminPanel({
     setPurgeProgress('开始...');
     const baseUrl = getBaseApiUrl();
     const KEEP = DEVELOPER_PHONE;
-    const COLS = ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations', 'team_members', 'auth_tokens', 'merchant_accounts', 'merchant_users', 'hubble_authorized_drivers', 'vip_codes', 'messages', 'user_sessions', 'dispatch_qrs', 'version_history', 'valet_orders', 'merchant_orders', 'active_orders', 'passenger_links'];
+    // 第六轮修复（A7）：补入 qr_notifications（第四轮拆分出的扫码通知集合），避免漏清后同号重注册收到幽灵通知
+    const COLS = ['driver_users', 'squad_members', 'squad_applications', 'online_applications', 'driver_locations', 'team_members', 'auth_tokens', 'merchant_accounts', 'merchant_users', 'hubble_authorized_drivers', 'vip_codes', 'messages', 'user_sessions', 'dispatch_qrs', 'version_history', 'valet_orders', 'merchant_orders', 'active_orders', 'passenger_links', 'qr_notifications'];
     let totalDeleted = 0;
     const failures: string[] = [];
     try {
@@ -2295,12 +2329,17 @@ export default function AdminPanel({
       }, { merge: true });
 
       // Also keep the city field inside the online_applications collection in sync if a document exists
+      // 第六轮修复（A6）：先查文档是否存在，不存在就跳过——旧实现无条件 setDoc merge，
+      // 会给从未申请过线上单的司机凭空造出只有 city 的空壳文档，干扰司机端状态判定。
       try {
         const appRef = doc(db, 'online_applications', trimmedPhone);
-        await setDoc(appRef, {
-          city: newCity,
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
+        const appSnap = await getDoc(appRef);
+        if (appSnap.exists()) {
+          await setDoc(appRef, {
+            city: newCity,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+        }
       } catch (err) {}
 
       triggerToast(`🎉 司机账号注册听单城市已成功修改为【${newCity || '全国接单'}】！`);

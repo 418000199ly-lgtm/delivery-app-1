@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Download, AlertCircle } from 'lucide-react';
-import { ChauffeurSettings, checkVipActive } from '../types';
+import { ChauffeurSettings, checkVipActive, checkVipActiveServerSynced } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
@@ -553,13 +553,14 @@ export default function SettingsView({
               <div className="text-sm font-semibold text-gray-700">纠偏功能</div>
               <div className="text-[10px] text-gray-400 leading-normal">在行程界面【已行程(公里)】和【等候时间】组件中点击可按设定步长纠偏</div>
             </div>
-            <label className={`relative inline-flex items-center ${!checkVipActive(settings.vipExpiry) ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+            <label className={`relative inline-flex items-center ${!checkVipActiveServerSynced(effectivePhone, settings.vipExpiry) ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
               <input 
                 type="checkbox" 
-                disabled={!checkVipActive(settings.vipExpiry)}
-                checked={!!(checkVipActive(settings.vipExpiry) && settings.deviationMitigation)}
+                disabled={!checkVipActiveServerSynced(effectivePhone, settings.vipExpiry)}
+                checked={!!(checkVipActiveServerSynced(effectivePhone, settings.vipExpiry) && settings.deviationMitigation)}
                 onChange={(e) => {
-                  if (!checkVipActive(settings.vipExpiry)) {
+                  // 2026-10-22 第五轮 P2-10：纠偏开关门禁改以服务端同步的 VIP 到期为准
+                  if (!checkVipActiveServerSynced(effectivePhone, settings.vipExpiry)) {
                     alert('🔒 提示：纠偏功能为VIP会员专属特权！会员已到期、未激活或有效期为0时自动关闭，重新激活会员后方可在手机端开启此功能。');
                     return;
                   }

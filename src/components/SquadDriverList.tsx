@@ -62,20 +62,42 @@ export default function SquadDriverList({
     '15509601222'
   ).trim();
 
-  // P0-9修复(2026-10-14)：哈勃权限检查，真名显示必须同时有权限+开关打开
-  const hasHubblePermission = (() => {
+  // 第六轮修复：哈勃权限不再只读 localStorage 缓存（缓存是上一会话/弹窗写入的，
+  // 开发者在别处撤权后本机缓存仍会放行真名）。改为实时订阅 hubble_authorized_drivers，
+  // 缓存仅作订阅到达前的首帧兜底，口径与 NearbyMapView 一致。
+  const [hubbleAuthorizedPhones, setHubbleAuthorizedPhones] = useState<string[]>(() => {
     try {
-      const cleanPhone = effectiveMyPhone.replace(/\D/g, '').trim();
-      if (cleanPhone === '15509601222') return true; // 开发者
       const cached = localStorage.getItem('hubble_authorized_list_cache');
       if (cached) {
         const list = JSON.parse(cached);
         if (Array.isArray(list)) {
-          return list.some((item: any) => String(item.phone || '').replace(/\D/g, '') === cleanPhone);
+          return list
+            .map((item: any) => String(item?.phone || item || '').replace(/\D/g, '').trim())
+            .filter(Boolean);
         }
       }
     } catch (_) {}
-    return false;
+    return [];
+  });
+
+  useEffect(() => {
+    if (!db) return;
+    const unsub = onSnapshot(collection(db, 'hubble_authorized_drivers'), (snapshot) => {
+      const phones: string[] = [];
+      snapshot.forEach((docSnap) => {
+        const p = String(docSnap.id || '').replace(/\D/g, '').trim();
+        if (p) phones.push(p);
+      });
+      setHubbleAuthorizedPhones(phones);
+    }, () => {});
+    return () => unsub();
+  }, []);
+
+  // P0-9修复(2026-10-14)：哈勃权限检查，真名显示必须同时有权限+开关打开
+  const hasHubblePermission = (() => {
+    const cleanPhone = effectiveMyPhone.replace(/\D/g, '').trim();
+    if (cleanPhone === '15509601222') return true; // 开发者
+    return hubbleAuthorizedPhones.includes(cleanPhone);
   })();
 
   // Full name preference from Hubble settings
@@ -487,7 +509,10 @@ export default function SquadDriverList({
       const resultList: DriverItem[] = [];
       mapDrivers.forEach((d: any) => {
         if (!d) return;
-        const cleanP = String(d.phone || '').replace(/\D/g, '').trim();
+        // 第六轮修复：脱敏条目（无哈勃权限时服务端把 phone/键打成 138****1234）的清洗数字
+        // 不是真实手机号，同号段两人清洗后会同号——身份键改用原始串保真，避免列表里两人并成一人。
+        const digitsP = String(d.phone || '').replace(/\D/g, '').trim();
+        const cleanP = digitsP.length === 11 ? digitsP : String(d.phone || '').trim();
         const isMe = d.isMe || isMeMember(cleanP);
 
         // 规则：下线状态的自己永远显示；小队内其他下线司机只有在哈勃里开启了showOffline才显示
@@ -496,7 +521,10 @@ export default function SquadDriverList({
           return;
         }
 
-        const rawRealName = resolveDriverRealName(cleanP, d.rawRealName || d.name);
+        // 脱敏条目不走 resolveDriverRealName（防假号污染全局真名注册表），名字即“某师傅”
+        const rawRealName = digitsP.length === 11
+          ? resolveDriverRealName(cleanP, d.rawRealName || d.name)
+          : String(d.rawRealName || d.name || '某师傅');
         const displayName = isMe
           ? currentDriverFullName
           : ((hasHubblePermission && showFullName) ? rawRealName : formatDriverMaskedName(rawRealName));
@@ -584,9 +612,14 @@ export default function SquadDriverList({
 
       const rawName = String(member.name || member.driverName || '').trim();
       const realName = resolveDriverRealName(phone, rawName);
-      const memberLastUpdated = member.lastUpdatedTime 
-        ? new Date(member.lastUpdatedTime).getTime() 
-        : (member.timestamp ? Number(member.timestamp) : 0);
+      // 第六轮修复：时间字段与服务端 cutoff 口径对齐（补 lastLocationTime/locationTimestamp）
+      const memberLastUpdated = member.lastLocationTime
+        ? Number(member.lastLocationTime)
+        : (member.locationTimestamp
+          ? Number(member.locationTimestamp)
+          : (member.lastUpdatedTime
+            ? new Date(member.lastUpdatedTime).getTime()
+            : (member.timestamp ? Number(member.timestamp) : 0)));
 
       const isFromToday = (member.lastResetDate && member.lastResetDate === cur6AmDay) ||
         (memberLastUpdated > 0 && new Date(memberLastUpdated - 6 * 3600 * 1000).toISOString().slice(0, 10) === cur6AmDay);
@@ -616,12 +649,24 @@ export default function SquadDriverList({
 
       const rawName = String(liveLoc.driverName || liveLoc.name || '').trim();
       const existing = candidateMap.get(phone);
+      // 第六轮修复：候选只来自 squadList（成员表），定位合并不得凭空造人——
+      // 旧逻辑对陌生号默认 status:'已通过'，非成员/待审核司机有定位就会混进小队名单。
+      if (!existing) return;
 
-      const uploadTimeVal = liveLoc.lastLocationTime
-        ? Number(liveLoc.lastLocationTime)
-        : (liveLoc.timestamp
-          ? Number(liveLoc.timestamp)
-          : (liveLoc.lastUpdatedTime ? new Date(liveLoc.lastUpdatedTime).getTime() : (existing?.uploadTime || Date.now())));
+      // 第六轮修复：时间字段与服务端 /api/driver/locations 的 cutoff 口径对齐
+      const uploadTimeVal = liveLoc.onlineSessionTime
+        ? Number(liveLoc.onlineSessionTime)
+        : (liveLoc.lastLocationTime
+          ? Number(liveLoc.lastLocationTime)
+          : (liveLoc.locationTimestamp
+            ? Number(liveLoc.locationTimestamp)
+            : (liveLoc.timestamp
+              ? Number(liveLoc.timestamp)
+              : (liveLoc.lastUpdatedTime
+                ? new Date(liveLoc.lastUpdatedTime).getTime()
+                : (liveLoc.updatedAt !== undefined && liveLoc.updatedAt !== null && liveLoc.updatedAt !== ''
+                  ? (isNaN(Number(liveLoc.updatedAt)) ? new Date(liveLoc.updatedAt).getTime() : Number(liveLoc.updatedAt))
+                  : (existing?.uploadTime || Date.now()))))));
 
       const isBusyVal = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
@@ -722,14 +767,16 @@ export default function SquadDriverList({
     return [...list, ...otherOnlineDrivers];
   }, [
     mapDrivers,
-    isCurrentDriverOnline, 
-    effectiveMyPhone, 
-    currentDriverFullName, 
-    isCurrentDriverBusy, 
-    myComputedTodayOrders, 
-    squadList, 
+    isCurrentDriverOnline,
+    effectiveMyPhone,
+    currentDriverFullName,
+    isCurrentDriverBusy,
+    myComputedTodayOrders,
+    squadList,
     realtimeLocations,
-    showFullName
+    showFullName,
+    showOfflineDrivers,
+    hasHubblePermission
   ]);
 
   const handleManualRefresh = () => {

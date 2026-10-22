@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { QrCode, Clock, RotateCw, CheckCircle2, Plus, Minus, Phone } from 'lucide-react';
-import { BillingRules, TripState, ChauffeurSettings, checkVipActive, DriverStats, DEFAULT_SLOTS } from '../types';
+import { BillingRules, TripState, ChauffeurSettings, checkVipActive, checkVipActiveServerSynced, DriverStats, DEFAULT_SLOTS } from '../types';
 import { getTimeSlotForTime } from '../utils/billingUtils';
 import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { subscribeSquadMembership } from '../lib/squadMembership';
@@ -313,15 +313,11 @@ export default function CreateOrderView({
   const [arrivedAtDeparture, setArrivedAtDeparture] = useState(false);
   const [showCancelConfirmModal, setShowCancelConfirmModal] = useState(false);
 
-  // 2026-10-17：报单/商户代叫页面不再置忙。司机号下商户单会把自己标忙，导致弹窗接单409自锁。
-  // 防双单由服务端派单的"已有未处理派单转大厅"保护。
-  useEffect(() => {
-    return () => {
-      if (userPhone) {
-        reportDriverBusyStatus(userPhone, false, { currentView: 'home', isBusy: false });
-      }
-    };
-  }, [userPhone]);
+  // 2026-10-22 第七轮：原「页面卸载兜底上报 isBusy=false」（2026-10-17 拆旧设计后的
+  // 半截残留）已删除。自助报单占用改由 App 层统一上报 isReporting 心跳（进页报、
+  // 每 15 秒续报、离页报停，见 App.tsx），本页卸载再抢报 isBusy=false 只会与 App 层
+  // 的忙闲推导互相冲掉。订单取消等逻辑不受影响（在下方 handleConfirmCancelOrder 内，
+  // 其忙碌复位走统一上报通道、保留不动）。
 
   const handleConfirmCancelOrder = async () => {
     if (activeOnlineOrder) {
@@ -1864,7 +1860,8 @@ export default function CreateOrderView({
         ) : (
           <div 
             onClick={() => {
-              if (!checkVipActive(settings?.vipExpiry)) {
+              // 2026-10-22 第五轮 P2-10：二维码创单门禁改以服务端同步的 VIP 到期为准（防改本地 dd_settings 绕过）
+              if (!checkVipActiveServerSynced(userPhone, settings?.vipExpiry)) {
                 alert('🔒 提示：二维码创单属于VIP专属高级特权功能。您当前非VIP会员或会员已到期，请先在设置中激活VIP会员。');
                 return;
               }
