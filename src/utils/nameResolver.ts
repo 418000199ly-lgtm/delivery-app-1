@@ -742,8 +742,9 @@ export function hasValidLicense(licenseExpiry?: string): boolean {
 // 补缺失的导出（2026-10-10修复：stash版本引用了不存在的函数）
 export function isMerchantAccountUnified(drv: any): boolean {
   if (!drv) return false;
-  const phone = String(drv.phone || drv.id || '');
-  if (phone.toUpperCase().endsWith('A')) return true;
+  // 2026-10-22 第九轮：phone 与 id 任一带 A 即商户（与服务端 db/list 双字段 OR 口径对齐）。
+  // 旧实现 phone||id 取先到者：phone 无 A 时根本不看 id，正是 2026-10-12 误杀事故的同型漏判。
+  if ([drv.phone, drv.id].some((v: any) => String(v || '').trim().toUpperCase().endsWith('A'))) return true;
   if (drv.isMerchant === true || drv.accountType === 'merchant') return true;
   if (drv.role === '商户' || drv.role === '商家' || drv.role === '商户、商家') return true;
   return false;

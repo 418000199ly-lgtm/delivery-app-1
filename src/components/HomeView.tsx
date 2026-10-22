@@ -398,16 +398,8 @@ export default function HomeView({
   const serverAppsSnapshotRef = useRef<any[]>([]);
   const calculatePendingApplicants = () => {
     try {
-      const isMock = (id: string, phone: string, name: string) => {
-        const mockIds = ['app-1', 'app-2', 'app-3'];
-        const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
-        const mockNames = ['王心凌', '张一山', '李小龙'];
-        return Boolean(
-          mockIds.includes(id) ||
-          (phone && mockPhones.includes(phone)) ||
-          (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
-        );
-      };
+      // 2026-10-22 第九轮：删硬编码 mock 黑名单（app-1/2/3、三个具体姓名、名字含「虚拟」）——
+      // 生产申请表已清洗干净，真申请人重名/含虚拟二字会被漏数角标。计数只认服务端快照事实。
 
       const pendingMap = new Map<string, any>();
       (serverAppsSnapshotRef.current || []).forEach((app: any) => {
@@ -418,7 +410,6 @@ export default function HomeView({
         const phone = rawKey.replace(/\D/g, '').trim();
         const id = String(app.id || '').trim();
         const name = String(app.name || app.driverName || app.applicantName || '').trim();
-        if (isMock(id, phone, name)) return;
         const st = String(app.status || app.approvalStatus || '').trim();
         // 宽口径归一（待审核/pending/审核中），与首页/后台/派单台统一
         if (isSquadAppPending(st)) {
@@ -696,32 +687,18 @@ export default function HomeView({
 
   const getActiveSquadDriverCount = () => {
     // 1. 获取当前被移出小队的名单
-    let removedList: string[] = removedMemberPhones || [];
-    try {
-      const savedRemoved = localStorage.getItem('dd_removed_squad_phones_v2');
-      if (savedRemoved) {
-        const parsed = JSON.parse(savedRemoved);
-        if (Array.isArray(parsed)) {
-          removedList = Array.from(new Set([...removedList, ...parsed]));
-        }
-      }
-    } catch (_) {}
+    // 2026-10-22 第九轮：只认服务端同步的 removedMemberPhones，不再并入 localStorage
+    // dd_removed_squad_phones_v2——本地残留会把已被重新审批移出名单的人继续少算。
+    const removedList: string[] = removedMemberPhones || [];
     const removedSet = new Set(removedList.map(p => String(p).replace(/\D/g, '').trim()).filter(Boolean));
 
     // 2. 构建与管理后台（AdminPanel）100% 严格一致的权威小队成员 membersMap
     const membersMap = new Map<string, any>();
     membersMap.set(DEVELOPER_PHONE, { phone: DEVELOPER_PHONE, name: '吴彦祖', role: '开发者司机', status: '已通过' });
 
-    let currentList = squadMembers || [];
-    if (currentList.length === 0 && typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('dd_squad_members_v2');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) currentList = parsed;
-        }
-      } catch (_) {}
-    }
+    // 2026-10-22 第九轮：成员名单只认服务端订阅 squadMembers；订阅未回/为空时只算
+    // 开发者 1 人，不再回退 localStorage dd_squad_members_v2 旧名单（会长期显示旧数）。
+    const currentList = squadMembers || [];
 
     if (currentList && currentList.length > 0) {
       currentList.forEach((m: any) => {
@@ -1662,13 +1639,25 @@ export default function HomeView({
     }
   }, [userPhone, squadMembers, settings?.wechatQrCode]);
 
+  // 2026-10-22 第九轮：pending/rejected 与 approved 同口径锁存。旧实现只有 approved
+  // 有「连续 2 次一致才翻转」的防抖，pending/rejected 直读 phase——服务端相位刚翻转
+  // 的一两拍里会出现「已通过锁存未翻、pending 已 false」→ 页面短暂掉回申请表单。
+  const pendingStableRef = useRef<{ val: boolean; count: number }>({ val: false, count: 0 });
+  const rejectionStableRef = useRef<{ val: boolean; count: number }>({ val: false, count: 0 });
+  const latchPhaseBool = (ref: { val: boolean; count: number }, raw: boolean): boolean => {
+    if (raw === ref.val) { ref.count = 0; return ref.val; }
+    ref.count += 1;
+    if (ref.count >= 2) { ref.val = raw; ref.count = 0; }
+    return ref.val;
+  };
+
   const checkPendingStatus = () => {
     if (isReapplying) return false;
     const currentPhone = getCurrentPhone();
     if (!currentPhone) return false;
     if (checkApprovalStatus()) return false;
     // 2026-10-20 重建：待审核只认服务端申请记录状态（统一模块 phase）
-    return myMembership?.phase === 'pending';
+    return latchPhaseBool(pendingStableRef.current, myMembership?.phase === 'pending');
   };
 
   const renderPendingResultView = (onCloseModal: () => void) => (
@@ -1855,7 +1844,8 @@ export default function HomeView({
     // 2026-10-22 第五轮 C-P3：与 checkPendingStatus/checkApprovalStatusRaw 同口径，
     // 只认服务端统一状态（myMembership）的被拒相位；不再读本地镜像 dd_applicants_v2
     // 与本地 removed 名单判定，镜像陈旧/污染时被拒页不再误显、漏显。
-    return myMembership?.phase === 'rejected';
+    // 2026-10-22 第九轮：与 approved 同口径锁存，防相位切换瞬间闪一拍。
+    return latchPhaseBool(rejectionStableRef.current, myMembership?.phase === 'rejected');
   };
 
   const renderRejectedResultView = (onCloseModal: () => void) => (
@@ -2239,29 +2229,19 @@ export default function HomeView({
       }
 
       const isMerchantItem = (item: any) => {
-        const p = String(item?.phone || item?.id || '').trim();
+        // 2026-10-22 第九轮：phone/id 任一带 A 即商户（对齐服务端双字段 OR）
         const r = String(item?.role || item?.userRole || '').trim();
-        return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
+        return [item?.phone, item?.id].some((v: any) => String(v || '').trim().toUpperCase().endsWith('A')) || r.includes('商户') || r.includes('商家');
       };
 
-      const isMockItem = (item: any) => {
-        if (!item) return false;
-        const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
-        const mockNames = ['王心凌', '张一山', '李小龙'];
-        const phone = String(item.phone || item.id || '').trim();
-        const name = String(item.name || item.driverName || '').trim();
-        return Boolean(
-          (phone && mockPhones.includes(phone)) ||
-          (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
-        );
-      };
+      // 2026-10-22 第九轮：mock 名单过滤已删（同 calculatePendingApplicants 口径，只认服务端事实）
 
       const map = new Map<string, any>();
 
       // 1. Load from apiMembers (squad_members in Firestore / MySQL / JSON DB)
       apiMembers.forEach(rawM => {
         const m = (rawM?.data && typeof rawM.data === 'object') ? { ...rawM.data, ...rawM, id: rawM.id || rawM.data.id } : rawM;
-        if (isMerchantItem(m) || isMockItem(m)) return;
+        if (isMerchantItem(m)) return;
         let phone = String(m.phone || '').replace(/\D/g, '').trim();
         const rawId = String(m.id || '').trim();
         if (!phone && /^\d{11}$/.test(rawId)) {
@@ -2581,27 +2561,17 @@ export default function HomeView({
       const map = new Map<string, any>();
 
       const isMerchant = (item: any) => {
-        const p = String(item?.phone || item?.id || '').trim();
+        // 2026-10-22 第九轮：phone/id 任一带 A 即商户（对齐服务端双字段 OR）
         const r = String(item?.role || item?.userRole || '').trim();
-        return p.toUpperCase().endsWith('A') || r.includes('商户') || r.includes('商家');
+        return [item?.phone, item?.id].some((v: any) => String(v || '').trim().toUpperCase().endsWith('A')) || r.includes('商户') || r.includes('商家');
       };
 
-      const isMock = (item: any) => {
-        if (!item) return false;
-        const mockPhones = ['13912345678', '15509601223', '15555556666', 'm-1', 'm-2', 'm-3'];
-        const mockNames = ['王心凌', '张一山', '李小龙'];
-        const phone = String(item.phone || item.id || '').trim();
-        const name = String(item.name || item.driverName || '').trim();
-        return Boolean(
-          (phone && mockPhones.includes(phone)) ||
-          (name && (mockNames.some(mn => name.includes(mn)) || name.includes('虚拟')))
-        );
-      };
+      // 2026-10-22 第九轮：mock 名单过滤已删（同 calculatePendingApplicants 口径，只认服务端事实）
 
       snapshot.forEach((docSnap) => {
         const data: any = docSnap.data();
         const m = { ...data, id: docSnap.id };
-        if (isMerchant(m) || isMock(m)) return;
+        if (isMerchant(m)) return;
 
         let phone = String(data?.phone || '').replace(/\D/g, '').trim();
         if (!phone && /^\d{11}$/.test(docSnap.id)) {

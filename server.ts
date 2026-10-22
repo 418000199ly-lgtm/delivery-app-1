@@ -2021,7 +2021,7 @@ function getClientIp(req: any): string {
       }
       // 2026-10-20 重建：driver_users 的状态/角色字段同样收口，防借档案写角色再镜像提权
       if (col === 'driver_users' && !(req as any).isAdmin) { // 2026-10-21 第三轮(P1-2)：管理也不许经通用写给他人写状态字段（isBanned 可软封上级、role 可污染投影），状态只走专用接口
-        const STATE_FIELDS = ['status', 'approvalStatus', 'role', 'userRole', 'squad_position', 'position', 'is_squad_member', 'inSquad', 'isBanned'];
+        const STATE_FIELDS = ['status', 'approvalStatus', 'role', 'userRole', 'squad_position', 'position', 'is_squad_member', 'inSquad', 'isBanned', 'onlineOrdersEnabled']; // 2026-10-22 第九轮：线上单开通资格只走审批接口，通用写剥离
         for (const f of STATE_FIELDS) {
           if (data && typeof data === 'object' && f in data) delete data[f];
         }
@@ -2230,7 +2230,7 @@ function getClientIp(req: any): string {
             city: finalData.city || existingUser.city || '银川市',
             vipExpiry: resolvedVip,
             isOnline: Boolean(finalData.isOnline !== undefined ? finalData.isOnline : existingUser.isOnline),
-            onlineOrdersEnabled: Boolean(finalData.onlineOrdersEnabled !== undefined ? finalData.onlineOrdersEnabled : (existingUser.onlineOrdersEnabled !== false)),
+            onlineOrdersEnabled: existingUser.onlineOrdersEnabled === true, // 2026-10-22 第九轮(P1)：只保留既有审批结果，镜像不透传、不再默认置真（旧默认 true 让提交申请即自置开通）
             isBanned: Boolean(finalData.isBanned !== undefined ? finalData.isBanned : existingUser.isBanned),
             updatedAt: new Date().toISOString()
           };
@@ -2323,7 +2323,7 @@ function getClientIp(req: any): string {
       }
       // 2026-10-20 重建：driver_users 的状态/角色字段同样收口，防借档案写角色再镜像提权
       if (col === 'driver_users' && !(req as any).isAdmin) { // 2026-10-21 第三轮(P1-2)：管理也不许经通用写给他人写状态字段（isBanned 可软封上级、role 可污染投影），状态只走专用接口
-        const STATE_FIELDS = ['status', 'approvalStatus', 'role', 'userRole', 'squad_position', 'position', 'is_squad_member', 'inSquad', 'isBanned'];
+        const STATE_FIELDS = ['status', 'approvalStatus', 'role', 'userRole', 'squad_position', 'position', 'is_squad_member', 'inSquad', 'isBanned', 'onlineOrdersEnabled']; // 2026-10-22 第九轮：线上单开通资格只走审批接口，通用写剥离
         for (const f of STATE_FIELDS) {
           if (data && typeof data === 'object' && f in data) delete data[f];
         }
@@ -2461,7 +2461,7 @@ function getClientIp(req: any): string {
             city: finalData.city || existingUser.city || '银川市',
             vipExpiry: resolvedVip,
             isOnline: Boolean(finalData.isOnline !== undefined ? finalData.isOnline : existingUser.isOnline),
-            onlineOrdersEnabled: Boolean(finalData.onlineOrdersEnabled !== undefined ? finalData.onlineOrdersEnabled : (existingUser.onlineOrdersEnabled !== false)),
+            onlineOrdersEnabled: existingUser.onlineOrdersEnabled === true, // 2026-10-22 第九轮(P1)：只保留既有审批结果，镜像不透传、不再默认置真（旧默认 true 让提交申请即自置开通）
             isBanned: Boolean(finalData.isBanned !== undefined ? finalData.isBanned : existingUser.isBanned),
             updatedAt: new Date().toISOString()
           };
@@ -2537,6 +2537,12 @@ function getClientIp(req: any): string {
     try {
       const phone = String(req.body.phone || req.body.phoneNumber || '').replace(/\D/g, '').trim();
       const rawVip = String(req.body.vipExpiry || '').trim();
+      // 2026-10-22 第九轮：vipExpiry 缺参/空串直接 400——旧口径把空值归一成「待开通」
+      // 并返回成功，任何漏传参的调用都会把司机 VIP 静默清零（假成功型隐患）。
+      // 管理后台始终显式传日期或「待开通」，不受影响。
+      if (req.body.vipExpiry === undefined || rawVip === '') {
+        return res.status(400).json({ success: false, error: '缺少 vipExpiry 参数' });
+      }
 
       if (!phone || phone.length !== 11) {
         return res.status(400).json({ success: false, error: '请输入有效的11位手机号码' });
@@ -3616,14 +3622,14 @@ function getClientIp(req: any): string {
       if (req.body.gpsValid !== undefined) patch.gpsValid = Boolean(req.body.gpsValid);
       if (isOnline !== undefined) {
         patch.isOnline = isOnline;
-        if (!isOnline) {
-          patch.onlineOrdersEnabled = false;
-        } else {
+        if (isOnline) {
           // a1-a5修复：恢复上线时清除看门狗踢出标记，否则标记永久残留
           patch.kickedOfflineAt = 0;
           patch.kickReason = '';
-          patch.onlineOrdersEnabled = true;
         }
+        // 2026-10-22 第九轮(P1)：onlineOrdersEnabled 不再随上线/下线翻转——它是线上单
+        // 开通「审批事实」，只由 /api/online-application/approve|reject 写。旧实现上线即
+        // 置 true、下线置 false，审批拒绝活不过下一次状态上报，审批闸门实际失控。
       }
 
       const dbData = readLocalJsonDb();
