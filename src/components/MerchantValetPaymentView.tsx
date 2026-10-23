@@ -65,6 +65,10 @@ export default function MerchantValetPaymentView({
     return '';
   })();
 
+  // 第四十轮二修：轮询串行化与正结果粘性所需的跨轮询状态（见 queryBaotaQr 内注释）
+  const pollRunningRef = React.useRef(false);
+  const havePositiveRef = React.useRef(false);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -74,6 +78,19 @@ export default function MerchantValetPaymentView({
     // High-availability Baota Node DB API polling for Mainland China direct server storage (No Firebase)
     const queryBaotaQr = async () => {
       if (!isMounted || !targetMerchantPhone) return;
+      // 第四十轮二修（一）：串行化——旧实现 setInterval 不等上一轮结束就启动下一轮，
+      // 一轮最长可拖 8 秒（多段 2 秒超时），多轮并发的 setServerQr 乱序落地：
+      // 慢轮的旧结果覆盖快轮的新结果，二维码在好/坏两个值之间来回横跳。
+      if (pollRunningRef.current) return;
+      pollRunningRef.current = true;
+      try {
+        await queryBaotaQrInner();
+      } finally {
+        pollRunningRef.current = false;
+      }
+    };
+
+    const queryBaotaQrInner = async () => {
       let gotServerResponse = false; // 本轮是否至少收到一次服务端 HTTP 回话（区分"服务端明确无码"与"纯网络失败")
       const baseUrl = getBaseApiUrl();
       const timeToken = Date.now();
@@ -82,7 +99,9 @@ export default function MerchantValetPaymentView({
       // 1. Query dedicated /api/get-wechat-qr endpoint with channel constraint
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        // 第四十轮二修：2 秒超时在生产（MySQL+文件多段查找、2 核机器有负载）经常误伤，
+        // 一超时就掉进下方集合兜底拿到旧路径。放宽到 6 秒，宁慢勿错。
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
         // P0修复(2026-10-14)：传 orderId 以便服务端验证订单关联授权（司机查下单人的码）
         const orderIdParam = orderId ? `&orderId=${encodeURIComponent(String(orderId))}` : '';
         const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetMerchantPhone)}&channel=${isWebChannel ? 'web' : 'app'}${orderIdParam}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
@@ -94,6 +113,7 @@ export default function MerchantValetPaymentView({
         if (res.ok) {
           const json = await res.json();
           if (isMounted && json?.success && json?.url && typeof json.url === 'string' && json.url.trim()) {
+            havePositiveRef.current = true;
             setServerQr(json.url);
             setServerChecked(true);
             if (isWebChannel) {
@@ -105,6 +125,12 @@ export default function MerchantValetPaymentView({
           }
         }
       } catch (_) {}
+
+      // 第四十轮二修（二）：正结果粘性——已经拿到过码（havePositiveRef）后不再走
+      // 集合兜底。集合文档里可能存着指向已不存在文件的旧路径（如 app_valet_qrs 的
+      // 历史路径），慢轮兜底命中它就会把正在显示的好码换成死路径（拉到的是 SPA
+      // 回退页 HTML，渲染成破图）。集合兜底只用于页面刚打开、尚未拿到码的引导期。
+      if (havePositiveRef.current) return;
 
       // 2. Query collections on Baota server matching channel
       const targetCols = isWebChannel 
@@ -123,6 +149,7 @@ export default function MerchantValetPaymentView({
             const json = await res.json();
             const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
             if (isMounted && foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+              havePositiveRef.current = true;
               setServerQr(foundQr);
               setServerChecked(true);
               if (isWebChannel) {
@@ -139,6 +166,7 @@ export default function MerchantValetPaymentView({
       // 第四轮修复（P1-24）：本轮所有来源都查完仍无码、且服务端确有回话 => 服务端明确无码，
       // 清掉此前轮询到的旧码，后续展示不再用本地缓存旧码兜底（防止付到已更换/已删除的码）
       if (isMounted && gotServerResponse) {
+        havePositiveRef.current = false;
         setServerChecked(true);
         setServerQr('');
       }

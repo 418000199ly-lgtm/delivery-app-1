@@ -24,10 +24,12 @@ export function formatQrUrl(url: string | undefined | null): string {
     return `${baseUrl.replace(/\/$/, '')}/${trimmed}`;
   }
   // 第四十轮：老集合里存的裸 base64（无 data: 前缀）直接当 img src 会是破图，
-  // 按文件头魔数补成 data URL（iVBOR=png、/9j/=jpeg）
-  if (trimmed.length >= 200 && /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
-    if (trimmed.startsWith('iVBOR')) return `data:image/png;base64,${trimmed}`;
-    if (trimmed.startsWith('/9j/')) return `data:image/jpeg;base64,${trimmed}`;
+  // 按文件头魔数补成 data URL（iVBOR=png、/9j/=jpeg）。二修补强：老数据常带
+  // 换行/空格，先剥空白再判、再拼。
+  const compact = trimmed.replace(/\s+/g, '');
+  if (compact.length >= 200 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    if (compact.startsWith('iVBOR')) return `data:image/png;base64,${compact}`;
+    if (compact.startsWith('/9j/')) return `data:image/jpeg;base64,${compact}`;
   }
   return trimmed;
 }
@@ -410,6 +412,12 @@ export function useAuthenticatedQrUrl(rawUrl: string | undefined | null): string
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const blob = await resp.blob();
+        // 第四十轮二修：静态文件不存在时请求会穿透到 SPA 回退页（200 + HTML），
+        // 旧实现把 HTML 也做成 blob 图源 → 破图只剩 alt。非图片内容一律按失败处理，
+        // 配合下方 catch 保留上一张已显示的图。
+        if (blob.type && !blob.type.startsWith('image/')) {
+          throw new Error(`非图片响应: ${blob.type}`);
+        }
         const objectUrl = URL.createObjectURL(blob);
         if (cancelled) {
           // P1(2026-10-16)：fetch 完成后才发现已取消，立即释放，不泄漏

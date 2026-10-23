@@ -10626,6 +10626,11 @@ function getClientIp(req: any): string {
   // 任何人拼 /uploads/qrs/{手机号}.png 即可枚举下载全员收款码。现与 qrcodes 同守卫。
   app.use('/uploads/qrs', requireDbAuth, qrStaticGuard);
   app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+  // 2026-10-23 第四十轮二修：收款码目录里不存在的文件必须明确 404，不许穿透到
+  // 后面的 SPA 回退页（会返回 200+HTML，客户端把 HTML 当图片渲染成破图）。
+  app.use(['/uploads/qrcodes', '/uploads/qrs'], (req: any, res: any) => {
+    return res.status(404).json({ success: false, error: 'Not found' });
+  });
   // 2026-10-21 第四轮(P0-1)：部署包与服务端构建产物不许经静态托管裸奔——public/ 与 dist/ 里
   // 若放了部署 zip / server.cjs，静态中间件会绕过下载接口的鉴权直接发出去。
   // 包文件先过开发者校验再放行后续静态/路由；server.cjs(.map) 一律拒绝（前端资源只在 /assets 下）。
@@ -10803,7 +10808,10 @@ function getClientIp(req: any): string {
       const now = Date.now();
       const qrKey = `qr:${clientIp}`;
       const qrLogs = (smsSendLogs.get(qrKey) || []).filter((t) => now - t < 60 * 1000);
-      if (qrLogs.length >= 20) {
+      // 2026-10-23 第四十轮二修：代叫费页每 2 秒轮询本接口（30 次/分），旧上限 20/分
+      // 在页面停留约 40 秒后必然触发 429，轮询在成功/被限流之间横跳。接口本身有
+      // 登录+订单关联鉴权，放宽到 60/分兼顾页面轮询与防枚举。
+      if (qrLogs.length >= 60) {
         return res.status(429).json({ success: false, error: '请求过于频繁，请稍后再试' });
       }
       qrLogs.push(now);
@@ -10878,6 +10886,11 @@ function getClientIp(req: any): string {
               const rowData = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
               const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
               if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+                // 第四十轮二修补强：路径型旧值先验文件真存在，不在当没查到（详见 JSON 分支同注）
+                const pth = foundQr.trim().split('?')[0];
+                if (pth.startsWith('/uploads/') && !fs.existsSync(path.join(process.cwd(), pth))) {
+                  continue;
+                }
                 return res.json({ success: true, url: foundQr, channel: isWeb ? 'web' : 'app' });
               }
             }
@@ -10895,6 +10908,10 @@ function getClientIp(req: any): string {
             const rowData = dbData[col][phone];
             const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
             if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+              const pth = foundQr.trim().split('?')[0];
+              if (pth.startsWith('/uploads/') && !fs.existsSync(path.join(process.cwd(), pth))) {
+                continue;
+              }
               return res.json({ success: true, url: foundQr, channel: isWeb ? 'web' : 'app' });
             }
           }
@@ -10943,6 +10960,10 @@ function getClientIp(req: any): string {
                 const rowData = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
                 const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
                 if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+                  const pth = foundQr.trim().split('?')[0];
+                  if (pth.startsWith('/uploads/') && !fs.existsSync(path.join(process.cwd(), pth))) {
+                    continue;
+                  }
                   return res.json({ success: true, url: foundQr, channel: altIsWeb ? 'web' : 'app' });
                 }
               }
@@ -10955,6 +10976,10 @@ function getClientIp(req: any): string {
             const rowData = dbDataAlt[col]?.[altPhone];
             const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
             if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+              const pth = foundQr.trim().split('?')[0];
+              if (pth.startsWith('/uploads/') && !fs.existsSync(path.join(process.cwd(), pth))) {
+                continue;
+              }
               return res.json({ success: true, url: foundQr, channel: altIsWeb ? 'web' : 'app' });
             }
           }
