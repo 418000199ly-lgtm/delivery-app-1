@@ -16,6 +16,7 @@
     "@alicloud/dypnsapi20170525": "^2.0.0",
     "@alicloud/openapi-client": "^0.4.15",
     "@alicloud/pop-core": "^1.8.0",
+    "@capacitor-community/background-geolocation": "^1.2.26",
     "@capacitor-community/text-to-speech": "^6.1.0",
     "@capacitor/android": "^7.0.0",
     "@capacitor/app": "^7.0.0",

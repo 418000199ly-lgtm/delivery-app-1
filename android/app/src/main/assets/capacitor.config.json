@@ -5,6 +5,17 @@
 	"server": {
 		"androidScheme": "https",
 		"iosScheme": "https",
-		"hostname": "heiwan.daijia"
+		"hostname": "heiwan.daijia",
+		"cleartext": true,
+		"allowNavigation": [
+			"lyheiwandaijiamax.com",
+			"*.lyheiwandaijiamax.com",
+			"*.run.app",
+			"*.aliyuncs.com",
+			"*.amap.com",
+			"amap.com",
+			"*.autonavi.com",
+			"autonavi.com"
+		]
 	}
 }

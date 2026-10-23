@@ -728,6 +728,8 @@ export default function HomeView({
   const prevHallOrderIdsRef = useRef<Set<string> | null>(null);
   // P1-3修复(2026-10-14)：大厅抢单防重复点击锁
   const hallClaimingRef = useRef(false);
+  // 2026-10-23 第四十一轮：服务端名下订单对账领回——已领回过的订单 id（本会话内防重复领回）
+  const adoptedClaimIdsRef = useRef<Set<string>>(new Set());
   const announcedOrderIdsRef = useRef<Set<string>>(new Set());
 
   // Auto-acquire real browser GPS on HomeView mount to ensure driver distance accuracy in hall
@@ -1071,6 +1073,86 @@ export default function HomeView({
 
     window.addEventListener('merchant_orders_updated', handleOrdersUpdated);
 
+    // 2026-10-23 第四十一轮：服务端名下订单对账领回。抢单/接单的响应若丢在网络里，
+    // 服务端订单已归本司机、手机却没有行程，订单会卡在「已接单」无人能动（生产实证）。
+    // 快照里发现「归属我、状态进行中」的订单且本机没有存活行程时，自动领回进入行程。
+    // 防复活：本机存根里同一单已是终态（刚完单/取消、服务端写入滞后）时不领；
+    // 时效：只领最近 6 小时内有更新的单；本会话领回过的不重复领。
+    const reconcileMyClaimedOrder = (allOrders: any[]) => {
+      try {
+        if (!onClaimIncomingOrder) return;
+        const myP = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+        if (!myP) return;
+        // 本机存活行程判定（与 App 的 hasLiveStoredTripOrOrder 同口径：解析内容、排除终态）
+        const storedDocs: any[] = [];
+        for (const key of ['dd_current_trip', 'dd_current_order']) {
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw) storedDocs.push(JSON.parse(raw));
+          } catch (_) {}
+        }
+        const isTerminalDoc = (t: any): boolean => {
+          if (!t || typeof t !== 'object') return true;
+          const st = String(t.status || t.currentStatus || '');
+          const cat = String(t.statusCategory || '');
+          if (t.isCancelled === true) return true;
+          if (['cancelled', 'completed', '已取消', '已完成'].includes(st)) return true;
+          if (['已取消', '订单已取消', '已完成'].includes(cat)) return true;
+          return false;
+        };
+        const hasLive = storedDocs.some((t) => t && !isTerminalDoc(t) && String(t.status || t.currentStatus || '') !== 'idle');
+        if (hasLive) return;
+        const now = Date.now();
+        for (const o of allOrders) {
+          const claimedBy = String(o?.claimedDriverPhone || '').replace(/\D/g, '').trim();
+          if (!claimedBy || claimedBy !== myP) continue;
+          const st = String(o?.status || '').toLowerCase();
+          if (!['claimed', 'accepted', 'taken', 'arrived', 'serving'].includes(st)) continue;
+          if (o?.isCancelled === true || o?.cancelledAt) continue;
+          const oid = String(o?.id || o?.orderId || o?.orderNo || '').trim();
+          if (!oid || adoptedClaimIdsRef.current.has(oid)) continue;
+          const lastTouch = Number(o?.updatedAt || o?.claimedAt || o?.createdAt || o?.timestamp || 0);
+          if (lastTouch > 0 && now - lastTouch > 6 * 3600 * 1000) continue;
+          // 本机存根里同 id 已终态 → 是刚结束的单、服务端还没同步，不领回
+          const stub = storedDocs.find((t) => t && [t.id, t.orderId, t.orderNo].some((v: any) => String(v || '').trim() === oid));
+          if (stub && isTerminalDoc(stub)) continue;
+          adoptedClaimIdsRef.current.add(oid);
+          const myName = String(o?.claimedDriverName || o?.driverName || '').trim();
+          const payload = {
+            ...o,
+            startLocation: o.startLocation || '代叫起点',
+            destination: o.destination || o.endLocation || '由司机根据现场口头协商规划行程',
+            status: 'submitted',
+            statusCategory: '待接单',
+            isCompleted: false,
+            isDirectClaim: true,
+            timestamp: Date.now(),
+            isValetOrder: true,
+            isPlatformDispatch: true,
+            approxPrice: o.approxPrice || '未知',
+            calculatedTotalFee: o.calculatedTotalFee || 40.00,
+            estimatedPrice: o.estimatedPrice || '40.00',
+            orderRemark: o.orderRemark || '商户代叫',
+            scheduledTime: o.scheduledTime || '现在（立即出发）',
+            orderId: oid,
+            id: oid,
+            dispatchedDriverPhone: myP,
+            dispatchedDriverName: myName,
+            claimedDriverPhone: myP,
+            claimedDriverName: myName,
+            driverName: myName,
+            paymentQrCode: o.paymentQrCode || o.merchantPaymentQrCode || '',
+            merchantPaymentQrCode: o.merchantPaymentQrCode || o.paymentQrCode || '',
+            merchantPhone: o.merchantPhone || '',
+            reporterPhone: o.reporterPhone || ''
+          };
+          try { triggerToast('📥 已同步一笔进行中的订单，已为你恢复行程'); } catch (_) {}
+          onClaimIncomingOrder(payload);
+          break;
+        }
+      } catch (_) {}
+    };
+
     if (!db) return () => window.removeEventListener('merchant_orders_updated', handleOrdersUpdated);
     try {
       const q = collection(db, 'merchant_orders');
@@ -1144,6 +1226,8 @@ export default function HomeView({
         const activeOrders = mergeOrders([], list, localValid);
         setHallOrders(activeOrders);
         syncDriverOrdersWithMerchantData([...allMerchantOrders, ...localValid]);
+        // 第四十一轮：名下进行中订单对账领回（抢单响应丢失等造成的「服务端有单、手机无行程」）
+        reconcileMyClaimedOrder(allMerchantOrders);
       }, (err) => {
         console.warn("Error listening to merchant_orders in HomeView:", err);
       });
@@ -1416,10 +1500,40 @@ export default function HomeView({
           return;
         }
       } catch (e: any) {
-        // 网络异常时不继续，避免撞单
-        alert(`⚠️ 抢单请求失败：${e?.message || '网络异常'}，请检查网络后重试`);
-        restoreHallCard();
-        return;
+        // 2026-10-23 第四十一轮：网络异常 ≠ 抢单失败。请求可能已到服务端并抢单成功、
+        // 只是响应丢在路上（生产实证：司机见「Load failed」，订单却已归他名下，
+        // 卡在「已接单」而手机无行程）。先回查服务端订单归属再决定：
+        // 已归我 → 按成功继续下方流程；已归他人 → 按已被抢走处理；
+        // 仍未归属或回查同样失败 → 才按失败处理（不继续，避免撞单）。
+        let recovered = false;
+        let takenByOther = false;
+        try {
+          const targetId = String(ord.id || ord.orderId || ord.orderNo || '').trim();
+          if (db && targetId) {
+            const snap = await getDoc(doc(db, 'merchant_orders', targetId));
+            if (snap && snap.exists()) {
+              const d: any = snap.data();
+              const claimedBy = String(d?.claimedDriverPhone || '').replace(/\D/g, '').trim();
+              const myP = String(userPhone || '').replace(/\D/g, '').trim();
+              if (myP && claimedBy === myP) recovered = true;
+              else if (claimedBy && claimedBy !== myP) takenByOther = true;
+            }
+          }
+        } catch (_) {}
+        if (takenByOther) {
+          alert('⚠️ 手慢了，该订单已被小队其他司机抢走！');
+          setHallOrders(prev => prev.filter(o => {
+            const k = String(o.id || o.orderId || o.orderNo || '').trim();
+            return k !== String(ord.id || ord.orderId || ord.orderNo || '').trim();
+          }));
+          return;
+        }
+        if (!recovered) {
+          alert(`⚠️ 抢单请求失败：${e?.message || '网络异常'}，请检查网络后重试`);
+          restoreHallCard();
+          return;
+        }
+        // recovered：请求其实已在服务端生效，落入下方成功流程（本地更新 + 进入行程）
       }
 
       // 2026-10-15 P1-3：去掉抢单成功后的服务端补写（主写已在 /api/order/driver-claim 内完成；

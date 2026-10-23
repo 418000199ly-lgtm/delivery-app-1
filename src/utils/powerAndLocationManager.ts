@@ -15,6 +15,11 @@
  */
 
 import { db, setDoc, doc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import type { BackgroundGeolocationPlugin } from '@capacitor-community/background-geolocation';
+// 原生后台定位插件（@capacitor-community/background-geolocation 1.2.x，对应 Capacitor 7）：
+// 该版本不导出现成实例，按其官方用法用 registerPlugin 注册。
+const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPlugin>('BackgroundGeolocation');
 import { resolveDriverRealName } from './nameResolver';
 import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
 import { scheduleResumeTask } from './resumeCoordinator';
@@ -263,6 +268,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
   let isDisposed = false;
   let timerId: any = null;
   let watchPositionId: number | null = null;
+  let nativeWatcherId: string | null = null;
 
   let lastReportedLat = 0;
   let lastReportedLng = 0;
@@ -533,6 +539,44 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     } catch (_) {}
   }
 
+  // 4. 原生后台定位（2026-10-24 新增）：iOS 系统级后台定位 + Android 前台服务。
+  // 纯 JS watchPosition 在 App 切后台后会被系统冻结（2026-10-23 晚真机被 GPS 看门狗
+  // 6 次强制下线实证：切后台/停留派单台期间 JS 上报停摆超 120 秒）。原生 watcher 由
+  // 系统定位引擎驱动，切后台/锁屏仍持续回调；回调与 JS 上报共用同一节流口径
+  // （位移≥10m 或距上次上报≥15s 才发），两路共用 lastReportTime 状态、不会重复上报。
+  try {
+    if (Capacitor.isNativePlatform()) {
+      BackgroundGeolocation.addWatcher(
+        {
+          backgroundMessage: '正在听单中：为接收附近派单，后台持续上报你的位置',
+          backgroundTitle: '黑湾代驾MAX 听单中',
+          requestPermissions: true,
+          stale: false,
+          distanceFilter: 0
+        },
+        (position, error) => {
+          if (isDisposed || error || !position) return;
+          const nLat = position.latitude;
+          const nLng = position.longitude;
+          if (!nLat || !nLng) return;
+          const dist = lastReportedLat
+            ? getDistanceMeters(lastReportedLat, lastReportedLng, nLat, nLng)
+            : 999;
+          const timeSinceLast = Date.now() - lastReportTime;
+          if (dist >= 10 || timeSinceLast >= 15000) {
+            uploadCoordinates(nLat, nLng, 'Native BackgroundGeolocation');
+          }
+        }
+      ).then((id) => {
+        if (isDisposed) {
+          BackgroundGeolocation.removeWatcher({ id }).catch(() => {});
+        } else {
+          nativeWatcherId = id;
+        }
+      }).catch(() => {});
+    }
+  } catch (_) {}
+
   // 立即触发首次上报
   executeLocate();
 
@@ -552,6 +596,10 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     if (timerId) clearTimeout(timerId);
     if (watchPositionId !== null && navigator.geolocation) {
       navigator.geolocation.clearWatch(watchPositionId);
+    }
+    if (nativeWatcherId) {
+      BackgroundGeolocation.removeWatcher({ id: nativeWatcherId }).catch(() => {});
+      nativeWatcherId = null;
     }
     document.removeEventListener('visibilitychange', handleVisibilityChange);
   };
