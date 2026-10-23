@@ -1005,7 +1005,27 @@
     async function fetchDriverData(phone) {
       const col = 'driver_users';
       const id = encodeURIComponent(phone);
-      
+
+      // 0. 2026-10-22 第十一轮：优先走公开最小字段端点 /api/passenger/link-info
+      // （/api/db/get 自 2026-10-18 起需登录令牌，乘客无令牌恒 401，服务端校验通道已死，
+      // 页面此前只剩 URL 自带 vip 参数、改参数即可绕过会员门禁）
+      const linkInfoHosts = ['https://api.lyheiwandaijiamax.com', window.location.origin];
+      for (const host of linkInfoHosts) {
+        try {
+          const res = await fetch(`${host}/api/passenger/link-info?driver=${id}`);
+          if (res.ok) {
+            const info = await res.json();
+            if (info && info.success && info.exists) {
+              apiDomain = host;
+              return { exists: true, data: { vipExpiry: info.vipExpiry, customAppName: info.brandName || '', driverBrandName: info.brandName || '' } };
+            }
+            if (info && info.success && info.exists === false) {
+              return null;
+            }
+          }
+        } catch (e) {}
+      }
+
       // 1. 优先尝试本地/同源 API 代理
       try {
         const localUrl = `/api/db/get?col=${col}&id=${id}`;

@@ -308,6 +308,38 @@ async function countTodayReportTransfers(reporterPhone: string): Promise<number>
 // 2026-10-18 有状态鉴权（一号一token终身制，用户拍板）：
 // MySQL auth_tokens 集合存 phone<->token 双向映射，token 为随机串，永久有效，
 // 退出/重装/重登不换 token，密钥轮换不影响。doc_id 用 p:{phone} 和 t:{token} 前缀区分。
+// 2026-10-22 第十一轮自愈：校验只认 t:{token} 反向记录，而发放只读 p:{phone} 正向记录。
+// 历史上双写任一侧静默失败（.catch 吞错）或数据单独受损时，p: 在而 t: 缺——发放会把
+// 永远校验不过的死 token 一次次发回，账号表现为「怎么登录都 401」且无自愈路径。
+// 故发放既有 token 前先确保反向记录存在，缺失即按本次登录的 scope/身份补写（仅补缺、不覆盖）。
+async function ensureTokenReverseRecord(cleanPhone: string, token: string, scope: string, isMerchant: boolean): Promise<void> {
+  const tokenKey = `t:${token}`;
+  try {
+    if (isMySQLEnabled && mysqlPool) {
+      const [rows]: any = await mysqlPool.query(
+        'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+        ['auth_tokens', tokenKey]
+      );
+      if (rows && rows.length > 0) {
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        if (d && d.phone) return;
+      }
+      const tokenData = JSON.stringify({ phone: cleanPhone, scope: String(scope || 'driver'), isMerchant: !!isMerchant, createdAt: new Date().toISOString(), healed: true });
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['auth_tokens', tokenKey, tokenData]
+      ).catch(() => {});
+    } else {
+      const dbData: any = readLocalJsonDb() || {};
+      if (!dbData.auth_tokens) dbData.auth_tokens = {};
+      const cur = dbData.auth_tokens[tokenKey];
+      if (cur && (cur as any).phone) return;
+      dbData.auth_tokens[tokenKey] = { phone: cleanPhone, scope: String(scope || 'driver'), isMerchant: !!isMerchant, createdAt: new Date().toISOString(), healed: true };
+      writeLocalJsonDb(dbData);
+    }
+  } catch (_) {}
+}
+
 async function getOrCreatePersistentToken(phone: string, scope: string, isMerchant: boolean): Promise<string> {
   const cleanPhone = String(phone || '').trim();
   if (!cleanPhone) throw new Error('手机号为空');
@@ -321,12 +353,20 @@ async function getOrCreatePersistentToken(phone: string, scope: string, isMercha
       );
       if (rows && rows.length > 0) {
         const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-        if (d && d.token) return String(d.token);
+        if (d && d.token) {
+          const existingToken = String(d.token);
+          await ensureTokenReverseRecord(cleanPhone, existingToken, scope, isMerchant);
+          return existingToken;
+        }
       }
     } else {
       const dbData: any = readLocalJsonDb() || {};
       const existing = dbData?.auth_tokens?.[phoneKey];
-      if (existing && (existing as any).token) return String((existing as any).token);
+      if (existing && (existing as any).token) {
+        const existingToken = String((existing as any).token);
+        await ensureTokenReverseRecord(cleanPhone, existingToken, scope, isMerchant);
+        return existingToken;
+      }
     }
   } catch (_) {}
   // 2. 无绑定则生成（64位随机hex，不依赖HMAC密钥，轮换密钥不影响）
@@ -361,6 +401,8 @@ async function getOrCreatePersistentToken(phone: string, scope: string, isMercha
               'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
               ['auth_tokens', tokenKey]
             ).catch(() => {});
+            // 第十一轮自愈：赢家 token 的反向记录也确保存在（其写入可能曾静默失败）
+            await ensureTokenReverseRecord(cleanPhone, winnerToken, scope, isMerchant);
             return winnerToken;
           }
         }
@@ -374,6 +416,8 @@ async function getOrCreatePersistentToken(phone: string, scope: string, isMercha
       writeLocalJsonDb(dbData);
     }
   } catch (_) {}
+  // 第十一轮自愈：新签发也兜底确保反向记录（MySQL 双写任一侧曾静默失败时不发死 token）
+  await ensureTokenReverseRecord(cleanPhone, newToken, scope, isMerchant);
   return newToken;
 }
 
@@ -1689,7 +1733,11 @@ function getClientIp(req: any): string {
       }
       // 2026-10-21 第二轮修复(P0)：auth_tokens 是全员终身 token 的明文存储、vip_codes 是未兑换的兑换码，
       // 禁止经通用接口读取（任何登录用户逐个拉走即可冒充他人/自助兑码）。登录与兑换走各自专用接口，不经此处。
-      if (col === 'auth_tokens' || col === 'vip_codes') {
+      // 2026-10-23 第十三轮修复：vip_codes 对开发者本人豁免——管理后台「兑换码库管理」必须
+      // 列表/查看兑换码（订阅 vip_codes 是后台挂载动作），一刀切禁读连开发者一起拦，后台
+      // 每次打开都报 DB Query failed: 403 误入脱机状态。auth_tokens 维持全员禁读（无通用读需求）。
+      const isDevGet = (() => { const p = String((req as any).authPhone || '').trim().toUpperCase(); return p === DEVELOPER_PHONE_SERVER || p === DEVELOPER_PHONE_SERVER + 'A'; })();
+      if (col === 'auth_tokens' || (col === 'vip_codes' && !isDevGet)) {
         return res.status(403).json({ exists: false, error: '禁止读取该集合' });
       }
       // config 集合允许读（城市配置、总开关等），但禁止读敏感子文档
@@ -1770,7 +1818,10 @@ function getClientIp(req: any): string {
         return res.status(403).json({ docs: [], error: '禁止读取系统配置' });
       }
       // 2026-10-21 第二轮修复(P0)：auth_tokens/vip_codes 禁止整表拉取（理由同 /api/db/get）。
-      if (col === 'auth_tokens' || col === 'vip_codes') {
+      // 2026-10-23 第十三轮修复：vip_codes 对开发者本人豁免（后台兑换码库管理需整表读，
+      // 一刀切拦截致后台挂载即报 403 脱机）；auth_tokens 维持全员禁拉。
+      const isDevList = (() => { const p = String((req as any).authPhone || '').trim().toUpperCase(); return p === DEVELOPER_PHONE_SERVER || p === DEVELOPER_PHONE_SERVER + 'A'; })();
+      if (col === 'auth_tokens' || (col === 'vip_codes' && !isDevList)) {
         return res.status(403).json({ docs: [], error: '禁止读取该集合' });
       }
       // P1(2026-10-15)：敏感集合的批量读取加权限控制
@@ -7002,70 +7053,6 @@ function getClientIp(req: any): string {
     res.sendStatus(204);
   });
 
-  app.get('/api/tts', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-
-    const text = String(req.query.text || '').trim();
-    if (!text) {
-      return res.status(400).send('Text parameter is required');
-    }
-    // 2026-10-21 第四轮：公开 TTS 代理此前无长度上限、无限流，可被白嫖刷量。语音播报文本都很短：
-    // 限 200 字 + 单 IP 60 次/分钟（客户端用 <audio> 直连无法带鉴权头，故不做 token 校验）。
-    if (text.length > 200) {
-      return res.status(400).send('Text too long');
-    }
-    try {
-      const ttsIp = getClientIp(req);
-      if (!(global as any).__ttsLogs) (global as any).__ttsLogs = new Map();
-      const ttsLogs: Map<string, number[]> = (global as any).__ttsLogs;
-      const tNow = Date.now();
-      const tArr = (ttsLogs.get(ttsIp) || []).filter(t => tNow - t < 60000);
-      if (tArr.length >= 60) {
-        return res.status(429).send('Too many requests');
-      }
-      tArr.push(tNow);
-      ttsLogs.set(ttsIp, tArr);
-    } catch (_) {}
-    const encodedText = encodeURIComponent(text);
-    const ttsProviders = [
-      {
-        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=web`,
-        referer: 'https://fanyi.baidu.com/'
-      },
-      {
-        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=baidu`,
-        referer: 'https://fanyi.baidu.com/'
-      },
-      {
-        url: `https://fanyi.baidu.com/gettts?lan=zh&text=${encodedText}&spd=5&source=tsn`,
-        referer: 'https://fanyi.baidu.com/'
-      }
-    ];
-
-    for (const item of ttsProviders) {
-      try {
-        const response = await fetch(item.url, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': item.referer
-          }
-        });
-        if (response.ok) {
-          const contentType = response.headers.get('content-type') || 'audio/mpeg';
-          const buffer = await response.arrayBuffer();
-          if (buffer.byteLength > 300) {
-            res.setHeader('Content-Type', contentType.includes('audio') ? contentType : 'audio/mpeg');
-            res.setHeader('Cache-Control', 'public, max-age=86400');
-            return res.send(Buffer.from(buffer));
-          }
-        }
-      } catch (err) {
-        // Continue to next provider
-      }
-    }
-    return res.status(502).send('TTS providers unavailable');
-  });
 
   // 2026-10-21 第三轮：微信扫码登录三接口（session/status/authorize）已整体下线。
   // 该功能从未接通任何登录消费方，authorize 却能无鉴权把任意手机号绑进会话——是颗哑弹，一并清除。
@@ -7748,6 +7735,30 @@ function getClientIp(req: any): string {
     // 此接口靠 IP 限流兜底，知道某 VIP 司机手机号即可匿名给他造订单弹窗，不再保留。
     // 2026-10-22 第六轮：410 之后约 140 行不可达旧匿名建单 handler 尸体已整段删除，防误接回复活。
     return res.status(410).json({ success: false, error: '该接口已下线' });
+  });
+
+  // 2026-10-22 第十一轮：乘客落地页公开信息端点（无鉴权，只读最小字段）。
+  // 背景：passenger_order.html 原靠 /api/db/get 查司机 vipExpiry 做服务端校验，
+  // 该接口 2026-10-18 鉴权收口后乘客（无 token）恒 401，服务端校验通道实际已死，
+  // 页面只剩 URL 自带 vip 参数可被随手改（React 版 P0-2 已修、静态页未跟上）。
+  // 本端点只返回页面门禁真正需要的三个字段（是否存在/VIP 到期/品牌名），
+  // 不返回真实姓名、位置、联系方式以外的任何档案数据；/api/db/get 鉴权口径不变。
+  app.get('/api/passenger/link-info', async (req, res) => {
+    try {
+      const driver = String(req.query.driver || req.query.phone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(driver)) {
+        return res.status(400).json({ success: false, error: '司机手机号格式错误' });
+      }
+      const doc = (await readStatusDocument('driver_users', driver)) || (await readStatusDocument('squad_members', driver));
+      if (!doc) {
+        return res.json({ success: true, exists: false });
+      }
+      const { vipExpiry } = await readDriverExpiryUnified(driver);
+      const brandName = String(doc.customAppName || doc.driverBrandName || '').trim();
+      return res.json({ success: true, exists: true, vipExpiry: vipExpiry || doc.vipExpiry || '待开通', brandName });
+    } catch (err) {
+      return res.status(500).json({ success: false, error: '查询失败' });
+    }
   });
 
   // 2026-10-11 二维码创单新流程：乘客扫码只传手机号给司机，不建单、不派单、不做地理编码

@@ -105,10 +105,21 @@ export function getBaseApiUrl(): string {
     const customUrl = localStorage.getItem('baota_api_url') || localStorage.getItem('custom_api_base_url');
     if (customUrl && customUrl.trim()) {
       let trimmed = customUrl.trim().replace(/\/$/, '');
-      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-        return trimmed;
+      const urlStr = (trimmed.startsWith('http://') || trimmed.startsWith('https://')) ? trimmed : 'https://' + trimmed;
+      // 2026-10-22 第十轮加固：自定义 API 地址是 Cloudflare 时期遗留。生产唯一合法端点是
+      // api.lyheiwandaijiamax.com（本地开发放行 localhost）。浏览器里一旦残留旧地址
+      // （旧服务器/Worker 地址），全部数据请求会被带偏，表现与「登录失效/数据库连接受阻」
+      // 完全一致且重登无法自愈。故非白名单覆盖值一律忽略并清除，回落默认端点。
+      let host = '';
+      try { host = new URL(urlStr).hostname; } catch (_) {}
+      if (host === 'api.lyheiwandaijiamax.com' || host === 'localhost' || host === '127.0.0.1') {
+        return urlStr;
       }
-      return 'https://' + trimmed;
+      try {
+        localStorage.removeItem('baota_api_url');
+        localStorage.removeItem('custom_api_base_url');
+        localStorage.removeItem('cloudflare_worker_api_url');
+      } catch (_) {}
     }
   } catch (_) {}
   
