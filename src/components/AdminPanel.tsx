@@ -1265,6 +1265,39 @@ export default function AdminPanel({
       });
     });
 
+    // 7b. 2026-10-23 第二十五轮：A 后缀 driver_users 壳文档兜底商户行。商户的存在形态是
+    // driver_users 里的 A 壳文档（merchant_accounts 生产为空集），旧组装第 5 步跳过 A 文档、
+    // 第 7 步只认 merchant_accounts——A 商户在后台整行消失且不报错。此处补行；
+    // merchant_accounts 已建行的不重复（以第 7 步为准）。
+    driverUsersList.forEach((du: any) => {
+      const fullPhone = String(du.phone || du.phoneNumber || du.id || '').trim();
+      if (!fullPhone || !fullPhone.toUpperCase().endsWith('A')) return;
+      if (driverMap.has(fullPhone)) return;
+      const rawNum = fullPhone.replace(/\D/g, '');
+      const rawName = String(du.driverName || du.name || '').trim();
+      const merchantDisplayName = rawName && rawName !== '商户、商家' ? rawName : `商户${fullPhone}`;
+      driverMap.set(fullPhone, {
+        id: fullPhone,
+        phone: fullPhone,
+        phoneNumber: fullPhone,
+        rawPhone: rawNum,
+        driverName: merchantDisplayName,
+        name: merchantDisplayName,
+        accountType: 'merchant',
+        isMerchant: true,
+        is_squad_member: 0,
+        status: '商户、商家',
+        role: '商户、商家',
+        userRole: '商户、商家',
+        city: du.city || '银川市',
+        vipExpiry: du.vipExpiry || '永久商户',
+        isOnline: false,
+        onlineOrdersEnabled: false,
+        isBanned: Boolean(du.isBanned),
+        updatedAt: du.updatedAt || new Date().toISOString()
+      });
+    });
+
     // 7. Ensure master developer 15509601222 always exists as official squad developer
     const devPhone = DEVELOPER_PHONE;
     const existingDev = driverMap.get(devPhone) || {};
@@ -1729,16 +1762,33 @@ export default function AdminPanel({
     }
 
     try {
-      // 1. Delete the online_applications document
-      await deleteDoc(doc(db, 'online_applications', phone));
+      // 2026-10-23 第二十五轮：关听单资格改走服务端专用驳回接口。此前用通用写 setDoc 写
+      // onlineOrdersEnabled——该字段在服务端通用写中被剥离（第九轮收口），写了也落不了库，
+      // 还无条件弹成功，资格实际一直没关。专用接口是唯一能写该字段的通道。
+      const baseUrl = getBaseApiUrl();
+      const resp = await fetch(`${baseUrl}/api/online-application/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone, reason: '办理离职，收回线上听单资格' })
+      });
+      const j = await resp.json().catch(() => ({}));
+      const noApp = resp.status === 404 && String(j.error || '').includes('不存在');
+      if (!resp.ok && !noApp) {
+        triggerToast(`⚠️ 离职未办成：收回听单资格失败（${j.error || `服务端返回 ${resp.status}`}），请重试`);
+        return;
+      }
 
-      // 2. Clear Driver User settings toggle state in driver_users
-      await setDoc(doc(db, 'driver_users', phone), {
+      // 申请文档物理清除（离职口径）；清空开通城市（city 非收口字段，通用写有效）
+      const okDel = await deleteDoc(doc(db, 'online_applications', phone));
+      const okSet = await setDoc(doc(db, 'driver_users', phone), {
         phoneNumber: phone,
-        onlineOrdersEnabled: false,
         city: '',
         updatedAt: new Date().toISOString()
       }, { merge: true });
+      if (!okDel || !okSet) {
+        triggerToast('⚠️ 离职未完全成功：听单资格已收回，但档案清理未被服务端确认，请检查后重试清理');
+        return;
+      }
 
       triggerToast(`✓ 司机 ${app.driverName || '未知姓名'} (${phone}) 离职手续已成功办理！注册信息已物理清除，听单资格已被实时安全收回。`);
       
@@ -2393,18 +2443,31 @@ export default function AdminPanel({
       `确定要给该手机号的司机(${trimmedPhone})办理【离职】手续吗？离职后将清空其开通城市，关闭线上听单，并且该司机必须在App里重新提交【线上单开通】重新申请审核，是否继续？`,
       async () => {
         try {
+          // 2026-10-23 第二十五轮：同 handleResignApprovedDriver——onlineOrdersEnabled 经通用写
+          // 被服务端剥离根本落不了库，先走专用驳回接口关资格（无申请记录的 404 视为资格已无）。
+          const baseUrl = getBaseApiUrl();
+          const resp = await fetch(`${baseUrl}/api/online-application/reject`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ phone: trimmedPhone, reason: '办理离职，收回线上听单资格' })
+          });
+          const j = await resp.json().catch(() => ({}));
+          const noApp = resp.status === 404 && String(j.error || '').includes('不存在');
+          if (!resp.ok && !noApp) {
+            alert(`⚠️ 离职办理失败：收回听单资格失败（${j.error || `服务端返回 ${resp.status}`}），请重试`);
+            return;
+          }
           // 1. Delete application
           const okDel = await deleteDoc(doc(db, 'online_applications', trimmedPhone));
-          // 2. Set driver_users settings
+          // 2. Set driver_users settings（city/解封等非收口字段）
           const okSet = await setDoc(doc(db, 'driver_users', trimmedPhone), {
-            onlineOrdersEnabled: false,
             city: '',
             isBanned: false, // reset ban status too
             updatedAt: new Date().toISOString()
           }, { merge: true });
           // 2026-10-23 第十五轮：deleteDoc/setDoc 失败返回 false 不抛错，此前无条件报成功。
           if (!okDel || !okSet) {
-            alert('⚠️ 离职办理未完全成功：服务端未确认全部写入，请检查网络后重试');
+            alert('⚠️ 离职办理未完全成功：听单资格已收回，但档案清理未被服务端确认，请检查网络后重试');
             return;
           }
           triggerToast(`🎉 已经成功为司机 ${trimmedPhone} 办理离职手续！`);

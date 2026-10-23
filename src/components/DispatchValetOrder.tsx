@@ -1414,17 +1414,15 @@ export default function DispatchValetOrder({
           list.push({ id: d.id, ...data });
         }
       });
-      // 2026-10-18防闪烁：服务端偶发返回空列表时不清空已有商户，避免「一会显示一会不显示」
-      setMerchantUsers((prev: any[]) => {
-        if (list.length === 0 && prev && prev.length > 0) {
-          console.warn('[merchant_users] server returned empty, keeping previous list to avoid flicker');
-          return prev;
-        }
-        return list;
-      });
+      // 2026-10-23 第二十五轮：空结果如实清空。旧「防闪烁」守卫把成功返回的空名单吞掉，
+      // 已删除的商户会在本机派单台永久显示为幻影（服务端删得再干净也没用）；订阅失败走的是
+      // error 回调而非空快照，空快照即权威空。缓存同步清除，防下次打开先读到旧缓存复活。
+      setMerchantUsers(list);
       try {
         if (list.length > 0) {
           localStorage.setItem('dd_merchant_users_v2', JSON.stringify(list));
+        } else {
+          localStorage.removeItem('dd_merchant_users_v2');
         }
       } catch (_) {}
     }, (err) => console.warn('Error fetching merchant_users:', err));

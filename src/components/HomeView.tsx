@@ -786,6 +786,17 @@ export default function HomeView({
       return isNaN(orderTime) ? 0 : orderTime;
     };
 
+    // 2026-10-23 第二十六轮：大厅单的展示年龄按「进大厅时间 hallAt」算，不按创建时间。
+    // 旧口径用创建时间——派单后 20 分钟以上才拒单/超时进大厅的单，进厅第一秒就已超龄，
+    // 在所有设备的大厅里永久不可见（服务端按 hallAt 保留 24 小时，两边口径差 23 小时 40 分）。
+    const hallDisplayTime = (o: any): number => {
+      if (o && (o.in_hall === true || o.status === 'hall')) {
+        const h = Number(o.hallAt || 0);
+        if (h > 0) return h;
+      }
+      return parseOrderTime(o);
+    };
+
     const isOrderEligibleForHall = (data: any): boolean => {
       if (!data) return false;
       const myPhone = String(userPhone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').replace(/\D/g, '').trim();
@@ -912,7 +923,11 @@ export default function HomeView({
           if (!isOrderEligibleForHall(o)) return false;
           const orderTime = parseOrderTime(o);
           if (clearedAt > 0 && orderTime > 0 && orderTime < clearedAt) return false;
-          if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) return false;
+          // 年龄按大厅口径（hallAt 优先）；本地条目连任何时间戳都没有的按过期处理——
+          // 旧口径下这类条目同时绕过清表过滤与 20 分钟超时，会在大厅里永不消失。
+          const dispTime = hallDisplayTime(o);
+          if (dispTime <= 0) return false;
+          if ((now - dispTime) >= TIMEOUT_20_MIN) return false;
           return true;
         });
       } catch (_) {
@@ -1070,7 +1085,7 @@ export default function HomeView({
             return;
           }
 
-          const orderTime = parseOrderTime(data);
+          const orderTime = hallDisplayTime(data);
           if (orderTime > 0 && (now - orderTime) >= TIMEOUT_20_MIN) {
             // 2026-10-20 重构：超过 20 分钟的大厅单仅在本地列表隐藏，不再由客户端直写 cancelled。
             // 订单取消是服务端决策（大厅单由服务端按 hallAt 做 24 小时清理）；客户端直写状态
@@ -1102,9 +1117,19 @@ export default function HomeView({
           }
         } catch (_) {}
 
+        // 2026-10-23 第二十六轮：本地独有单一并剔除。此前 claimedOrCancelledIds 只收录
+        // 「快照里出现且不合格」的单，服务端已删除/已清表的单不出现在快照里、永远剔不掉，
+        // 会在本机大厅反复复活（点了才被服务端拒）。快照是 merchant_orders 全集合，缺席即不存在。
+        const snapshotKeys = new Set<string>();
+        allMerchantOrders.forEach((m: any) => {
+          [m.id, m.orderId, m.orderNo].forEach((v: any) => {
+            const kk = String(v || '').trim();
+            if (kk) snapshotKeys.add(kk);
+          });
+        });
         const localValid = getValidHallOrdersFromLocal().filter((o: any) => {
           const k = String(o.id || o.orderId || o.orderNo || '').trim();
-          return !claimedOrCancelledIds.has(k);
+          return snapshotKeys.has(k) && !claimedOrCancelledIds.has(k);
         });
 
         // Authoritative update from database snapshot + local valid items (No stale prev state merged!)
@@ -2149,15 +2174,9 @@ export default function HomeView({
         } catch (_) {}
       }
 
-      try {
-        const saved = localStorage.getItem('dd_removed_squad_phones_v2');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed)) {
-            cloudRemovedPhones = Array.from(new Set([...cloudRemovedPhones, ...parsed]));
-          }
-        }
-      } catch (_) {}
+      // 2026-10-23 第二十六轮：removed 名单只认服务端 config 文档，不再并入本地缓存。
+      // 旧实现「云端 ∪ 本地缓存 ∪ 当前 state」组集后又写回缓存与 state，三源任一残留即被
+      // 重新固化到另两个来源——服务端已解除的人会在本机被永久排除（本人中招即被持续降级）。
 
       const currentPhone = (userPhone || applyPhone || (settings as any)?.phone || '').trim();
 
@@ -2217,7 +2236,7 @@ export default function HomeView({
       } catch (_) {}
 
       const allRemovedSet = new Set(
-        [...cloudRemovedPhones, ...(removedMemberPhones || [])]
+        [...cloudRemovedPhones]
           .map(p => String(p).replace(/\D/g, '').trim())
           .filter(p => p && p !== DEVELOPER_PHONE)
       );

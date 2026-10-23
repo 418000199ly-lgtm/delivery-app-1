@@ -65,6 +65,7 @@ const verifyFailures = new Map<string, { count: number; lockedUntil: number }>()
 
 // M4修复：/api/sms/send 限流（IP+手机号：60秒1次 / 1小时5次）
 const smsSendLogs = new Map<string, number[]>();
+const smsVerifyIpLogs = new Map<string, number[]>(); // 2026-10-23 第二十六轮：/api/sms/verify 的 IP 维度尝试记录（防爆破）
 
 // 认证令牌存储：短信验证成功后签发，用于 /api/db/* 写操作鉴权
 // 结构：token -> { phone, scope, createdAt }
@@ -987,10 +988,11 @@ async function scanPendingDispatchMap(): Promise<Map<string, PendingDispatchInfo
       map.set(phone, { orderId: String(docId || o.id || o.orderId || ''), expiresAt });
     }
   };
-  try {
-    const mo = readLocalJsonDb()?.['merchant_orders'] || {};
-    Object.keys(mo).forEach((k) => consider(k, mo[k]));
-  } catch (_) {}
+  // 2026-10-23 第二十五轮：与 loadMerchantOrdersCanonical 同口径——MySQL 启用时只认 MySQL。
+  // 旧实现 JSON 铺底+MySQL 并集：consider 只登记不撤销，镜像里残留的 dispatched 旧态会把
+  // 已接/已取消单的司机误登记为「有未决派单」（最长 60 秒窗口：派单误淘汰、抢单误报 409）。
+  // MySQL 查询失败才回退镜像扫描，绝不并集。
+  let scannedFromMySQL = false;
   if (isMySQLEnabled && mysqlPool) {
     try {
       const [rows]: any = await mysqlPool.query(
@@ -1000,6 +1002,13 @@ async function scanPendingDispatchMap(): Promise<Map<string, PendingDispatchInfo
       (rows || []).forEach((r: any) => {
         try { consider(String(r.doc_id || ''), typeof r.data === 'string' ? JSON.parse(r.data) : r.data); } catch (_) {}
       });
+      scannedFromMySQL = true;
+    } catch (_) {}
+  }
+  if (!scannedFromMySQL) {
+    try {
+      const mo = readLocalJsonDb()?.['merchant_orders'] || {};
+      Object.keys(mo).forEach((k) => consider(k, mo[k]));
     } catch (_) {}
   }
   return map;
@@ -2233,6 +2242,16 @@ function getClientIp(req: any): string {
           if (data && typeof data === 'object' && f in data) delete data[f];
         }
       }
+      // 2026-10-23 第二十五轮：订单集合状态字段收口——订单状态只走业务接口（派单/抢单/
+      // 取消/完单/转大厅），通用写一律剥离，防管理层/派单员 token 直写订单终态绕过全部
+      // 状态机守卫。客户端现行代码零通用写订单状态（已全仓核实），剥离不影响现行流程；
+      // set 的合并底稿会保留服务端现行状态值，剥离只是不许通用写改动它们。
+      if (col === 'merchant_orders' || col === 'valet_orders' || col === 'orders') {
+        const ORDER_STATE_FIELDS = ['status', 'statusCategory', 'isCancelled', 'in_hall', 'claimedDriverPhone', 'claimedDriverName', 'dispatchedDriverPhone', 'dispatchedDriverName', 'hallAt', 'declinedDriverPhones', 'timeoutDriverPhones'];
+        for (const f of ORDER_STATE_FIELDS) {
+          if (data && typeof data === 'object' && f in data) delete data[f];
+        }
+      }
       // M3修复：普通用户写 squad_members 时剥离敏感字段（防被开除司机自助"洗白"）
       // 只有开发者/城市老板/城市管理可写 status/approvalStatus/role/squad_position
       // 注(2026-10-22 第六轮)：上方 PROTECTED_COLLECTION 已对非开发者写 squad_members 先行 403，
@@ -2567,6 +2586,16 @@ function getClientIp(req: any): string {
       if (col === 'driver_users' && !(req as any).isAdmin) { // 2026-10-21 第三轮(P1-2)：管理也不许经通用写给他人写状态字段（isBanned 可软封上级、role 可污染投影），状态只走专用接口
         const STATE_FIELDS = ['status', 'approvalStatus', 'role', 'userRole', 'squad_position', 'position', 'is_squad_member', 'inSquad', 'isBanned', 'onlineOrdersEnabled']; // 2026-10-22 第九轮：线上单开通资格只走审批接口，通用写剥离
         for (const f of STATE_FIELDS) {
+          if (data && typeof data === 'object' && f in data) delete data[f];
+        }
+      }
+      // 2026-10-23 第二十五轮：订单集合状态字段收口——订单状态只走业务接口（派单/抢单/
+      // 取消/完单/转大厅），通用写一律剥离，防管理层/派单员 token 直写订单终态绕过全部
+      // 状态机守卫。客户端现行代码零通用写订单状态（已全仓核实），剥离不影响现行流程；
+      // set 的合并底稿会保留服务端现行状态值，剥离只是不许通用写改动它们。
+      if (col === 'merchant_orders' || col === 'valet_orders' || col === 'orders') {
+        const ORDER_STATE_FIELDS = ['status', 'statusCategory', 'isCancelled', 'in_hall', 'claimedDriverPhone', 'claimedDriverName', 'dispatchedDriverPhone', 'dispatchedDriverName', 'hallAt', 'declinedDriverPhones', 'timeoutDriverPhones'];
+        for (const f of ORDER_STATE_FIELDS) {
           if (data && typeof data === 'object' && f in data) delete data[f];
         }
       }
@@ -3404,6 +3433,7 @@ function getClientIp(req: any): string {
       writeLocalJsonDb(dbData);
       console.log(`✓ [Batch VIP Recharge] Successfully recharged ${updatedPhones.length} squad drivers with ${daysCount} days VIP`);
 
+      try { await logAdminOperation('batch-recharge-vip', String((req as any).authPhone || ''), 'squad', `批量VIP充值，失败 ${failedPhones.length} 人`, req); } catch (_) {}
       return res.json({
         success: failedPhones.length === 0,
         count: updatedPhones.length,
@@ -3640,6 +3670,7 @@ function getClientIp(req: any): string {
 
       writeLocalJsonDb(dbData);
 
+      try { await logAdminOperation('clear-collection', String((req as any).authPhone || ''), col, `整表清空集合 ${col}`, req); } catch (_) {}
       return res.json({ success: true, collection: col });
     } catch (err: any) {
       console.error('[DB Proxy CLEAR-COLLECTION Exception]:', err);
@@ -3721,6 +3752,7 @@ function getClientIp(req: any): string {
 
       writeLocalJsonDb(dbData);
       console.log('✓ [阿里云本地数据库] 已彻底清除所有订单记录，本地与服务器不再保存所有订单记录');
+      try { await logAdminOperation('clear-all-orders', String((req as any).authPhone || ''), 'merchant_orders', '一键清空全部订单记录', req); } catch (_) {}
       return res.json({ success: true, clearedAt: nowTs, message: '所有订单记录已从服务器彻底清除！' });
     } catch (err: any) {
       console.error('[Clear-All Orders Exception]:', err);
@@ -3849,15 +3881,18 @@ function getClientIp(req: any): string {
 
       if (isMySQLEnabled && mysqlPool) {
         try {
+          // 2026-10-23 第二十五轮：更新改走 JSON_MERGE_PATCH 只补 patch 字段。旧实现把「JSON
+          // 镜像底稿+patch」整档覆盖 MySQL——镜像一旦并发丢更新，下一次心跳就把陈旧字段回灌
+          // 进 MySQL 权威源。插入新文档时仍写整档底稿。
           await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['driver_locations', phone, JSON.stringify({ ...(dbData.driver_locations?.[phone] || {}), ...patch, phone })]
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = JSON_MERGE_PATCH(`data`, ?)',
+            ['driver_locations', phone, JSON.stringify({ ...(dbData.driver_locations?.[phone] || {}), ...patch, phone }), JSON.stringify({ ...patch, phone })]
           );
           // 2026-10-21 第四轮(P2-8)：MySQL 分支此前只写 driver_locations，driver_users.isBusy 长期陈旧；
           // JSON 分支两表都写，此处补齐同口径。
           await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['driver_users', phone, JSON.stringify({ ...(dbData.driver_users?.[phone] || {}), ...patch, phone })]
+            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = JSON_MERGE_PATCH(`data`, ?)',
+            ['driver_users', phone, JSON.stringify({ ...(dbData.driver_users?.[phone] || {}), ...patch, phone }), JSON.stringify({ ...patch, phone })]
           );
         } catch (_) {}
       }
@@ -4021,10 +4056,12 @@ function getClientIp(req: any): string {
         }
         if (!skipMysql) {
           // Fire-and-forget async update with error catching
+          // 2026-10-23 第二十五轮：同 /api/driver/status——更新只 MERGE_PATCH 本次 patch 字段，
+          // 不再以 JSON 镜像底稿整档覆盖 MySQL，断掉镜像陈旧字段回灌权威源的通道。
           mysqlPool.query(
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
-            'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['driver_locations', phone, JSON.stringify(mergedLocation)]
+            'ON DUPLICATE KEY UPDATE `data` = JSON_MERGE_PATCH(`data`, ?)',
+            ['driver_locations', phone, JSON.stringify(mergedLocation), JSON.stringify({ ...patch, phone })]
           ).catch(() => {});
         }
       }
@@ -4088,7 +4125,10 @@ function getClientIp(req: any): string {
         Object.keys(dbData.driver_locations).forEach((k) => {
           const phone = String(dbData.driver_locations[k]?.phone || k || '').trim();
           if (phone && (phone === '15509601222' || !removedPhones.has(phone))) {
-            locations[k] = { ...(locations[k] || {}), ...dbData.driver_locations[k] };
+            // 2026-10-23 第二十六轮：改与派单组装同口径——MySQL 有行整档为准，JSON 只补
+            // MySQL 缺失的手机号。旧实现逐字段覆盖，镜像里陈旧的在线/忙碌/坐标会盖掉权威新值
+            // （附近页显示已下线者在线、空闲者忙碌）。
+            if (!locations[k]) locations[k] = dbData.driver_locations[k];
           }
         });
       }
@@ -4223,6 +4263,9 @@ function getClientIp(req: any): string {
     try {
       const list: any[] = [];
       const seen = new Set<string>();
+      // 2026-10-23 第二十六轮：MySQL 已有行（任意状态）的手机号集合——JSON 补缺不得越过它，
+      // 防 MySQL 已驳回/已改状态者被镜像里的旧已通过文档复活进名单（派单不走本接口，仅名单面）。
+      const mysqlMemberPhones = new Set<string>();
       const dbData = readLocalJsonDb();
       const removedPhones = new Set<string>();
       try {
@@ -4268,6 +4311,7 @@ function getClientIp(req: any): string {
               try {
                 const parsed = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
                 const phone = String(parsed?.phone || r.doc_id || '').trim();
+                if (phone) mysqlMemberPhones.add(phone);
                 // 2026-10-21 第四轮：名单组装此前无条件先盖 status:'已通过'——无 status 的壳文档
                 // 会被冒充成正式成员。改与 getUnifiedMembership 同口径：只有 status/approvalStatus
                 // 命中已通过集合的文档才进名单，输出 status 统一规范化。
@@ -4285,7 +4329,7 @@ function getClientIp(req: any): string {
         Object.keys(dbData.squad_members).forEach((k) => {
           const m = dbData.squad_members[k];
           const phone = String(m?.phone || k || '').trim();
-          if (phone && !seen.has(phone) && !isInvalidDriver(phone) && isApprovedMemberStatus(effectiveMemberStatus(m))) {
+          if (phone && !seen.has(phone) && !mysqlMemberPhones.has(phone) && !isInvalidDriver(phone) && isApprovedMemberStatus(effectiveMemberStatus(m))) {
             seen.add(phone);
             list.push({ ...m, id: k, phone, status: '已通过' });
           }
@@ -4438,7 +4482,9 @@ function getClientIp(req: any): string {
       const driverUsers = dbData.driver_users || {};
       const squadMembers = dbData.squad_members || {};
       const driverLocations = dbData.driver_locations || {};
-      const merchantOrders = dbData.merchant_orders || {};
+      // 2026-10-23 第二十五轮：进行中订单判定改读权威源（MySQL 启用时只读 MySQL）。
+      // 旧实现只扫 JSON 镜像——镜像丢了一笔进行中订单时，05:59 会把正在跑单的司机强制下线。
+      const merchantOrders = await loadMerchantOrdersCanonical();
 
       // Gather all online drivers from in-memory cache
       const onlineDriverPhones = new Set<string>();
@@ -4711,12 +4757,22 @@ function getClientIp(req: any): string {
         // 定向封杀司机；预置 coordsUnknown 可绕过就近派单强制进大厅变相选人。
         for (const poisonField of ['claimedDriverPhone', 'claimedDriverName', 'claimedAt',
           'declinedDriverPhones', 'timeoutDriverPhones', 'rejectedDriverPhones',
-          'coordsUnknown', 'in_hall', 'status', 'statusCategory', 'hallAt', 'hallReason',
+          'coordsUnknown', 'in_hall', 'status', 'statusCategory', 'isCancelled', 'hallAt', 'hallReason', // 2026-10-23 第二十五轮：补剥 isCancelled——预置 true 的毒单被接单后会同时是 claimed 与已取消，读 IC 的消费方误判终态
           'dispatchedAt', 'dispatchExpiresAt', 'dispatchCountdown', 'serverCountdown',
           'paymentQrCode', 'qrCode', 'wechatQrCode', 'driverQrCode', 'qrcode_url',
           'assignedDriver', 'assignedDriverPhone']) {
           delete (orderData as any)[poisonField];
         }
+        // 2026-10-23 第二十六轮补充（用户拍板）：金额服务端锚定。商户单起步价是平台标准
+        // ¥40（现行下单端写死此值），此前 calculatedTotalFee/price 等字段由下单端原样落库、
+        // 还充当行程的锁定起步价——被改包的商户端可任意标价、乘客照单支付。现建单时一律
+        // 以服务端标准价覆盖、客户端传值不落库；行程中的里程/等候等费用在行程页按实际
+        // 轨迹另行结算、不走建单字段，不受此锚影响。
+        (orderData as any).calculatedTotalFee = 40;
+        (orderData as any).estimatedPrice = '40.00';
+        (orderData as any).price = '¥40.00';
+        delete (orderData as any).fare;
+        delete (orderData as any).totalFee;
         // 2026-10-21 第四轮(E2/F2 实测)：orderData 未带 merchantPhone 时以 token 身份兜底补写。
         // 否则订单里没有下单方字段，商户本人 true-cancel/cancel 会被归属校验拒绝、取消不了自己的单。
         if (!String((orderData as any).merchantPhone || '').trim()) {
@@ -4941,7 +4997,10 @@ function getClientIp(req: any): string {
       });
 
       // P2(2026-10-16)：订单ID加随机后缀，防同一毫秒创建的两单重ID串单
-      const orderId = String(orderData.id || orderData.orderId || orderData.orderNo || `ORDER_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).trim();
+      // 2026-10-23 第二十六轮：orderNo 不再充当文档 id。YC 号是客户端本地计数生成
+      // （分钟粒度+本机序号），跨设备同分钟必撞——两单同 YC 时后单会覆盖先单文档。
+      // 文档 id 只认 id/orderId，缺失时服务端生成（现行客户端恒带 MO_ id，不受影响）。
+      const orderId = String(orderData.id || orderData.orderId || `ORDER_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).trim();
 
       // 2026-10-22 第七轮：占用淘汰的事实来源——未决派单全图（带缓存，高频调用不重复扫表）
       const pendingMap = await getPendingDispatchMap();
@@ -5259,6 +5318,7 @@ function getClientIp(req: any): string {
             ...coordFields,
             status: 'hall',
             in_hall: true,
+            statusCategory: '等待接单', // 2026-10-23 第二十五轮：与无候选分支同口径补分类，防徽章分类三分裂
             hallReason: 'no_licensed_driver',
             hallAt: Date.now(),
             timestamp: Date.now(),
@@ -5309,6 +5369,7 @@ function getClientIp(req: any): string {
               ...coordFields,
               status: 'hall',
               in_hall: true,
+              statusCategory: '等待接单', // 2026-10-23 第二十五轮：同上
               hallReason: 'pending_conflict',
               hallAt: nowTs,
               timestamp: nowTs,
@@ -5951,7 +6012,12 @@ function getClientIp(req: any): string {
               [cleanDriverPhone]
             );
           }
-        } catch (_) {}
+        } catch (e: any) {
+          // 2026-10-23 第二十五轮：旧实现 catch 静默吞——JSON 已翻大厅、MySQL 仍 dispatched
+          // 还报 success，双源分叉无感知。与 claim 口径对齐：如实 500（拒单可安全重试收敛）。
+          console.error('[Order Decline] MySQL 写入失败:', e?.message);
+          return res.status(500).json({ success: false, error: '拒单写入失败，请重试' });
+        }
       }
 
       return res.json({ success: true, order: updateData, serverTime: now });
@@ -6010,6 +6076,7 @@ function getClientIp(req: any): string {
       const cancelPayload = {
         status: 'cancelled',
         statusCategory: '已取消',
+        isCancelled: true, // 2026-10-23 第二十五轮：与 true-cancel 口径对齐——此前本接口订单文档独缺 isCancelled，只写 isCancelled 的通知文档反而齐全，终态判据踩缝
         in_hall: false,
         cancelledAt: now,
         cancelledBy: cancelledBy,
@@ -6089,7 +6156,9 @@ function getClientIp(req: any): string {
           statusCategory: '已取消',
           cancelledBy,
           cancelReason,
-          cancelledAt: now
+          cancelledAt: now,
+          timestamp: now, // 第二十六轮：给 48 小时清扫器留可识别时戳（与 cancelledAt 兜底双保险）
+          updatedAt: now
         };
         if (!dbData['passenger_links']) dbData['passenger_links'] = {};
         dbData['passenger_links'][assignedDriver] = driverCancelNotice;
@@ -6135,6 +6204,8 @@ function getClientIp(req: any): string {
               orderId,
               orderNo: req.body.orderNo || orderId,
               isCancelled: true,
+              timestamp: now,
+              updatedAt: now,
               status: 'cancelled',
               statusCategory: '已取消',
               cancelledBy,
@@ -6610,6 +6681,7 @@ function getClientIp(req: any): string {
           ['hubble_authorized_drivers', phone, JSON.stringify(dbData['hubble_authorized_drivers'][phone])]
         ).catch(() => {});
       }
+      try { await logAdminOperation('hubble-authorize', requester, phone, '授予哈勃真名查看权限', req); } catch (_) {}
       return res.json({ success: true });
     } catch (e: any) {
       return res.status(500).json({ success: false, message: String(e?.message || e) });
@@ -6638,6 +6710,7 @@ function getClientIp(req: any): string {
           ['hubble_authorized_drivers', phone]
         ).catch(() => {});
       }
+      try { await logAdminOperation('hubble-revoke', requester, phone, '撤销哈勃真名查看权限', req); } catch (_) {}
       return res.json({ success: true });
     } catch (e: any) {
       return res.status(500).json({ success: false, message: String(e?.message || e) });
@@ -6928,7 +7001,9 @@ function getClientIp(req: any): string {
         for (const [k, v] of Object.entries<any>(dbData['passenger_links'])) {
           // 2026-10-21 第四轮(P2-6)：updatedAt 常是 ISO 字符串，旧代码 Number(ISO)=NaN，这类文档永远清不掉；
           // 改为数字直接用、字符串走 Date.parse。
-          const rawT: any = (v as any)?.timestamp ?? (v as any)?.updatedAt ?? 0;
+          // 2026-10-23 第二十六轮：补 cancelledAt——取消通知文档只有 cancelledAt、没有
+          // timestamp/updatedAt，旧口径算出 0 永远跳过，这类文档永不过期（单槽残留）。
+          const rawT: any = (v as any)?.timestamp ?? (v as any)?.updatedAt ?? (v as any)?.cancelledAt ?? 0;
           const time = typeof rawT === 'number' ? rawT : (Date.parse(String(rawT)) || 0);
           if (time > 0 && (now - time) > 48 * 3600 * 1000) {
             delete dbData['passenger_links'][k];
@@ -7409,6 +7484,10 @@ function getClientIp(req: any): string {
       const now = Date.now();
       const keyPhone = `p:${cleanPhone}`;
       const keyIp = `ip:${clientIp}`;
+      // 2026-10-23 第二十六轮：改两段式——先两个键都检查通过、再统一记账。旧实现逐键
+      // 「查完即记账」，手机号键先落账后 IP 键拒绝时，这次被拒的请求白白烧掉该号的小时配额
+      // （同一 IP 反复被拒可把某号配额烧光而一条短信都没发出）。
+      const pendingLogs: Array<[string, number[]]> = [];
       for (const key of [keyPhone, keyIp]) {
         const logs = (smsSendLogs.get(key) || []).filter((t) => now - t < 3600 * 1000);
         if (logs.length >= 5) {
@@ -7418,6 +7497,9 @@ function getClientIp(req: any): string {
           const waitSec = Math.ceil((60 * 1000 - (now - logs[logs.length - 1])) / 1000);
           return res.status(429).json({ success: false, error: `❌ 发送过于频繁，请 ${waitSec} 秒后再试` });
         }
+        pendingLogs.push([key, logs]);
+      }
+      for (const [key, logs] of pendingLogs) {
         logs.push(now);
         smsSendLogs.set(key, logs);
       }
@@ -7774,6 +7856,29 @@ function getClientIp(req: any): string {
           success: false,
           error: `❌ 验证码错误次数过多，该手机号已锁定，请 ${remainMin} 分钟后再试`
         });
+      }
+    }
+    // 2026-10-23 第二十六轮：校验接口补 IP 维度防爆破（对所有号码一视同仁，含豁免号）。
+    // 豁免铁律豁免的是「本人被限流/被锁定」，不是「任意来源的无限次猜码」：4 位码+5 分钟
+    // 有效期下，旧实现对豁免号既不查锁定也不记失败，猜中即得终身 token。此限是网络层口径：
+    // 同一 IP 10 分钟最多 30 次校验尝试——正常使用（本人输错重试）永远碰不到，不锁定手机号、
+    // 不计入按号失败数；仅把远程爆破从「有效期内任意次」压到至多 30 次。
+    {
+      const vIp = getClientIp(req);
+      const vKey = `ip:${vIp}`;
+      const vNow = Date.now();
+      const vLogs = (smsVerifyIpLogs.get(vKey) || []).filter((t) => vNow - t < 10 * 60 * 1000);
+      if (vLogs.length >= 30) {
+        return res.status(429).json({ success: false, error: '❌ 校验请求过于频繁，请稍后再试' });
+      }
+      vLogs.push(vNow);
+      smsVerifyIpLogs.set(vKey, vLogs);
+      if (smsVerifyIpLogs.size > 5000) {
+        for (const [k2, v2] of smsVerifyIpLogs) {
+          const fresh = v2.filter((t) => vNow - t < 10 * 60 * 1000);
+          if (fresh.length === 0) smsVerifyIpLogs.delete(k2);
+          else smsVerifyIpLogs.set(k2, fresh);
+        }
       }
     }
     // 记录失败的辅助函数（M4：5次失败销毁验证码并锁定30分钟；豁免号码不记录）
@@ -8553,6 +8658,18 @@ function getClientIp(req: any): string {
             ['passenger_links', cleanDriverPhone]
           ).catch(() => {});
         }
+        // 2026-10-23 第二十五轮：MySQL 分支此前不刷 JSON 镜像，镜像长期停在 dispatched 态，
+        // db/get 回退、05:59 清理等读镜像路径会吃到旧态。与其它写路径同口径补镜像同步。
+        try {
+          const jdb2 = readLocalJsonDb();
+          if (!jdb2['merchant_orders']) jdb2['merchant_orders'] = {};
+          const jm = jdb2['merchant_orders'][cleanOrderId] || {};
+          jdb2['merchant_orders'][cleanOrderId] = applyToOrder(jm);
+          if (cleanDriverPhone && jdb2['passenger_links']?.[cleanDriverPhone]) {
+            delete jdb2['passenger_links'][cleanDriverPhone];
+          }
+          writeLocalJsonDb(jdb2);
+        } catch (_) {}
       } else {
         const dbData = readLocalJsonDb();
         if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
@@ -8676,6 +8793,13 @@ function getClientIp(req: any): string {
       if (!tcRole) {
         return res.status(403).json({ success: false, error: '只有接单司机、下单方或管理人员可以取消该订单' });
       }
+      // 2026-10-23 第二十六轮：补终态守卫——已完成订单不许被真取消翻成 cancelled
+      // （/api/order/cancel 早有此守卫，本通道独缺；翻活会连带非 VIP 日完单计数变化）。
+      // 已取消单重复取消保持幂等放行。
+      if (['completed', '已完成', 'finished'].includes(String(tcOrder.status || '')) ||
+          String(tcOrder.statusCategory || '') === '已完成') {
+        return res.status(409).json({ success: false, error: '订单已完成，无法取消' });
+      }
       const cancelPayload = {
         status: 'cancelled',
         statusCategory: '已取消',
@@ -8695,13 +8819,13 @@ function getClientIp(req: any): string {
             'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
             'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
             [col, cleanOrderId, JSON.stringify(applyCancel(tcExisting[col]))]
-          ).catch(() => {});
+          ).catch((e: any) => console.error('[TrueCancel] 订单写入失败:', col, cleanOrderId, e?.message));
         }
         if (tcDriverPhone) {
           await mysqlPool.query(
             'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
             ['passenger_links', tcDriverPhone]
-          ).catch(() => {});
+          ).catch((e: any) => console.error('[TrueCancel] 删除乘客链接失败:', tcDriverPhone, e?.message));
           // 2026-10-22 第八轮：真取消必须同步清进行中订单与司机忙碌（与 /api/order/cancel 口径对齐）。
           // 旧实现只改订单状态：已接单被真取消后司机 isBusy 永不清、active_orders 残留，
           // 司机被永久误判行程中（edge E2b 三态根源之一）。仅当进行中订单就是本单时才清，
@@ -8738,6 +8862,29 @@ function getClientIp(req: any): string {
             }
           } catch (_) {}
         }
+        // 2026-10-23 第二十六轮：MySQL 分支补刷 JSON 镜像（与 to-hall 同口径）。旧实现真取消
+        // 只写 MySQL，镜像里该单长期停在取消前状态，MySQL 故障切 JSON 模式会原样复活。
+        try {
+          const jdb = readLocalJsonDb();
+          for (const col of tcCols) {
+            if (!jdb[col]) jdb[col] = {};
+            jdb[col][cleanOrderId] = applyCancel(jdb[col][cleanOrderId] || tcExisting[col]);
+          }
+          if (tcDriverPhone) {
+            if (jdb['passenger_links']?.[tcDriverPhone]) delete jdb['passenger_links'][tcDriverPhone];
+            const aDocJ = jdb['active_orders']?.[tcDriverPhone];
+            const aOrderIdJ = String(aDocJ?.orderId || aDocJ?.id || '').trim();
+            if (!aDocJ || aOrderIdJ === cleanOrderId) {
+              if (jdb['active_orders']) delete jdb['active_orders'][tcDriverPhone];
+              for (const col of ['driver_locations', 'driver_users', 'squad_members']) {
+                if (jdb[col]?.[tcDriverPhone]) {
+                  jdb[col][tcDriverPhone] = { ...jdb[col][tcDriverPhone], isBusy: false, lastStatusUpdateTime: now };
+                }
+              }
+            }
+          }
+          writeLocalJsonDb(jdb);
+        } catch (_) {}
       } else {
         const dbData = readLocalJsonDb();
         for (const col of tcCols) {
@@ -9796,6 +9943,13 @@ function getClientIp(req: any): string {
           'UPDATE `daijia_documents` SET `data` = ? WHERE `collection` = ? AND `doc_id` = ?',
           [JSON.stringify(od), 'merchant_orders', orderId]
         );
+        // 2026-10-23 第二十五轮：完单同步清 active_orders（此前完单不在清除点之列，
+        // active_orders[司机] 残留指向已完成单——2026-10-23 生产体检残留的代码根源）。
+        // 按 orderId 守卫：只删指向本单的文档，防误删该司机另一笔行程。
+        await mysqlPool.query(
+          'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? AND (JSON_UNQUOTE(JSON_EXTRACT(`data`, \'$.orderId\')) = ? OR JSON_EXTRACT(`data`, \'$.orderId\') IS NULL)',
+          ['active_orders', claimedBy, String(orderId)]
+        ).catch((e: any) => console.error('[OrderComplete] 清理 active_orders 失败:', e?.message));
         // 重置司机busy状态
         for (const col of ['driver_locations', 'driver_users']) {
           try {
@@ -9818,6 +9972,10 @@ function getClientIp(req: any): string {
           const jdb = readLocalJsonDb();
           if (!jdb['merchant_orders']) jdb['merchant_orders'] = {};
           jdb['merchant_orders'][orderId] = od;
+          if (jdb['active_orders']?.[claimedBy]) {
+            const aDoc: any = jdb['active_orders'][claimedBy];
+            if (!aDoc?.orderId || String(aDoc.orderId) === String(orderId)) delete jdb['active_orders'][claimedBy];
+          }
           for (const col of ['driver_locations', 'driver_users']) {
             if (jdb[col]?.[authPhone]) jdb[col][authPhone].isBusy = false;
           }
@@ -9869,6 +10027,11 @@ function getClientIp(req: any): string {
           if (dbData[col]?.[authPhone]) {
             dbData[col][authPhone].isBusy = false;
           }
+        }
+        // 2026-10-23 第二十五轮：同 MySQL 分支——完单清 active_orders（orderId 守卫）
+        if (dbData['active_orders']?.[claimedBy]) {
+          const aDoc: any = dbData['active_orders'][claimedBy];
+          if (!aDoc?.orderId || String(aDoc.orderId) === String(orderId)) delete dbData['active_orders'][claimedBy];
         }
         writeLocalJsonDb(dbData);
       }
@@ -10404,7 +10567,7 @@ function getClientIp(req: any): string {
     if (/^\/server\.cjs(\.map)?$/i.test(p)) {
       return res.status(403).json({ success: false, error: '禁止访问' });
     }
-    if (/^\/(daijia_deploy|baota_deploy|deploy)\.(zip|tar\.gz)$/i.test(p)) {
+    if (/^\/(daijia_deploy|baota_deploy|deploy)\.(zip|tar\.gz|tar)$/i.test(p)) {
       if (await verifyDeveloperDownload(req)) return next();
       return res.status(403).json({ success: false, error: '部署包下载需要开发者登录' });
     }
@@ -10655,13 +10818,18 @@ function getClientIp(req: any): string {
         }
       }
 
-      const dbData = readLocalJsonDb();
-      for (const col of targetCols) {
-        if (dbData[col] && dbData[col][phone]) {
-          const rowData = dbData[col][phone];
-          const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
-          if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
-            return res.json({ success: true, url: foundQr, channel: isWeb ? 'web' : 'app' });
+      // 2026-10-23 第二十五轮：MySQL 启用时集合解析只认 MySQL。旧实现在 MySQL 六集合全空后
+      // 无条件续查 JSON 镜像——删码后镜像残留的旧码会被重新解析出来（已删除的码复活）。
+      // JSON 扫描仅在 MySQL 未启用（镜像即权威）时执行；文件存在性检查不受影响。
+      if (!isMySQLEnabled || !mysqlPool) {
+        const dbData = readLocalJsonDb();
+        for (const col of targetCols) {
+          if (dbData[col] && dbData[col][phone]) {
+            const rowData = dbData[col][phone];
+            const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
+            if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+              return res.json({ success: true, url: foundQr, channel: isWeb ? 'web' : 'app' });
+            }
           }
         }
       }
@@ -10720,8 +10888,10 @@ function getClientIp(req: any): string {
       // Also clean MySQL and local JSON DB
       if (isMySQLEnabled && mysqlPool) {
         try {
-          await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?', ['dispatch_qrs', phone]);
-          await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?', ['dispatch_qrcodes', phone]);
+          // 2026-10-23 第二十六轮：改用归一化 filePhone（与上传/其余删除处同口径）——
+          // 原始 phone 带小写 a 形态时这两处按错键删空，A 商户的码集删不掉。
+          await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?', ['dispatch_qrs', filePhone]);
+          await mysqlPool.query('DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?', ['dispatch_qrcodes', filePhone]);
           // 2026-10-23 第十五轮补漏：上传按渠道分流（web/A 商户→web_valet_qrs/dispatch_qrs_web/
           // merchant_users；app→app_valet_qrs），删除此前只清 app 侧两集，商户删码后
           // merchant_users 等文档仍指着已删文件、解析出死链。按 filePhone 同口径补清：
@@ -10735,6 +10905,7 @@ function getClientIp(req: any): string {
             muPrev.wechatQrCode = '';
             muPrev.qrCode = '';
             muPrev.qrcode_url = '';
+            muPrev.wechatClean = ''; // 第二十六轮：同上
             await mysqlPool.query('INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', ['merchant_users', filePhone, JSON.stringify(muPrev)]);
           }
           
@@ -10743,6 +10914,8 @@ function getClientIp(req: any): string {
             const prev = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
             prev.wechatQrCode = '';
             prev.qrCode = '';
+            prev.qrcode_url = ''; // 第二十六轮：与 JSON 分支对齐补清（此前 MySQL 独留死链）
+            prev.wechatClean = ''; // 第二十六轮：解析侧仍认此字段，删除侧必须同清
             await mysqlPool.query('INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', ['driver_users', phone, JSON.stringify(prev)]);
           }
 
@@ -10751,6 +10924,8 @@ function getClientIp(req: any): string {
             const squadPrev = typeof squadRows[0].data === 'string' ? JSON.parse(squadRows[0].data) : squadRows[0].data;
             squadPrev.wechatQrCode = '';
             squadPrev.qrCode = '';
+            squadPrev.qrcode_url = ''; // 第二十六轮：同 driver_users
+            squadPrev.wechatClean = '';
             await mysqlPool.query('INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)', ['squad_members', phone, JSON.stringify(squadPrev)]);
           }
         } catch (err: any) {

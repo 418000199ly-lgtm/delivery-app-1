@@ -503,6 +503,46 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
     
     if (validCandidateIds.length === 0) return;
 
+    // 2026-10-23 第二十六轮：本地取消证据（同设备商户组件写的标记/缓存）先经服务端确认
+    // 再关弹窗。旧实现凭本地证据直接按「超时」关单——共享角色设备上本地默认态/陈旧缓存
+    // 会误杀真派单（本人还被记入该单超时名单）；查不到/网络异常一律不关，宁可等倒计时。
+    const confirmingCancelRef = { current: false };
+    const confirmCancelledOnServer = async (): Promise<boolean> => {
+      try {
+        const baseUrl = getBaseApiUrl();
+        let sawDoc = false;
+        for (const cid of validCandidateIds) {
+          const r = await fetch(`${baseUrl}/api/db/get?collection=merchant_orders&docId=${encodeURIComponent(cid)}&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+          if (r.status === 404) return true; // 服务端已无此单（被删/被清表）
+          if (!r.ok) continue;
+          const j = await r.json().catch(() => ({} as any));
+          const d = (j as any)?.data;
+          if (d) {
+            sawDoc = true;
+            return d.status === 'cancelled' || d.isCancelled === true || d.statusCategory === '已取消' || d.statusCategory === '订单已取消';
+          }
+        }
+        return !sawDoc; // 所有候选 id 都查无此单 → 订单已不存在
+      } catch (_) {
+        return false;
+      }
+    };
+    const declineAfterServerConfirm = (branch: string) => {
+      if (confirmingCancelRef.current) return;
+      confirmingCancelRef.current = true;
+      confirmCancelledOnServer()
+        .then((ok) => {
+          confirmingCancelRef.current = false;
+          if (!ok) return;
+          if (isAcceptingRef.current) return;
+          stopSpeaking();
+          console.log(`[PopupKiller] 分支${branch} 经服务端确认已取消，关闭弹窗`);
+          try { (window as any).__popupKillerBranch = branch; } catch (_) {}
+          safeDecline('timeout');
+        })
+        .catch(() => { confirmingCancelRef.current = false; });
+    };
+
     const checkCancelled = () => {
       try {
         // 2026-10-17：25秒内新单不响应取消检查。商户组件下单时本地默认写hall/取消态，
@@ -517,9 +557,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
           const pNo = String(parsed.orderNo || '').trim();
           if ((pId && validCandidateIds.includes(pId)) || (pNo && validCandidateIds.includes(pNo))) {
             if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
-            stopSpeaking();
-            console.log('[PopupKiller] 分支D-本地取消标记 关闭弹窗'); try{(window as any).__popupKillerBranch='D-本地取消标记';}catch(_){}
-            safeDecline('timeout');
+            declineAfterServerConfirm('D-本地取消标记');
             return;
           }
         }
@@ -531,9 +569,7 @@ export const IncomingOrderOverlay: React.FC<IncomingOrderOverlayProps> = ({
         });
         if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           if (isAcceptingRef.current) return; // P1-1:接单中不响应取消
-          stopSpeaking();
-          console.log('[PopupKiller] 分支E-本地订单已取消 关闭弹窗'); try{(window as any).__popupKillerBranch='E-本地已取消';}catch(_){}
-          safeDecline('timeout');
+          declineAfterServerConfirm('E-本地已取消');
         }
       } catch (_) {}
     };

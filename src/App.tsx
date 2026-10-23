@@ -603,25 +603,36 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           }
         }
 
-        // Reset dd_ keys
-        localStorage.setItem('dd_applicants_v2', '[]');
-        localStorage.setItem('dd_squad_applications_v2', '[]');
-        localStorage.setItem('dd_squad_members_v2', JSON.stringify([
-          { id: DEVELOPER_PHONE, phone: DEVELOPER_PHONE, phoneNumber: DEVELOPER_PHONE, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
-        ]));
-        localStorage.setItem('cached_unified_drivers', JSON.stringify([
-          { id: DEVELOPER_PHONE, phone: DEVELOPER_PHONE, phoneNumber: DEVELOPER_PHONE, driverName: '吴彦祖', name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true, city: '银川市' }
-        ]));
-        localStorage.setItem('dd_merchant_users_v2', '[]');
-        localStorage.setItem('dd_team_members', '[]');
-        
-        // Dispatch update events so active components reload state
-        window.dispatchEvent(new CustomEvent('squad_members_updated'));
-        window.dispatchEvent(new CustomEvent('squad_applicants_updated'));
+        // 2026-10-23 第二十六轮：不再在挂载时重置名单类缓存键。此前每次冷启动都把
+        // 成员/申请人/商户名单重置为「仅开发者/空」，并广播事件催各组件按假名单重算——
+        // 订阅首帧回来前小队人数恒显 1、角标归 0、后台首屏只剩开发者一行；订阅失败时
+        // 假名单无限期持续。名单一律等订阅/拉取首帧覆盖，宁可短暂显示上次的真名单。
       } catch (_) {}
     };
     clearStaleLocalCaches();
   }, []);
+
+  // 2026-10-23 第二十六轮：本地行程/订单缓存的「存活」判定——解析内容并排除终态。
+  // 旧实现只看 localStorage 键是否存在：完单会把 endedTrip 写回 dd_current_trip，
+  // 同会话内 05:59 守护据此误判「有进行中订单」，只延迟下线+每日重复弹提示，永不真下线。
+  const hasLiveStoredTripOrOrder = (): boolean => {
+    try {
+      for (const key of ['dd_current_trip', 'dd_current_order']) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const t = JSON.parse(raw);
+        if (!t || typeof t !== 'object') continue;
+        const st = String(t.status || t.currentStatus || '');
+        const cat = String(t.statusCategory || '');
+        if (t.isCancelled === true) continue;
+        if (['cancelled', 'completed', '已取消', '已完成'].includes(st)) continue;
+        if (['已取消', '订单已取消', '已完成'].includes(cat)) continue;
+        if (st === 'idle') continue;
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  };
 
   const [isInSquad, setIsInSquad] = useState(false);
 
@@ -1199,21 +1210,20 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             }
           } catch (_) {}
 
-          if (!isUserRemoved) {
-            try {
-              const resRemoved = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: syncHeaders });
-              if (resRemoved.ok) {
-                const rJson = await resRemoved.json();
-                const phones = rJson?.data?.phones || rJson?.phones;
-                if (Array.isArray(phones)) {
-                  localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
-                  if (phones.includes(userPhone)) {
-                    isUserRemoved = true;
-                  }
-                }
+          // 2026-10-23 第二十六轮：无条件拉服务端名单并以服务端为准。旧实现本地缓存命中
+          // 本人即判 removed 且跳过服务端拉取——服务端已解除的人在本地永远翻不了案。
+          // 拉取失败时才保留本地判定兜底。
+          try {
+            const resRemoved = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: syncHeaders });
+            if (resRemoved.ok) {
+              const rJson = await resRemoved.json();
+              const phones = rJson?.data?.phones || rJson?.phones;
+              if (Array.isArray(phones)) {
+                localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(phones));
+                isUserRemoved = phones.includes(userPhone);
               }
-            } catch (_) {}
-          }
+            }
+          } catch (_) {}
 
           if (isUserRemoved) {
             setIsSquadApprovedOrManagement(prev => (prev ? false : prev));
@@ -1497,10 +1507,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const hasActiveTripOrOrder = Boolean(
         (currentTrip && currentTrip.currentStatus !== 'idle' && currentTrip.currentStatus !== 'completed') ||
         activeOnlineOrder ||
-        (typeof window !== 'undefined' && (
-          localStorage.getItem('dd_current_trip') ||
-          localStorage.getItem('dd_current_order')
-        ))
+        (typeof window !== 'undefined' && hasLiveStoredTripOrOrder())
       );
 
       if (hasActiveTripOrOrder) {
@@ -1563,10 +1570,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const hasActive = Boolean(
         (currentTrip && currentTrip.currentStatus !== 'idle' && currentTrip.currentStatus !== 'completed') ||
         activeOnlineOrder ||
-        (typeof window !== 'undefined' && (
-          localStorage.getItem('dd_current_trip') ||
-          localStorage.getItem('dd_current_order')
-        ))
+        (typeof window !== 'undefined' && hasLiveStoredTripOrOrder())
       );
       if (!hasActive) {
         executeDirectOffline('daily_559_expired_on_mount');
@@ -2695,7 +2699,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
         const unsub = onSnapshot(doc(db, 'merchant_orders', docId), (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            if (data?.status === 'cancelled' || data?.statusCategory === '已取消' || data?.statusCategory === '订单已取消') {
+            if (data?.status === 'cancelled' || data?.isCancelled === true || data?.statusCategory === '已取消' || data?.statusCategory === '订单已取消') {
               // 去重：同一订单只处理一次，避免5秒轮询导致语音无限循环
               const cancelKey = `cancel_merchant_${data?.orderId || data?.id || docId}_${data?.cancelTime || data?.timestamp || ''}`;
               if (handledCancelledOrderKeysRef.current.has(cancelKey)) return;
@@ -2768,7 +2772,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             String(o.orderNo || '').trim() === cid
           )
         );
-        if (match && (match.status === 'cancelled' || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
+        if (match && (match.status === 'cancelled' || match.isCancelled === true || match.statusCategory === '已取消' || match.statusCategory === '订单已取消')) {
           handleOrderCancelled(match);
           return;
         }
@@ -2782,7 +2786,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           if (res.ok) {
             const json = await res.json();
             if (json && json.data) {
-              if (json.data.status === 'cancelled' || json.data.statusCategory === '已取消') {
+              if (json.data.status === 'cancelled' || json.data.isCancelled === true || json.data.statusCategory === '已取消') {
                 handleOrderCancelled(json.data);
                 return;
               }
