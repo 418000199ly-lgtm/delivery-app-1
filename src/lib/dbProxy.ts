@@ -279,6 +279,10 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
   
   // Cache locally first for instant reactive response and local offline availability
   const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
+  // 第二十轮修复：记下写前缓存，服务端写入失败（返回 false）时回滚本地缓存——旧实现
+  // 失败也保留新值，配合 getDocs 的 30 秒防删保护，假数据会在列表里「假活」半分钟。
+  let prevCacheValue: string | null = null;
+  try { prevCacheValue = localStorage.getItem(cacheKey); } catch (_) {}
   try {
     if (isMerge) {
       const existing = localStorage.getItem(cacheKey);
@@ -323,7 +327,14 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
     if (isForbiddenError(err)) {
       throw err;
     }
-    console.warn('[dbProxy.setDoc] 网络错误，服务端写入失败（本地缓存已更新）:', (err as any)?.message || err);
+    try {
+      if (prevCacheValue !== null) localStorage.setItem(cacheKey, prevCacheValue);
+      else localStorage.removeItem(cacheKey);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('db_doc_updated', { detail: { col: docRef.collectionName, id: cleanId } }));
+      }
+    } catch (_) {}
+    console.warn('[dbProxy.setDoc] 网络错误，服务端写入失败（本地缓存已回滚）:', (err as any)?.message || err);
     return false;
   }
 }
@@ -449,6 +460,7 @@ export async function addDoc(collectionRef: any, data: any) {
 
     return { id: finalId };
   } catch (err) {
+    try { localStorage.removeItem(tempCacheKey); } catch (_) {}
     // M8修复：addDoc失败直接抛出，不再返回假id
     // P1-1修复 2026-10-19：403 只抛错不清 token
     if (isAuthError(err)) {

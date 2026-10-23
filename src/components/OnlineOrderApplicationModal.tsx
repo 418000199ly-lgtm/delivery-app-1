@@ -302,9 +302,10 @@ export default function OnlineOrderApplicationModal({
                 <h4 className="text-sm font-black text-red-800">❌ 审核未通过 (申请已被驳回)</h4>
                 
                 <div className="w-full bg-white/90 border border-red-200/50 rounded-xl p-3 text-left">
-                  <span className="text-[10px] font-black text-red-600 block mb-1">駁回原因 / 改进建议：</span>
+                  <span className="text-[10px] font-black text-red-600 block mb-1">驳回原因 / 改进建议：</span>
                   <p className="text-[11px] text-red-800 leading-relaxed font-bold">
-                    {onlineApp.rejectionReason || '原因：您提交的某一证件正面反射光太强、人像面部模糊或驾龄信息有误，无法认定资质。'}
+                    {/* 2026-10-23 第十五轮：删除编造兜底——旧文案在管理员未填原因时展示一段具体假原因（证件反光/人像模糊），司机误以为真；改为中性表述 */}
+                    {onlineApp.rejectionReason || '管理员未填写具体原因，请联系小队管理人员了解并按要求重新提交。'}
                   </p>
                 </div>
 

@@ -315,6 +315,7 @@ function normalizeApplicantsList(items: any[]): any[] {
     if (!key) return;
     if (['app-1', 'app-2', 'app-3'].includes(String(item.id || ''))) return;
     if (fullKey.toUpperCase().endsWith('A') || item.isMerchant || item.accountType === 'merchant') return;
+    if (String(item.id || '').trim().toUpperCase().endsWith('A')) return;
     if (key === '15509601222') return;
     map.set(key, {
       ...item,
@@ -950,8 +951,11 @@ export default function MobileDispatchValetOrder({
             rawApps = jsonApps.docs.map((d: any) => (d ? { id: d.id, phone: d.id, ...(d.data || {}) } : null)).filter(Boolean);
           }
         }
-        // 空数组也照常 setApplicants 清空；镜像写回统一由 [applicants] effect 负责
-        setApplicants(normalizeApplicantsList(rawApps));
+        // 2026-10-23 第十七轮：仅 HTTP 成功时才 setApplicants（成功且为空=真清空）；
+        // 非 2xx（401/403/500）保留旧 state，避免角标被一次失败响应清零跳动。
+        if (resApps.ok) {
+          setApplicants(normalizeApplicantsList(rawApps));
+        }
       } catch (_) {}
     };
 
@@ -1134,17 +1138,21 @@ export default function MobileDispatchValetOrder({
       if (appQr) {
         const baseUrl = getBaseApiUrl();
         const qrPayload = { id: targetPhone, phone: targetPhone, qrCode: appQr, wechatQrCode: appQr, updatedAt: Date.now() };
+        // 2026-10-23 第十五轮：审批附带的收款码回填是尽力而为，但失败不再无声——
+        // 汇总失败数打警告日志（收款码主通道由司机本人在设置里上传，那里失败有明确提示）。
+        let qrBackfillFails = 0;
         for (const colName of ['dispatch_qrs', 'dispatch_qrcodes']) {
           fetch(`${baseUrl}/api/db/set`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ collection: colName, docId: targetPhone, data: qrPayload })
-          }).catch(() => {});
+          }).then(r => { if (!r.ok) qrBackfillFails++; }).catch(() => { qrBackfillFails++; });
         }
         if (db) {
-          setDoc(doc(db, 'dispatch_qrs', targetPhone), qrPayload, { merge: true }).catch(() => {});
-          setDoc(doc(db, 'driver_users', targetPhone), { wechatQrCode: appQr, qrCode: appQr }, { merge: true }).catch(() => {});
+          setDoc(doc(db, 'dispatch_qrs', targetPhone), qrPayload, { merge: true }).then(ok => { if (!ok) qrBackfillFails++; }).catch(() => { qrBackfillFails++; });
+          setDoc(doc(db, 'driver_users', targetPhone), { wechatQrCode: appQr, qrCode: appQr }, { merge: true }).then(ok => { if (!ok) qrBackfillFails++; }).catch(() => { qrBackfillFails++; });
         }
+        setTimeout(() => { if (qrBackfillFails > 0) console.warn(`[QR回填] ${targetPhone} 收款码回填 ${qrBackfillFails} 路失败，司机可在设置里重新上传`); }, 1500);
       }
     } catch (_) {}
 
@@ -1492,17 +1500,9 @@ export default function MobileDispatchValetOrder({
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
       }
     } catch (_) {}
-    return [{
-      phone: '15509601222',
-      name: '吴彦祖',
-      drivingYears: 5,
-      isOnline: true,
-      isBusy: false,
-      role: '开发者司机',
-      onlineOrdersEnabled: true,
-      lastUpdatedTime: new Date().toLocaleTimeString(),
-      version: 'V2.0'
-    }];
+    // 2026-10-23 第十五轮：删除伪造种子——缓存为空时旧代码虚构一条「开发者在线且已开通
+    // 线上单」的记录，订阅失败时假象长期驻留派单台。无数据就空列表，等服务端订阅到达。
+    return [];
   });
   const [squadPhones, setSquadPhones] = useState<string[]>([]);
   const [squadMembers, setSquadMembers] = useState<any[]>(() => {
@@ -2094,14 +2094,13 @@ export default function MobileDispatchValetOrder({
           // （不再读 localStorage），这里是本页从服务端拿到 removed 名单的点，顺手同步进缓存供全页消费；
           // 空数组也同步（服务端清空时缓存同步清零）。
           if (Array.isArray(pList)) syncRemovedSquadPhones(pList);
-          if (Array.isArray(pList) && pList.length > 0) {
-            setRemovedMemberPhones(prev => {
-              const updated = Array.from(new Set([...prev, ...pList.map((p: any) => String(p).trim()).filter(Boolean)]));
-              try {
-                localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
-              } catch (_) {}
-              return updated;
-            });
+          if (Array.isArray(pList)) {
+            // 2026-10-23 第十七轮：精确同步（不再只增不减），与服务端名单严格一致。
+            const updated = pList.map((p: any) => String(p).trim()).filter(Boolean);
+            try {
+              localStorage.setItem('dd_removed_squad_phones_v2', JSON.stringify(updated));
+            } catch (_) {}
+            setRemovedMemberPhones(updated);
           }
         }
       } catch (_) {}
@@ -3789,6 +3788,23 @@ export default function MobileDispatchValetOrder({
           </button>
         </div>
 
+        {canReviewApplicants && (
+          <button
+            type="button"
+            onClick={() => setShowTeamManagementModal(true)}
+            className="relative px-2 py-1 rounded-lg text-xs font-semibold text-[#584235] hover:bg-black/5 flex items-center gap-1 border border-gray-200/80 cursor-pointer transition-all active:scale-95"
+            title="管理团队"
+          >
+            <Users className="w-3.5 h-3.5 text-[#ff7d00]" />
+            <span>管理团队</span>
+            {pendingApplicantCount > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-0.5 rounded-full bg-[#e02424] text-white text-[9px] font-bold flex items-center justify-center">
+                {pendingApplicantCount}
+              </span>
+            )}
+          </button>
+        )}
+
         <div className="flex items-center gap-1.5 shrink-0">
           <button 
             type="button"
@@ -4568,7 +4584,7 @@ export default function MobileDispatchValetOrder({
             // 严格识别：只有带有 'A' 尾缀的才是商户；未带 'A' 的 15509601222 才是开发者司机！
             const isMerchant = rawPhone.toUpperCase().endsWith('A');
             const isMaster = !isMerchant && cleanPhone === '15509601222';
-            const status = String(m.status || (isMaster ? '已通过' : '')).trim();
+            const status = String(m.status || m.approvalStatus || (isMaster ? '已通过' : '')).trim();
 
             // 只有审核通过的司机才进入成员列表！未审核或待审核绝不计入！
             if (isMaster || ['已通过', 'approved', '通过'].includes(status)) {
@@ -4598,6 +4614,8 @@ export default function MobileDispatchValetOrder({
                 role: memberRole,
                 phone: mapKey,
                 status: '已通过',
+                is_squad_member: 1,
+                inSquad: true,
                 approvedBy: m.approvedBy || '最高开发者',
                 approvedRole: m.approvedRole || '开发者司机',
                 avatarBg: isMaster ? 'bg-[#ffdbc8] text-[#311300]' : 'bg-[#e2e2e2] text-[#584235]',
@@ -5984,8 +6002,9 @@ export default function MobileDispatchValetOrder({
                       return mPhone === cleanPhone && (m.status === '已通过' || m.status === 'approved' || m.status === '通过' || !m.status);
                     });
 
-                    const isRejectedStatus = applicant.status === '已拒绝' && !isApprovedInSquad;
-                    const isPendingStatus = (applicant.status === '待审核' || applicant.status === 'pending' || applicant.status === '审核中') && !isApprovedInSquad;
+                    const effAppStatus = applicant.status || applicant.approvalStatus;
+                    const isRejectedStatus = effAppStatus === '已拒绝' && !isApprovedInSquad;
+                    const isPendingStatus = (effAppStatus === '待审核' || effAppStatus === 'pending' || effAppStatus === '审核中') && !isApprovedInSquad;
                     const curStatusCode = isRejectedStatus ? 'rejected' : isPendingStatus ? 'pending' : 'approved';
 
                     if (applicantFilterTab === 'approved' && curStatusCode !== 'approved') return false;
@@ -5993,7 +6012,7 @@ export default function MobileDispatchValetOrder({
                     if (applicantFilterTab === 'pending' && curStatusCode !== 'pending') return false;
 
                     if (isGeneric) {
-                      return isRejectedStatus;
+                      return isRejectedStatus || isPendingStatus;
                     }
                     return true;
                   })
@@ -6009,8 +6028,9 @@ export default function MobileDispatchValetOrder({
                       return mPhone === cleanPhone && (m.status === '已通过' || m.status === 'approved' || m.status === '通过' || !m.status);
                     });
 
-                    const isRejected = applicant.status === '已拒绝' && !isApprovedInSquad;
-                    const isPending = (applicant.status === '待审核' || applicant.status === 'pending' || applicant.status === '审核中') && !isApprovedInSquad;
+                    const effAppStatus2 = applicant.status || applicant.approvalStatus;
+                    const isRejected = effAppStatus2 === '已拒绝' && !isApprovedInSquad;
+                    const isPending = (effAppStatus2 === '待审核' || effAppStatus2 === 'pending' || effAppStatus2 === '审核中') && !isApprovedInSquad;
                     const currentStatus = isRejected ? '已拒绝' : isPending ? '待审核' : '已通过';
                     const showCopyBtn = currentStatus === '已通过' && !isSpecial155 && Boolean(cleanPhone);
 

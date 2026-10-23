@@ -406,7 +406,9 @@ export default function HomeView({
         if (!app) return;
         const rawKey = String(app.phone || app.id || '').trim();
         // 显式排除商户 A 后缀账号：去非数字后会与开发者同键，必须在清洗前排除
-        if (rawKey.toUpperCase().endsWith('A') || app.isMerchant || app.accountType === 'merchant') return;
+        if (rawKey.toUpperCase().endsWith('A') || String(app.id || '').trim().toUpperCase().endsWith('A') || app.isMerchant || app.accountType === 'merchant') return;
+        // 2026-10-23 第十七轮：开发者本人恒为常驻成员、不是待审批申请人（与派单台归一排除口径对齐）
+        if (rawKey.replace(/\D/g, '').trim() === DEVELOPER_PHONE) return;
         const phone = rawKey.replace(/\D/g, '').trim();
         const id = String(app.id || '').trim();
         const name = String(app.name || app.driverName || app.applicantName || '').trim();
@@ -1179,8 +1181,21 @@ export default function HomeView({
 
     // 2026-10-15 P1-1：大厅抢单前端接单授权检查（与服务端一致）
     if (!hasValidLicense((settings as any)?.licenseExpiry)) {
-      alert('⚠️ 您的接单授权已到期或未开通，无法抢单！请联系开发者充值接单授权。');
-      return;
+      // 2026-10-23 第十五轮：本地授权值可能滞后——管理员刚充值而本地未同步时会误拦。
+      // 先向服务端拉本人最新 licenseExpiry 再裁决；拉不到（离线）则维持拦截（抢单请求本身也会失败）。
+      let freshLicense: any = null;
+      try {
+        const myPhoneForLicense = String(userPhone || '').replace(/\D/g, '').trim();
+        const licRes = await fetch(`${getBaseApiUrl()}/api/db/get?col=driver_users&id=${encodeURIComponent(myPhoneForLicense)}`, { headers: { ...getAuthHeaders() } });
+        if (licRes.ok) {
+          const licJson = await licRes.json();
+          freshLicense = (licJson?.data || {}).licenseExpiry;
+        }
+      } catch (_) {}
+      if (!hasValidLicense(freshLicense)) {
+        alert('⚠️ 您的接单授权已到期或未开通，无法抢单！请联系开发者充值接单授权。');
+        return;
+      }
     }
 
     const savedLat = typeof window !== 'undefined' ? localStorage.getItem('dd_bg_driver_coords_lat') : null;
@@ -1896,9 +1911,16 @@ export default function HomeView({
           </div>
           <div className="space-y-1">
             <p className="text-xs font-bold text-[#5f5e5e] tracking-wider uppercase">详情说明</p>
-            <p className="text-sm text-[#1a1c1c] leading-normal font-medium">
-              请联系管理人员了解具体不符合项及整改建议。
-            </p>
+            {/* 2026-10-23 第十五轮：管理员填写了驳回原因时如实展示（此前 rejectionReason 已算出但无任何界面读取，被拒司机永远看不到原因） */}
+            {(myMembership as any)?.rejectionReason ? (
+              <p className="text-sm text-[#1a1c1c] leading-normal font-medium">
+                驳回原因：{String((myMembership as any).rejectionReason)}
+              </p>
+            ) : (
+              <p className="text-sm text-[#1a1c1c] leading-normal font-medium">
+                请联系管理人员了解具体不符合项及整改建议。
+              </p>
+            )}
           </div>
         </div>
 
@@ -2171,6 +2193,11 @@ export default function HomeView({
       // 之前只留开发者，导致每次同步都用仅含开发者申请的列表覆盖 dd_applicants_v2，
       // 当前用户的"待审核"申请被清空 → checkApprovalStatusRaw 找不到待审核 → 页面从审核中跳回表单。
       const syncCurPhone = getCurrentPhone();
+      // 2026-10-23 第十七轮：HTTP 路同样刷新角标快照 ref（全量服务端申请），
+      // 不再让首页待审批角标只能等 onSnapshot 轮询（审批后最长滞后 30 秒）。
+      try {
+        serverAppsSnapshotRef.current = apiApps.map((rawA: any) => (rawA?.data ? { id: rawA.id, phone: rawA.id, ...rawA.data } : rawA)).filter(Boolean);
+      } catch (_) {}
       apiApps.forEach(rawA => {
         const a = (rawA?.data && typeof rawA.data === 'object') ? { ...rawA.data, ...rawA, id: rawA.id || rawA.data?.id } : rawA;
         const p = String(a?.phone || a?.id || '').replace(/\D/g, '').trim();
@@ -2249,9 +2276,9 @@ export default function HomeView({
         }
         const name = String(m.name || m.driverName || '').trim();
         const st = String(m.status || m.approvalStatus || '').trim();
-        const isApproved = phone === DEVELOPER_PHONE || name === '吴彦祖' || ['已通过', 'approved', '通过'].includes(st);
+        const isApproved = phone === DEVELOPER_PHONE || ['已通过', 'approved', '通过'].includes(st);
 
-        if (phone === DEVELOPER_PHONE || name === '吴彦祖') {
+        if (phone === DEVELOPER_PHONE) {
           map.set(DEVELOPER_PHONE, {
             ...m,
             id: DEVELOPER_PHONE,
@@ -2529,7 +2556,9 @@ export default function HomeView({
                 name: resolveDriverRealName(curP, myApp.name || myApp.driverName || myApp.applicantName),
                 role: myApp.role || '普通司机',
                 userRole: myApp.role || '普通司机',
-                status: '已通过'
+                status: '已通过',
+                is_squad_member: 1,
+                inSquad: true
               };
               localStorage.setItem(`dd_squad_member_${curP}`, JSON.stringify(memberObj));
               setSquadMembers(prev => {
@@ -2578,7 +2607,7 @@ export default function HomeView({
           phone = docSnap.id;
         }
         const name = String(data?.name || data?.driverName || '').trim();
-        const st = String(data?.status || '').trim();
+        const st = String(data?.status || data?.approvalStatus || '').trim();
         const isApproved = phone === DEVELOPER_PHONE || ['已通过', 'approved', '通过'].includes(st);
 
         if (phone !== DEVELOPER_PHONE) {
@@ -6104,9 +6133,9 @@ export default function HomeView({
                     <h4 className="text-sm font-black text-red-800">❌ 审核未通过 (申请已被驳回)</h4>
                     
                     <div className="w-full bg-white/90 border border-red-200/50 rounded-xl p-3 text-left">
-                      <span className="text-[10px] font-black text-red-600 block mb-1">駁回原因 / 改进建议：</span>
+                      <span className="text-[10px] font-black text-red-600 block mb-1">驳回原因 / 改进建议：</span>
                       <p className="text-[11px] text-red-800 leading-relaxed font-bold">
-                        {onlineApp.rejectionReason || '原因：您提交的某一证件正面反射光太强、人像面部模糊或驾龄信息有误，无法认定资质。'}
+                        {onlineApp.rejectionReason || '管理员未填写具体原因，请联系小队管理人员了解并按要求重新提交。'}
                       </p>
                     </div>
 

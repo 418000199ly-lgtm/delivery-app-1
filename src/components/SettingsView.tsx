@@ -3,7 +3,7 @@ import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookma
 import { ChauffeurSettings, checkVipActive, checkVipActiveServerSynced } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
-import { MOCK_ALBUM_PHOTOS } from '../utils/mockImages';
+
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
 import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
@@ -276,12 +276,20 @@ export default function SettingsView({
 
         // 2026-10-18修：上传/删除必须用 localStorage 的登录号（source of truth），
         // 不用 React state 的 effectivePhone（退出重登后可能是过期值，导致 403 手机号对不上）
-        const targetPhone = (localStorage.getItem('dd_user_phone') || effectivePhone || (settings as any)?.phone || settings.phoneNumber || '').replace(/\D/g, '').trim();
-        if (targetPhone) {
+        // 2026-10-23 第十五轮：上传给服务端的 phone 必须用原始形态（商户号带 A 后缀）。
+        // 旧写法先 replace(/\D/g) 剥掉 A，服务端鉴权 rawPhone===authPhone（带 A）永不相等，
+        // 普通商户上传必然 403；且服务端按无 A 落盘成司机码、与同号司机串码。
+        // 本地键则双写原始形态+纯数字形态（各读取方口径不一，双写保兼容）。
+        const rawPhone = (localStorage.getItem('dd_user_phone') || effectivePhone || (settings as any)?.phone || settings.phoneNumber || '').trim();
+        const targetPhone = rawPhone.replace(/\D/g, '').trim();
+        if (rawPhone) {
           try {
-            localStorage.removeItem(`dd_qr_deleted_${targetPhone}`);
-            localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, cleanQr);
-            localStorage.setItem(`dd_dispatch_fee_qr_${targetPhone}`, cleanQr);
+            for (const k of new Set([rawPhone, targetPhone])) {
+              localStorage.removeItem(`dd_qr_deleted_${k}`);
+              localStorage.setItem(`dd_dispatch_wechat_qr_${k}`, cleanQr);
+              localStorage.setItem(`dd_dispatch_fee_qr_${k}`, cleanQr);
+              localStorage.setItem(`dd_user_wechat_clean_qr_${k}`, cleanQr);
+            }
             localStorage.setItem('dd_dispatch_wechat_qr', cleanQr);
             localStorage.setItem('dd_user_wechat_qr', cleanQr);
             localStorage.setItem('dd_user_wechat_clean_qr', cleanQr);
@@ -294,7 +302,7 @@ export default function SettingsView({
           fetch(`${baseUrl}/api/upload-wechat-qr`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ phone: targetPhone, imageBase64: cleanQr })
+            body: JSON.stringify({ phone: rawPhone, imageBase64: cleanQr })
           }).then(async (res) => {
             if (!res.ok) {
               let detail = '';
@@ -775,6 +783,15 @@ export default function SettingsView({
                         localStorage.removeItem(`dd_dispatch_wechat_qr_${currentPhone}`);
                         localStorage.removeItem(`dd_dispatch_fee_qr_${currentPhone}`);
                         localStorage.removeItem(`dd_user_wechat_clean_qr_${currentPhone}`);
+                        // 2026-10-23 第十五轮：上传侧历史版本按纯数字形态写过本地键，
+                        // 删除必须双形态同清，否则删后被残留键复活（A 后缀商户尤甚）。
+                        const digitsPhone = currentPhone.replace(/\D/g, '').trim();
+                        if (digitsPhone && digitsPhone !== currentPhone) {
+                          localStorage.setItem(`dd_qr_deleted_${digitsPhone}`, 'true');
+                          localStorage.removeItem(`dd_dispatch_wechat_qr_${digitsPhone}`);
+                          localStorage.removeItem(`dd_dispatch_fee_qr_${digitsPhone}`);
+                          localStorage.removeItem(`dd_user_wechat_clean_qr_${digitsPhone}`);
+                        }
                       }
                       localStorage.removeItem('dd_dispatch_wechat_qr');
                       localStorage.removeItem('dd_user_wechat_qr');
@@ -838,7 +855,7 @@ export default function SettingsView({
             onChange={handleAlipayFileChange} 
           />
 
-          {!isPhotoAlbumOpen ? (
+          {true && (
             /* SUB-VIEW 1: MY QR CODE OVERVIEW (Image 2 & 4 style) */
             <div className="flex-1 flex flex-col justify-between p-5 pb-3 overflow-y-auto select-none android-nav-safe-pb">
               
@@ -1000,7 +1017,12 @@ export default function SettingsView({
                       <button 
                         onClick={() => {
                           setIsBottomSheetOpen(false);
-                          setIsPhotoAlbumOpen(true);
+                          // 2026-10-23 第十五轮：原先打开的是内置假相册（演示图可被选作真收款码上传），改走真实文件选择
+                          if (selectedQrTab === 'wechat') {
+                            wechatInputRef.current?.click();
+                          } else {
+                            alipayInputRef.current?.click();
+                          }
                         }}
                         className="w-full py-4 text-center text-sm font-semibold text-gray-800 hover:bg-gray-50 transition-colors bg-white font-sans"
                       >
@@ -1019,127 +1041,6 @@ export default function SettingsView({
                   </div>
                 </div>
               )}
-
-            </div>
-          ) : (
-            /* SUB-VIEW 2: DYNAMIC WECHAT-STYLE PHOTO ALBUM (Image 3 style) */
-            <div className="flex-1 bg-[#121212] flex flex-col overflow-hidden text-white font-sans">
-              
-              {/* Top subheader bar */}
-              <div className="bg-[#1A1A1A] px-4 py-2 flex items-center justify-between border-b border-[#2C2C2C] shrink-0 text-xs text-gray-400">
-                <span className="font-bold flex items-center gap-1 text-gray-300">
-                  相机胶卷
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </span>
-                <span>微信相册 (8)</span>
-              </div>
-
-              {/* Photo album grid - 3 Columns (Exactly representing layout elements of Image 3) */}
-              <div className="flex-1 overflow-y-auto p-0.5 bg-[#121212]">
-                <div className="grid grid-cols-3 gap-0.5">
-                  {MOCK_ALBUM_PHOTOS.map((photo, index) => (
-                    <div 
-                      key={photo.id}
-                      onClick={async () => {
-                        // User selects the photo
-                        try {
-                          const selectedImgUrl = photo.dataUrl;
-                          const targetPhone = (localStorage.getItem('dd_user_phone') || effectivePhone || (settings as any)?.phone || settings.phoneNumber || '').replace(/\D/g, '').trim();
-                          
-                          if (selectedQrTab === 'wechat') {
-                            onUpdateSettings({ ...settings, wechatQrCode: selectedImgUrl });
-                            if (targetPhone) {
-                              try {
-                                localStorage.removeItem(`dd_qr_deleted_${targetPhone}`);
-                                localStorage.setItem(`dd_dispatch_wechat_qr_${targetPhone}`, selectedImgUrl);
-                                localStorage.setItem(`dd_dispatch_fee_qr_${targetPhone}`, selectedImgUrl);
-                                localStorage.setItem('dd_dispatch_wechat_qr', selectedImgUrl);
-                                localStorage.setItem('dd_user_wechat_qr', selectedImgUrl);
-                                localStorage.setItem('dd_user_wechat_clean_qr', selectedImgUrl);
-                                localStorage.setItem('dd_last_payment_qr', selectedImgUrl);
-                              } catch (_) {}
-
-                              const baseUrl = getBaseApiUrl();
-                              // 2026-10-21 第三轮：此前发完不管、失败也照常庆祝；改为等结果，失败明确提示
-                              const upRes = await fetch(`${baseUrl}/api/upload-wechat-qr`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-                                body: JSON.stringify({ phone: targetPhone, imageBase64: selectedImgUrl })
-                              }).catch(() => null);
-                              if (!upRes || !upRes.ok) {
-                                alert('⚠️ 微信收款码已保存在本机，但同步到服务器失败（代叫订单可能展示不到新码），请稍后在设置里重新上传');
-                              }
-                            }
-                          } else {
-                            onUpdateSettings({ ...settings, alipayQrCode: selectedImgUrl });
-                          }
-                          
-                          // Small customized log feedback
-                          if (index === 0) {
-                            alert('🎉 您已成功选择相册第一个二维码！\n系统已将其中的微信专属头像与加密标识自动抹除，并转换为高清无损的纯黑白二维码格式供页面展示。');
-                          } else {
-                            alert(`🎉 已选定 ${photo.name}，已自动抹除中间小图片和个人头像，转换为黑白二维码！`);
-                          }
-                        } catch (err) {
-                          if (selectedQrTab === 'wechat') {
-                            onUpdateSettings({ ...settings, wechatQrCode: photo.dataUrl });
-                          } else {
-                            onUpdateSettings({ ...settings, alipayQrCode: photo.dataUrl });
-                          }
-                        }
-                        
-                        setIsPhotoAlbumOpen(false);
-                      }}
-                      className="aspect-square relative overflow-hidden group cursor-pointer"
-                    >
-                      <img 
-                        src={photo.dataUrl} 
-                        alt={photo.name} 
-                        className="w-full h-full object-cover transition-transform group-hover:scale-105" 
-                      />
-
-                      {/* Small serial item badge index number mirroring Image 3 */}
-                      <div className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full border border-white/80 bg-black/45 hover:bg-teal-500/80 flex items-center justify-center text-[10px] font-bold text-white transition-all">
-                        {index === 0 ? '1' : index + 1}
-                      </div>
-
-                      {/* Detail metadata tags overlay on hover or active to make it gorgeous */}
-                      <div className="absolute bottom-0 inset-x-0 bg-black/70 py-1 px-1 text-center text-[8px] text-gray-300 font-mono scale-y-0 group-hover:scale-100 origin-bottom transition-all duration-150">
-                        {photo.name}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Photo Album bottom preview panel bar */}
-              <div className="bg-[#1A1A1A] h-12 border-t border-[#2C2C2C] px-4 flex items-center justify-between text-xs text-gray-400 shrink-0">
-                <button 
-                  onClick={() => {
-                    // Trigger real computer file selector inside album
-                    if (selectedQrTab === 'wechat') {
-                      wechatInputRef.current?.click();
-                    } else {
-                      alipayInputRef.current?.click();
-                    }
-                    setIsPhotoAlbumOpen(false);
-                  }}
-                  className="text-teal-400 hover:text-teal-300 font-semibold cursor-pointer"
-                >
-                  本地上传文件
-                </button>
-                <span className="text-[11px] text-gray-500 leading-normal font-sans">
-                  已选择 1 张卡片
-                </span>
-                <button 
-                  onClick={() => setIsPhotoAlbumOpen(false)}
-                  className="bg-[#07C160] text-white px-4 py-1.5 rounded-lg font-bold hover:bg-[#06a504] cursor-pointer"
-                >
-                  原图
-                </button>
-              </div>
 
             </div>
           )}

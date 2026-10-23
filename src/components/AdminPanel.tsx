@@ -369,6 +369,7 @@ export default function AdminPanel({
   // 其余司机照常刷新，不再整表冻结 10 秒。
   const savingExpiryGuardRef = useRef<Map<string, number>>(new Map());
   const lastAuthoritativeSavedExpiryRef = useRef<string | null>(null);
+  const lastAuthoritativeSavedAtRef = useRef<number>(0);
   const lastQueriedPhoneRef = useRef<string>('');
   const [allDrivers, setAllDrivers] = useState<any[]>(() => {
     try {
@@ -507,7 +508,16 @@ export default function AdminPanel({
       const next = { ...masterSwitchesRef.current, [key]: value };
       masterSwitchesRef.current = next;
       setMasterSwitches(next);
-      await setDoc(docRef, next, { merge: true });
+      // 2026-10-23 第十五轮：setDoc 网络失败返回 false 不抛错，此前裸 await 后无条件报成功。
+      const ok = await setDoc(docRef, next, { merge: true });
+      if (!ok) {
+        // 写失败回滚本地乐观状态，避免界面与服务端不一致
+        const back = { ...masterSwitchesRef.current, [key]: !value };
+        masterSwitchesRef.current = back;
+        setMasterSwitches(back);
+        triggerToast('⚠️ 开关保存失败：服务端未确认，请检查网络后重试');
+        return;
+      }
       triggerToast(`✨ 已成功${value ? '开启' : '关闭'}对应组件！`);
     } catch (err: any) {
       console.error("Error updating master switch:", err);
@@ -519,15 +529,24 @@ export default function AdminPanel({
   const updateAllMasterSwitches = async (value: boolean) => {
     try {
       const docRef = doc(db, 'config', 'master_switches');
+      const prev = masterSwitchesRef.current;
       const next = {
-        ...masterSwitchesRef.current,
+        ...prev,
         online_app_enabled: value,
         merchant_dispatch_enabled: value,
         squad_management_enabled: value
       };
       masterSwitchesRef.current = next;
       setMasterSwitches(next);
-      await setDoc(docRef, next, { merge: true });
+      // 2026-10-23 第十五轮：此前连失败都无任何提示；失败回滚到点击前状态并明确报错。
+      const ok = await setDoc(docRef, next, { merge: true });
+      if (!ok) {
+        masterSwitchesRef.current = prev;
+        setMasterSwitches(prev);
+        triggerToast('⚠️ 一键开关保存失败：服务端未确认，请检查网络后重试');
+        return;
+      }
+      triggerToast(`✨ 已成功一键${value ? '全开' : '全关'}！`);
     } catch (err: any) {
       console.error("Error updating all master switches:", err);
       alert(`操作失败：${err.message}`);
@@ -577,17 +596,22 @@ export default function AdminPanel({
     return () => unsubscribe();
   }, []);
 
-  const saveCityConfigsMap = async (newMap: Record<string, any>) => {
+  // 2026-10-23 第十五轮：返回写结果——setDoc 失败返回 false 不抛错，此前调用方一律无条件报成功。
+  const saveCityConfigsMap = async (newMap: Record<string, any>): Promise<boolean> => {
     setCityConfigs(newMap);
     localStorage.setItem('dd_city_configs_v2', JSON.stringify(newMap));
     window.dispatchEvent(new CustomEvent('cityConfigsUpdated', { detail: newMap }));
     if (db) {
       try {
-        await setDoc(doc(db, 'config', 'city_configs'), { configs: newMap }, { merge: true });
+        const ok = await setDoc(doc(db, 'config', 'city_configs'), { configs: newMap }, { merge: true });
+        if (!ok) console.error("Error saving city configs: setDoc returned false");
+        return ok;
       } catch (err) {
         console.error("Error saving city configs:", err);
+        return false;
       }
     }
+    return true;
   };
 
   const getCityConfig = (cityName: string) => {
@@ -622,8 +646,12 @@ export default function AdminPanel({
       ...cityConfigs,
       [norm]: updatedCity
     };
-    await saveCityConfigsMap(newMap);
+    const okSave = await saveCityConfigsMap(newMap);
     const label = key === 'online_app_enabled' ? '线上单开通' : key === 'merchant_dispatch_enabled' ? '商户代叫' : '小队管理';
+    if (!okSave) {
+      triggerToast('⚠️ 保存失败：服务端未确认，请检查网络后重试');
+      return;
+    }
     triggerToast(`✨ 已为 ${norm}市 ${value ? '开通' : '关闭'} ${label} 功能！`);
   };
 
@@ -653,19 +681,24 @@ export default function AdminPanel({
       ...cityConfigs,
       [norm]: updatedCity
     };
-    await saveCityConfigsMap(newMap);
+    const okSave = await saveCityConfigsMap(newMap);
 
     // Real-time sync with app's team_config and dispatch events
     localStorage.setItem('dd_dispatch_team_name', trimmed);
     localStorage.setItem('dd_team_config_name', trimmed);
     window.dispatchEvent(new Event('teamNameUpdated'));
+    let okTeam = true;
     if (db) {
       try {
-        await setDoc(doc(db, 'config', 'team_config'), { teamName: trimmed, updatedAt: new Date().toISOString() }, { merge: true });
-      } catch(e) {}
+        okTeam = await setDoc(doc(db, 'config', 'team_config'), { teamName: trimmed, updatedAt: new Date().toISOString() }, { merge: true });
+      } catch(e) { okTeam = false; }
     }
 
     setEditingSquadModal(null);
+    if (!okSave || !okTeam) {
+      triggerToast('⚠️ 小队名称保存失败：服务端未确认，请检查网络后重试');
+      return;
+    }
     triggerToast(`✨ 已成功${oldName ? '修改' : '添加'} ${norm}市 小队名称：${trimmed}`);
   };
 
@@ -684,7 +717,11 @@ export default function AdminPanel({
       ...cityConfigs,
       [norm]: updatedCity
     };
-    await saveCityConfigsMap(newMap);
+    const okSave = await saveCityConfigsMap(newMap);
+    if (!okSave) {
+      triggerToast('⚠️ 删除保存失败：服务端未确认，请检查网络后重试');
+      return;
+    }
     triggerToast(`🗑️ 已成功删除 ${norm}市 小队：${squadNameToDelete}`);
   };
 
@@ -965,8 +1002,9 @@ export default function AdminPanel({
     try {
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/db/list?col=merchant_accounts&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } }).then(r => r.json()).then(res => {
-        if (res && res.success && Array.isArray(res.data) && res.data.length > 0) {
-          setMerchantAccountsList(res.data);
+        const mRows = (res && (res.docs || res.list || res.data)) || [];
+        if (Array.isArray(mRows) && mRows.length > 0) {
+          setMerchantAccountsList(mRows.map((d: any) => (d && d.data ? { ...d.data, id: d.id } : d)));
         }
       }).catch(e => console.warn("[SilentCatch]", e?.message || e));
 
@@ -1055,7 +1093,7 @@ export default function AdminPanel({
         city: m.city || '银川市',
         vipExpiry: vExpiry,
         isOnline: Boolean(m.isOnline),
-        onlineOrdersEnabled: Boolean(m.onlineOrdersEnabled !== false),
+        onlineOrdersEnabled: Boolean(m.onlineOrdersEnabled === true || m.onlineOrdersEnabled === 'true'),
         isBanned: Boolean(m.isBanned),
         updatedAt: m.updatedAt || m.lastUpdatedTime || new Date().toISOString()
       });
@@ -1095,7 +1133,7 @@ export default function AdminPanel({
         city: a.city || existing.city || '银川市',
         vipExpiry: vExpiry,
         isOnline: Boolean(existing.isOnline),
-        onlineOrdersEnabled: Boolean(existing.onlineOrdersEnabled !== false),
+        onlineOrdersEnabled: Boolean(existing.onlineOrdersEnabled === true || existing.onlineOrdersEnabled === 'true'),
         isBanned: Boolean(existing.isBanned),
         updatedAt: a.updatedAt || existing.updatedAt || new Date().toISOString()
       });
@@ -1145,7 +1183,7 @@ export default function AdminPanel({
         isSquadMember: isActuallyInSquad,
         collection: isActuallyInSquad ? 'squad_members' : 'driver_users',
         isOnline: Boolean(du.isOnline),
-        onlineOrdersEnabled: Boolean(du.onlineOrdersEnabled !== false),
+        onlineOrdersEnabled: Boolean(du.onlineOrdersEnabled === true || du.onlineOrdersEnabled === 'true'),
         isBanned: Boolean(du.isBanned),
         updatedAt: du.updatedAt || existing.updatedAt || new Date().toISOString()
       });
@@ -1165,9 +1203,11 @@ export default function AdminPanel({
         is_squad_member: 1,
         collection: 'squad_members',
         city: '银川市',
-        vipExpiry: '永久有效',
-        isOnline: true,
-        onlineOrdersEnabled: true
+        // 2026-10-23 第十五轮：常驻行只保证「在册」，不再伪造权益/在线——旧默认
+        // vipExpiry=永久有效、isOnline=true、onlineOrdersEnabled=true 在数据缺失时冒充事实。
+        vipExpiry: '待开通',
+        isOnline: false,
+        onlineOrdersEnabled: false
       });
     }
 
@@ -1245,9 +1285,9 @@ export default function AdminPanel({
       city: existingDev.city || '银川市',
       vipExpiry: (existingDev.vipExpiry !== undefined && existingDev.vipExpiry !== null && existingDev.vipExpiry !== '')
         ? existingDev.vipExpiry
-        : '永久有效',
+        : '待开通',
       isOnline: Boolean(existingDev.isOnline),
-      onlineOrdersEnabled: Boolean(existingDev.onlineOrdersEnabled !== false),
+      onlineOrdersEnabled: Boolean(existingDev.onlineOrdersEnabled === true || existingDev.onlineOrdersEnabled === 'true'),
       isBanned: false
     });
 
@@ -1372,7 +1412,9 @@ export default function AdminPanel({
           ? data.vipExpiry
           : (squadData?.vipExpiry || appData?.vipExpiry || matchInAll?.vipExpiry || localSquadMember?.vipExpiry || localSettingsExpiry || '待开通');
 
-        if (lastAuthoritativeSavedExpiryRef.current) {
+        // 第二十轮修复：保存值只在 15 秒传播窗口内优先（防订阅旧值闪回）；窗口外一律
+        // 认服务端最新值——旧实现永久锁定本页保存过的值，他人改期后详情页永远显示旧值。
+        if (lastAuthoritativeSavedExpiryRef.current && (Date.now() - (lastAuthoritativeSavedAtRef.current || 0)) < 15000) {
           resolvedVip = lastAuthoritativeSavedExpiryRef.current;
         }
 
@@ -1386,9 +1428,9 @@ export default function AdminPanel({
           userRole: cleanPhone === DEVELOPER_PHONE ? '最高开发者' : (combined.role || combined.userRole || '普通司机'),
           city: combined.city || '银川市',
           vipExpiry: resolvedVip,
-          status: combined.status || '已通过',
+          status: combined.status || '未加入小队',
           isOnline: Boolean(combined.isOnline),
-          onlineOrdersEnabled: Boolean(combined.onlineOrdersEnabled !== false),
+          onlineOrdersEnabled: Boolean(combined.onlineOrdersEnabled === true || combined.onlineOrdersEnabled === 'true'),
           isBanned: Boolean(combined.isBanned),
           updatedAt: combined.updatedAt || new Date().toISOString()
         };
@@ -1758,6 +1800,7 @@ export default function AdminPanel({
       } catch (_) {}
       try {
         lastAuthoritativeSavedExpiryRef.current = rollbackSnapshot.prevAuthExpiry;
+        lastAuthoritativeSavedAtRef.current = Date.now();
         setTempExpiry(rollbackSnapshot.tempExpiry);
         setTempDays(rollbackSnapshot.tempDays);
         setDriverDoc(rollbackSnapshot.driverDoc);
@@ -1771,6 +1814,7 @@ export default function AdminPanel({
 
     // 1. Instantly lock and optimistically update all local UI states (0 millisecond lag, absolute rollback prevention)
     lastAuthoritativeSavedExpiryRef.current = finalExpiry;
+    lastAuthoritativeSavedAtRef.current = Date.now();
     isSavingExpiryRef.current = true;
     // 第六轮修复（A10）：登记单司机保护窗口（10 秒），订阅回调只保护这名司机，不再整表冻结
     savingExpiryGuardRef.current.set(cleanPhone, Date.now() + 10000);
@@ -1844,23 +1888,8 @@ export default function AdminPanel({
         }
       }
 
-      const mockDuKey = `mock_db_driver_users_${cleanPhone}`;
-      const cachedDu = localStorage.getItem(mockDuKey);
-      if (cachedDu) {
-        const parsed = JSON.parse(cachedDu);
-        parsed.vipExpiry = finalExpiry;
-        localStorage.setItem(mockDuKey, JSON.stringify(parsed));
-      } else {
-        localStorage.setItem(mockDuKey, JSON.stringify({ phone: cleanPhone, phoneNumber: cleanPhone, vipExpiry: finalExpiry }));
-      }
-
-      const mockSqKey = `mock_db_squad_members_${cleanPhone}`;
-      const cachedSq = localStorage.getItem(mockSqKey);
-      if (cachedSq) {
-        const parsed = JSON.parse(cachedSq);
-        parsed.vipExpiry = finalExpiry;
-        localStorage.setItem(mockSqKey, JSON.stringify(parsed));
-      }
+      // 2026-10-23 第十五轮：删除两处死写——原先往 mock_db_driver_users_*/mock_db_squad_members_*
+      // 写缓存，但 dbProxy 的实际缓存键带版本前缀（mock_db_v20261011a_…），这两处写完无人读。
 
       const savedSquad = JSON.parse(localStorage.getItem('dd_squad_members_v2') || '[]');
       if (Array.isArray(savedSquad)) {
@@ -2322,11 +2351,16 @@ export default function AdminPanel({
     }
     try {
       const docRef = doc(db, 'driver_users', trimmedPhone);
-      await setDoc(docRef, {
+      const okCity = await setDoc(docRef, {
         phoneNumber: trimmedPhone,
         city: newCity,
         updatedAt: new Date().toISOString()
       }, { merge: true });
+      // 2026-10-23 第十五轮：主写失败不再假报成功（此前裸 await 后无条件庆祝）。
+      if (!okCity) {
+        alert('⚠️ 城市修改未成功：服务端未确认，请检查网络后重试');
+        return;
+      }
 
       // Also keep the city field inside the online_applications collection in sync if a document exists
       // 第六轮修复（A6）：先查文档是否存在，不存在就跳过——旧实现无条件 setDoc merge，
@@ -2360,14 +2394,19 @@ export default function AdminPanel({
       async () => {
         try {
           // 1. Delete application
-          await deleteDoc(doc(db, 'online_applications', trimmedPhone));
+          const okDel = await deleteDoc(doc(db, 'online_applications', trimmedPhone));
           // 2. Set driver_users settings
-          await setDoc(doc(db, 'driver_users', trimmedPhone), {
+          const okSet = await setDoc(doc(db, 'driver_users', trimmedPhone), {
             onlineOrdersEnabled: false,
             city: '',
             isBanned: false, // reset ban status too
             updatedAt: new Date().toISOString()
           }, { merge: true });
+          // 2026-10-23 第十五轮：deleteDoc/setDoc 失败返回 false 不抛错，此前无条件报成功。
+          if (!okDel || !okSet) {
+            alert('⚠️ 离职办理未完全成功：服务端未确认全部写入，请检查网络后重试');
+            return;
+          }
           triggerToast(`🎉 已经成功为司机 ${trimmedPhone} 办理离职手续！`);
         } catch (e: any) {
           alert('办理离职失败: ' + e.message);
@@ -2389,10 +2428,15 @@ export default function AdminPanel({
       async () => {
         try {
           const nextBanStatus = !currentBanStatus;
-          await setDoc(doc(db, 'driver_users', trimmedPhone), {
+          const okBan = await setDoc(doc(db, 'driver_users', trimmedPhone), {
             isBanned: nextBanStatus,
             updatedAt: new Date().toISOString()
           }, { merge: true });
+          // 2026-10-23 第十五轮：验 setDoc 返回值，失败不再假报成功。
+          if (!okBan) {
+            alert(`⚠️ ${actionText}未成功：服务端未确认，请检查网络后重试`);
+            return;
+          }
           triggerToast(`🎉 司机账号已被成功【${actionText}】！`);
         } catch (e: any) {
           alert(`${actionText}失败: ` + e.message);
@@ -2423,7 +2467,11 @@ export default function AdminPanel({
         targetPhone: msgTarget === 'all' ? 'all' : phone,
         createdAt: new Date().toISOString(),
       };
-      await addDoc(collection(db, 'messages'), newMessage);
+      const okMsg = await addDoc(collection(db, 'messages'), newMessage);
+      if (!okMsg) {
+        triggerToast('❌ 消息发布失败: 服务端未确认，请检查网络后重试');
+        return;
+      }
       setMsgContent('');
       triggerToast('🎉 消息下发成功，手机客户端已实时同步推送！');
     } catch (e: any) {
@@ -2436,7 +2484,11 @@ export default function AdminPanel({
 
   const handleDeleteMessage = async (id: string) => {
     try {
-      await deleteDoc(doc(db, 'messages', id));
+      const okDelMsg = await deleteDoc(doc(db, 'messages', id));
+      if (!okDelMsg) {
+        triggerToast('❌ 撤回失败: 服务端未确认，请检查网络后重试');
+        return;
+      }
       triggerToast('🗑️ 系统通知消息已成功同步撤回并删除！');
     } catch (e: any) {
       console.error('物理撤回失败:', e);
@@ -4845,12 +4897,16 @@ export default function AdminPanel({
                         onClick={async () => {
                           try {
                             const docRef = doc(db, 'driver_users', targetPhone.trim());
-                            await setDoc(docRef, {
+                            const okCreate = await setDoc(docRef, {
                               phoneNumber: targetPhone.trim(),
                               phone: targetPhone.trim(),
                               vipExpiry: '待开通',
                               updatedAt: new Date().toISOString()
                             });
+                            if (!okCreate) {
+                              alert('⚠️ 开立账号未成功：服务端未确认，请检查网络后重试');
+                              return;
+                            }
                             triggerToast('🎉 司机账号档案已在云端档案库录入！');
                           } catch (err: any) {
                             alert('物理开立账号失败: ' + err.message);
@@ -5281,12 +5337,13 @@ export default function AdminPanel({
                         xianyuUrl: inputXianyuUrl.trim(),
                         updatedAt: new Date().toISOString()
                       };
-                      await setDoc(versionDocRef, vData);
+                      const okV1 = await setDoc(versionDocRef, vData);
                       
                       // Also save/update in history list
                       const historyDocRef = doc(db, 'version_history', inputVersion.trim());
-                      await setDoc(historyDocRef, vData);
+                      const okV2 = await setDoc(historyDocRef, vData);
 
+                      if (!okV1 || !okV2) { triggerToast('⚠️ 发布未完全成功：服务端未确认，请检查网络后重试'); setVersionSyncStatus('error'); return; }
                       triggerToast(`🚀 升级指令及配置发布成功！当前版本已强制锁定为 ${inputVersion}`);
                       setVersionSyncStatus('success');
                     } catch (err: any) {
@@ -5314,12 +5371,13 @@ export default function AdminPanel({
                         xianyuUrl: xianyu,
                         updatedAt: new Date().toISOString()
                       };
-                      await setDoc(versionDocRef, vData);
+                      const okV1 = await setDoc(versionDocRef, vData);
 
                       // Also save/update in history list
                       const historyDocRef = doc(db, 'version_history', v);
-                      await setDoc(historyDocRef, vData);
+                      const okV2 = await setDoc(historyDocRef, vData);
 
+                      if (!okV1 || !okV2) { triggerToast('⚠️ 操作未完全成功：服务端未确认，请检查网络后重试'); setVersionSyncStatus('error'); return; }
                       triggerToast(`✅ 降级降噪成功！当前版本 ${v} 已解除强制升级弹框`);
                       setVersionSyncStatus('success');
                     } catch (err: any) {
@@ -5348,12 +5406,13 @@ export default function AdminPanel({
                         xianyuUrl: inputXianyuUrl.trim(),
                         updatedAt: new Date().toISOString()
                       };
-                      await setDoc(versionDocRef, vData);
+                      const okV1 = await setDoc(versionDocRef, vData);
                       
                       // Also save/update in history list
                       const historyDocRef = doc(db, 'version_history', inputVersion.trim() || sysVersion);
-                      await setDoc(historyDocRef, vData);
+                      const okV2 = await setDoc(historyDocRef, vData);
 
+                      if (!okV1 || !okV2) { triggerToast('⚠️ 更新未完全成功：服务端未确认，请检查网络后重试'); setVersionSyncStatus('error'); return; }
                       triggerToast(`🔄 咸鱼购买网址一键实时同步更新成功！`);
                       setVersionSyncStatus('success');
                     } catch (err: any) {
@@ -5447,8 +5506,9 @@ export default function AdminPanel({
                                       xianyuUrl: item.xianyuUrl || inputXianyuUrl,
                                       updatedAt: now
                                     };
-                                    await setDoc(versionDocRef, vData);
-                                    await setDoc(doc(db, 'version_history', item.version), vData);
+                                    const okHV1 = await setDoc(versionDocRef, vData);
+                                    const okHV2 = await setDoc(doc(db, 'version_history', item.version), vData);
+                                    if (!okHV1 || !okHV2) { triggerToast('⚠️ 操作未完全成功：服务端未确认，请检查网络后重试'); return; }
                                     
                                     triggerToast(`🚀 已将版本 ${item.version} 升级为当前强更版本！`);
                                     setVersionSyncStatus('success');
@@ -5482,8 +5542,9 @@ export default function AdminPanel({
                                       xianyuUrl: item.xianyuUrl || inputXianyuUrl,
                                       updatedAt: now
                                     };
-                                    await setDoc(versionDocRef, vData);
-                                    await setDoc(doc(db, 'version_history', item.version), vData);
+                                    const okHV1 = await setDoc(versionDocRef, vData);
+                                    const okHV2 = await setDoc(doc(db, 'version_history', item.version), vData);
+                                    if (!okHV1 || !okHV2) { triggerToast('⚠️ 操作未完全成功：服务端未确认，请检查网络后重试'); return; }
                                     
                                     triggerToast(`✅ 已将版本 ${item.version} 降级并解除强制弹窗！`);
                                     setVersionSyncStatus('success');
@@ -5512,7 +5573,8 @@ export default function AdminPanel({
                                   }
                                   showConfirm('确认删除记录', `您确定要删除 ${item.version} 的版本记录吗？`, async () => {
                                     try {
-                                      await deleteDoc(doc(db, 'version_history', item.version));
+                                      const okDelV = await deleteDoc(doc(db, 'version_history', item.version));
+                                      if (!okDelV) { triggerToast('⚠️ 删除未成功：服务端未确认，请检查网络后重试'); return; }
                                       triggerToast(`🗑️ 成功删除 ${item.version} 的历史记录`);
                                     } catch (err: any) {
                                       triggerToast(`删除失败：${err.message || err}`);
@@ -6520,8 +6582,9 @@ export default function AdminPanel({
                           const curr = getCityConfig(norm);
                           newMap[norm] = { ...curr, online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true };
                         });
-                        await saveCityConfigsMap(newMap);
+                        const okBulk = await saveCityConfigsMap(newMap);
                         await updateAllMasterSwitches(true);
+                        if (!okBulk) { triggerToast('⚠️ 城市配置保存失败：服务端未确认，请检查网络后重试'); return; }
                         triggerToast(`✨ 已成功一键开启中国大陆全部城市的 线上单、商户代叫 与 小队管理 功能！`);
                       }
                     }}
@@ -6540,7 +6603,8 @@ export default function AdminPanel({
                           newMap[norm] = { ...curr, online_app_enabled: true, merchant_dispatch_enabled: true, squad_management_enabled: true };
                         });
                         // 第四轮修复（P1-7）：等保存完成再弹成功，不许未落库先报喜
-                        await saveCityConfigsMap(newMap);
+                        const okBulk = await saveCityConfigsMap(newMap);
+                        if (!okBulk) { triggerToast('⚠️ 城市配置保存失败：服务端未确认，请检查网络后重试'); return; }
                         triggerToast(`✨ 已一键开启 ${filteredChinaCities.length} 个城市的全部功能！`);
                       }
                     }}
@@ -6559,7 +6623,8 @@ export default function AdminPanel({
                           newMap[norm] = { ...curr, online_app_enabled: false, merchant_dispatch_enabled: false, squad_management_enabled: false };
                         });
                         // 第四轮修复（P1-7）：等保存完成再弹成功，不许未落库先报喜
-                        await saveCityConfigsMap(newMap);
+                        const okBulk = await saveCityConfigsMap(newMap);
+                        if (!okBulk) { triggerToast('⚠️ 城市配置保存失败：服务端未确认，请检查网络后重试'); return; }
                         triggerToast(`🛑 已一键关闭 ${filteredChinaCities.length} 个城市的全部功能！`);
                       }
                     }}

@@ -3815,9 +3815,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           deviationMitigation: !!newSettings.deviationMitigation,
           deviationKm: newSettings.deviationKm ?? 1.0,
           deviationWaitSec: newSettings.deviationWaitSec ?? 30,
-          onlineOrdersEnabled: !!newSettings.onlineOrdersEnabled,
+          // 2026-10-23 第十五轮：onlineOrdersEnabled/isBanned 不再随设置回写上送——
+          // 二者是服务端审批/管理事实（服务端 STATE_FIELDS 本就剥离），客户端不做写源，
+          // 防剥离清单一旦回归即成自助开通/自助解封通道。
           city: newSettings.city || '',
-          isBanned: !!newSettings.isBanned,
           wechatQrCode: newSettings.wechatQrCode || '',
           qrCode: newSettings.wechatQrCode || '',
           updatedAt: new Date().toISOString()
@@ -3843,29 +3844,43 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             phone: userPhone,
             updatedAt: Date.now()
           };
-          setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+          // 2026-10-23 第十五轮：setDoc 失败返回 false 不抛错，此前只有 catch 兜底等于无声失败——
+          // 收款码没同步上服务器时其他司机解析到的仍是旧码，必须让用户可见。
+          setDoc(doc(db, 'dispatch_qrs', userPhone), qrPayload, { merge: true }).then((qrSyncOk) => {
+            if (!qrSyncOk) {
+              triggerToast('⚠️ 收款码同步到服务器失败，其他司机可能仍看到旧码，请检查网络后重新保存');
+            }
+          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
         } else {
           // Explicitly delete from server collections and disk
-          fetch(`${baseUrl}/api/delete-wechat-qr`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ phone: userPhone })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-          fetch(`${baseUrl}/api/db/delete`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ col: 'dispatch_qrs', id: userPhone })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-          fetch(`${baseUrl}/api/db/delete`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ col: 'dispatch_qrcodes', id: userPhone })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
-          fetch(`${baseUrl}/api/db/set`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-            body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: '', qrCode: '' }, merge: true })
-          }).catch(e => console.warn("[SilentCatch]", e?.message || e));
+          // 2026-10-23 第十五轮：四路删除此前全部 fire-and-forget，失败无声、旧码在服务器复活；
+          // 改为汇总结果，任一失败明确提示。
+          Promise.all([
+            fetch(`${baseUrl}/api/delete-wechat-qr`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify({ phone: userPhone })
+            }).catch(() => null),
+            fetch(`${baseUrl}/api/db/delete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify({ col: 'dispatch_qrs', id: userPhone })
+            }).catch(() => null),
+            fetch(`${baseUrl}/api/db/delete`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify({ col: 'dispatch_qrcodes', id: userPhone })
+            }).catch(() => null),
+            fetch(`${baseUrl}/api/db/set`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+              body: JSON.stringify({ collection: 'driver_users', docId: userPhone, data: { wechatQrCode: '', qrCode: '' }, merge: true })
+            }).catch(() => null)
+          ]).then((delResults) => {
+            if (delResults.some(r => !r || !r.ok)) {
+              triggerToast('⚠️ 收款码服务器删除未完全成功，旧码可能仍在服务器，请检查网络后重试删除');
+            }
+          });
         }
       }
     }
