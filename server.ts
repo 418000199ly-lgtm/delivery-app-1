@@ -6860,6 +6860,25 @@ function getClientIp(req: any): string {
         });
       }
 
+      // 2026-10-23 第二十七轮：终态订单的倒计时直接报关闭。此前已取消/已完成的单仍按
+      // dispatchedAt 继续算 60 秒倒计时（status 虽如实回 cancelled，但 isExpired=false、
+      // 秒数递减），只看秒数的消费方会误以为派单还活着。终态口径与占用守卫共用
+      // isTerminalOrderFact（status 终态集 ∪ isCancelled ∪ statusCategory）。
+      if (isTerminalOrderFact(targetOrder)) {
+        return res.json({
+          success: true,
+          orderId: targetOrder.id || orderId,
+          serverCountdown: 0,
+          dispatchCountdown: 0,
+          isExpired: true,
+          inHall: false,
+          status: targetOrder.status,
+          statusCategory: targetOrder.statusCategory,
+          isCancelled: targetOrder.isCancelled === true || targetOrder.status === 'cancelled',
+          serverTime: now
+        });
+      }
+
       const isClaimedOrActiveForDriver = Boolean(
         (targetOrder.claimedDriverPhone && driverPhone && targetOrder.claimedDriverPhone === driverPhone) ||
         (targetOrder.dispatchedDriverPhone && driverPhone && targetOrder.dispatchedDriverPhone === driverPhone) ||
