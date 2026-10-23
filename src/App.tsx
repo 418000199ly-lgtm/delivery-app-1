@@ -1103,6 +1103,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
     // 4. 定时轮询与事件监听，确保跨设备秒级同步
     const checkStatusSync = async () => {
+      // 2026-10-24 第四十二轮：同步节流（生产访问日志实证同一毫秒 3 份并发同查
+      // driver_users）：本函数被 2 秒定时器、窗口事件、切前台多路触发，入口设时间戳
+      // 门闩，1.5 秒内的重复触发直接跳过；首个调用同步占位，并发调用必然撞门闩。
+      const _syncGateNow = Date.now();
+      if (_syncGateNow - Number((window as any)._ddStatusSyncLastAt || 0) < 1500) return;
+      (window as any)._ddStatusSyncLastAt = _syncGateNow;
       try {
         const baseUrl = getBaseApiUrl();
         // 2026-10-16修复：/api/db/get 已加 requireDbAuth，轮询必须带 X-Auth-Token，
@@ -1302,7 +1308,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
     };
     window.addEventListener('visibilitychange', onVisibilityChange);
-    window.addEventListener('focus', checkStatusSync);
+    // 2026-10-24 第四十二轮续修6：focus 原先直调 checkStatusSync，绕过协调器——
+    // 切回前台时 visibilitychange 与 focus 先后触发，focus 这条让全套状态级联
+    // 在恢复瞬间立即开火（用户实测切回卡 1-2 秒、服务器 CPU 尖峰的主因之一）。
+    // 改与 visibilitychange 同 id 走协调器：两事件被去重合并为一次错峰执行。
+    const onFocusSync = () => {
+      scheduleResumeTask('app-check-status', 'normal', () => checkStatusSync());
+    };
+    window.addEventListener('focus', onFocusSync);
 
     const handleApprovedEvent = (e: any) => {
       const p = e?.detail?.phone;
@@ -1340,7 +1353,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       unsub3();
       clearInterval(syncInterval);
       window.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('focus', checkStatusSync);
+      window.removeEventListener('focus', onFocusSync);
       window.removeEventListener('squad_member_approved', handleApprovedEvent);
       window.removeEventListener('storage', checkStatusSync);
       window.removeEventListener('user_role_updated', handleRoleUpdateForApp);

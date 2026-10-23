@@ -145,29 +145,10 @@ export async function reportDriverBusyStatus(userPhone: string, isBusy: boolean,
         timestamp: Date.now()
       })
     }).catch(() => {});
-
-    // 同时写 DB 代理通用接口，确保持久层秒级同步
-    fetch(`${baseUrl}/api/db/set`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({
-        collection: 'driver_users',
-        docId: cleanPhone,
-        data: payload,
-        merge: true
-      })
-    }).catch(() => {});
-
-    fetch(`${baseUrl}/api/db/set`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
-      body: JSON.stringify({
-        collection: 'driver_locations',
-        docId: cleanPhone,
-        data: payload,
-        merge: true
-      })
-    }).catch(() => {});
+    // 2026-10-24 第四十二轮续修1：删除原先两笔裸 fetch /api/db/set——它们与上方
+    // dbProxy setDoc 是同一端点、同一 payload 的逐字重复（dbProxy setDoc 本身就走
+    // /api/db/set），纯属一事三办。保留 dbProxy 双写（带本地缓存与失败计数）与
+    // /api/driver/status 专用通道，忙闲事实落库口径不变。
   } catch (_) {}
 }
 
@@ -296,7 +277,6 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       activeOnlineOrder ||
       localStorage.getItem('dd_driver_status_is_busy') === 'true'
     );
-    const timestampIso = new Date().toISOString();
     const currentTodayOrders = Number(stats?.todayOrders || 0);
     const resolvedSelfName = resolveDriverRealName(userPhone, settings?.driverName, settings);
     const isGenericName = !resolvedSelfName || 
@@ -307,37 +287,13 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
       /^司机\d{4}$/.test(resolvedSelfName) || 
       resolvedSelfName === `司机${userPhone.slice(-4)}`;
 
-    const payload: any = {
-      phone: userPhone,
-      lat,
-      lng,
-      isOnline: true,
-      onlineOrdersEnabled: true,
-      isBusy: isDriverBusy,
-      currentView: currentView,
-      isInReportView: currentView === 'create_order',
-      todayOrders: currentTodayOrders,
-      city: city,
-      version: sysVersion,
-      appVersion: sysVersion,
-      lastUpdatedBy: methodUsed,
-      lastUpdatedTime: timestampIso,
-      lastLocationTime: Date.now()
-    };
-
-    if (!isGenericName) {
-      payload.driverName = resolvedSelfName;
-      payload.name = resolvedSelfName;
-    }
-
-    // 1. 异步更新各大集合（静默失败不阻塞）
+    // 2026-10-24 第四十二轮续修1：上报改 REST 单通道（原 payload 对象随双写一并删除）。
+    // 此前每次上报一发三写——dbProxy setDoc ×2（driver_users/driver_locations）+ REST
+    // 一次，而 REST 服务端本就双写两表（本轮又补齐 driver_users 的 MySQL MERGE_PATCH
+    // 与 currentView/isInReportView/lastUpdatedBy 透传字段），两笔 setDoc 纯属重复往返。
+    // 删除后每次上报省 2 个请求（400 司机当量约省 30-100 req/s）；GPS 健康指示改由
+    // REST 结果驱动（下方 fetch 的 .then 已挂 markGpsUploadSuccess）。
     markGpsUploadAttempt();
-    setDoc(doc(db, 'driver_users', userPhone), payload, { merge: true }).then(() => markGpsUploadSuccess()).catch(() => {});
-    setDoc(doc(db, 'driver_locations', userPhone), payload, { merge: true }).then(() => markGpsUploadSuccess()).catch(() => {});
-
-    // 2026-10-21 第二轮修复(P1)：定位不再合并写 squad_members（理由同状态同步处）。
-
-    // 2. 直连宝塔 REST 接口
     try {
       const baseUrl = getBaseApiUrl();
       fetch(`${baseUrl}/api/driver/location`, {
@@ -354,6 +310,9 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
           city: city,
           version: sysVersion,
           appVersion: sysVersion,
+          currentView: currentView,
+          isInReportView: currentView === 'create_order',
+          lastUpdatedBy: methodUsed,
           timestamp: Date.now()
         })
       }).then((r) => { if (r.ok) markGpsUploadSuccess(); }).catch(() => {});

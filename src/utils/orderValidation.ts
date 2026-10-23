@@ -137,6 +137,18 @@ export async function isOrderAlreadyEnded(order: any, userPhone?: string): Promi
           ) {
             return true;
           }
+          // 2026-10-24 第四十七轮：锁屏/后台期间派单已超时进大厅、或已改派他人时，
+          // 待接缓存（5 分钟有效）切回前台仍会走弹窗判定——远端核对补两条：
+          // 订单已进大厅、或派单司机已不是本人，一律按已完结处理，不再弹新来单页
+          // （该单可在选单大厅里正常抢，不走定向弹窗；本人仍是派单司机时不受影响）。
+          if (data.in_hall === true || dStatus === 'hall') {
+            return true;
+          }
+          const dDisp = (data.dispatchedDriverPhone || '').toString().replace(/\D/g, '');
+          const me = (userPhone || '').toString().replace(/\D/g, '');
+          if (dDisp && me && dDisp !== me) {
+            return true;
+          }
         }
       }
     } catch (_) {}

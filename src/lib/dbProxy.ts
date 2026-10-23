@@ -229,7 +229,43 @@ async function safeFetchWithTimeout(url: string, options: RequestInit = {}, time
 }
 
 // REST API Database Client Implementations
-export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
+// 2026-10-24 第四十二轮：读请求去重。生产访问日志实证：多个组件在同一毫秒并发拉取
+// 同一文档（同 _t 的 driver_users GET 一秒内出现 3 次）、集合订阅各自全量拉表，
+// 单台手机即打出每秒数十个请求，把服务端单核打满（node 64% CPU）。
+// 机制：同一 key 的读在 2 秒窗口内共享同一次网络请求（在途合并 + 短时复用）；
+// 写操作（set/update/delete）按集合失效相关读缓存，保证写后读不读到旧值。
+// 专用接口（claim/complete/dispatch 等）不经此层，不受影响。
+const _readCache = new Map<string, { at: number; promise: Promise<any> }>();
+const READ_DEDUPE_TTL_MS = 2000;
+function dedupedRead<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = _readCache.get(key);
+  if (hit && (now - hit.at) < READ_DEDUPE_TTL_MS) return hit.promise as Promise<T>;
+  const promise = fn();
+  _readCache.set(key, { at: now, promise });
+  promise.catch(() => {
+    const cur = _readCache.get(key);
+    if (cur && cur.promise === promise) _readCache.delete(key);
+  });
+  return promise;
+}
+function invalidateReadCache(colName: string, docId?: string) {
+  if (docId) _readCache.delete(`doc:${colName}:${docId}`);
+  for (const k of Array.from(_readCache.keys())) {
+    if (k.startsWith(`list:${colName}:`)) _readCache.delete(k);
+  }
+  // 第四十二轮续修5：本端写过的集合清增量状态，下一轮列表必走全量（防合并图过期）
+  for (const k of Array.from(_listIncr.keys())) {
+    if (k.startsWith(`${colName}|`)) _listIncr.delete(k);
+  }
+}
+
+export function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
+  const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
+  return dedupedRead(`doc:${docRef.collectionName}:${cleanId}`, () => getDocUncached(docRef));
+}
+
+async function getDocUncached(docRef: any): Promise<ProxyDocumentSnapshot> {
   const baseUrl = getBaseApiUrl();
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
   const url = `${baseUrl}/api/db/get?col=${encodeURIComponent(docRef.collectionName)}&id=${encodeURIComponent(cleanId)}&_t=${Date.now()}`;
@@ -287,6 +323,7 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
 }
 
 export async function setDoc(docRef: any, data: any, options?: { merge?: boolean }) {
+  invalidateReadCache(docRef.collectionName, String(docRef.id || '').replace(/\s+/g, '').trim());
   const baseUrl = getBaseApiUrl();
   const url = `${baseUrl}/api/db/set`;
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
@@ -355,6 +392,7 @@ export async function setDoc(docRef: any, data: any, options?: { merge?: boolean
 }
 
 export async function updateDoc(docRef: any, data: any) {
+  invalidateReadCache(docRef.collectionName, String(docRef.id || '').replace(/\s+/g, '').trim());
   const baseUrl = getBaseApiUrl();
   const url = `${baseUrl}/api/db/update`;
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
@@ -405,6 +443,7 @@ export async function updateDoc(docRef: any, data: any) {
 }
 
 export async function deleteDoc(docRef: any) {
+  invalidateReadCache(docRef.collectionName, String(docRef.id || '').replace(/\s+/g, '').trim());
   const baseUrl = getBaseApiUrl();
   const url = `${baseUrl}/api/db/delete`;
   const cleanId = String(docRef.id || '').replace(/\s+/g, '').trim();
@@ -443,6 +482,7 @@ export async function deleteDoc(docRef: any) {
 }
 
 export async function addDoc(collectionRef: any, data: any) {
+  invalidateReadCache(collectionRef.collectionName);
   const baseUrl = getBaseApiUrl();
   const url = `${baseUrl}/api/db/add`;
   const randomId = 'doc_' + Math.random().toString(36).substring(2, 11);
@@ -488,14 +528,42 @@ export async function addDoc(collectionRef: any, data: any) {
   }
 }
 
-export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot> {
+export function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot> {
+  const colName = queryRefOrColRef.collectionName;
+  const constraints = queryRefOrColRef.constraints || [];
+  const key = `list:${colName}:${constraints.length ? JSON.stringify(constraints) : ''}`;
+  return dedupedRead(key, () => getDocsUncached(queryRefOrColRef));
+}
+
+// 2026-10-24 第四十二轮续修5：列表增量订阅状态。此前 onSnapshot 轮询每次全量拉表
+// （driver_users 单表 94KB、5 秒一轮）。现改为：首次/每 60 秒全量（对账删除），
+// 其间带 since 水位只拉增量并按 id 合并。水位由服务端在响应 watermark 回传
+// （MySQL=max(updated_at)，JSON 模式=查询时刻）。状态按「集合+token 尾段」键控，
+// 换账号登录不会串上一个账号的合并结果；写操作经 invalidateReadCache 同步清状态，
+// 本端写完下一轮必走全量。
+const _listIncr = new Map<string, { byId: Map<string, any>; watermark: string | null; lastFullAt: number }>();
+const LIST_FULL_RECONCILE_MS = 60 * 1000;
+function listIncrKey(colName: string): string {
+  let tail = '';
+  try { tail = String(localStorage.getItem('dd_auth_token') || '').slice(-8); } catch (_) {}
+  return `${colName}|${tail}`;
+}
+
+async function getDocsUncached(queryRefOrColRef: any): Promise<ProxyQuerySnapshot> {
   const baseUrl = getBaseApiUrl();
   const colName = queryRefOrColRef.collectionName;
   const constraints = queryRefOrColRef.constraints || [];
-  
+  const useIncr = !constraints || constraints.length === 0;
+  const incrKey = listIncrKey(colName);
+  const incrState = useIncr ? _listIncr.get(incrKey) : undefined;
+  const wantFull = !useIncr || !incrState || !incrState.watermark || (Date.now() - incrState.lastFullAt >= LIST_FULL_RECONCILE_MS);
+
   let url = `${baseUrl}/api/db/list?col=${encodeURIComponent(colName)}`;
   if (constraints.length > 0) {
     url += `&constraints=${encodeURIComponent(JSON.stringify(constraints))}`;
+  }
+  if (!wantFull && incrState && incrState.watermark) {
+    url += `&since=${encodeURIComponent(incrState.watermark)}`;
   }
   // 2026-10-17：加时间戳 + no-store，防 304 命中旧缓存造成状态污染
   url += `${url.includes('?') ? '&' : '?'}_t=${Date.now()}`;
@@ -508,35 +576,57 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
       throw lErr;
     }
     const result = await res.json();
-    const docs = (result.docs || []).map((docItem: any) => {
+    let effectiveRawDocs: any[] = result.docs || [];
+    if (useIncr) {
+      if (wantFull) {
+        const byId = new Map<string, any>();
+        for (const d of effectiveRawDocs) { if (d && d.id) byId.set(String(d.id), d); }
+        _listIncr.set(incrKey, { byId, watermark: result.watermark || null, lastFullAt: Date.now() });
+      } else if (incrState) {
+        for (const d of effectiveRawDocs) { if (d && d.id) incrState.byId.set(String(d.id), d); }
+        if (result.watermark) incrState.watermark = result.watermark;
+        effectiveRawDocs = Array.from(incrState.byId.values());
+      }
+    }
+    const docs = effectiveRawDocs.map((docItem: any) => {
       return new ProxyDocumentSnapshot(docItem.id, docItem.data, true);
     });
 
     // Synchronize localStorage cache with authoritative server state:
     // Remove stale/deleted local keys that no longer exist on server for this collection,
     // but protect recently written local entries (< 30 seconds) to prevent flickering.
+    // 2026-10-24 第四十二轮续修6：整段缓存同步推迟到快照交付之后（setTimeout 0）。
+    // 此前它在 return 前同步执行——全量轮要把整表逐条 JSON.stringify 写进
+    // localStorage（driver_users 约 94KB），切回前台多个订阅同时完成时主线程
+    // 被这批同步写占满，表现为 1-2 秒点不动。缓存晚一个宏任务落盘不影响正确性
+    // （网络失败兜底读的是上一轮已落盘的缓存）。
+    const syncLocalCache = () => {
     try {
       if (!constraints || constraints.length === 0) {
-        const serverDocIds = new Set((result.docs || []).map((d: any) => String(d.id)));
-        const prefix = `mock_db_${DB_CACHE_VERSION}_${colName}_`;
-        const now = Date.now();
-        for (let i = localStorage.length - 1; i >= 0; i--) {
-          const key = localStorage.key(i);
-          if (key && key.startsWith(prefix)) {
-            const docId = key.substring(prefix.length);
-            if (!serverDocIds.has(docId)) {
-              try {
-                const cached = localStorage.getItem(key);
-                if (cached) {
-                  const parsed = JSON.parse(cached);
-                  const writeTime = Number(parsed._lastLocalWriteTime || parsed.timestamp || parsed.createdAt || 0);
-                  if (writeTime > 0 && (now - writeTime) < 30000) {
-                    // Do not remove recent local doc
-                    continue;
+        // 第四十二轮续修5：修剪（删本地已消失文档）只在全量轮做——增量轮的结果集
+        // 只是变更子集，拿它当全集修剪会把未变更文档误判为已删除。
+        if (wantFull) {
+          const serverDocIds = new Set((result.docs || []).map((d: any) => String(d.id)));
+          const prefix = `mock_db_${DB_CACHE_VERSION}_${colName}_`;
+          const now = Date.now();
+          for (let i = localStorage.length - 1; i >= 0; i--) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(prefix)) {
+              const docId = key.substring(prefix.length);
+              if (!serverDocIds.has(docId)) {
+                try {
+                  const cached = localStorage.getItem(key);
+                  if (cached) {
+                    const parsed = JSON.parse(cached);
+                    const writeTime = Number(parsed._lastLocalWriteTime || parsed.timestamp || parsed.createdAt || 0);
+                    if (writeTime > 0 && (now - writeTime) < 30000) {
+                      // Do not remove recent local doc
+                      continue;
+                    }
                   }
-                }
-              } catch (_) {}
-              localStorage.removeItem(key);
+                } catch (_) {}
+                localStorage.removeItem(key);
+              }
             }
           }
         }
@@ -547,9 +637,13 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
         });
       }
     } catch (_) {}
+    };
+    setTimeout(syncLocalCache, 0);
 
     return new ProxyQuerySnapshot(docs);
   } catch (err) {
+    // 第四十二轮续修5：增量轮失败即弃状态，下一轮回到全量，防坏水位卡住增量链
+    if (useIncr && !wantFull) _listIncr.delete(incrKey);
     // 2026-10-17根治：401/403 是鉴权失败，不是"空集合"，必须清 token 并抛出，
     // 绝不能回退本地旧缓存（否则 401 后 App 会用 stale 数据渲染，造成状态污染）。
     if (isAuthError(err)) {

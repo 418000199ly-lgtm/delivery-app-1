@@ -55,7 +55,7 @@ import {
   MoreVertical
 } from 'lucide-react';
 import { ChauffeurSettings, DriverStats, TripState, BillingRules, checkVipActive, DEFAULT_SLOTS } from '../types';
-import { reportDriverBusyStatus, isGpsUploadHealthy, msSinceLastGpsUpload } from '../utils/powerAndLocationManager';
+import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
 import DriverIllustration from './DriverIllustration';
 import DispatchValetOrder from './DispatchValetOrder';
 import OrderDetailModal from './OrderDetailModal';
@@ -346,22 +346,10 @@ export default function HomeView({
   };
 
   // --- Squad Management States (Declared first to avoid TDZ in role and squad helper functions) ---
-  // a1-a5修复：GPS 上报健康状态（服务端120秒看门狗踢下线后，App UI 需同步警告）
-  const [gpsUnhealthy, setGpsUnhealthy] = useState(false);
-  useEffect(() => {
-    if (!isOnline) { setGpsUnhealthy(false); return; }
-    const checkGps = () => {
-      try {
-        const healthy = isGpsUploadHealthy();
-        const msSince = msSinceLastGpsUpload();
-        // 超过90秒无成功上报即警告（服务端120秒踢下线，提前30秒预警）
-        setGpsUnhealthy(!healthy && msSince > 90000);
-      } catch (_) {}
-    };
-    checkGps();
-    const id = setInterval(checkGps, 10000);
-    return () => clearInterval(id);
-  }, [isOnline]);
+  // 2026-10-24 第四十四轮（用户明确要求）：GPS 警告横幅/红标彻底下线——显示层早在
+  // 51c8ee79 已移除，本次连残留的健康检查状态与 10 秒定时器一并删除，不再有任何
+  // GPS 警告 UI，也省掉无谓的周期 setState。上报健康函数保留在 powerAndLocationManager
+  // 供内部逻辑使用，不再驱动任何界面警告。
   const [squadMembers, setSquadMembers] = useState<any[]>(() => {
     const masterMember = { phone: DEVELOPER_PHONE, id: DEVELOPER_PHONE, name: '吴彦祖', role: '开发者司机', userRole: '开发者司机', status: '已通过', is_squad_member: 1, inSquad: true };
     try {
@@ -730,6 +718,8 @@ export default function HomeView({
   const hallClaimingRef = useRef(false);
   // 2026-10-23 第四十一轮：服务端名下订单对账领回——已领回过的订单 id（本会话内防重复领回）
   const adoptedClaimIdsRef = useRef<Set<string>>(new Set());
+  // 2026-10-24 第四十二轮：完单对账补发——已补发过的订单 id（本会话内防重复补发）
+  const completeRepairedRef = useRef<Set<string>>(new Set());
   const announcedOrderIdsRef = useRef<Set<string>>(new Set());
 
   // Auto-acquire real browser GPS on HomeView mount to ensure driver distance accuracy in hall
@@ -1153,6 +1143,51 @@ export default function HomeView({
       } catch (_) {}
     };
 
+    // 2026-10-24 第四十二轮：完单对账补发。结束行程时 App 调 /api/order/complete 是
+    // 单发不等结果的——请求若丢在网络里（生产 2026-10-23 晚实证同类丢失），本地行程已
+    // 结束、界面恢复空闲，但服务端订单仍是进行中、active_orders 占用不释放，之后的新单
+    // 派单会一直以「忙碌中」跳过该司机（表象=结束后再下单卡住）。快照里发现「归属我、
+    // 服务端仍进行中」的订单，而本机历史订单（dd_driver_orders，结束行程时先行写入、
+    // status=已支付）证明该单已在本机完结时，自动补发一次 complete 修复服务端状态。
+    // 本会话每单只补发一次；补发成功后下一帧快照该单即为已完成、条件自然消失。
+    const repairMyCompletedOrders = (allOrders: any[]) => {
+      try {
+        const myP = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '').trim();
+        if (!myP) return;
+        let history: any[] = [];
+        try { history = JSON.parse(localStorage.getItem('dd_driver_orders') || '[]'); } catch (_) {}
+        if (!Array.isArray(history) || history.length === 0) return;
+        const endedIds = new Set<string>();
+        for (const h of history) {
+          const st = String(h?.status || '');
+          const cat = String(h?.statusCategory || '');
+          if (st === '已支付' || cat === '已完成' || h?.isCompleted === true) {
+            for (const v of [h?.id, h?.orderId, h?.orderNo]) {
+              const s = String(v || '').trim();
+              if (s) endedIds.add(s);
+            }
+          }
+        }
+        if (endedIds.size === 0) return;
+        for (const o of allOrders) {
+          const claimedBy = String(o?.claimedDriverPhone || '').replace(/\D/g, '').trim();
+          const dispatchedTo = String(o?.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
+          if (claimedBy !== myP && dispatchedTo !== myP) continue;
+          const st = String(o?.status || '').toLowerCase();
+          if (!['claimed', 'accepted', 'taken', 'arrived', 'serving', 'dispatched'].includes(st)) continue;
+          if (o?.isCancelled === true || o?.cancelledAt) continue;
+          const oid = String(o?.id || o?.orderId || o?.orderNo || '').trim();
+          if (!oid || !endedIds.has(oid) || completeRepairedRef.current.has(oid)) continue;
+          completeRepairedRef.current.add(oid);
+          fetch(`${getBaseApiUrl()}/api/order/complete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+            body: JSON.stringify({ orderId: oid })
+          }).catch(() => {});
+        }
+      } catch (_) {}
+    };
+
     if (!db) return () => window.removeEventListener('merchant_orders_updated', handleOrdersUpdated);
     try {
       const q = collection(db, 'merchant_orders');
@@ -1228,6 +1263,8 @@ export default function HomeView({
         syncDriverOrdersWithMerchantData([...allMerchantOrders, ...localValid]);
         // 第四十一轮：名下进行中订单对账领回（抢单响应丢失等造成的「服务端有单、手机无行程」）
         reconcileMyClaimedOrder(allMerchantOrders);
+        // 第四十二轮：完单对账补发（complete 请求丢失造成的「本地已完单、服务端仍占用」）
+        repairMyCompletedOrders(allMerchantOrders);
       }, (err) => {
         console.warn("Error listening to merchant_orders in HomeView:", err);
       });
@@ -2269,15 +2306,25 @@ export default function HomeView({
 
   // 实时从后端 API 和云端同步最新的小队成员与申请数据
   const fetchLatestSquadData = async () => {
+    // 2026-10-24 第四十二轮：同步节流（同 App.checkStatusSync 口径）：多路触发时
+    // 3 秒内重复执行直接跳过，避免整套成员/申请/名单查询在同一毫秒并发重发。
+    const _squadGateNow = Date.now();
+    if (_squadGateNow - Number((window as any)._ddSquadSyncLastAt || 0) < 3000) return;
+    (window as any)._ddSquadSyncLastAt = _squadGateNow;
     try {
       const baseUrl = getBaseApiUrl();
 
       // 0. 拉取云端最新被删除小队成员名单
       // 2026-10-17：补 X-Auth-Token，否则裸请求 401（Nginx 日志已证实）
+      // 2026-10-24 第四十二轮：删除原 list?col=config 兜底——服务端按 H3 口径禁止整表读
+      // config（恒 403），且旧逻辑把「名单为空」误判为拉取失败，每轮同步都白打一次 403；
+      // 单文档 get 成功（哪怕名单为空）即为权威结果，失败才走下方 getDoc 缓存兜底。
       let cloudRemovedPhones: string[] = [];
+      let removedFetchOk = false;
       try {
         const resDirect = await fetch(`${baseUrl}/api/db/get?col=config&id=removed_squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (resDirect.ok) {
+          removedFetchOk = true;
           const json = await resDirect.json();
           const p = json?.data?.phones || json?.phones;
           if (Array.isArray(p)) {
@@ -2286,26 +2333,7 @@ export default function HomeView({
         }
       } catch (_) {}
 
-      if (cloudRemovedPhones.length === 0) {
-        try {
-          const resRemoved = await fetch(`${baseUrl}/api/db/list?col=config&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
-          if (resRemoved.ok) {
-            const raw = await resRemoved.json();
-            const list = Array.isArray(raw) ? raw : (raw?.docs || raw?.list || raw?.data || []);
-            if (Array.isArray(list)) {
-              const configObj = list.find((item: any) => item.id === 'removed_squad_members' || item.docId === 'removed_squad_members');
-              if (configObj) {
-                const p = configObj.phones || configObj.data?.phones;
-                if (Array.isArray(p)) {
-                  cloudRemovedPhones = p;
-                }
-              }
-            }
-          }
-        } catch (_) {}
-      }
-
-      if (cloudRemovedPhones.length === 0 && db) {
+      if (!removedFetchOk && db) {
         try {
           const snap = await getDoc(doc(db, 'config', 'removed_squad_members'));
           if (snap.exists() && Array.isArray(snap.data()?.phones)) {
