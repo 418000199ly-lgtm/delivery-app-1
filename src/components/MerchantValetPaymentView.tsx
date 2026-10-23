@@ -348,7 +348,9 @@ export default function MerchantValetPaymentView({
                     </span>
                   </>
                 ) : (
-                  <span className="text-base font-bold text-gray-500">金额以派单台设置为准</span>
+                  // 2026-10-23 用户定版：订单未带代叫费时不再显示「金额以派单台设置为准」，
+                  // 直接文字显示标准代叫费 12元（取代第四轮 P1-25 的占位口径，用户明确要求）
+                  <span className="text-3xl sm:text-4xl font-black text-[#1a1c1c] font-sans">12元</span>
                 )}
               </div>
 
