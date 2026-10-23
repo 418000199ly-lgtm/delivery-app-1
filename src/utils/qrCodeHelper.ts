@@ -23,6 +23,12 @@ export function formatQrUrl(url: string | undefined | null): string {
     const baseUrl = getBaseApiUrl();
     return `${baseUrl.replace(/\/$/, '')}/${trimmed}`;
   }
+  // 第四十轮：老集合里存的裸 base64（无 data: 前缀）直接当 img src 会是破图，
+  // 按文件头魔数补成 data URL（iVBOR=png、/9j/=jpeg）
+  if (trimmed.length >= 200 && /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) {
+    if (trimmed.startsWith('iVBOR')) return `data:image/png;base64,${trimmed}`;
+    if (trimmed.startsWith('/9j/')) return `data:image/jpeg;base64,${trimmed}`;
+  }
   return trimmed;
 }
 
@@ -413,7 +419,9 @@ export function useAuthenticatedQrUrl(rawUrl: string | undefined | null): string
         setUrl(objectUrl);
       } catch (e) {
         console.warn('[QR] 带鉴权加载收款码失败:', (e as any)?.message);
-        setUrl('');
+        // 第四十轮：已有一张图在显示时，单次拉取失败不许抹掉它（费用页站在乘客
+        // 面前收钱，闪断也不能变破图）；从未成功过才置空走占位渲染。
+        if (!prevBlobRef.current) setUrl('');
       }
     };
 

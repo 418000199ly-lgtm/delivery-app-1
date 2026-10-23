@@ -10907,6 +10907,60 @@ function getClientIp(req: any): string {
         return res.json({ success: true, url: `/uploads/qrs/${appFilename}?t=${stat.mtimeMs}`, channel: 'fallback' });
       }
 
+      // 2026-10-23 第四十轮：同一人双形态兜底——码只以商户 A 形态（*_web.png）存着、
+      // 代叫费页却按纯号+app 渠道来查时（商户在 App 内以管理员身份下单、订单
+      // merchantPhone 为纯号无 web 标记），主形态全查空会误报「QR not found」，
+      // 费用页据此把订单自带码一并清掉，二维码闪 2-3 秒后只剩 alt 文字（真机实测）。
+      // 此处按相同数字的另一形态再查一遍文件与集合（仅同人同号、不跨账号），命中即返回。
+      try {
+        const altPhone = phone.endsWith('A') ? phoneDigits : `${phoneDigits}A`;
+        const altIsWeb = !isWeb;
+        const altWebFile = `${altPhone}_web.png`;
+        const altAppFile = `${altPhone}.png`;
+        const altAppSpecific = `${altPhone}_app.png`;
+        const altCandidates: Array<[string, string]> = altIsWeb
+          ? [[qrcodesDir, altWebFile], [qrsDir, altWebFile], [qrcodesDir, altAppFile], [qrsDir, altAppFile]]
+          : [[qrcodesDir, altAppSpecific], [qrcodesDir, altAppFile], [qrsDir, altAppSpecific], [qrsDir, altAppFile]];
+        for (const [dir, fn] of altCandidates) {
+          const fp = path.join(dir, fn);
+          if (fs.existsSync(fp)) {
+            const stat = fs.statSync(fp);
+            const dirName = dir === qrsDir ? 'qrs' : 'qrcodes';
+            return res.json({ success: true, url: `/uploads/${dirName}/${fn}?t=${stat.mtimeMs}`, channel: altIsWeb ? 'web' : 'app' });
+          }
+        }
+        const altCols = altIsWeb
+          ? ['web_valet_qrs', 'dispatch_qrs_web', 'merchant_users', 'dispatch_qrs', 'dispatch_qrcodes', 'driver_users']
+          : ['app_valet_qrs', 'driver_users', 'dispatch_qrs', 'dispatch_qrcodes', 'web_valet_qrs', 'merchant_users'];
+        if (isMySQLEnabled && mysqlPool) {
+          for (const col of altCols) {
+            try {
+              const [rows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                [col, altPhone]
+              );
+              if (rows && rows.length > 0) {
+                const rowData = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+                const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
+                if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+                  return res.json({ success: true, url: foundQr, channel: altIsWeb ? 'web' : 'app' });
+                }
+              }
+            } catch (_) {}
+          }
+        }
+        if (!isMySQLEnabled || !mysqlPool) {
+          const dbDataAlt = readLocalJsonDb();
+          for (const col of altCols) {
+            const rowData = dbDataAlt[col]?.[altPhone];
+            const foundQr = rowData?.qrCode || rowData?.wechatQrCode || rowData?.wechatClean;
+            if (foundQr && typeof foundQr === 'string' && foundQr.trim()) {
+              return res.json({ success: true, url: foundQr, channel: altIsWeb ? 'web' : 'app' });
+            }
+          }
+        }
+      } catch (_) {}
+
       return res.json({ success: false, url: '', message: 'QR not found' });
     } catch (err: any) {
       console.error('[Server get-wechat-qr error]:', err);

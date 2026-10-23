@@ -87,7 +87,10 @@ export default function MerchantValetPaymentView({
         const orderIdParam = orderId ? `&orderId=${encodeURIComponent(String(orderId))}` : '';
         const res = await fetch(`${baseUrl}/api/get-wechat-qr?phone=${encodeURIComponent(targetMerchantPhone)}&channel=${isWebChannel ? 'web' : 'app'}${orderIdParam}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
         clearTimeout(timeoutId);
-        gotServerResponse = true;
+        // 第四十轮：只有 HTTP 200 才算服务端给出了确定答案；403/429/5xx 等错误响应
+        // 不许触发后续的「明确无码清码」逻辑，否则一次限流/鉴权抖动就把正在显示的
+        // 订单自带码抹掉（二维码闪后变 alt 文字）。
+        if (res.ok) gotServerResponse = true;
         if (res.ok) {
           const json = await res.json();
           if (isMounted && json?.success && json?.url && typeof json.url === 'string' && json.url.trim()) {
@@ -115,7 +118,7 @@ export default function MerchantValetPaymentView({
           const timeoutId = setTimeout(() => controller.abort(), 2000);
           const res = await fetch(`${baseUrl}/api/db/get?col=${colName}&id=${encodeURIComponent(targetMerchantPhone)}&_t=${timeToken}`, { cache: 'no-store', signal: controller.signal, headers: { ...getAuthHeaders() } });
           clearTimeout(timeoutId);
-          gotServerResponse = true;
+          if (res.ok) gotServerResponse = true;
           if (res.ok) {
             const json = await res.json();
             const foundQr = json?.data?.qrCode || json?.data?.wechatQrCode || json?.data?.wechatClean;
