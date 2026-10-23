@@ -1026,41 +1026,59 @@ async function getPendingDispatchForPhone(rawPhone: any, fresh = false): Promise
 // 为本人、未终态、未进大厅）的订单集合。isBusy 标志可被司机本人经通用写自清，
 // 派单/抢单守卫若只读标志，「一人多单」防线可从写侧击穿；订单事实不可自改。
 let _activeClaimedCache: { at: number; set: Set<string> } | null = null;
-async function getActiveClaimedDriverSet(): Promise<Set<string>> {
-  if (_activeClaimedCache && (Date.now() - _activeClaimedCache.at) < PENDING_DISPATCH_CACHE_TTL_MS) {
-    return _activeClaimedCache.set;
-  }
-  const set = new Set<string>();
-  const terminal = ['completed', '已完成', 'cancelled', '已取消', 'true_cancelled', 'true-cancelled', 'hall', 'expired'];
-  const consider = (o: any) => {
-    if (!o) return;
-    const claimed = String(o.claimedDriverPhone || '').replace(/\D/g, '').trim();
-    if (!claimed) return;
-    if (o.in_hall === true || o.in_hall === 'true') return;
-    if (terminal.includes(String(o.status || '').trim())) return;
-    set.add(claimed);
-  };
-  try {
-    const mo = readLocalJsonDb()?.['merchant_orders'] || {};
-    Object.keys(mo).forEach((k) => consider(mo[k]));
-  } catch (_) {}
+// 2026-10-23 第二十四轮：订单终态事实判定。终态不只看 status——取消/完成在多条写路径上
+// 以 isCancelled / statusCategory 为准落库（订单中心徽章、claim 预检、转单守卫都认这三者），
+// 占用守卫此前只认 status，分类已取消但 status 滞留 claimed 的单会被误判占用。
+function isTerminalOrderFact(o: any): boolean {
+  if (!o) return true;
+  const st = String(o.status || '').trim();
+  if (['completed', '已完成', 'cancelled', '已取消', 'true_cancelled', 'true-cancelled', 'hall', 'expired'].includes(st)) return true;
+  if (o.isCancelled === true || o.isCancelled === 'true') return true;
+  const cat = String(o.statusCategory || '');
+  if (cat.includes('已取消') || cat.includes('已完成')) return true;
+  return false;
+}
+
+// 2026-10-23 第二十四轮：订单事实的权威读取。MySQL 是唯一权威——JSON 镜像在并发
+// 全量覆写下会丢订单状态更新（生产实证：司机取消单只落进 MySQL、镜像仍停在 claimed，
+// 占用守卫按镜像误判「已有进行中的接单」，把唯一队员锁死、订单只能进大厅）。
+// MySQL 可用时只读 MySQL；未启用或查询失败才回退镜像，绝不双源并集。
+async function loadMerchantOrdersCanonical(): Promise<Array<[string, any]>> {
   if (isMySQLEnabled && mysqlPool) {
     try {
       const [rows]: any = await mysqlPool.query(
         'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
         ['merchant_orders']
       );
-      (rows || []).forEach((r: any) => {
-        try { consider(typeof r.data === 'string' ? JSON.parse(r.data) : r.data); } catch (_) {}
-      });
-    } catch (_) {}
+      return (rows || []).map((r: any) => [String(r.doc_id || ''), typeof r.data === 'string' ? parseStoredDoc(r.data) : r.data] as [string, any]);
+    } catch (_) { /* 查询失败回退镜像 */ }
   }
+  try {
+    const mo = readLocalJsonDb()?.['merchant_orders'] || {};
+    return Object.keys(mo).map((k) => [k, mo[k]] as [string, any]);
+  } catch (_) { return []; }
+}
+
+async function getActiveClaimedDriverSet(): Promise<Set<string>> {
+  if (_activeClaimedCache && (Date.now() - _activeClaimedCache.at) < PENDING_DISPATCH_CACHE_TTL_MS) {
+    return _activeClaimedCache.set;
+  }
+  const set = new Set<string>();
+  const consider = (o: any) => {
+    if (!o) return;
+    const claimed = String(o.claimedDriverPhone || '').replace(/\D/g, '').trim();
+    if (!claimed) return;
+    if (o.in_hall === true || o.in_hall === 'true') return;
+    if (isTerminalOrderFact(o)) return;
+    set.add(claimed);
+  };
+  const docs = await loadMerchantOrdersCanonical();
+  docs.forEach(([, o]) => consider(o));
   _activeClaimedCache = { at: Date.now(), set };
   return set;
 }
 
 async function findDriverActiveOrderId(phone: string, exceptOrderId: string): Promise<string | null> {
-  const terminal = ['completed', '已完成', 'cancelled', '已取消', 'true_cancelled', 'true-cancelled', 'hall', 'expired'];
   const consider = (docId: string, o: any): string | null => {
     if (!o) return null;
     const oid = String(docId || o.id || o.orderId || '');
@@ -1068,24 +1086,11 @@ async function findDriverActiveOrderId(phone: string, exceptOrderId: string): Pr
     const claimed = String(o.claimedDriverPhone || '').replace(/\D/g, '').trim();
     if (claimed !== phone) return null;
     if (o.in_hall === true || o.in_hall === 'true') return null;
-    if (terminal.includes(String(o.status || '').trim())) return null;
+    if (isTerminalOrderFact(o)) return null;
     return oid || 'unknown';
   };
-  try {
-    const mo = readLocalJsonDb()?.['merchant_orders'] || {};
-    for (const k of Object.keys(mo)) { const r = consider(k, mo[k]); if (r) return r; }
-  } catch (_) {}
-  if (isMySQLEnabled && mysqlPool) {
-    try {
-      const [rows]: any = await mysqlPool.query(
-        'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
-        ['merchant_orders']
-      );
-      for (const r of (rows || [])) {
-        try { const hit = consider(String(r.doc_id || ''), typeof r.data === 'string' ? JSON.parse(r.data) : r.data); if (hit) return hit; } catch (_) {}
-      }
-    } catch (_) {}
-  }
+  const docs = await loadMerchantOrdersCanonical();
+  for (const [k, o] of docs) { const r = consider(k, o); if (r) return r; }
   return null;
 }
 
@@ -9766,6 +9771,7 @@ function getClientIp(req: any): string {
           return res.status(409).json({ success: false, error: '订单尚未接单，无法完成' });
         }
         od.status = 'completed';
+        od.statusCategory = '已完成'; // 2026-10-23 第二十四轮：完单同步分类，防订单中心徽章永停「服务中」
         od.completedAt = now;
         od.updatedAt = now;
         // 2026-10-18修1：完单时存储司机端解析好的真实终点（名+坐标+里程），商户端/管理后台看终点才对得上
@@ -9838,6 +9844,7 @@ function getClientIp(req: any): string {
           return res.status(409).json({ success: false, error: '订单尚未接单，无法完成' });
         }
         od.status = 'completed';
+        od.statusCategory = '已完成'; // 2026-10-23 第二十四轮：完单同步分类，防订单中心徽章永停「服务中」
         od.completedAt = now;
         od.updatedAt = now;
         // 2026-10-18修1：完单时存储司机端解析好的真实终点（名+坐标+里程），商户端/管理后台看终点才对得上

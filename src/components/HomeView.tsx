@@ -1341,7 +1341,10 @@ export default function HomeView({
           return;
         }
         if (claimRes.status === 409) {
-          alert('⚠️ 该订单已被其他小队司机抢走！');
+          // 2026-10-23 第二十四轮：409 透出服务端真实原因（占用/未决派单/已拒单等），
+          // 此前一律误报「被抢走」，司机被占用守卫拦截时完全看不到真正原因。
+          const errJson = await claimRes.json().catch(() => null);
+          alert('⚠️ ' + (errJson?.error || '该订单已被其他小队司机抢走！'));
           // 刷新大厅列表，移除已抢单
           setHallOrders(prev => prev.filter(o => {
             const k = String(o.id || o.orderId || o.orderNo || '').trim();
