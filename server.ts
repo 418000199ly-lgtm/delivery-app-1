@@ -2002,7 +2002,10 @@ function getClientIp(req: any): string {
       const hasValidSince = sinceDate && !isNaN(sinceDate.getTime());
 
       // P1(2026-10-15)：敏感集合非管理员只能读自己的文档
-      const sensitiveCols = ['driver_users', 'squad_members', 'online_applications', 'driver_locations'];
+      const sensitiveCols = ['driver_users', 'squad_members', 'online_applications', 'driver_locations', 'passenger_links'];
+      // 2026-10-23 第三十四轮：passenger_links 一并纳入本人限定——文档键即司机手机号，
+      // 内含其乘客的手机号；此前整表对任何登录司机开放，可枚举全队乘客联系方式。
+      // 客户端只有按本人 doc 的单文档订阅，无整表消费方，收紧零影响。
       const isSensitive = sensitiveCols.includes(col);
       let forcedDocId: string | null = null;
       if (isSensitive && !isAdmin) {
@@ -2011,6 +2014,30 @@ function getClientIp(req: any): string {
         }
         forcedDocId = requesterPhone; // 强制只读本人
       }
+
+      // 2026-10-23 第三十四轮：订单列表的乘客手机号脱敏。db/list 对订单集合此前只拦
+      // removed 名单，任何登录司机都能整表拉到全部订单的乘客真实手机号（单文档 GET
+      // 早已按关联人 403，两个读口径不一致）。口径：工作人员（开发者/管理员/管理/
+      // 派单员）与订单关联人（商户/被派/接单/报单司机）看真号，其余一律打码——
+      // 大厅抢单不需要乘客号，接单后本人即成关联人、真号自动可见，App 流程不受影响。
+      const maskPhoneForList = (v: any): string => {
+        const digits = String(v || '').replace(/\D/g, '').trim();
+        if (!digits) return String(v || '');
+        if (digits.length < 7) return '****';
+        return digits.slice(0, 3) + '****' + digits.slice(-4);
+      };
+      const listStaff = isDevList || (req as any).isAdmin === true || (req as any).isManager === true || (req as any).isDispatcher === true;
+      const redactOrderPii = (doc: any) => {
+        if (listStaff || !doc) return;
+        const me = requesterPhone;
+        const involved = [doc.merchantPhone, doc.dispatchedDriverPhone, doc.claimedDriverPhone, doc.reporterPhone, doc.driverPhone]
+          .map((x: any) => String(x || '').replace(/\D/g, '').trim());
+        if (me && involved.includes(me)) return;
+        for (const f of ['passengerPhone', 'customerPhone', 'contactPhone', 'passengerTel', 'passengerMobile']) {
+          if (doc[f]) doc[f] = maskPhoneForList(doc[f]);
+          if (doc.data && doc.data[f]) doc.data[f] = maskPhoneForList(doc.data[f]);
+        }
+      };
 
       // P0(2026-10-16)：函数顶层统一初始化，MySQL 分支与 JSON 分支共用。
       // 修复生产运行时 ReferenceError：① dbData 在 MySQL 分支声明前使用（TDZ）；
@@ -2101,6 +2128,7 @@ function getClientIp(req: any): string {
               const t = Number(doc.timestamp || doc.createdAt || doc.dispatchedAt || 0);
               if (t > 0 && t <= clearedTimestamp) return false;
             }
+            if (isOrdersCol) redactOrderPii(doc);
             return true;
           });
 
@@ -2171,6 +2199,7 @@ function getClientIp(req: any): string {
           if (t > 0 && t <= clearedTimestamp) return false;
         }
 
+        if (isOrdersCol) redactOrderPii(doc);
         return true;
       });
 
@@ -4128,7 +4157,12 @@ function getClientIp(req: any): string {
             // 2026-10-23 第二十六轮：改与派单组装同口径——MySQL 有行整档为准，JSON 只补
             // MySQL 缺失的手机号。旧实现逐字段覆盖，镜像里陈旧的在线/忙碌/坐标会盖掉权威新值
             // （附近页显示已下线者在线、空闲者忙碌）。
-            if (!locations[k]) locations[k] = dbData.driver_locations[k];
+            // 2026-10-23 第三十三轮修复：必须浅拷贝，绝不把缓存原文对象放进响应组装——
+            // 下游脱敏（某师傅/手机号打码）与占用折叠（busyReason/isBusy）都是原地改字段，
+            // 引用共享会把打码结果永久写回内存数据库：真名变某师傅、phone 变打码号，
+            // 后续请求按真号匹配不上成员，附近名单塌缩到只剩查看者本人；刷盘后落盘成真。
+            // MySQL 分支的行是逐请求 JSON.parse 的新对象，安全；镜像分支此前是唯一引用口。
+            if (!locations[k]) locations[k] = { ...dbData.driver_locations[k] };
           }
         });
       }
@@ -4505,8 +4539,11 @@ function getClientIp(req: any): string {
       // Helper to check if driver has an active, in-progress order
       const hasActiveOrder = (phone: string): boolean => {
         const cleanPhone = String(phone).trim();
-        for (const orderId in merchantOrders) {
-          const order = merchantOrders[orderId];
+        // 2026-10-23 第三十三轮修复：loadMerchantOrdersCanonical 返回 [docId, order] 元组数组，
+        // 此前用 for...in 遍历数组只能拿到下标、order 恒为元组本身，dispatchedDriverPhone 恒
+        // undefined——在途单豁免自第二十五轮改权威源后实际失效，手持进行中订单的司机在
+        // 05:59 守护轮次会被直接下线。改与其它消费方同口径的元组解构遍历。
+        for (const [, order] of merchantOrders) {
           if (!order) continue;
           const assignedDriver = String(order.dispatchedDriverPhone || order.driverPhone || order.assignedDriver || '').trim();
           if (assignedDriver === cleanPhone) {
