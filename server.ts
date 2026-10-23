@@ -9781,6 +9781,17 @@ function getClientIp(req: any): string {
           }
         }
       } catch (_) {}
+      // 2026-10-23 第三十九轮：报单人不得抢回自己报单转单的订单。RT 派单环已排除
+      // 发起人（绝不派给自己），但大厅抢单口此前零校验：报单进大厅后报单人能在
+      // 自己大厅看到并抢回，绕过排除规则（且与报单弹窗「不会显示在您的选单大厅」
+      // 的承诺不符）。与派单环同口径，不设管理员豁免：报单人身份本身即排除事由。
+      try {
+        const hallOrderDocRt: any = await Promise.resolve(readCanonicalDocument('merchant_orders', cleanOrderId));
+        const reporterOfOrder = String(hallOrderDocRt?.reporterPhone || '').replace(/\D/g, '').trim();
+        if (reporterOfOrder && reporterOfOrder === cleanDriverPhone) {
+          return res.status(409).json({ success: false, error: '不能抢自己报单转单的订单' });
+        }
+      } catch (_) {}
       const now = Date.now();
       const claimData = {
         status: 'claimed',

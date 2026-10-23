@@ -842,6 +842,14 @@ export default function HomeView({
         } catch (_) {}
       }
 
+      // 2026-10-23 第三十九轮：自己报单转单的订单不进本人大厅（与报单弹窗
+      // 「不会显示在您的选单大厅中」的承诺一致；服务端抢单口已同步硬拦，
+      // 展示侧先行隐藏，免得司机点了才被拒）
+      const reporterOfOrder = String(data.reporterPhone || '').replace(/\D/g, '').trim();
+      if (myPhone && reporterOfOrder && reporterOfOrder === myPhone) {
+        return false;
+      }
+
       // 3. 检查是否有指派给其他司机且处于60秒强弹倒计时中的订单（若已超时60秒则自动开放给大厅抢单）
       const dispatchedPhone = String(data.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
       if (dispatchedPhone && st !== 'hall' && data.in_hall !== true) {
@@ -1333,6 +1341,21 @@ export default function HomeView({
       // Instantly remove claimed order from local hallOrders state so the hall view refreshes immediately
       setHallOrders(prev => prev.filter(o => o.id !== ord.id && o.orderId !== ord.id && o.orderNo !== ord.orderNo));
 
+      // 2026-10-23 视角深挖修复：抢单失败（403/服务器异常/网络）时把卡片还回大厅。
+      // 此前乐观移除后失败分支直接 return，该单在本机大厅凭空消失（快照无变化不会
+      // 再下发，要等其它订单变动或重进页面才恢复），接单授权 0 天的司机逐个点会把
+      // 整个大厅点空、还以为没单。409/410 是订单确已易主/取消，保持移除不还原。
+      const restoreHallCard = () => {
+        try {
+          setHallOrders(prev => {
+            const k = String(ord.id || ord.orderId || ord.orderNo || '').trim();
+            if (!k) return prev;
+            if (prev.some((o: any) => String(o.id || o.orderId || o.orderNo || '').trim() === k)) return prev;
+            return [ord, ...prev];
+          });
+        } catch (_) {}
+      };
+
       const claimUpdateData = {
         status: 'claimed',
         statusCategory: '已接单',
@@ -1363,6 +1386,7 @@ export default function HomeView({
           // 2026-10-15 P1-1：透出服务端error（区分授权到期/无权限等），而非写死文案
           const errJson = await claimRes.json().catch(() => null);
           alert('⚠️ ' + (errJson?.error || '仅小队正式成员可抢单，请先申请加入小队并通过审核！'));
+          restoreHallCard();
           return;
         }
         if (claimRes.status === 409) {
@@ -1388,11 +1412,13 @@ export default function HomeView({
         if (!claimRes.ok) {
           const errData = await claimRes.json().catch(() => ({}));
           alert(`⚠️ 抢单失败：${errData.error || '服务器异常，请重试'}`);
+          restoreHallCard();
           return;
         }
       } catch (e: any) {
         // 网络异常时不继续，避免撞单
         alert(`⚠️ 抢单请求失败：${e?.message || '网络异常'}，请检查网络后重试`);
+        restoreHallCard();
         return;
       }
 

@@ -242,12 +242,16 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
       throw qErr;
     }
     const result = await res.json();
-    if (result.exists && result.data) {
-      try {
-        const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
-        safeSetItem(cacheKey, JSON.stringify(result.data));
-      } catch (_) {}
-    }
+    try {
+      const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
+      if (result.exists && result.data) {
+        safeSetItem(cacheKey, JSON.stringify({ ...result.data, _cachedAt: Date.now() }));
+      } else {
+        // 2026-10-23 视角深挖修复：服务端明确「不存在」时清掉本地缓存，
+        // 让删除/驳回/移出在第一次成功轮询即永久生效，杜绝旧缓存复活。
+        localStorage.removeItem(cacheKey);
+      }
+    } catch (_) {}
     return new ProxyDocumentSnapshot(cleanId, result.data, result.exists);
   } catch (err: any) {
     // 2026-10-17根治：401/403 是鉴权失败，不是"无数据"，必须清 token 并抛出，
@@ -259,15 +263,26 @@ export async function getDoc(docRef: any): Promise<ProxyDocumentSnapshot> {
     if (isForbiddenError(err)) {
       throw err;
     }
-    // Secondary simulation fallback to guarantee absolute offline stability
-    const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
-    if (DRIVER_COLLECTIONS.includes(docRef.collectionName) && cleanId !== DEVELOPER_PHONE) {
-      return new ProxyDocumentSnapshot(cleanId, null, false);
-    }
+    // 2026-10-23 视角深挖修复（闪烁总根源）：旧实现对 squad_members 等司机集合在
+    // 网络失败时直接返回「文档不存在」，一次弱网抖动（隧道/地库/电梯/服务器重启）
+    // 就让成员状态翻假：大厅、接单授权徽章、报单转单按钮随 5 秒轮询成败横跳，
+    // 2026-10-16「已到期→几秒后恢复2天」、10-20「授权(0)一会显示一会不显示」皆源于此。
+    // 改为与其它集合一致的新鲜缓存兜底：10 分钟内的缓存（每次成功轮询都会刷新时间戳）
+    // 视为最后已知事实；服务端明确不存在时已清缓存（见成功路径），删除不会被复活；
+    // 一切接单动作仍由服务端二次验权，显示层短暂沿用旧值无安全后果。
     const cacheKey = `mock_db_${DB_CACHE_VERSION}_${docRef.collectionName}_${cleanId}`;
-    const cached = localStorage.getItem(cacheKey);
-    let parsed = cached ? JSON.parse(cached) : null;
-    return new ProxyDocumentSnapshot(cleanId, parsed, Boolean(parsed));
+    let parsed: any = null;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      parsed = cached ? JSON.parse(cached) : null;
+    } catch (_) { parsed = null; }
+    if (parsed) {
+      const stamp = Number(parsed._cachedAt || parsed._lastLocalWriteTime || 0);
+      if (!stamp || (Date.now() - stamp) < 10 * 60 * 1000) {
+        return new ProxyDocumentSnapshot(cleanId, parsed, true);
+      }
+    }
+    return new ProxyDocumentSnapshot(cleanId, null, false);
   }
 }
 
@@ -527,7 +542,7 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
         }
         (result.docs || []).forEach((d: any) => {
           if (d && d.id) {
-            localStorage.setItem(`mock_db_${DB_CACHE_VERSION}_${colName}_${d.id}`, JSON.stringify(d.data));
+            localStorage.setItem(`mock_db_${DB_CACHE_VERSION}_${colName}_${d.id}`, JSON.stringify({ ...(d.data || {}), _cachedAt: Date.now() }));
           }
         });
       }
@@ -546,16 +561,15 @@ export async function getDocs(queryRefOrColRef: any): Promise<ProxyQuerySnapshot
     }
     console.warn("Proxy DB Query falling back to local simulation:", err);
     // Sweep localStorage to retrieve matching cached documents
+    // 2026-10-23 视角深挖修复：旧实现对司机集合在网络失败时整表归零（跳过缓存），
+    // 小队名单/申请名单随弱网抖动整表闪没、闪现。与 getDoc 同口径改走缓存兜底；
+    // 成功路径的同步修剪仍负责删除已消失文档，口径不变。
     const docList: ProxyDocumentSnapshot[] = [];
-    const DRIVER_COLLECTIONS = ['squad_members', 'squad_applications', 'online_applications', 'driver_users', 'driver_locations'];
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key && key.startsWith(`mock_db_${DB_CACHE_VERSION}_${colName}_`)) {
           const docId = key.substring(`mock_db_${DB_CACHE_VERSION}_${colName}_`.length);
-          if (DRIVER_COLLECTIONS.includes(colName) && docId !== DEVELOPER_PHONE) {
-            continue;
-          }
           const cached = localStorage.getItem(key);
           if (cached) {
             docList.push(new ProxyDocumentSnapshot(docId, JSON.parse(cached), true));
