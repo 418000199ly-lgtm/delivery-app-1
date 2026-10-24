@@ -515,8 +515,13 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
         },
         (position, error) => {
           if (isDisposed || error || !position) return;
-          const nLat = position.latitude;
-          const nLng = position.longitude;
+          // 原生插件回的是 WGS-84 原始坐标，必须先转 GCJ-02 再参与节流判断与上报：
+          // 此前这里漏转，而 JS watchPosition 路径是转过的——两路共用同一节流状态
+          // 互相顶替，App 位置在真值与偏移约 400 米的 WGS 原始点之间反复横跳
+          // （用户 2026-10-24 录屏实证：附近页位置 错→真→错 停住、报单页被拉走）。
+          const nConverted = wgs84ToGcj02(position.longitude, position.latitude);
+          const nLat = nConverted.lat;
+          const nLng = nConverted.lng;
           if (!nLat || !nLng) return;
           const dist = lastReportedLat
             ? getDistanceMeters(lastReportedLat, lastReportedLng, nLat, nLng)
