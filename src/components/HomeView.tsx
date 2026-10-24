@@ -444,6 +444,21 @@ export default function HomeView({
     );
   };
 
+  // 2026-10-20 重建：本人小队状态只认服务端——统一模块订阅成员表/申请表/移除名单，
+  // 本地缓存不参与判定；申请三页与各成员门控都由这一个状态驱动（纯显示器）。
+  // 2026-10-24 修复（登录崩溃根因）：本状态原声明在文件后部（原 1687 行），而紧随其后的
+  // isDriverRemoved/isDriverInSquad 在渲染期就被 localRole 的 useState 初始化器调用
+  // （非开发者账号路径会读 myMembership）——声明未执行即被读，触发 TDZ
+  // 「Cannot access 'myMembership' before initialization」，普通司机登录必崩、
+  // 开发者因提前 return 永不触达。故将声明与订阅提前到两个判定函数之前。
+  const [myMembership, setMyMembership] = useState<SquadMembershipState | null>(null);
+  useEffect(() => {
+    const p = getCurrentPhone();
+    if (!p) { setMyMembership(null); return; }
+    const unsub = subscribeSquadMembership(p, (st) => setMyMembership(st));
+    return () => { try { unsub(); } catch (_) {} };
+  }, [userPhone]);
+
   const isDriverRemoved = (phoneToCheck?: string) => {
     const phone = (phoneToCheck || getCurrentPhone()).trim();
     if (!phone) return false;
@@ -1681,16 +1696,6 @@ export default function HomeView({
   const [applyRemarks, setApplyRemarks] = useState('');
   const [isSubmittingApply, setIsSubmittingApply] = useState(false);
   const [isReapplying, setIsReapplying] = useState(false);
-
-  // 2026-10-20 重建：本人小队状态只认服务端——统一模块订阅成员表/申请表/移除名单，
-  // 本地缓存不参与判定；申请三页与各成员门控都由这一个状态驱动（纯显示器）。
-  const [myMembership, setMyMembership] = useState<SquadMembershipState | null>(null);
-  useEffect(() => {
-    const p = getCurrentPhone();
-    if (!p) { setMyMembership(null); return; }
-    const unsub = subscribeSquadMembership(p, (st) => setMyMembership(st));
-    return () => { try { unsub(); } catch (_) {} };
-  }, [userPhone]);
 
   useEffect(() => {
     const p = getCurrentPhone();
