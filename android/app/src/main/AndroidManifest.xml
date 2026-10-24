@@ -44,6 +44,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- 2026-10-24：后台定位权限。插件清单不自带此声明，缺它时系统权限页只给
+         「仅使用期间允许/禁止」、不出现「始终允许」（用户安卓真机实报）。
+         声明后权限页出现「始终允许」，听单切后台/进程重启后仍可恢复上报。 -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 

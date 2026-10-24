@@ -710,6 +710,21 @@ export default function NearbyMapView({
   const activeMapDrivers = useMemo(() => {
     const cutoff0559Ms = getBeijing0559CutoffMs();
     const currentRenderedDrivers: any[] = [];
+    // 2026-10-24 根治「时间戳字段遮蔽」（与服务端 docLatestTimeMs 同口径）：
+    // 文档上多个时间字段只有部分被当前上报路径刷新，取新鲜度必须用全部字段
+    // 的最大值；旧的「首个非空字段」链会被陈旧字段遮蔽秒级新鲜的上报，
+    // 把在线司机误判过期（生产实证：对方正在上报却在本地图上消失）。
+    const latestTimeOf = (doc: any): number => {
+      if (!doc) return 0;
+      let m = 0;
+      for (const v of [doc.onlineSessionTime, doc.lastLocationTime, doc.locationTimestamp, doc.timestamp, doc.lastStatusUpdateTime, doc.lastUpdatedTime, doc.updatedAt]) {
+        if (v === undefined || v === null || v === '') continue;
+        const num = Number(v);
+        const n = isNaN(num) ? new Date(v as any).getTime() : num;
+        if (n > m) m = n;
+      }
+      return m;
+    };
 
     // 1. 当前司机本人 "我" (15509601222 或 登录司机)
     // 规则：地图上始终显示自己；上线显示绿色(或忙碌红色)，下线显示灰色的下线状态自己
@@ -747,7 +762,7 @@ export default function NearbyMapView({
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       const name = String(member.name || member.driverName || '').trim();
       if (!phone || isMeMember(phone, name) || removedPhones.includes(phone)) return;
-      const uploadTime = member.lastLocationTime || member.locationTimestamp || (member.lastUpdatedTime ? new Date(member.lastUpdatedTime).getTime() : 0);
+      const uploadTime = latestTimeOf(member); // 2026-10-24：全部时间字段最大值，防陈旧字段遮蔽
       const isExpired = uploadTime > 0 && uploadTime < cutoff0559Ms;
       const rawOnline = member.isOnline === undefined ? true : Boolean(member.isOnline === true || member.isOnline === 'true');
 
@@ -778,19 +793,11 @@ export default function NearbyMapView({
       const p = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       if (p) memberPhoneSet.add(p);
     });
-    // 定位时间字段与服务端 /api/driver/locations 的 cutoff 口径对齐（旧客户端链漏了
-    // onlineSessionTime/locationTimestamp/updatedAt，订阅路径下过期判定会失效）。
+    // 2026-10-24：与服务端同口径——新鲜度取全部时间字段最大值（见 latestTimeOf 注释），
+    // 不再用首个非空字段链（陈旧字段会遮蔽新鲜上报、误判过期）。
     const pickUploadTime = (loc: any, fallback: number): number => {
-      if (loc.onlineSessionTime) return Number(loc.onlineSessionTime);
-      if (loc.lastLocationTime) return Number(loc.lastLocationTime);
-      if (loc.locationTimestamp) return Number(loc.locationTimestamp);
-      if (loc.timestamp) return Number(loc.timestamp);
-      if (loc.lastUpdatedTime) return new Date(loc.lastUpdatedTime).getTime();
-      if (loc.updatedAt !== undefined && loc.updatedAt !== null && loc.updatedAt !== '') {
-        const n = Number(loc.updatedAt);
-        return isNaN(n) ? new Date(loc.updatedAt).getTime() : n;
-      }
-      return fallback;
+      const t = latestTimeOf(loc);
+      return t > 0 ? t : fallback;
     };
     Object.keys(realtimeLocations).forEach((phoneKey) => {
       const liveLoc = realtimeLocations[phoneKey];

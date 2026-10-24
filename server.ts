@@ -521,6 +521,32 @@ async function verifyPersistentToken(token: string): Promise<{ phone: string; sc
   return null;
 }
 
+// 2026-10-24 根治「时间戳字段遮蔽」（生产实证）：定位/成员文档上有多个时间字段，
+// 不同上报路径只刷新其中一部分——如 iPhone 当前上报路径只刷 locationTimestamp /
+// lastUpdatedTime，lastLocationTime 会冻结在旧值（生产开发者文档冻结于当日 05:58:47，
+// 仅比亚日 05:59 截止线早 13 秒）。凡新鲜度判定按「首个非空字段」取值者，都会被
+// 陈旧字段遮蔽秒级新鲜的其它字段，把正在上报的司机误判过期/离线（/api/driver/
+// locations 因此把开发者 isOnline 改成 false 回给普通成员，对方地图与小队列表
+// 默认不显示离线者，于是「对方在线却看不到他」，而对方的新号文档无陈旧字段、
+// 反向看一切正常，现象呈单向不对称）。统一口径：新鲜度 = 全部时间字段的最大值。
+function latestTimeMs(...vals: any[]): number {
+  let m = 0;
+  for (const v of vals) {
+    if (v === undefined || v === null || v === '') continue;
+    const num = Number(v);
+    const n = isNaN(num) ? new Date(v as any).getTime() : num;
+    if (n > m) m = n;
+  }
+  return m;
+}
+function docLatestTimeMs(doc: any): number {
+  if (!doc) return 0;
+  return latestTimeMs(
+    doc.onlineSessionTime, doc.lastLocationTime, doc.locationTimestamp,
+    doc.timestamp, doc.lastStatusUpdateTime, doc.lastUpdatedTime, doc.updatedAt
+  );
+}
+
 const DEVELOPER_PHONE_SERVER = '15509601222';
 
 // P1: 定时清理内存泄漏（verificationCodes/dispatchLogs/authTokens）
@@ -1425,7 +1451,7 @@ async function startServer() {
       for (const k of Object.keys(locs)) {
         const item = locs[k];
         if (!item || item.isOnline !== true) continue;
-        const t = Number(item.lastLocationTime || item.locationTimestamp || item.lastStatusUpdateTime || 0);
+        const t = docLatestTimeMs(item); // 2026-10-24：取全部时间字段最大值，防陈旧字段遮蔽新鲜上报误踢（见 docLatestTimeMs 注释）
         // M2修复：无时间戳(t<=0)按过期处理（fail-safe），幽灵司机不再永生
         if (now - t > GPS_OFFLINE_THRESHOLD_MS) {
           locs[k] = { ...item, isOnline: false, onlineOrdersEnabled: false, kickedOfflineAt: now, kickReason: 'gps_timeout_300s' };
@@ -4359,13 +4385,10 @@ function getClientIp(req: any): string {
       Object.keys(locations).forEach((k) => {
         const item = locations[k];
         if (item && (item.isOnline === true || item.isOnline === 'true')) {
-          let t = 0;
-          if (item.onlineSessionTime) t = Number(item.onlineSessionTime);
-          else if (item.lastLocationTime) t = Number(item.lastLocationTime);
-          else if (item.locationTimestamp) t = Number(item.locationTimestamp);
-          else if (item.lastUpdatedTime) t = new Date(item.lastUpdatedTime).getTime();
-          else if (item.updatedAt) t = new Date(item.updatedAt).getTime();
-          
+          // 2026-10-24：改取全部时间字段最大值（旧首个非空链被陈旧 lastLocationTime
+          // 遮蔽新鲜 locationTimestamp，生产开发者因此被回以 isOnline=false）。
+          const t = docLatestTimeMs(item);
+
           if (t > 0 && t < cutoffMs) {
             locations[k] = { ...item, isOnline: false, onlineOrdersEnabled: false };
           }
@@ -4726,13 +4749,13 @@ function getClientIp(req: any): string {
       //    MySQL 模式也要数十秒；配合 performServerOffline 的异步刷盘改动，整轮降到秒级。
       const expiredPhones: string[] = [];
       for (const phone of Array.from(onlineDriverPhones)) {
+        // 2026-10-24：三表 × 全部时间字段取最大值（旧实现逐表首个非空即停，
+        // 任一表里的陈旧字段都会遮蔽定位表的新鲜上报、把在线司机误判过期下线）。
         let driverOnlineTime = 0;
         for (const src of [driverUsers[phone], squadMembers[phone], driverLocations[phone]]) {
           if (!src) continue;
-          const t = Number((src as any).onlineSessionTime || (src as any).lastLocationTime || (src as any).locationTimestamp || 0)
-            || ((src as any).lastUpdatedTime ? new Date((src as any).lastUpdatedTime).getTime() : 0)
-            || ((src as any).updatedAt ? new Date((src as any).updatedAt).getTime() : 0);
-          if (t > 0) { driverOnlineTime = t; break; }
+          const t = docLatestTimeMs(src);
+          if (t > driverOnlineTime) driverOnlineTime = t;
         }
 
         const isExpired = is0559Time || (!driverOnlineTime || driverOnlineTime < cutoffMs);
@@ -10426,7 +10449,7 @@ function getClientIp(req: any): string {
           const la = Number(loc.lat ?? loc.latitude);
           const lo = Number(loc.lng ?? loc.longitude);
           if (isNaN(la) || isNaN(lo) || la === 0 || lo === 0) continue;
-          const updTs = Number(loc.locationTimestamp || loc.lastStatusUpdateTime || loc.lastLocationTime || 0);
+          const updTs = docLatestTimeMs(loc); // 2026-10-24：取全部时间字段最大值，防陈旧字段遮蔽新鲜上报（见 docLatestTimeMs 注释）
           // P0(2026-10-16)：字段名与 /api/dispatch/nearest 同口径。之前读 loc.timestamp/loc.updatedAt/loc.lastUpdate
           // 三个不存在的字段，updTs 恒为 0，所有候选人被跳过，报单转单实际从未派单成功过、全部进了大厅。
           // 2026-10-12修复：无时间戳按过期处理（M2规则），不再放行幽灵司机

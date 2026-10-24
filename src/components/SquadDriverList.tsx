@@ -602,6 +602,29 @@ export default function SquadDriverList({
 
     const cur6AmDay = getCurrent6AmDay();
 
+    // 2026-10-24 根治「时间戳字段遮蔽」（与服务端 docLatestTimeMs / 地图 latestTimeOf 同口径）：
+    // 新鲜度取全部时间字段最大值，不用首个非空字段链（陈旧字段会遮蔽新鲜上报）。
+    const latestTimeOf = (doc: any): number => {
+      if (!doc) return 0;
+      let m = 0;
+      for (const v of [doc.onlineSessionTime, doc.lastLocationTime, doc.locationTimestamp, doc.timestamp, doc.lastStatusUpdateTime, doc.lastUpdatedTime, doc.updatedAt]) {
+        if (v === undefined || v === null || v === '') continue;
+        const num = Number(v);
+        const n = isNaN(num) ? new Date(v as any).getTime() : num;
+        if (n > m) m = n;
+      }
+      return m;
+    };
+    // 无哈勃权限时服务端把他人定位的 phone/键脱敏为 139****0101 形式，清洗后只剩
+    // 7 位残号、与成员真号对不齐。按「前3****后4」的脱敏形式反查成员真号，
+    // 让实时定位能合并进成员候选（地图组件已有同款处理，本列表此前缺失，
+    // 导致无权限者列表里他人永远停留在成员文档的陈旧在线状态、看不到在线成员）。
+    const maskedToRealPhone = new Map<string, string>();
+    squadList.forEach((m: any) => {
+      const p = String(m?.phone || m?.id || '').replace(/\D/g, '').trim();
+      if (p.length === 11) maskedToRealPhone.set(`${p.slice(0, 3)}****${p.slice(-4)}`, p);
+    });
+
     squadList.forEach((member) => {
       const phone = String(member.phone || member.id || '').replace(/\D/g, '').trim();
       if (!phone || isMeMember(phone)) return;
@@ -612,14 +635,7 @@ export default function SquadDriverList({
 
       const rawName = String(member.name || member.driverName || '').trim();
       const realName = resolveDriverRealName(phone, rawName);
-      // 第六轮修复：时间字段与服务端 cutoff 口径对齐（补 lastLocationTime/locationTimestamp）
-      const memberLastUpdated = member.lastLocationTime
-        ? Number(member.lastLocationTime)
-        : (member.locationTimestamp
-          ? Number(member.locationTimestamp)
-          : (member.lastUpdatedTime
-            ? new Date(member.lastUpdatedTime).getTime()
-            : (member.timestamp ? Number(member.timestamp) : 0)));
+      const memberLastUpdated = latestTimeOf(member); // 2026-10-24：全部时间字段最大值
 
       const isFromToday = (member.lastResetDate && member.lastResetDate === cur6AmDay) ||
         (memberLastUpdated > 0 && new Date(memberLastUpdated - 6 * 3600 * 1000).toISOString().slice(0, 10) === cur6AmDay);
@@ -644,8 +660,18 @@ export default function SquadDriverList({
     Object.keys(realtimeLocations).forEach((phoneKey) => {
       const liveLoc = realtimeLocations[phoneKey];
       if (!liveLoc) return;
-      const phone = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
-      if (!phone || isMeMember(phone)) return;
+      const digits = String(liveLoc.phone || liveLoc.driverPhone || phoneKey || '').replace(/\D/g, '').trim();
+      if (!digits || isMeMember(digits)) return;
+      // 2026-10-24：脱敏条目（清洗后非 11 位）按脱敏形式反查成员真号再合并，
+      // 否则无哈勃权限者的列表永远合并不上他人的实时在线状态（见上方注释）。
+      let phone = digits;
+      if (digits.length !== 11) {
+        const maskedRaw = String(liveLoc.phone || phoneKey || '').replace(/#\d+$/, '').trim();
+        const real = maskedToRealPhone.get(maskedRaw);
+        if (!real) return;
+        phone = real;
+        if (isMeMember(phone)) return;
+      }
 
       const rawName = String(liveLoc.driverName || liveLoc.name || '').trim();
       const existing = candidateMap.get(phone);
@@ -653,20 +679,8 @@ export default function SquadDriverList({
       // 旧逻辑对陌生号默认 status:'已通过'，非成员/待审核司机有定位就会混进小队名单。
       if (!existing) return;
 
-      // 第六轮修复：时间字段与服务端 /api/driver/locations 的 cutoff 口径对齐
-      const uploadTimeVal = liveLoc.onlineSessionTime
-        ? Number(liveLoc.onlineSessionTime)
-        : (liveLoc.lastLocationTime
-          ? Number(liveLoc.lastLocationTime)
-          : (liveLoc.locationTimestamp
-            ? Number(liveLoc.locationTimestamp)
-            : (liveLoc.timestamp
-              ? Number(liveLoc.timestamp)
-              : (liveLoc.lastUpdatedTime
-                ? new Date(liveLoc.lastUpdatedTime).getTime()
-                : (liveLoc.updatedAt !== undefined && liveLoc.updatedAt !== null && liveLoc.updatedAt !== ''
-                  ? (isNaN(Number(liveLoc.updatedAt)) ? new Date(liveLoc.updatedAt).getTime() : Number(liveLoc.updatedAt))
-                  : (existing?.uploadTime || Date.now()))))));
+      // 2026-10-24：新鲜度取全部时间字段最大值（旧首个非空链会被陈旧字段遮蔽）
+      const uploadTimeVal = latestTimeOf(liveLoc) || existing?.uploadTime || Date.now();
 
       const isBusyVal = liveLoc.isBusy !== undefined
         ? Boolean(liveLoc.isBusy === true || liveLoc.isBusy === 'true')
