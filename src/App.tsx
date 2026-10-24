@@ -1129,28 +1129,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const uData = uJson.data;
                 if (uData?.vipExpiry !== undefined && uData?.vipExpiry !== null) {
                   const freshVip = String(uData.vipExpiry).trim();
-                  const lastLocalTime = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_time_${userPhone}`) : null;
-                  const isRecentLocalUpdate = lastLocalTime && (Date.now() - Number(lastLocalTime)) < 600000; // 10 min
-                  const localSavedVip = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_${userPhone}`) : null;
-
-                  if (isRecentLocalUpdate && localSavedVip && localSavedVip !== freshVip) {
-                    // Preserve recent local authoritative update
-                  } else {
-                    setSettings(prev => {
-                      if (prev.vipExpiry !== freshVip) {
-                        const updated = { ...prev, vipExpiry: freshVip };
-                        try {
-                          safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
-                          safeSetItem('dd_settings', JSON.stringify(updated));
-                          // 2026-10-22 第五轮 P2-10：同步留痕服务端 VIP 值，供 VIP 功能门禁优先采信
-                          safeSetItem(`dd_vip_expiry_${userPhone}`, freshVip);
-                          safeSetItem(`dd_vip_expiry_time_${userPhone}`, Date.now().toString());
-                        } catch (_) {}
-                        return updated;
-                      }
-                      return prev;
-                    });
-                  }
+                  // 2026-10-24 修复：删除 10 分钟本地保护（与接单授权 2026-10-17 的先例对齐）。
+                  // 旧逻辑：登录时轮询把服务端旧值（待开通）连同时间戳留痕，10 分钟内
+                  // 管理后台充值的新值因「与本地留痕不同」被持续拒绝——轮询明明已拿到
+                  // 新值（实验室实证 db/get 序列已翻新）却不采信，App 充值后最长
+                  // 10 分钟显示旧有效期（用户 2026-10-24 真机实报 15121904440）。
+                  // 服务端已是唯一权威（充值/兑换均先写服务端），本地保护只剩误杀。
+                  setSettings(prev => {
+                    if (prev.vipExpiry !== freshVip) {
+                      const updated = { ...prev, vipExpiry: freshVip };
+                      try {
+                        safeSetItem(`dd_settings_${userPhone}`, JSON.stringify(updated));
+                        safeSetItem('dd_settings', JSON.stringify(updated));
+                        // 2026-10-22 第五轮 P2-10：同步留痕服务端 VIP 值，供 VIP 功能门禁优先采信
+                        safeSetItem(`dd_vip_expiry_${userPhone}`, freshVip);
+                        safeSetItem(`dd_vip_expiry_time_${userPhone}`, Date.now().toString());
+                      } catch (_) {}
+                      return updated;
+                    }
+                    return prev;
+                  });
                 }
 
                 // P0(2026-10-15)：接单授权实时同步（与vipExpiry同逻辑，防充值后App不更新）
@@ -1879,13 +1877,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             const incomingVip = data.vipExpiry;
             if (incomingVip !== undefined && incomingVip !== null) {
               const freshVip = String(incomingVip).trim();
-              const lastLocalTime = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_time_${userPhone}`) : null;
-              const isRecentLocalUpdate = lastLocalTime && (Date.now() - Number(lastLocalTime)) < 600000; // 10 min window
-              const localSavedVip = typeof window !== 'undefined' ? localStorage.getItem(`dd_vip_expiry_${userPhone}`) : null;
-
-              if (isRecentLocalUpdate && localSavedVip && localSavedVip !== freshVip) {
-                // Ignore stale background snapshot when local authoritative update exists
-              } else if (prev.vipExpiry !== freshVip) {
+              // 2026-10-24 修复：同 checkStatusSync——删除 10 分钟本地保护，
+              // 服务端值直接采信（旧保护会把管理后台充值的新值压最长 10 分钟）。
+              if (prev.vipExpiry !== freshVip) {
                 nextSettings.vipExpiry = freshVip;
                 changed = true;
               }
