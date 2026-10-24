@@ -4,7 +4,7 @@
   "version": "1.0.2",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "NODE_ENV=development tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --banner:js=\"#!/usr/bin/env node\" --outfile=dist/server.cjs",
     "build:mobile": "vite build && python3 scripts/generate_mobile_assets.py && npx cap sync",
     "generate:assets": "python3 scripts/generate_mobile_assets.py",

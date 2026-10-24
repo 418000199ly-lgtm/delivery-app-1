@@ -198,10 +198,17 @@ function isVipActiveServer(vipExpiry: any): boolean {
     return false;
   }
 }
-// 北京时间今天日期字符串（2026-10-15 P0：非VIP每日2单用）
+// 北京时间业务日日期字符串（2026-10-15 P0：非VIP每日2单用）
+// 2026-10-24 第四十九轮口径修复：用户铁律为「每天凌晨6点自动刷新」，403 文案也承诺
+// 「明早6点自动恢复」，但原实现按自然日 00:00 切分——司机 23:30 用完 2 次、00:00 即恢复，
+// 一个业务夜可白嫖 4 次，与承诺不符。改为业务日锚点：北京时间减 6 小时后取日期
+// （00:00–05:59 仍属前一业务日）。本函数与下方 beijingDayStrOf 仅供两个限额计数器使用，
+// 改动面仅限非VIP限额口径，不影响任何展示统计。
 function getBeijingTodayStr(): string {
-  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
-  return now.toISOString().slice(0, 10);
+  return beijingDayStrOf(Date.now());
+}
+function beijingDayStrOf(tsMs: number): string {
+  return new Date(Number(tsMs) + 8 * 60 * 60 * 1000 - 6 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 // 统计司机今天（北京时间）完成的订单数（2026-10-15 P0）
 // 2026-10-17优化：之前 SELECT 全量 data 再 JSON.parse，订单多时阻塞事件循环导致派单卡死。
@@ -233,7 +240,7 @@ async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
           if (dPhone !== driverPhone) continue;
           const ts = r.completedAt || r.updatedAt || r.ts;
           if (!ts || ts === 'null') continue;
-          const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          const bjt = beijingDayStrOf(Number(ts));
           if (bjt === todayStr) count++;
         } catch (_) { /* skip bad row */ }
       }
@@ -246,7 +253,7 @@ async function countTodayCompletedOrders(driverPhone: string): Promise<number> {
         if (o.status !== 'completed') continue;
         const ts = o.completedAt || o.updatedAt || o.timestamp;
         if (!ts) continue;
-        const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const bjt = beijingDayStrOf(Number(ts));
         if (bjt === todayStr) count++;
       }
     }
@@ -286,7 +293,7 @@ async function countTodayReportTransfers(reporterPhone: string): Promise<number>
           if (rp !== reporterPhone) continue;
           const ts = (r.createdAt && r.createdAt !== 'null' ? r.createdAt : null) || (r.ts && r.ts !== 'null' ? r.ts : null) || (r.dispatchedAt && r.dispatchedAt !== 'null' ? r.dispatchedAt : null);
           if (!ts) continue;
-          const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          const bjt = beijingDayStrOf(Number(ts));
           if (bjt === todayStr) count++;
         } catch (_) { /* skip bad row */ }
       }
@@ -300,7 +307,7 @@ async function countTodayReportTransfers(reporterPhone: string): Promise<number>
         if (rp !== reporterPhone) continue;
         const ts = o.createdAt || o.timestamp || o.dispatchedAt;
         if (!ts) continue;
-        const bjt = new Date(Number(ts) + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const bjt = beijingDayStrOf(Number(ts));
         if (bjt === todayStr) count++;
       }
     }
@@ -1847,7 +1854,6 @@ function getClientIp(req: any): string {
       '/api/order/driver-claim',
       '/api/order/cancel',
       '/api/order/complete',
-      '/api/order/decline',
       '/api/order/to-hall',
       '/api/order/true-cancel',
       '/api/order/progress',
@@ -1862,7 +1868,6 @@ function getClientIp(req: any): string {
       '/api/db/list',
       '/api/geocode',
       '/api/geo/locate',
-      '/api/auth/validate',
       '/api/auth/logout',
       // 2026-10-18修：收款码上传/删除/获取、入队申请，这些接口传 phone 不传 id，
       // 不加白名单会被 H9 的"无目标id批量操作"逻辑误杀 403
@@ -4982,6 +4987,17 @@ function getClientIp(req: any): string {
         (orderData as any).price = '¥40.00';
         delete (orderData as any).fare;
         delete (orderData as any).totalFee;
+        // 2026-10-24 第四十九轮（fuzz 实证）：订单展示文本字段原无长度上限，200KB 的
+        // startLocation 被原样落库，进每个司机的列表轮询载荷长期膨胀。建单时统一截断
+        // 展示类文本（地址/名称/备注）到 300 字——真实地址远不及此；功能字段（电话、
+        // 二维码、坐标）不在此列，不误伤。
+        for (const textField of ['startLocation', 'endLocation', 'destination', 'dropoffName',
+          'pickupName', 'startAddress', 'endAddress', 'passengerName', 'remark', 'orderRemark', 'note']) {
+          const v = (orderData as any)[textField];
+          if (typeof v === 'string' && v.length > 300) {
+            (orderData as any)[textField] = v.slice(0, 300);
+          }
+        }
         // 2026-10-21 第四轮(E2/F2 实测)：orderData 未带 merchantPhone 时以 token 身份兜底补写。
         // 否则订单里没有下单方字段，商户本人 true-cancel/cancel 会被归属校验拒绝、取消不了自己的单。
         if (!String((orderData as any).merchantPhone || '').trim()) {
@@ -6137,119 +6153,6 @@ function getClientIp(req: any): string {
     }
   });
 
-  // 5.2 60-Second Timeout / Driver Decline Order Reclaim to 选单大厅
-  app.post('/api/order/decline', requireDbAuth, orderLockMiddleware, async (req, res) => {
-    try {
-      const { orderId, driverPhone } = req.body;
-      const cleanOrderId = String(orderId || '').trim();
-      // 2026-10-21 第三轮(P2-7)：body 未带 driverPhone 时以 token 本人作为拒单者（旧逻辑空值直接跳过归属校验、declined 名单还记不上人）
-      const cleanDriverPhone = String(driverPhone || (req as any).authPhone || '').replace(/\D/g, '').trim();
-      // H8修复：校验操作者是接单司机本人（或管理员）
-      const authPhone = String((req as any).authPhone || '').replace(/\D/g, '').trim();
-      const isAdmin = !!(req as any).isAdmin;
-      if (!isAdmin && cleanDriverPhone && authPhone !== cleanDriverPhone) {
-        return res.status(403).json({ success: false, error: '只能操作自己的订单' });
-      }
-
-      if (!cleanOrderId) {
-        return res.status(400).json({ success: false, error: 'Missing orderId' });
-      }
-
-      const dbData = readLocalJsonDb();
-      if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
-      // 2026-10-21 第四轮(P1-3)：守卫改读权威源（MySQL 优先、JSON 兜底）。旧逻辑先读本地 JSON、
-      // 缺失才查 MySQL：driver-claim 等只写 MySQL 的路径之后，JSON 副本停在 hall 态，
-      // 陈旧守卫会放行拒单，把已被抢走的订单偷回大厅。订单不存在直接 404，不再造空壳大厅单。
-      const targetOrder: any = await readCanonicalDocument('merchant_orders', cleanOrderId);
-      if (!targetOrder) {
-        return res.status(404).json({ success: false, error: '订单不存在' });
-      }
-
-      // P0-2修复(2026-10-13)：拒单前校验订单仍派单给本人且未被接单。
-      // 否则延迟的拒单会把已进大厅被他人抢走的订单偷回大厅（B已接单，A的旧页面点拒单把B的单清空）。
-      if (targetOrder) {
-        const dispatchedTo = String(targetOrder.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
-        const tStatus = String(targetOrder.status || '');
-        if (tStatus === 'claimed' || tStatus === 'serving' || tStatus === 'completed' || tStatus === 'cancelled') {
-          return res.status(409).json({ success: false, error: '订单已被接单，无法拒单' });
-        }
-        if (dispatchedTo && dispatchedTo !== cleanDriverPhone) {
-          return res.status(409).json({ success: false, error: '订单已不在派单中' });
-        }
-      }
-
-      const existingDeclined = Array.isArray(targetOrder?.declinedDriverPhones) ? targetOrder.declinedDriverPhones : [];
-      const existingTimeout = Array.isArray(targetOrder?.timeoutDriverPhones) ? targetOrder.timeoutDriverPhones : [];
-
-      const now = Date.now();
-      const updateData = {
-        ...(targetOrder || {}),
-        status: 'hall',
-        in_hall: true,
-        statusCategory: '呼叫中',
-        dispatchedDriverPhone: '',
-        dispatchedDriverName: '',
-        claimedDriverPhone: '',
-        claimedDriverName: '',
-        driverName: '',
-        declinedDriverPhones: Array.from(new Set([...existingDeclined, cleanDriverPhone].filter(Boolean))),
-        timeoutDriverPhones: existingTimeout, // 2026-10-20 重构(P2)：拒单/转大厅只记 declined 名单，timeout 名单只由服务端扫单写入
-        lastDeclinedAt: now,
-        // 2026-10-21 第四轮：decline 进大厅此前独缺 hallAt——24 小时归档按 hallAt 判据，这类单永远漏删、大厅只进不出
-        hallAt: Number((targetOrder as any)?.hallAt || 0) || now
-      };
-
-      dbData['merchant_orders'][cleanOrderId] = updateData;
-
-      if (cleanDriverPhone && dbData['passenger_links'] && dbData['passenger_links'][cleanDriverPhone]) {
-        delete dbData['passenger_links'][cleanDriverPhone];
-      }
-
-      // 释放司机忙碌状态，重新恢复可派单空闲状态
-      if (cleanDriverPhone) {
-        ['driver_users', 'driver_locations', 'squad_members'].forEach(col => {
-          if (dbData[col] && dbData[col][cleanDriverPhone]) {
-            dbData[col][cleanDriverPhone] = {
-              ...dbData[col][cleanDriverPhone],
-              isBusy: false,
-              lastStatusUpdateTime: now
-            };
-          }
-        });
-      }
-
-      writeLocalJsonDb(dbData);
-
-      if (isMySQLEnabled && mysqlPool) {
-        try {
-          await mysqlPool.query(
-            'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
-            ['merchant_orders', cleanOrderId, JSON.stringify(updateData)]
-          );
-          if (cleanDriverPhone) {
-            await mysqlPool.query(
-              'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
-              ['passenger_links', cleanDriverPhone]
-            );
-            await mysqlPool.query(
-              'UPDATE `daijia_documents` SET `data` = JSON_SET(`data`, "$.isBusy", CAST(FALSE AS JSON)) WHERE `collection` IN ("driver_locations", "driver_users") AND `doc_id` = ?',
-              [cleanDriverPhone]
-            );
-          }
-        } catch (e: any) {
-          // 2026-10-23 第二十五轮：旧实现 catch 静默吞——JSON 已翻大厅、MySQL 仍 dispatched
-          // 还报 success，双源分叉无感知。与 claim 口径对齐：如实 500（拒单可安全重试收敛）。
-          console.error('[Order Decline] MySQL 写入失败:', e?.message);
-          return res.status(500).json({ success: false, error: '拒单写入失败，请重试' });
-        }
-      }
-
-      return res.json({ success: true, order: updateData, serverTime: now });
-    } catch (err: any) {
-      console.error('[Order Decline Exception]:', err);
-      res.status(500).json({ success: false, error: err.message });
-    }
-  });
 
   // 5.2.2 ABSOLUTE Order Cancellation (Marks order as cancelled everywhere so it disappears from hall for ALL drivers)
   app.post('/api/order/cancel', requireDbAuth, orderLockMiddleware, async (req, res) => {
@@ -7965,29 +7868,6 @@ function getClientIp(req: any): string {
     }
   });
 
-  // a5修复：token 有效性校验接口——App 启动时调用，提前发现过期
-  app.get('/api/auth/validate', async (req, res) => {
-    try {
-      // 2026-10-21 第四轮：不再接受 ?token= 查询串传 token（会进 URL 与访问日志）；只认请求头。
-      const token = String(req.headers['x-auth-token'] || '').trim();
-      if (token) {
-        // 2026-10-21 第三轮(P1-4)：与 requireDbAuth 同口径——先查持久 token 存储，再查内存 Map。
-        // 旧实现只查 Map：token 只存在于 MySQL auth_tokens 时（如换机部署、Map 文件丢失）
-        // 启动预检会误判"登录失效"，逼用户白白重走短信。
-        const persistent = await verifyPersistentToken(token);
-        if (persistent) {
-          return res.json({ success: true, valid: true, phone: persistent.phone, scope: persistent.scope });
-        }
-        const info = authTokens.get(token);
-        if (info) {
-          return res.json({ success: true, valid: true, phone: info.phone, scope: info.scope });
-        }
-      }
-      return res.json({ success: true, valid: false });
-    } catch (e: any) {
-      return res.json({ success: true, valid: false });
-    }
-  });
 
 
   // 2026-10-21 第三轮：开发者专用 token 吊销——st_ 终身制此前无任何止损口，
@@ -11414,7 +11294,12 @@ function getClientIp(req: any): string {
   app.get('/baota_deploy.tar', (req, res) => servePackageFile(req, res, 'daijia_deploy.tar'));
 
   // Integration with Vite development server middleware for dev OR static assets serving for production
-  if (process.env.NODE_ENV !== "production") {
+  // 2026-10-24 第四十九轮安全修复（实验室实证）：原条件 NODE_ENV!=="production" 时加载 Vite 开发
+  // 中间件——宝塔启动若未显式设 NODE_ENV=production，生产会误跑开发模式：Vite 的 /@fs/ 可无鉴权
+  // 读取进程 cwd 内任意文件（实测无 token 读出 local_db.json 全量含 tokenSecret 与全部登录 token、
+  // canary 文件同理），且 HMR WebSocket(24678) 无凭证可连。改为显式 opt-in：仅
+  // NODE_ENV==="development" 才加载开发中间件，其余（production/未设/任何值）一律走静态生产分支。
+  if (process.env.NODE_ENV === "development") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

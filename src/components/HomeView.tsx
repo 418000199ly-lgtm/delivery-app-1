@@ -1107,37 +1107,64 @@ export default function HomeView({
           const stub = storedDocs.find((t) => t && [t.id, t.orderId, t.orderNo].some((v: any) => String(v || '').trim() === oid));
           if (stub && isTerminalDoc(stub)) continue;
           adoptedClaimIdsRef.current.add(oid);
-          const myName = String(o?.claimedDriverName || o?.driverName || '').trim();
-          const payload = {
-            ...o,
-            startLocation: o.startLocation || '代叫起点',
-            destination: o.destination || o.endLocation || '由司机根据现场口头协商规划行程',
-            status: 'submitted',
-            statusCategory: '待接单',
-            isCompleted: false,
-            isDirectClaim: true,
-            timestamp: Date.now(),
-            isValetOrder: true,
-            isPlatformDispatch: true,
-            approxPrice: o.approxPrice || '未知',
-            calculatedTotalFee: o.calculatedTotalFee || 40.00,
-            estimatedPrice: o.estimatedPrice || '40.00',
-            orderRemark: o.orderRemark || '商户代叫',
-            scheduledTime: o.scheduledTime || '现在（立即出发）',
-            orderId: oid,
-            id: oid,
-            dispatchedDriverPhone: myP,
-            dispatchedDriverName: myName,
-            claimedDriverPhone: myP,
-            claimedDriverName: myName,
-            driverName: myName,
-            paymentQrCode: o.paymentQrCode || o.merchantPaymentQrCode || '',
-            merchantPaymentQrCode: o.merchantPaymentQrCode || o.paymentQrCode || '',
-            merchantPhone: o.merchantPhone || '',
-            reporterPhone: o.reporterPhone || ''
-          };
-          try { triggerToast('📥 已同步一笔进行中的订单，已为你恢复行程'); } catch (_) {}
-          onClaimIncomingOrder(payload);
+          // 2026-10-24 第四十九轮（用户生产实报）：领回前必须向服务端现查该单现状，不能只信快照。
+          // 本函数消费的是轮询快照——完单瞬间在途的旧快照（请求在 complete 落地前发出、响应在后
+          // 到达）或网络失败时的本地缓存兜底，仍会把刚结束的单显示为 arrived/serving；而完单时
+          // 本地行程存根已被清除，存根防复活闸在此场景无从拦截，旧快照就能把已结束订单「复活」
+          // 成行程页（用户点完代叫费确认即见行程页，下几单中约 2 单复现）。现查口径：
+          // 服务端现状仍为「归属我的进行中订单」才领回（数据源换成现查结果）；
+          // 已终态/已改派/不存在 → 不领回且保留占位，本会话不再重试；
+          // 现查失败（网络）→ 移除占位、不领回，等下一帧快照再验，真丢单的领回只延迟一帧。
+          (async () => {
+            let fresh: any = null;
+            try {
+              const r = await fetch(`${getBaseApiUrl()}/api/db/get?col=merchant_orders&id=${encodeURIComponent(oid)}&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+              if (r.ok) {
+                const j = await r.json();
+                fresh = j?.data || null;
+              }
+            } catch (_) {}
+            if (!fresh) {
+              adoptedClaimIdsRef.current.delete(oid);
+              return;
+            }
+            const fSt = String(fresh.status || '').toLowerCase();
+            const fClaimed = String(fresh.claimedDriverPhone || '').replace(/\D/g, '').trim();
+            if (!['claimed', 'accepted', 'taken', 'arrived', 'serving'].includes(fSt) || fClaimed !== myP || fresh.isCancelled === true || fresh.cancelledAt) {
+              return;
+            }
+            const myName = String(fresh.claimedDriverName || fresh.driverName || '').trim();
+            const payload = {
+              ...fresh,
+              startLocation: fresh.startLocation || '代叫起点',
+              destination: fresh.destination || fresh.endLocation || '由司机根据现场口头协商规划行程',
+              status: 'submitted',
+              statusCategory: '待接单',
+              isCompleted: false,
+              isDirectClaim: true,
+              timestamp: Date.now(),
+              isValetOrder: true,
+              isPlatformDispatch: true,
+              approxPrice: fresh.approxPrice || '未知',
+              calculatedTotalFee: fresh.calculatedTotalFee || 40.00,
+              estimatedPrice: fresh.estimatedPrice || '40.00',
+              orderRemark: fresh.orderRemark || '商户代叫',
+              scheduledTime: fresh.scheduledTime || '现在（立即出发）',
+              orderId: oid,
+              id: oid,
+              dispatchedDriverPhone: myP,
+              dispatchedDriverName: myName,
+              claimedDriverPhone: myP,
+              claimedDriverName: myName,
+              driverName: myName,
+              paymentQrCode: fresh.paymentQrCode || fresh.merchantPaymentQrCode || '',
+              merchantPaymentQrCode: fresh.merchantPaymentQrCode || fresh.paymentQrCode || '',
+              merchantPhone: fresh.merchantPhone || '',
+              reporterPhone: fresh.reporterPhone || ''
+            };
+            try { triggerToast('📥 已同步一笔进行中的订单，已为你恢复行程'); } catch (_) {}
+            onClaimIncomingOrder(payload);
+          })();
           break;
         }
       } catch (_) {}
@@ -3304,6 +3331,26 @@ export default function HomeView({
 
     driverOrders.forEach((order: any) => {
       if (!order) return;
+      // 2026-10-24 第四十九轮（父代理接手修）：成单统计先分类——本地记录里混有「已转单」
+      // 发起记录（ReportTransferOrderModal 写，isTransferIssuer/已转单，那是别人完成的单）
+      // 与取消记录，旧实现无过滤全量计入，今日成单虚增；且「今日」旧判定是自然日∪业务日
+      // 的 30 小时并集，00:00–06:00 的单跨两天重复计入。现口径：
+      // - 非完单记录（已转单/已取消）不计入任何成单统计；
+      // - 今日成单/今日收入只认明确完单记录（与完单写入的 status=已支付 对齐），
+      //   且「今日」只用 06:00 业务日单一口径（与服务端限额切日一致）。
+      const oStatus = String(order.status || '');
+      const oCat = String(order.statusCategory || '');
+      const isNonCompletion =
+        order.isTransferIssuer === true ||
+        oStatus === '已转单' ||
+        oStatus === 'cancelled' ||
+        oCat === '已取消' ||
+        order.isCancelled === true;
+      if (isNonCompletion) return;
+      const isOwnCompletion =
+        order.isCompleted === true ||
+        ['已支付', '已完成', 'completed', 'paid', 'finished', 'settled'].includes(oStatus) ||
+        ['已完成', '已支付', '已结单'].includes(oCat);
       totalCount++;
 
       let orderDate: Date | null = null;
@@ -3349,7 +3396,7 @@ export default function HomeView({
           orderShift.getDate() === shiftDay
         );
 
-        if (isCalendarToday || isShiftToday) {
+        if (isShiftToday && isOwnCompletion) {
           todayCount++;
           const amt = Number(order.amount ?? order.calculatedTotalFee ?? order.totalFee ?? 0);
           if (!isNaN(amt)) todayIncome += amt;

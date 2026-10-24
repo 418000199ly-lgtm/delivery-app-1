@@ -20,6 +20,7 @@ import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
 import HubbleSettingsDialog, { HubbleFilterSettings } from './HubbleSettingsDialog';
 import { ensureAMapLoaded } from '../utils/amapLoader';
+import { isValidCoords, isDefaultYinchuanCoords, smoothPanMapTo } from '../utils/geocoding';
 
 interface NearbyMapViewProps {
   userPhone?: string;
@@ -45,6 +46,8 @@ export default function NearbyMapView({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+  // 第四十九轮：用户手动拖过地图后，本次打开内不再自动回中（防定位回调把镜头强行拉回）
+  const userDraggedMapRef = useRef<boolean>(false);
 
   const rawPhone = userPhone || 
     (typeof window !== 'undefined' ? (localStorage.getItem('dd_user_phone') || localStorage.getItem('user_phone') || (settings as any)?.phone) : '') || 
@@ -128,9 +131,22 @@ export default function NearbyMapView({
 
   // 第六轮修复：初始定位禁用银川中心占位坐标(38.487167,106.23091)冒充真实GPS（定位铁律雷区）。
   // 无真实坐标时用 0 表示位置未知，等 driverCoords/本地缓存/高德定位回填；0 坐标不会被渲染成标记。
-  const [gpsLocation, setGpsLocation] = useState<{ lng: number; lat: number }>({
-    lng: driverCoords?.lng || 0,
-    lat: driverCoords?.lat || 0
+  // 第四十九轮：开局中心按「最新已知真值」挑——driverCoords 是真坐标且非占位才用；
+  // 否则读 dd_bg_driver_coords 本地缓存（持续定位每次上报都刷新）；都没有才 0 未知。
+  // 旧逻辑只认 prop：App 无缓存时 prop 默认值恰是银川占位坐标，地图会先开在占位点、
+  // 等真定位回来再被 setCenter 一把拉走（用户录屏实证）。
+  const [gpsLocation, setGpsLocation] = useState<{ lng: number; lat: number }>(() => {
+    if (driverCoords && isValidCoords(driverCoords.lat, driverCoords.lng) && !isDefaultYinchuanCoords(driverCoords)) {
+      return { lng: driverCoords.lng, lat: driverCoords.lat };
+    }
+    try {
+      const cLat = Number(localStorage.getItem('dd_bg_driver_coords_lat'));
+      const cLng = Number(localStorage.getItem('dd_bg_driver_coords_lng'));
+      if (isValidCoords(cLat, cLng) && !isDefaultYinchuanCoords({ lat: cLat, lng: cLng })) {
+        return { lng: cLng, lat: cLat };
+      }
+    } catch (_) {}
+    return { lng: 0, lat: 0 };
   });
 
   const [removedPhones, setRemovedPhones] = useState<string[]>(() => {
@@ -403,13 +419,15 @@ export default function NearbyMapView({
 
   // Sync GPS Coordinates from driverCoords or cached storage
   useEffect(() => {
-    if (driverCoords && driverCoords.lat && driverCoords.lng) {
+    // 第四十九轮：占位坐标（App 无缓存时的默认值）不当真值回填，否则「我」的标记会
+    // 钉在银川市中心冒充真实位置（违反定位铁律）；缓存同理先验真伪。
+    if (driverCoords && driverCoords.lat && driverCoords.lng && !isDefaultYinchuanCoords(driverCoords)) {
       setGpsLocation({ lng: driverCoords.lng, lat: driverCoords.lat });
     } else {
-      const cachedLat = localStorage.getItem('dd_bg_driver_coords_lat');
-      const cachedLng = localStorage.getItem('dd_bg_driver_coords_lng');
-      if (cachedLat && cachedLng) {
-        setGpsLocation({ lng: parseFloat(cachedLng), lat: parseFloat(cachedLat) });
+      const cachedLat = Number(localStorage.getItem('dd_bg_driver_coords_lat'));
+      const cachedLng = Number(localStorage.getItem('dd_bg_driver_coords_lng'));
+      if (isValidCoords(cachedLat, cachedLng) && !isDefaultYinchuanCoords({ lat: cachedLat, lng: cachedLng })) {
+        setGpsLocation({ lng: cachedLng, lat: cachedLat });
       }
     }
   }, [driverCoords]);
@@ -572,6 +590,11 @@ export default function NearbyMapView({
 
       mapInstanceRef.current = map;
 
+      // 第四十九轮：登记用户拖动守卫——用户一旦手动拖图，本次打开内定位回调不再动镜头
+      try {
+        map.on('dragstart', () => { userDraggedMapRef.current = true; });
+      } catch (_) {}
+
       // Ensure map re-measures container layout on screen after paint
       setTimeout(() => {
         if (!isDisposed && mapInstanceRef.current) {
@@ -600,8 +623,12 @@ export default function NearbyMapView({
                 const curLng = result.position.lng;
                 const curLat = result.position.lat;
                 setGpsLocation({ lng: curLng, lat: curLat });
-                if (mapInstanceRef.current) {
-                  mapInstanceRef.current.setCenter([curLng, curLat]);
+                // 第四十九轮（修「强行拉回」）：旧逻辑无条件 setCenter 硬切——开局中心是
+                // 缓存/占位点时，真定位数秒后到达就把镜头一把拽走。改为：本人标记照常
+                // 更新；镜头仅在用户没手动拖过、且与当前中心相距 >100 米时平滑 panTo
+                // 过去（当前中心未知时 setCenter 直接落位）。用户拖过则绝不打扰。
+                if (mapInstanceRef.current && !userDraggedMapRef.current) {
+                  smoothPanMapTo(mapInstanceRef.current, curLng, curLat);
                 }
               }
             });
@@ -986,6 +1013,8 @@ export default function NearbyMapView({
   const handleRecenter = () => {
     // 第六轮修复：无真实GPS（坐标为0）时不回中，避免地图跳到 (0,0) 海面
     if (mapInstanceRef.current && gpsLocation.lng && gpsLocation.lat) {
+      // 用户主动点回中：复位拖动守卫，后续定位修正可再次自动跟随
+      userDraggedMapRef.current = false;
       mapInstanceRef.current.setZoomAndCenter(15.5, [gpsLocation.lng, gpsLocation.lat]);
     }
   };

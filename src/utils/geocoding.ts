@@ -122,6 +122,34 @@ export function calculateHaversineDistanceKm(lat1: number, lng1: number, lat2: n
 }
 
 /**
+ * 平滑移动地图镜头到目标点（2026-10-24 第四十九轮，修「地图先在他处、又被强行拉回」）：
+ * - 当前中心与目标相距 ≤100 米：不动镜头（只更新标记即可），返回 false；
+ * - 当前中心是未知（0,0/无效）：直接 setCenter 落位（从无意义视图切走不存在「平滑」一说）；
+ * - 其余：优先 panTo 平滑飞行，旧版 AMap 无 panTo 时退回 setCenter。
+ * 返回是否实际移动了镜头。
+ */
+export function smoothPanMapTo(map: any, lng: number, lat: number): boolean {
+  if (!map || !isValidCoords(lat, lng)) return false;
+  try {
+    const c = typeof map.getCenter === 'function' ? map.getCenter() : null;
+    const cLng = c ? Number(typeof c.getLng === 'function' ? c.getLng() : c.lng) : 0;
+    const cLat = c ? Number(typeof c.getLat === 'function' ? c.getLat() : c.lat) : 0;
+    if (isValidCoords(cLat, cLng)) {
+      if (calculateHaversineDistanceKm(cLat, cLng, lat, lng) <= 0.1) return false;
+      if (typeof map.panTo === 'function') {
+        map.panTo([lng, lat]);
+        return true;
+      }
+    }
+    if (typeof map.setCenter === 'function') {
+      map.setCenter([lng, lat]);
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/**
  * Format distance in meters or kilometers appropriately per user requirement:
  * - 1公里内显示多少米 (例如 "50米", "280米", "850米")
  * - 1公里外显示公里数保留2位小数 (例如 "1.01公里", "2.35公里")

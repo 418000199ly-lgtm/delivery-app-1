@@ -12,6 +12,7 @@ import QRCode from 'qrcode';
 import { ensureAMapLoaded } from '../utils/amapLoader';
 import { getHighPrecisionLocationName } from '../utils/locationResolver';
 import { wgs84ToGcj02 } from '../utils/coordinateTransform';
+import { smoothPanMapTo } from '../utils/geocoding';
 
 const MULTIPLIER_OPTIONS = Array.from({ length: 11 }, (_, i) => Number((1.0 + i * 0.1).toFixed(1))); // [1.0, 1.1, ..., 2.0]
 
@@ -620,13 +621,19 @@ export default function CreateOrderView({
           const AMap = (window as any).AMap;
           const map = mapInstanceRef.current;
           // If map and AMap are already fully loaded, immediately update center & reverse-geocode
+          // 第四十九轮：用户已手动拖图调整起点时，迟到的预取定位不得再动镜头、不得覆盖
+          // 起点地址（原 isUserDraggingRef 声明后从未接线，本轮接上）；未拖动时镜头也改
+          // 平滑移动，不再 setCenter 硬切（与附近页同病同修）。
           if (map && AMap && !prefetchedGeocodedRef.current) {
             prefetchedGeocodedRef.current = true;
+            if (isUserDraggingRef.current) {
+              return;
+            }
             const finalLng = converted.lng;
             const finalLat = converted.lat;
-            
+
             isMapMovingProgrammaticallyRef.current = true;
-            map.setCenter([finalLng, finalLat]);
+            smoothPanMapTo(map, finalLng, finalLat);
             
             AMap.plugin('AMap.Geocoder', () => {
               const geocoder = new AMap.Geocoder({
@@ -711,11 +718,23 @@ export default function CreateOrderView({
 
           const reverseGeocodeCenter = (lng: number, lat: number) => {
             isMapMovingProgrammaticallyRef.current = true;
-            if (typeof map.setZoomAndCenter === 'function') {
-              map.setZoomAndCenter(18, [lng, lat]);
-            } else {
+            // 第四十九轮：镜头改平滑移动——与目标同点（初始中心已用同一坐标）时零位移、
+            // 相距远时 panTo 飞行，不再 setZoomAndCenter 硬切（用户实报的「被强行拉回」）。
+            // 缩放仍直接设 18（街道级），只平滑平移部分。
+            if (typeof map.setZoom === 'function') {
               map.setZoom(18);
-              map.setCenter([lng, lat]);
+            }
+            if (!smoothPanMapTo(map, lng, lat) && typeof map.setCenter === 'function') {
+              // smoothPanMapTo 返回 false 含「≤100 米无需动」与异常两种情形：
+              // 仅当当前中心与目标确实不一致（>100 米）却没动成时才兜底硬切。
+              try {
+                const c = map.getCenter();
+                const cLng = Number(c?.getLng ? c.getLng() : c?.lng);
+                const cLat = Number(c?.getLat ? c.getLat() : c?.lat);
+                if (!cLng || !cLat || Math.abs(cLng - lng) > 0.001 || Math.abs(cLat - lat) > 0.001) {
+                  map.setCenter([lng, lat]);
+                }
+              } catch (_) {}
             }
             geocoder.getAddress([lng, lat], (geoStatus: string, geoResult: any) => {
               isMapMovingProgrammaticallyRef.current = false;
@@ -876,6 +895,8 @@ export default function CreateOrderView({
           map.on('dragstart', () => {
             if (isMapMovingProgrammaticallyRef.current) return;
             isUserDraggingMap = true;
+            // 第四十九轮：闩锁「用户已接管镜头」，供迟到的预取定位回调判读（见上方预取处）
+            isUserDraggingRef.current = true;
           });
 
           map.on('dragging', () => {

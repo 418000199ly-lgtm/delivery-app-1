@@ -1232,12 +1232,14 @@ export default function MobileDispatchValetOrder({
       if (latStr && lngStr) {
         const lat = parseFloat(latStr);
         const lng = parseFloat(lngStr);
-        if (!isNaN(lat) && !isNaN(lng) && lat > 0 && lng > 0) {
+        // 缓存若是旧版本写入的占位坐标，一律不认（防占位经缓存回注）。
+        if (!isNaN(lat) && !isNaN(lng) && lat > 0 && lng > 0 && !isDefaultYinchuanCoords({ lat, lng })) {
           return { lat, lng };
         }
       }
     } catch (_) {}
-    return { lat: 38.487167, lng: 106.23091 };
+    // 2026-10-24：无真实缓存坐标时以 0,0 表示「未知」，不再拿银川中心占位冒充起点。
+    return { lat: 0, lng: 0 };
   });
 
   const amapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -2342,10 +2344,12 @@ export default function MobileDispatchValetOrder({
             const converted = wgs84ToGcj02(pos.coords.longitude, pos.coords.latitude);
             doReport(converted.lat, converted.lng);
           },
-          () => doReport(passengerCoords.lat, passengerCoords.lng),
+          // 定位失败时不再拿起点坐标冒充本人位置上报（起点未知/占位会污染
+          // driver_locations）；无真实起点坐标则本轮不上报，等下轮 GPS。
+          () => { if (isValidCoords(passengerCoords.lat, passengerCoords.lng)) doReport(passengerCoords.lat, passengerCoords.lng); },
           { enableHighAccuracy: true, timeout: 6000 }
         );
-      } else {
+      } else if (isValidCoords(passengerCoords.lat, passengerCoords.lng)) {
         doReport(passengerCoords.lat, passengerCoords.lng);
       }
     };
@@ -2513,10 +2517,15 @@ export default function MobileDispatchValetOrder({
           }
         },
         () => {
+          // 定位失败：仅真实司机坐标（非银川占位）可兜底且不冒名假地址；
+          // 无真实坐标时不预填起点、提示手动输入（2026-10-24 用户拍板）。
           if (!resolved) {
-            const driverLat = propDriverCoords?.lat || 38.487167;
-            const driverLng = propDriverCoords?.lng || 106.23091;
-            applyResolvedLocation(driverLat, driverLng, '银川市运祥小区');
+            if (propDriverCoords && !isDefaultYinchuanCoords(propDriverCoords)) {
+              applyResolvedLocation(propDriverCoords.lat, propDriverCoords.lng);
+            } else {
+              setIsLocatingGPS(false);
+              if (!silent) onShowToast('⚠️ 定位失败，请手动输入起点地址');
+            }
           }
         },
         { enableHighAccuracy: true, timeout: 2500, maximumAge: 60000 }
@@ -2551,13 +2560,16 @@ export default function MobileDispatchValetOrder({
       });
     }
 
-    // Track 3: Instant backup timer
+    // Track 3: 兜底定时器（同 Track 1 失败口径，真坐标才兜底，绝不预填占位）。
     setTimeout(() => {
       if (!resolved) {
         resolved = true;
-        const driverLat = propDriverCoords?.lat || 38.487167;
-        const driverLng = propDriverCoords?.lng || 106.23091;
-        applyResolvedLocation(driverLat, driverLng, '银川市运祥小区');
+        if (propDriverCoords && !isDefaultYinchuanCoords(propDriverCoords)) {
+          applyResolvedLocation(propDriverCoords.lat, propDriverCoords.lng);
+        } else {
+          setIsLocatingGPS(false);
+          if (!silent) onShowToast('⚠️ 定位失败，请手动输入起点地址');
+        }
       }
     }, 1500);
   };
@@ -2592,9 +2604,16 @@ export default function MobileDispatchValetOrder({
       if (!AMap || !amapContainerRef.current) return;
 
       try {
+        // 起点未知（0,0）时：地图仅借银川中心作初始视野（不写入起点坐标），
+        // 也不放置起点标记；有真实起点后才居中并打标（2026-10-24 占位预填修复）。
+        const pickupValid = isValidCoords(passengerCoords.lat, passengerCoords.lng);
+        const mapCenter: [number, number] = pickupValid
+          ? [passengerCoords.lng, passengerCoords.lat]
+          : [106.23091, 38.487167];
+
         if (!amapInstanceRef.current) {
           const map = new AMap.Map(amapContainerRef.current, {
-            center: [passengerCoords.lng, passengerCoords.lat],
+            center: mapCenter,
             zoom: 16,
             viewMode: '2D',
             pitch: 0,
@@ -2630,14 +2649,14 @@ export default function MobileDispatchValetOrder({
               });
             });
           });
-        } else {
+        } else if (pickupValid) {
           amapInstanceRef.current.setCenter([passengerCoords.lng, passengerCoords.lat]);
         }
 
         const map = amapInstanceRef.current;
 
-        // Pickup point marker
-        if (!amapMarkerRef.current) {
+        // Pickup point marker（起点未知时不打标，避免标记落在视野占位中心冒充起点）
+        if (pickupValid && !amapMarkerRef.current) {
           const marker = new AMap.Marker({
             position: [passengerCoords.lng, passengerCoords.lat],
             title: passengerAddress || '代驾商家起点',
@@ -2645,7 +2664,7 @@ export default function MobileDispatchValetOrder({
           });
           marker.setMap(map);
           amapMarkerRef.current = marker;
-        } else {
+        } else if (pickupValid && amapMarkerRef.current) {
           amapMarkerRef.current.setPosition([passengerCoords.lng, passengerCoords.lat]);
           amapMarkerRef.current.setTitle(passengerAddress || '代驾商家起点');
         }

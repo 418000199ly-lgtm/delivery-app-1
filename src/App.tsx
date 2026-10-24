@@ -19,7 +19,7 @@ import WeChatMiniSimulator from './components/WeChatMiniSimulator';
 import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName, getHighPrecisionLocationName, calculateHaversineDistanceKm } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
-import { findNearestKnownPoi } from './utils/geocoding';
+import { findNearestKnownPoi, isDefaultYinchuanCoords } from './utils/geocoding';
 import { resolveDriverRealName, calculateDaysFromExpiry, hasValidLicense } from './utils/nameResolver';
 
 import { 
@@ -936,7 +936,10 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const cachedLat = localStorage.getItem('dd_bg_driver_coords_lat');
       const cachedLng = localStorage.getItem('dd_bg_driver_coords_lng');
       if (cachedLat && cachedLng) {
-        return { lat: Number(cachedLat), lng: Number(cachedLng) };
+        const cached = { lat: Number(cachedLat), lng: Number(cachedLng) };
+        // 2026-10-24：缓存若是代叫台旧版本写入的占位坐标（38.487167 组），不认，
+        // 落回下方占位默认值（消费端有守卫），防止占位经共享缓存回注成「真实定位」。
+        if (!isDefaultYinchuanCoords(cached)) return cached;
       }
     } catch (_) {}
     return {
@@ -3685,7 +3688,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       const baseUrl = getBaseApiUrl();
       // 第四轮修复（P1-22）：冷启动无缓存时 driverCoords 是银川中心占位默认值（38.4830,106.2350），
       // 不是真实定位，不许当真 GPS 上报（否则刚上线司机按市中心位置被派单/算距离）
-      const isPlaceholderCoords = driverCoords?.lat === 38.4830 && driverCoords?.lng === 106.2350;
+      const isPlaceholderCoords = isDefaultYinchuanCoords(driverCoords);
       const hasGps = !!(driverCoords?.lat && driverCoords?.lng) && !isPlaceholderCoords;
       const payload: any = {
         phone: userPhone,
@@ -3736,7 +3739,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       // 直接使用真实GPS坐标，无GPS时已在上方拦截（2026-10-10修复，不再用城市中心冒充）
       // 第四轮修复（P1-22）：占位默认坐标（38.4830,106.2350）不是真实定位，
       // 同步在线状态时坐标置 0（未知），不许把市中心假坐标写进 driver_users/driver_locations
-      const isPlaceholderCoordsOnline = driverCoords?.lat === 38.4830 && driverCoords?.lng === 106.2350;
+      const isPlaceholderCoordsOnline = isDefaultYinchuanCoords(driverCoords);
       const currentLat = isPlaceholderCoordsOnline ? 0 : (driverCoords?.lat || 0);
       const currentLng = isPlaceholderCoordsOnline ? 0 : (driverCoords?.lng || 0);
 
