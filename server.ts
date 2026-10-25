@@ -2394,6 +2394,9 @@ function getClientIp(req: any): string {
             const cleanPhone = phoneStr.replace(/\D/g, '').trim();
             const hasASuffix = docIdStr.toUpperCase().endsWith('A') || phoneStr.toUpperCase().endsWith('A');
 
+            // 2026-10-25：哈勃墓碑行（撤销兜底）对所有读者不可见
+            if (col === 'hubble_authorized_drivers' && (doc as any)._revoked) return false;
+
             if (col === 'squad_applications') {
               // 第六轮：删除通用名规则——旧规则使「通用名+未拒绝」的待审申请在所有列表不可见（P0-1 主因）；
               // 保留 A 后缀/商户字段/开发者三项排除。
@@ -2483,6 +2486,9 @@ function getClientIp(req: any): string {
           if (cleanPhone === '15509601222') return false;
           return true;
         }
+
+                // 2026-10-25：哈勃墓碑行（撤销兜底）对所有读者不可见（JSON 分支）
+        if (col === 'hubble_authorized_drivers' && (doc as any)._revoked) return false;
 
         if (col === 'online_applications') {
           if (cleanPhone === '15509601222') return true;
@@ -4608,9 +4614,15 @@ function getClientIp(req: any): string {
               'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
               ['hubble_authorized_drivers', requesterPhone]
             );
-            hasHubble = !!(hrows && hrows.length > 0);
+            // 2026-10-25：墓碑（_revoked）行存在也不算授权（撤销删行失败时的兜底）
+            if (hrows && hrows.length > 0) {
+              let hd: any = null;
+              try { hd = typeof hrows[0].data === 'string' ? JSON.parse(hrows[0].data) : hrows[0].data; } catch (_) {}
+              hasHubble = !!hd && !hd._revoked;
+            }
           } else {
-            hasHubble = !!readLocalJsonDb()?.['hubble_authorized_drivers']?.[requesterPhone];
+            const hv: any = readLocalJsonDb()?.['hubble_authorized_drivers']?.[requesterPhone];
+            hasHubble = !!hv && !hv._revoked;
           }
         }
         if (!hasHubble) {
@@ -7074,12 +7086,14 @@ function getClientIp(req: any): string {
           });
         } catch (_) {}
       }
-      const list = Object.entries(col).map(([phone, v]: [string, any]) => ({
-        phone,
-        name: v?.name || `司机${phone.slice(-4)}`,
-        addedAt: v?.addedAt || Date.now(),
-        addedBy: v?.addedBy || '开发者'
-      }));
+      const list = Object.entries(col)
+        .filter(([, v]: [string, any]) => !(v && v._revoked)) // 2026-10-25：墓碑不进名单
+        .map(([phone, v]: [string, any]) => ({
+          phone,
+          name: v?.name || `司机${phone.slice(-4)}`,
+          addedAt: v?.addedAt || Date.now(),
+          addedBy: v?.addedBy || '开发者'
+        }));
       return res.json({ success: true, list });
     } catch (e: any) {
       return res.status(500).json({ success: false, message: String(e?.message || e) });
@@ -7140,11 +7154,43 @@ function getClientIp(req: any): string {
         writeLocalJsonDb(dbData);
       }
       // 2026-10-21 第四轮(P2-3)：撤销同步删 MySQL（与授权双写对齐）
+      // 2026-10-25 修复：DELETE 此前 .catch 静默吞错——生产实证撤销后对方仍有
+      // 权限（开发者名单与对方自查都仍能读到授权行，疑 DELETE 未真正生效而
+      // 接口照常报成功+记日志）。改：删后回读验证；行仍在（删失败/无删权限）
+      // 即写墓碑文档（_revoked，靠 UPDATE 权限，授权同款 upsert 已证可用），
+      // 全部读者认墓碑；墓碑也写不进才返回失败，不再假成功。
       if (isMySQLEnabled && mysqlPool) {
-        await mysqlPool.query(
-          'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
-          ['hubble_authorized_drivers', phone]
-        ).catch(() => {});
+        let rowGone = false;
+        try {
+          await mysqlPool.query(
+            'DELETE FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ?',
+            ['hubble_authorized_drivers', phone]
+          );
+          const [chk]: any = await mysqlPool.query(
+            'SELECT `doc_id` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+            ['hubble_authorized_drivers', phone]
+          );
+          rowGone = !(chk && chk.length > 0);
+        } catch (delErr: any) {
+          console.error('[hubble/revoke] MySQL DELETE 失败，改走墓碑:', delErr?.message || delErr);
+          rowGone = false;
+        }
+        if (!rowGone) {
+          try {
+            const tomb = JSON.stringify({ phone, name: '', _revoked: true, revokedAt: Date.now(), revokedBy: requester });
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['hubble_authorized_drivers', phone, tomb]
+            );
+            const dbData2 = readLocalJsonDb();
+            if (!dbData2['hubble_authorized_drivers']) dbData2['hubble_authorized_drivers'] = {};
+            dbData2['hubble_authorized_drivers'][phone] = { phone, name: '', _revoked: true, revokedAt: Date.now(), revokedBy: requester };
+            writeLocalJsonDb(dbData2);
+          } catch (tombErr: any) {
+            console.error('[hubble/revoke] 墓碑写入失败:', tombErr?.message || tombErr);
+            return res.status(500).json({ success: false, message: '撤销写入失败，请重试' });
+          }
+        }
       }
       try { await logAdminOperation('hubble-revoke', requester, phone, '撤销哈勃真名查看权限', req); } catch (_) {}
       return res.json({ success: true });
