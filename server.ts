@@ -1980,14 +1980,22 @@ function getClientIp(req: any): string {
     const MEMBER_COLS = ['squad_members', 'driver_users', 'driver_locations', 'squad_applications', 'online_applications', 'team_members'];
     // P0(2026-10-14): hubble_authorized_drivers 只允许开发者写，防止普通用户通过 db API 给自己授权
     // 必须放在"普通用户可写自己手机号文档"的通用逻辑之前
+    // 2026-10-25 修复：原实现不分读写一律 403——附近页靠读本名单判断本人是否被
+    // 授权（onSnapshot→db/list），非开发者连自己的授权状态都读不到，授权永远
+    // 不生效、点哈勃恒报「您无权限」（生产实证：周杰伦已授权仍无权限）。改：
+    // 写操作维持仅开发者；读操作放行到通用鉴权，名单数据由 list 处理按
+    // 「非管理员只读本人文档」收紧（只知自己是否被授权，看不到他人名单）。
     if (colName === 'hubble_authorized_drivers') {
       const isDev = infoPhoneNorm === devPhoneNorm || infoPhoneNorm === devPhoneNorm + 'A';
-      if (!isDev) {
+      if (isDev) {
+        (req as any).authPhone = info.phone;
+        (req as any).isAdmin = true;
+        return next();
+      }
+      const isWriteReq = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(String(req.method || 'GET').toUpperCase());
+      if (isWriteReq) {
         return res.status(403).json({ success: false, error: '仅开发者可管理哈勃权限' });
       }
-      (req as any).authPhone = info.phone;
-      (req as any).isAdmin = true;
-      return next();
     }
     // 2026-10-23 第二十一轮(M4)：定位表不走管理层通用写放行——城市管理/老板经 db/set
     // 改他人 driver_locations（挪坐标/置离线/置忙碌）等效绕过等级链软封同行，而
@@ -2268,7 +2276,7 @@ function getClientIp(req: any): string {
       const hasValidSince = sinceDate && !isNaN(sinceDate.getTime());
 
       // P1(2026-10-15)：敏感集合非管理员只能读自己的文档
-      const sensitiveCols = ['driver_users', 'squad_members', 'online_applications', 'driver_locations', 'passenger_links'];
+      const sensitiveCols = ['driver_users', 'squad_members', 'online_applications', 'driver_locations', 'passenger_links', 'hubble_authorized_drivers'];
       // 2026-10-23 第三十四轮：passenger_links 一并纳入本人限定——文档键即司机手机号，
       // 内含其乘客的手机号；此前整表对任何登录司机开放，可枚举全队乘客联系方式。
       // 客户端只有按本人 doc 的单文档订阅，无整表消费方，收紧零影响。
