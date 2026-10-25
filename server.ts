@@ -4419,13 +4419,30 @@ function getClientIp(req: any): string {
           }
         }
         if (!hasHubble) {
+          // 2026-10-25（用户口径）：脱敏名保留姓氏——吴彦祖→吴师傅、李扬→李师傅，
+          // 与客户端 formatDriverMaskedName 同规则（全名只对哈勃授权+开关同开者显示）。
+          // 旧实现一律打成「某师傅」把姓氏也抹掉，小队里在线司机无从分辨是谁
+          //（用户 2026-10-25 真机反馈）。无真实姓名（通用名/纯数字/空）才回落「某师傅」；
+          // 已带「师傅」后缀的名字原样保留（如「林师傅」）。
+          const compoundSurnames = ['欧阳', '诸葛', '司马', '上官', '夏侯', '东方', '独孤', '南宫', '皇甫', '司徒', '尉迟', '公孙', '慕容', '宇文'];
+          const maskNameToSurname = (raw: any): string => {
+            const n = String(raw || '').trim();
+            if (!n) return '某师傅';
+            if (n.endsWith('师傅')) return n;
+            if (/^司机\d+$/.test(n) || /^\d+$/.test(n)) return '某师傅';
+            const ch = n.match(/[一-龥]+/);
+            if (!ch) return '某师傅';
+            const s = ch[0];
+            const compound = compoundSurnames.find((x) => s.startsWith(x));
+            return (compound || s[0]) + '师傅';
+          };
           const keyRemap = new Map<string, string>();
           for (const k of Object.keys(locations)) {
             const itemPhone = String(locations[k]?.phone || k || '').replace(/\D/g, '').trim();
             if (itemPhone && itemPhone !== requesterPhone) {
-              // 遮挡真名，保留位置用于地图显示
-              if (locations[k].driverName) locations[k].driverName = '某师傅';
-              if (locations[k].name) locations[k].name = '某师傅';
+              // 遮挡全名（保留姓氏），保留位置用于地图显示
+              if (locations[k].driverName) locations[k].driverName = maskNameToSurname(locations[k].driverName);
+              if (locations[k].name) locations[k].name = maskNameToSurname(locations[k].name);
               // 手机号脱敏
               if (locations[k].phone) locations[k].phone = String(locations[k].phone).slice(0, 3) + '****' + String(locations[k].phone).slice(-4);
               // 2026-10-21 第四轮(P1-5)：响应对象的键就是完整手机号（doc_id），value 脱敏形同虚设——
