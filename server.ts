@@ -627,6 +627,8 @@ async function getTodayOrderCounts(): Promise<Map<string, number>> {
 //（仅审批/改名等状态机写，位置上报永不写它）。位置上报的名字字段一律以它为准，
 // 客户端本地的旧名不得回写覆盖（见 /api/driver/location 的名字处理）。
 const _authoritativeNameCache = new Map<string, { name: string; at: number }>();
+// 2026-10-25：/api/squad/members 上次完整名单快照（读失败兜底，见该接口内说明）。
+let _squadMembersLastGood: { at: number; list: any[] } | null = null;
 async function getAuthoritativeDriverName(phone: string): Promise<string> {
   const p = String(phone || '').replace(/\D/g, '').trim();
   if (!p) return '';
@@ -652,8 +654,46 @@ async function getAuthoritativeDriverName(phone: string): Promise<string> {
       if (n && !isGenericDriverName(n, p)) name = n;
     } catch (_) {}
   }
+  // 2026-10-25：成员档姓名本身是通用名（历史审批误写）时，继续按申请/档案记录
+  // 兜底解析真实姓名，让位置上报的权威名治愈链能把各表一起纠正过来。
+  if (!name) {
+    try { name = await resolveRealNameFromRecords(p); } catch (_) {}
+  }
   _authoritativeNameCache.set(p, { name, at: Date.now() });
   return name;
+}
+
+// 2026-10-25：真实姓名兜底解析——按 申请记录 → 线上单申请 → 司机档案 的顺序，
+// 找司机本人留下的非通用名。起因：审批人手机本地解析不出申请人真名时，审批
+// 把通用名（司机+尾号）写进了成员档（生产实证：蔡涛被写成「司机6058」，
+// 名单页按通用名过滤整行剔除、附近页只见司机6058）。MySQL 与 JSON 镜像各查一遍。
+async function resolveRealNameFromRecords(p: string): Promise<string> {
+  const sources: Array<[string, string[]]> = [
+    ['squad_applications', ['name', 'driverName', 'applicantName']],
+    ['online_applications', ['name', 'driverName', 'applicantName']],
+    ['driver_users', ['name', 'driverName']],
+  ];
+  for (const [col, fields] of sources) {
+    try {
+      const doc: any = await Promise.resolve(readStatusDocument(col, p)).catch(() => null);
+      if (doc) {
+        for (const f of fields) {
+          const n = String(doc[f] || '').trim();
+          if (n && !isGenericDriverName(n, p)) return n.slice(0, 8);
+        }
+      }
+    } catch (_) {}
+    try {
+      const doc = readLocalJsonDb()?.[col]?.[p];
+      if (doc) {
+        for (const f of fields) {
+          const n = String(doc[f] || '').trim();
+          if (n && !isGenericDriverName(n, p)) return n.slice(0, 8);
+        }
+      }
+    } catch (_) {}
+  }
+  return '';
 }
 
 const DEVELOPER_PHONE_SERVER = '15509601222';
@@ -4645,6 +4685,8 @@ function getClientIp(req: any): string {
       // 2026-10-23 第二十六轮：MySQL 已有行（任意状态）的手机号集合——JSON 补缺不得越过它，
       // 防 MySQL 已驳回/已改状态者被镜像里的旧已通过文档复活进名单（派单不走本接口，仅名单面）。
       const mysqlMemberPhones = new Set<string>();
+      // 2026-10-25：MySQL 名单读是否成功（JSON-only 模式恒 true）；失败时走快照兜底。
+      let mysqlReadOk = !(isMySQLEnabled && mysqlPool);
       const dbData = readLocalJsonDb();
       const removedPhones = new Set<string>();
       try {
@@ -4685,6 +4727,7 @@ function getClientIp(req: any): string {
             'SELECT `doc_id`, `data` FROM `daijia_documents` WHERE `collection` = ?',
             ['squad_members']
           );
+          mysqlReadOk = true;
           if (rows && Array.isArray(rows)) {
             rows.forEach((r: any) => {
               try {
@@ -4727,6 +4770,71 @@ function getClientIp(req: any): string {
           userRole: '开发者司机',
           status: '已通过'
         });
+      }
+
+      // 2026-10-25：名单完整性兜底——MySQL 读失败时本接口过去会静默降级为镜像
+      // 子集，客户端整表采信就表现为人数骤降闪烁（生产实证 9→1、8→2 后自愈）。
+      // 读成功记住完整名单；读失败且有 10 分钟内快照时用快照顶上，绝不发残缺名单。
+      if (mysqlReadOk) {
+        try { _squadMembersLastGood = { at: Date.now(), list: JSON.parse(JSON.stringify(list)) }; } catch (_) {}
+      } else if (_squadMembersLastGood && Date.now() - _squadMembersLastGood.at < 10 * 60 * 1000) {
+        try {
+          const snap = JSON.parse(JSON.stringify(_squadMembersLastGood.list));
+          list.length = 0;
+          snap.forEach((e: any) => list.push(e));
+        } catch (_) {}
+      }
+
+      // 2026-10-25：名单响应瘦身——成员档内嵌收款码 base64，9 人名单实测 464KB，
+      // 单次生成/传输 15-30 秒，多端 2.5 秒轮询把单线程服务端拖到超时，名单面
+      // 出现整表闪烁/残缺。与 /api/db/list 第四十二轮口径一致：他人文档删 QR 类
+      // 字段（列表消费方从不读他人收款码，收款码走单文档 GET 与专用接口），
+      // 本人文档保留全字段。体积降到几 KB 后轮询与解析都回到毫秒级。
+      try {
+        const QR_SLIM = ['wechatQrCode', 'qrCode', 'wechatClean', 'alipayQrCode', 'paymentQrCode', 'driverQrCode', 'qrcode_url'];
+        const requesterDigits = String((req as any).authPhone || '').replace(/\D/g, '').trim();
+        for (const entry of list) {
+          const p = String(entry?.phone || entry?.id || '').replace(/\D/g, '').trim();
+          if (!p || p === requesterDigits) continue;
+          for (const f of QR_SLIM) { if (entry[f] !== undefined) delete entry[f]; }
+        }
+      } catch (_) {}
+
+      // 2026-10-25：名单姓名自愈——成员档姓名为通用名（历史审批误写，如蔡涛被写成
+      // 「司机6058」）时，按申请/档案记录解析真实姓名替换展示，并回写成员档
+      // （MySQL+镜像双写、失效权威名缓存），治愈一次后不再重复触发；解析不到
+      // 才保留原样（名单不按名字剔人、计数不受影响，待管理员改名纠正）。
+      for (const entry of list) {
+        try {
+          const p = String(entry?.phone || entry?.id || '').replace(/\D/g, '').trim();
+          const n = String(entry?.name || entry?.driverName || '').trim();
+          if (!p || !isGenericDriverName(n, p)) continue;
+          const healed = await resolveRealNameFromRecords(p).catch(() => '');
+          if (!healed) continue;
+          entry.name = healed;
+          entry.driverName = healed;
+          _authoritativeNameCache.delete(p);
+          try {
+            const healPayload = { name: healed, driverName: healed, updatedAt: new Date().toISOString() };
+            if (isMySQLEnabled && mysqlPool) {
+              const [rows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['squad_members', p]);
+              if (rows && rows.length > 0) {
+                const existingDoc = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+                await mysqlPool.query(
+                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                  'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                  ['squad_members', p, JSON.stringify({ ...existingDoc, ...healPayload })]);
+              }
+            }
+            const dbDataHeal = readLocalJsonDb();
+            if (dbDataHeal.squad_members?.[p]) {
+              dbDataHeal.squad_members[p] = { ...dbDataHeal.squad_members[p], ...healPayload };
+              writeLocalJsonDb(dbDataHeal);
+            }
+          } catch (_) {}
+        } catch (_) {}
       }
 
       return res.json({ success: true, list });
@@ -9263,6 +9371,16 @@ function getClientIp(req: any): string {
           return res.status(400).json({ success: false, error: '该司机没有入队申请记录，不能直接审批（请先让司机提交申请）' });
         }
       }
+      // 2026-10-25：审批人传来的名字可能是其手机本地解析的通用名（司机+尾号）——
+      // 审批人没接触过申请人时，本地名字注册表只能给出通用名（生产实证：王元平
+      // 审批蔡涛，传名「司机6058」被原样写进成员档，名单页按通用名过滤把蔡涛
+      // 整行滤掉、附近页只见司机6058）。服务端以司机本人在申请/档案里留下的
+      // 真实姓名为准纠正，审批人传名仅作兜底。
+      let resolvedName = cleanName;
+      if (isGenericDriverName(cleanName, cleanPhone)) {
+        const fromRecords = await resolveRealNameFromRecords(cleanPhone).catch(() => '');
+        if (fromRecords) resolvedName = fromRecords;
+      }
       const now = new Date().toISOString();
       const nowTs = Date.now();
       // P1-4修复(2026-10-15)：approvedBy取token身份，不信任客户端自报
@@ -9297,7 +9415,7 @@ function getClientIp(req: any): string {
       } catch (_) {}
       const memberPayload = {
         id: cleanPhone, phone: cleanPhone, phoneNumber: cleanPhone,
-        name: cleanName, driverName: cleanName,
+        name: resolvedName, driverName: resolvedName,
         role: keepRole, userRole: keepRole,
         status: '已通过', approvalStatus: '已通过',
         approvedBy: realApprover, approvedRole: String(approvedRole || ''),
