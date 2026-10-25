@@ -552,6 +552,39 @@ function docLatestTimeMs(doc: any): number {
 // 防御 JSON 镜像与 MySQL 的存量字段分叉长期不自愈。
 const _locMysqlFlushAt = new Map<string, number>();
 
+// 2026-10-25：司机权威姓名缓存（60 秒）——权威来源是成员事实 squad_members
+//（仅审批/改名等状态机写，位置上报永不写它）。位置上报的名字字段一律以它为准，
+// 客户端本地的旧名不得回写覆盖（见 /api/driver/location 的名字处理）。
+const _authoritativeNameCache = new Map<string, { name: string; at: number }>();
+async function getAuthoritativeDriverName(phone: string): Promise<string> {
+  const p = String(phone || '').replace(/\D/g, '').trim();
+  if (!p) return '';
+  const hit = _authoritativeNameCache.get(p);
+  if (hit && Date.now() - hit.at < 60000) return hit.name;
+  let name = '';
+  if (isMySQLEnabled && mysqlPool) {
+    try {
+      const [rows]: any = await mysqlPool.query(
+        'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+        ['squad_members', p]);
+      if (rows && rows.length > 0) {
+        const d = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
+        const n = String(d?.name || d?.driverName || '').trim();
+        if (n && !isGenericDriverName(n, p)) name = n;
+      }
+    } catch (_) {}
+  }
+  if (!name) {
+    try {
+      const d = readLocalJsonDb()?.['squad_members']?.[p];
+      const n = String(d?.name || d?.driverName || '').trim();
+      if (n && !isGenericDriverName(n, p)) name = n;
+    } catch (_) {}
+  }
+  _authoritativeNameCache.set(p, { name, at: Date.now() });
+  return name;
+}
+
 const DEVELOPER_PHONE_SERVER = '15509601222';
 
 // P1: 定时清理内存泄漏（verificationCodes/dispatchLogs/authTokens）
@@ -4165,9 +4198,22 @@ function getClientIp(req: any): string {
       // 2026-10-21 第四轮：body 未带 isBusy 时不许把默认 false 写进 patch——行程中司机的忙碌状态
       // 会被不带该字段的位置上报冲掉（派单过滤随即失效）。
       if (isBusy === undefined) delete (patch as any).isBusy;
-      if (driverName && !isGenericDriverName(driverName, phone)) {
-        patch.driverName = driverName;
-        patch.name = driverName;
+      // 2026-10-25：名字以服务端成员事实为准，客户端上报的名字不得覆盖。
+      // 背景：被管理员改名的司机，其手机本地名字注册表仍是申请旧名，此前每次
+      // 定位上报都会把旧名写回 driver_users/driver_locations——改名成果被自家
+      // 上报持续冲刷，重启后又经镜像/节流写回灌 MySQL（生产实证：15121904440
+      // 改名林俊杰后三表反复回到李扬）。口径：squad_members 有真实姓名时 patch
+      // 强制用权威名（顺带治愈两表存量旧名）；查不到权威名才采信客户端上报
+      //（首次注册期成员事实尚未建立）。
+      let nameForPatch = '';
+      if (driverName && !isGenericDriverName(driverName, phone)) nameForPatch = String(driverName).trim();
+      try {
+        const authName = await getAuthoritativeDriverName(phone);
+        if (authName) nameForPatch = authName;
+      } catch (_) {}
+      if (nameForPatch) {
+        patch.driverName = nameForPatch;
+        patch.name = nameForPatch;
       }
       if (req.body.city) patch.city = req.body.city;
       if (req.body.version) patch.version = req.body.version;
@@ -9505,6 +9551,8 @@ function getClientIp(req: any): string {
       if (syncFailures > 0) {
         return res.status(500).json({ success: false, error: '改名同步失败，请重试' });
       }
+      // 2026-10-25：改名后失效权威名缓存，位置上报立即改用新名治愈各表。
+      _authoritativeNameCache.delete(cleanPhone);
       try { await logAdminOperation('rename', operatorPhone, cleanPhone, `改名为 ${cleanName}`, req); } catch (_) {}
       return res.json({ success: true });
     } catch (err: any) {
