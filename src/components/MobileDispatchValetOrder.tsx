@@ -2019,9 +2019,14 @@ export default function MobileDispatchValetOrder({
         }
 
         // 2. Fetch squad_members from Aliyun
-        const res2 = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+        // 2026-10-25：同 fetchSquadFromHttp——改走 /api/squad/members 完整名单，
+        // 把 list 形态归一成 docs 形态喂给下方原解析（非管理员不再只剩本人文档）。
+        const res2 = await fetch(`${baseUrl}/api/squad/members?_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res2.ok) {
           const json2 = await res2.json();
+          if (json2 && Array.isArray(json2.list) && !Array.isArray(json2.docs)) {
+            json2.docs = json2.list.map((d: any) => ({ id: d.phone || d.id, data: d }));
+          }
           if (json2 && Array.isArray(json2.docs)) {
             const phones: string[] = [];
             const list: any[] = [];
@@ -2155,7 +2160,11 @@ export default function MobileDispatchValetOrder({
     const fetchSquadFromHttp = async () => {
       try {
         const baseUrl = getBaseApiUrl();
-        const res = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+        // 2026-10-25：名单改走 /api/squad/members——该接口对所有登录用户返回完整
+        // 已通过名单；原 /api/db/list 对非管理员强制只读本人文档，城市派单员等
+        // 管理层在管理团队里只能看到开发者+自己（生产实证 18695119126 看不到
+        // 15121904440、小队人数少算 1 人）。本处解析本就兼容 list 形态。
+        const res = await fetch(`${baseUrl}/api/squad/members?_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res.ok) {
           const json = await res.json();
           let rawList: any[] = [];

@@ -248,6 +248,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
 
   let isDisposed = false;
   let timerId: any = null;
+  let guardianId: any = null;
   let watchPositionId: number | null = null;
   let nativeWatcherId: string | null = null;
 
@@ -256,9 +257,11 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
   let lastReportTime = 0;
 
   // 上传定位数据
+  // 2026-10-25：整个函数体加总兜底——它在定位回调里被调用且后面紧跟 scheduleNext，
+  // 内部任何同步抛错（名字解析/状态回调/存储）都会让上报链断在这一轮、永不续排。
   const uploadCoordinates = (lat: number, lng: number, methodUsed: string) => {
     if (isDisposed || !lat || !lng) return;
-
+   try {
     lastReportedLat = lat;
     lastReportedLng = lng;
     lastReportTime = Date.now();
@@ -317,6 +320,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
         })
       }).then((r) => { if (r.ok) markGpsUploadSuccess(); }).catch(() => {});
     } catch (_) {}
+   } catch (_) {}
   };
 
   // 评估当前动态调频周期（毫秒）
@@ -371,7 +375,17 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
           noGeoLocation: 0,
         });
 
+        // 2026-10-25：回调防挂死——高德 SDK 在 WebView 里偶发永不回调（内部
+        // 计时未武装），而上报链只靠回调续排 scheduleNext，一次挂死=整链静默
+        // 死亡。12 秒未 settle 强制走低精度兜底，链条不许断。
+        let settled = false;
+        const hangTimer = setTimeout(() => {
+          if (!settled && !isDisposed) { settled = true; tryLowAccuracyAmap(); }
+        }, 12000);
         geolocation.getCurrentPosition((status: string, result: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(hangTimer);
           if (isDisposed) return;
           if (status === 'complete' && result.position) {
             const lat = result.position.lat;
@@ -402,7 +416,19 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
           noIpLocate: 0,
           noGeoLocation: 0,
         });
+        // 2026-10-25：同高精度路——25 秒未 settle 强制落 HTML5 兜底，防挂死断链。
+        let settled = false;
+        const hangTimer = setTimeout(() => {
+          if (!settled && !isDisposed) {
+            settled = true;
+            if (navigator.geolocation) fallbackHtml5();
+            else scheduleNext(getNextIntervalMs());
+          }
+        }, 25000);
         geolocation.getCurrentPosition((status: string, result: any) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(hangTimer);
           if (isDisposed) return;
           if (status === 'complete' && result.position) {
             const lat = result.position.lat;
@@ -555,9 +581,26 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
   };
   document.addEventListener('visibilitychange', handleVisibilityChange);
 
+  // 2026-10-25：上报链守护（最后一道保险）——上报链全靠定位回调续命，任一环
+  // 挂死都会静默断报（生产实证：开发者苹果手机前台未锁屏断报 10 分钟被看门狗
+  // 踢下线、附近页整个人消失，滑动下线再上线重启上报器才恢复）。每 15 秒
+  // 检查：超过 90 秒没有任何一次定位成功（lastReportTime 在每次定位成功时
+  // 更新；静止正常间隔约 25-30 秒，阈值不误伤），判定链已死，强制重跑一轮
+  // 定位并重排下一轮；若仍无成功，下一个 90 秒继续拉活，不依赖用户手动重启。
+  lastReportTime = Date.now();
+  guardianId = setInterval(() => {
+    if (isDisposed) return;
+    if (Date.now() - lastReportTime > 90000) {
+      lastReportTime = Date.now();
+      try { executeLocate(); } catch (_) {}
+      scheduleNext(5000);
+    }
+  }, 15000);
+
   return () => {
     isDisposed = true;
     if (timerId) clearTimeout(timerId);
+    if (guardianId) clearInterval(guardianId);
     if (watchPositionId !== null && navigator.geolocation) {
       navigator.geolocation.clearWatch(watchPositionId);
     }

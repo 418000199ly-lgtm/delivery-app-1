@@ -690,7 +690,17 @@ export default function HomeView({
     };
   }, []);
 
+  // 2026-10-25：小队总人数以服务端 /api/squad/members 的权威名单长度为准。
+  // 本地 squadMembers 经 /api/db/list 拉取，该接口对非管理员强制只读本人文档——
+  // 非成员看到的名单恒为空、成员也只看得到自己，按本地名单计数永远少算
+  //（生产实证：新注册账号角标显示 1 人，实际小队 2 人；且成员的计数此前只是
+  // 「开发者+自己」恰与总人数巧合）。fetchLatestSquadData 每轮同步刷新此值。
+  const [squadTotalCount, setSquadTotalCount] = useState<number | null>(null);
+
   const getActiveSquadDriverCount = () => {
+    if (squadTotalCount !== null && squadTotalCount > 0) {
+      return squadTotalCount;
+    }
     // 1. 获取当前被移出小队的名单
     // 2026-10-22 第九轮：只认服务端同步的 removedMemberPhones，不再并入 localStorage
     // dd_removed_squad_phones_v2——本地残留会把已被重新审批移出名单的人继续少算。
@@ -2394,6 +2404,18 @@ export default function HomeView({
           apiMembers = data.data;
         }
       }
+
+      // 2026-10-25：小队总人数走 /api/squad/members 权威名单（该接口对所有登录
+      // 用户返回完整已通过名单）；/api/db/list 对非管理员只给本人文档，计数会少算。
+      try {
+        const resTotal = await fetch(`${baseUrl}/api/squad/members?_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+        if (resTotal.ok) {
+          const totalData = await resTotal.json();
+          if (totalData && Array.isArray(totalData.list)) {
+            setSquadTotalCount(totalData.list.length);
+          }
+        }
+      } catch (_) {}
 
       const resApps = await fetch(`${baseUrl}/api/db/list?col=squad_applications&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
       let apiApps: any[] = [];

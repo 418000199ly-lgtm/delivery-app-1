@@ -1928,9 +1928,14 @@ export default function DispatchValetOrder({
         }
 
         // 2. Fetch squad_members from Aliyun
-        const res2 = await fetch(`${baseUrl}/api/db/list?col=squad_members&_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
+        // 2026-10-25：同移动端——改走 /api/squad/members 完整名单并归一成 docs
+        // 形态；原 /api/db/list 对非管理员只给本人文档，管理层看不到全队名单。
+        const res2 = await fetch(`${baseUrl}/api/squad/members?_t=${Date.now()}`, { cache: 'no-store', headers: { ...getAuthHeaders() } });
         if (res2.ok) {
           const json2 = await res2.json();
+          if (json2 && Array.isArray(json2.list) && !Array.isArray(json2.docs)) {
+            json2.docs = json2.list.map((d: any) => ({ id: d.phone || d.id, data: d }));
+          }
           if (json2 && Array.isArray(json2.docs)) {
             const phones: string[] = [];
             const list: any[] = [];

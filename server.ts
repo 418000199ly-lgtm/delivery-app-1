@@ -552,6 +552,74 @@ function docLatestTimeMs(doc: any): number {
 // 防御 JSON 镜像与 MySQL 的存量字段分叉长期不自愈。
 const _locMysqlFlushAt = new Map<string, number>();
 
+// 2026-10-25：今日成单统一口径（用户拍板）——所有人的今日成单都由服务端按
+// merchant_orders 订单表实时统计，不再采信各手机上报的本地统计（重装清零、
+// 完单不涨、被旧值拉回的双口径分叉就此终结）。口径与客户端 computedStats 严格
+// 对齐：排除转单发起/已转单/已取消；完单认 isCompleted 或 status/statusCategory
+// 命中完单集合；按订单时间戳落 06:00 业务日（北京时间）。5 秒服务端缓存共享
+// 全部请求（locations 本就是 4 秒轮询，计数新鲜度足够）；MySQL 用 updated_at
+// 窗口过滤缩小扫描面（完单必 bump updated_at，窗口外的行不可能是今日完单）。
+let _todayOrderCountsCache: { at: number; map: Map<string, number> } | null = null;
+async function getTodayOrderCounts(): Promise<Map<string, number>> {
+  if (_todayOrderCountsCache && Date.now() - _todayOrderCountsCache.at < 5000) {
+    return _todayOrderCountsCache.map;
+  }
+  const map = new Map<string, number>();
+  const BJ_MS = 8 * 3600 * 1000;
+  const businessDayKey = (t: number): string => {
+    const s = new Date(t + BJ_MS - 6 * 3600 * 1000);
+    return `${s.getUTCFullYear()}-${s.getUTCMonth()}-${s.getUTCDate()}`;
+  };
+  const todayKey = businessDayKey(Date.now());
+  const nowBJ = new Date(Date.now() + BJ_MS);
+  let windowStartUtcMs = Date.UTC(nowBJ.getUTCFullYear(), nowBJ.getUTCMonth(), nowBJ.getUTCDate(), 6, 0, 0) - BJ_MS;
+  if (nowBJ.getUTCHours() < 6) windowStartUtcMs -= 24 * 3600 * 1000;
+  const consider = (doc: any) => {
+    try {
+      if (!doc || typeof doc !== 'object') return;
+      const oStatus = String(doc.status || '');
+      const oCat = String(doc.statusCategory || '');
+      if (doc.isTransferIssuer === true || oStatus === '已转单' || oStatus === 'cancelled' || oCat === '已取消' || doc.isCancelled === true) return;
+      const isCompletion = doc.isCompleted === true ||
+        ['已支付', '已完成', 'completed', 'paid', 'finished', 'settled'].includes(oStatus) ||
+        ['已完成', '已支付', '已结单'].includes(oCat);
+      if (!isCompletion) return;
+      const driver = String(doc.driverPhone || '').replace(/\D/g, '').trim();
+      if (!driver) return;
+      let t = 0;
+      if (typeof doc.timestamp === 'number' && isFinite(doc.timestamp) && doc.timestamp > 0) t = doc.timestamp;
+      else {
+        const ds = doc.fullTimeStr || doc.timeStr || doc.createdTime || doc.createdAt || doc.completedAt;
+        const p = ds ? Date.parse(String(ds)) : NaN;
+        if (!isNaN(p)) t = p;
+      }
+      if (!t || businessDayKey(t) !== todayKey) return;
+      map.set(driver, (map.get(driver) || 0) + 1);
+    } catch (_) {}
+  };
+  let scanned = false;
+  if (isMySQLEnabled && mysqlPool) {
+    try {
+      const [rows]: any = await mysqlPool.query(
+        "SELECT `data` FROM `daijia_documents` WHERE `collection` = 'merchant_orders' AND UNIX_TIMESTAMP(`updated_at`) >= ?",
+        [Math.floor(windowStartUtcMs / 1000)]
+      );
+      (rows || []).forEach((r: any) => {
+        try { consider(typeof r.data === 'string' ? JSON.parse(r.data) : r.data); } catch (_) {}
+      });
+      scanned = true;
+    } catch (_) {}
+  }
+  if (!scanned) {
+    try {
+      const mo = readLocalJsonDb()?.['merchant_orders'] || {};
+      Object.keys(mo).forEach((k) => consider(mo[k]));
+    } catch (_) {}
+  }
+  _todayOrderCountsCache = { at: Date.now(), map };
+  return map;
+}
+
 // 2026-10-25：司机权威姓名缓存（60 秒）——权威来源是成员事实 squad_members
 //（仅审批/改名等状态机写，位置上报永不写它）。位置上报的名字字段一律以它为准，
 // 客户端本地的旧名不得回写覆盖（见 /api/driver/location 的名字处理）。
@@ -4416,6 +4484,16 @@ function getClientIp(req: any): string {
           }
         });
       }
+
+      // 2026-10-25：今日成单统一按订单表口径注入（用户拍板）——覆盖位置文档里
+      // 各手机上报的本地统计值（含 0 完单者强制归 0，防存量旧值残留显示）。
+      try {
+        const todayCounts = await getTodayOrderCounts();
+        Object.keys(locations).forEach((k) => {
+          const p = String(locations[k]?.phone || k || '').replace(/\D/g, '').trim();
+          if (p) locations[k].todayOrders = todayCounts.get(p) || 0;
+        });
+      } catch (_) {}
 
       // 2026-10-22 第六轮：附近地图只显示小队内上线司机——按统一口径过滤成员资格
       // （status 已通过、排除 removed；成员文档 MySQL+JSON 双源合并，与本接口既有合并口径一致）。
