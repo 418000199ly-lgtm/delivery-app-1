@@ -584,7 +584,10 @@ async function getTodayOrderCounts(): Promise<Map<string, number>> {
         ['已支付', '已完成', 'completed', 'paid', 'finished', 'settled'].includes(oStatus) ||
         ['已完成', '已支付', '已结单'].includes(oCat);
       if (!isCompletion) return;
-      const driver = String(doc.driverPhone || '').replace(/\D/g, '').trim();
+      // 归属字段与服务端既有口径（派单占用组装）一致：driverPhone → claimed →
+      // dispatched。生产实证：商户代叫完单文档没有 driverPhone，完成司机记在
+      // claimedDriverPhone/dispatchedDriverPhone，只认 driverPhone 会全员计 0。
+      const driver = String(doc.driverPhone || doc.claimedDriverPhone || doc.dispatchedDriverPhone || '').replace(/\D/g, '').trim();
       if (!driver) return;
       let t = 0;
       if (typeof doc.timestamp === 'number' && isFinite(doc.timestamp) && doc.timestamp > 0) t = doc.timestamp;
