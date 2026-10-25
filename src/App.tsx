@@ -20,7 +20,7 @@ import AlipayMiniSimulator from './components/AlipayMiniSimulator';
 import { isUnsetDestination, autoUpdateOrderDestinationIfUnset, resolveCurrentGpsLocationName, getHighPrecisionLocationName, calculateHaversineDistanceKm } from './utils/locationResolver';
 import { calculateOrderTripCost } from './utils/billingUtils';
 import { findNearestKnownPoi, isDefaultYinchuanCoords } from './utils/geocoding';
-import { resolveDriverRealName, calculateDaysFromExpiry, hasValidLicense } from './utils/nameResolver';
+import { resolveDriverRealName, registerDriverCustomName, calculateDaysFromExpiry, hasValidLicense } from './utils/nameResolver';
 
 import { 
   ChauffeurSettings, 
@@ -2026,6 +2026,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             }
             return changed ? nextSettings : prev;
           });
+
+          // 2026-10-25：管理员改名必须能落到本人手机——本人申请时以旧名调用
+          // updateDriverGlobalName 把旧名钉进了本地名字注册表（resolveDriverRealName
+          // 的最高优先级）与 dd_driver_name_ 缓存；此前的同步只更新 settings，
+          // 注册表永远压着新名（生产实证：15121904440 被改名林俊杰后，服务器三表
+          // 皆新名、本人附近页仍显示申请时的李扬）。这里以服务端档案名为准纠正
+          // 注册表（本地纠正、不回写服务器，服务器本就是对的）。
+          try {
+            const serverName = String((data as any).driverName || (data as any).name || '').trim();
+            if (serverName && serverName !== '代驾司机' && serverName !== '在线代驾司机' &&
+                (userPhone === DEVELOPER_PHONE || serverName !== '吴彦祖') &&
+                resolveDriverRealName(userPhone) !== serverName) {
+              registerDriverCustomName(userPhone, serverName);
+            }
+          } catch (_) {}
 
           // Set both calibration references to this user on successful snapshot delivery
           lastCalibratedPhoneRef.current = userPhone;

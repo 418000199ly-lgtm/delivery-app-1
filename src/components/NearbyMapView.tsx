@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { ChauffeurSettings } from '../types';
 import { db, collection, doc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
-import { formatDriverMaskedName, resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
+import { formatDriverMaskedName, resolveDriverRealName, registerDriverCustomName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES } from '../utils/nameResolver';
 import { scheduleResumeTask } from '../utils/resumeCoordinator';
 import SquadDriverList from './SquadDriverList';
 import HubbleManagerModal from './HubbleManagerModal';
@@ -444,7 +444,15 @@ export default function NearbyMapView({
           const phone = String(data?.phone || docSnap.id || '').trim();
           const name = String(data?.name || data?.driverName || '').trim();
           if (isMeMember(phone, name)) {
-            if (name) setMySquadName(name);
+            if (name) {
+              setMySquadName(name);
+              // 2026-10-25：同 fetchBaotaSquad——服务端本人名纠正本地注册表旧名。
+              try {
+                if (resolveDriverRealName(effectiveMyPhone) !== name) {
+                  registerDriverCustomName(effectiveMyPhone, name);
+                }
+              } catch (_) {}
+            }
           } else if (phone && !isMeMember(phone, name)) {
             // 第六轮修复：与 HTTP /api/squad/members 口径对齐——无名成员也进名单，
             // 旧逻辑要求 name 非空，两路数据源轮流覆盖 squadList 时无名成员会闪烁消失。
@@ -465,7 +473,16 @@ export default function NearbyMapView({
           if (data && Array.isArray(data.list)) {
             const myEntry = data.list.find((m: any) => isMeMember(m?.phone || m?.id, m?.name || m?.driverName));
             if (myEntry && (myEntry.name || myEntry.driverName)) {
-              setMySquadName(myEntry.name || myEntry.driverName);
+              const serverMyName = String(myEntry.name || myEntry.driverName).trim();
+              setMySquadName(serverMyName);
+              // 2026-10-25：同 App 档案同步——成员名单里的本人名字是服务端权威，
+              // 与本地注册表不一致时以服务端为准纠正（管理员改名后本人附近页仍显示
+              // 申请旧名的根因：注册表优先级高于一切候选名且无人更新）。
+              try {
+                if (serverMyName && resolveDriverRealName(effectiveMyPhone) !== serverMyName) {
+                  registerDriverCustomName(effectiveMyPhone, serverMyName);
+                }
+              } catch (_) {}
             }
             const filtered = data.list.filter((m: any) => {
               const phone = String(m?.phone || m?.id || '').trim();
