@@ -547,6 +547,11 @@ function docLatestTimeMs(doc: any): number {
   );
 }
 
+// 2026-10-25：位置上报写 MySQL 的节流地板时间戳（见 /api/driver/location 的
+// skipMysql 逻辑）——静止司机靠它保证至少每 60 秒整档对齐一次 MySQL，
+// 防御 JSON 镜像与 MySQL 的存量字段分叉长期不自愈。
+const _locMysqlFlushAt = new Map<string, number>();
+
 const DEVELOPER_PHONE_SERVER = '15509601222';
 
 // P1: 定时清理内存泄漏（verificationCodes/dispatchLogs/authTokens）
@@ -4256,8 +4261,23 @@ function getClientIp(req: any): string {
           const distM = Math.sqrt(dLat * dLat + dLng * dLng);
           const statusChanged = (isOnline !== undefined && Boolean(prevLoc.isOnline) !== Boolean(isOnline)) ||
             (isBusy !== undefined && Boolean(prevLoc.isBusy) !== Boolean(isBusy));
-          if (distM < 50 && !statusChanged) skipMysql = true;
+          // 2026-10-25：成单数变化也必须落 MySQL。此前 statusChanged 只看在线/忙碌，
+          // 静止司机完单后 todayOrders 只进本地 JSON，而 /api/driver/locations 是
+          // 「MySQL 整档优先、JSON 只补缺号」——有 MySQL 行时 JSON 的新计数永远
+          // 读不出来，小队列表里他人今日成单长期冻结（生产实证：林俊杰自家账本
+          // driver_users 记 1 单、位置文档对外仍显示 0 单；开发者本人 3 单对外 2 单）。
+          // 完单是低频事件，强制写不影响原 90% 节流收益。
+          const statsChanged = todayOrders !== undefined && !isNaN(todayOrders) &&
+            Number((prevLoc as any).todayOrders || 0) !== todayOrders;
+          // 存量分叉兜底：prevLoc 读的是 JSON 镜像，若 MySQL 早已与 JSON 分叉
+          //（旧节流冻住的计数/名字等），靠「变化触发」永远发现不了——故加 60 秒
+          // 强制刷 MySQL 地板：每个持续上报的司机至少每分钟整档对齐一次，
+          // 任何字段分叉最迟 60 秒自愈；写入量仍远低于逐次上报。
+          const lastFlush = _locMysqlFlushAt.get(phone) || 0;
+          const flushDue = Date.now() - lastFlush >= 60000;
+          if (distM < 50 && !statusChanged && !statsChanged && !flushDue) skipMysql = true;
         }
+        if (!skipMysql) _locMysqlFlushAt.set(phone, Date.now());
         if (!skipMysql) {
           // Fire-and-forget async update with error catching
           // 2026-10-23 第二十五轮：同 /api/driver/status——更新只 MERGE_PATCH 本次 patch 字段，
