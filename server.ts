@@ -2205,6 +2205,32 @@ function getClientIp(req: any): string {
             return res.status(403).json({ exists: false, error: '无权读取他人订单' });
           }
         }
+        // 2026-10-30 修复（曹方信 17398459567 实报）：后台开会员后 App 设置页
+        // 已显示 VIP、二维码创单等功能却仍报「非VIP」，退出重登才恢复。
+        // 根因在 App 内两条同步路径抢跑：订阅路径（经 dbProxy、带 X-App-Version
+        // 头）先把 settings.vipExpiry 改掉，却不写功能门禁留痕 dd_vip_expiry_；
+        // 轮询路径 checkStatusSync（裸 fetch、无版本头）本应连留痕一起写，但其
+        // 写入被「settings 变化才写」的守卫挡住（订阅已先改），留痕永远停在
+        // 开通前的「待开通」，门禁认留痕不认显示。服务端收口：本人 driver_users
+        // 单文档经带版本头的请求（即 dbProxy 通道）读取时不下发 vipExpiry，
+        // 使 checkStatusSync 成为 App 内 vipExpiry 的唯一轮询同步入口——它每次
+        // 采信新值都连留痕一并写入，显示与门禁永不分叉。他人文档、裸 fetch
+        // （checkStatusSync/乘客页）、管理后台读取均不受影响。
+        if (col === 'driver_users' && cleanPhone === requesterPhone) {
+          const appVersionHdr = String((req.headers as any)?.['x-app-version'] || '').trim();
+          if (appVersionHdr) {
+            const { vipExpiry: _omitVip, ...restData } = foundData as any;
+            return res.json({ exists: true, id: docId, data: restData });
+          }
+        }
+        // 2026-10-30：单文档读 driver_locations 同样按订单表覆盖 todayOrders
+        // （与 /api/driver/locations、db/list 同口径，防不同读路径给出不同成单数）
+        if (col === 'driver_locations') {
+          try {
+            const tcMap = await getTodayOrderCounts();
+            return res.json({ exists: true, id: docId, data: { ...(foundData as any), todayOrders: tcMap.get(cleanPhone) || 0 } });
+          } catch (_) {}
+        }
         return res.json({ exists: true, id: docId, data: foundData });
       }
       // 城市配置兜底（2026-10-11）：部署覆盖导致配置丢失时，返回银川默认开通，避免"暂未开通服务"
@@ -2435,7 +2461,26 @@ function getClientIp(req: any): string {
             return true;
           });
           docs.forEach(slimListQrFields);
-
+          // 2026-10-30 修复（今日成单闪烁，用户实报）：App 里有两路定位数据——
+          // /api/driver/locations（已按订单表注入权威今日成单）与 db/list 的
+          // driver_locations 原始文档（司机本机上报的本地统计，商户代叫单常
+          // 不在司机本地订单列表里、系统性少算）。两路轮询交替合并，同一司机
+          // 的成单一会是权威值、一会是原始 0，列表里来回闪。此处与 locations
+          // 接口同口径：返回前按订单表计数覆盖 todayOrders（只改响应、不写库），
+          // 两路同源后合并顺序不再影响显示。
+          if (col === 'driver_locations' && docs.length) {
+            try {
+              const tcMap = await getTodayOrderCounts();
+              docs.forEach((d: any) => {
+                const p = String(d?.phone || d?.id || '').replace(/\D/g, '').trim();
+                if (p) {
+                  const c = tcMap.get(p) || 0;
+                  d.todayOrders = c;
+                  if (d.data) d.data.todayOrders = c;
+                }
+              });
+            } catch (_) {}
+          }
           return res.json({ docs, list: docs, data: docs, watermark: listWatermark });
         } catch (mysqlErr: any) {
           console.error('[DB Proxy LIST MySQL Error]:', mysqlErr);
@@ -2521,7 +2566,26 @@ function getClientIp(req: any): string {
         return true;
       });
       docs.forEach(slimListQrFields);
-
+      // 2026-10-30 修复（今日成单闪烁，用户实报）：App 里有两路定位数据——
+      // /api/driver/locations（已按订单表注入权威今日成单）与 db/list 的
+      // driver_locations 原始文档（司机本机上报的本地统计，商户代叫单常
+      // 不在司机本地订单列表里、系统性少算）。两路轮询交替合并，同一司机
+      // 的成单一会是权威值、一会是原始 0，列表里来回闪。此处与 locations
+      // 接口同口径：返回前按订单表计数覆盖 todayOrders（只改响应、不写库），
+      // 两路同源后合并顺序不再影响显示。
+      if (col === 'driver_locations' && docs.length) {
+        try {
+          const tcMap = await getTodayOrderCounts();
+          docs.forEach((d: any) => {
+            const p = String(d?.phone || d?.id || '').replace(/\D/g, '').trim();
+            if (p) {
+              const c = tcMap.get(p) || 0;
+              d.todayOrders = c;
+              if (d.data) d.data.todayOrders = c;
+            }
+          });
+        } catch (_) {}
+      }
       return res.json({ docs, list: docs, data: docs, watermark: listWatermark });
     } catch (err: any) {
       console.error('[DB Proxy LIST Exception]:', err);
