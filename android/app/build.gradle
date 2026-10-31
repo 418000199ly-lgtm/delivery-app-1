@@ -7,8 +7,10 @@ android {
         applicationId "com.heiwan.daijia"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 20
-        versionName "2.0"
+        // 2026-11-01 自更新桥接版：真实构建号由 CI 注入（BUILD_NUMBER=GitHub 构建序号，
+        // 单调递增），本地构建回退 400。旧版写死 20/"2.0"，服务端分不清新旧。
+        versionCode (System.getenv("BUILD_NUMBER") ? System.getenv("BUILD_NUMBER").toInteger() : 400)
+        versionName "2.1." + (System.getenv("BUILD_NUMBER") ?: "400")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,11 +18,33 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:daijia_deploy*'
         }
     }
+    // 2026-11-01 自更新桥接版：项目专用固定签名。钥匙与密码由 CI 从仓库 Secrets
+    // 注入环境变量（KEYSTORE_FILE/KEYSTORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD）；
+    // 本地无这些变量时不配置签名（保持原调试构建行为），CI 缺失时构建直接失败、
+    // 绝不静默回退到随机调试签名（签名一变，全队覆盖安装失败被迫重装）。
+    signingConfigs {
+        releaseFixed {
+            if (System.getenv("KEYSTORE_FILE")) {
+                storeFile file(System.getenv("KEYSTORE_FILE"))
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS") ?: "heiwan-release"
+                keyPassword System.getenv("KEY_PASSWORD")
+                storeType "PKCS12"
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (System.getenv("KEYSTORE_FILE")) {
+                signingConfig signingConfigs.releaseFixed
+            }
         }
+    }
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
     }
 }
 

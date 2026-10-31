@@ -58,6 +58,7 @@ import {
   Store
 } from 'lucide-react';
 import DispatchValetOrder from './DispatchValetOrder';
+import AppVersionManager from './AppVersionManager';
 import AdminBillingRules from './AdminBillingRules';
 import { resolveDriverRealName, AUTHORITATIVE_REAL_DRIVER_NAMES, isGenericDriverName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, syncRemovedSquadPhones, isMerchantAccountUnified, hasValidLicense } from '../utils/nameResolver';
 import { DEVELOPER_PHONE } from '../utils/constants';
@@ -6623,6 +6624,7 @@ export default function AdminPanel({
         {/* 11. MASTER CONTROLS TAB */}
         {activeTab === 'master_controls' && (
           <div className="space-y-6 animate-in fade-in duration-200">
+            <AppVersionManager />
             {/* 中国大陆所有城市独立功能开关与小队名称管理 */}
             <div className="bg-[#12141F] rounded-2xl border border-slate-900 p-6 space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-indigo-950/20 pb-4">

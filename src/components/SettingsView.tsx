@@ -1,4 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
+
+  // 2026-11-01 自更新：设置页手动检查更新
+  const [manualUpdateInfo, setManualUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState<boolean>(false);
+  const [updateCheckMsg, setUpdateCheckMsg] = useState<string>('');
+  const handleManualCheckUpdate = async () => {
+    if (checkingUpdate) return;
+    setCheckingUpdate(true);
+    setUpdateCheckMsg('');
+    try {
+      const info = await checkAppUpdate();
+      if (info && info.hasUpdate) {
+        setManualUpdateInfo(info);
+      } else if (info) {
+        setUpdateCheckMsg('已是最新版本');
+      } else {
+        setUpdateCheckMsg(isNativeApp() ? '检查失败，请检查网络后重试' : '网页版无需更新');
+      }
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Download, AlertCircle } from 'lucide-react';
 import { ChauffeurSettings, checkVipActive, checkVipActiveServerSynced } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
@@ -7,6 +29,8 @@ import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders }
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
 import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
+import AppUpdateModal from './AppUpdateModal';
+import { checkAppUpdate, APP_BUILD, APP_VERSION_LABEL, isNativeApp, type AppUpdateInfo } from '../lib/appUpdate';
 
 export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl };
 
@@ -618,6 +642,17 @@ export default function SettingsView({
           <div className="text-gray-400 font-medium text-sm text-center">
             <span>版本号：{systemVersion}</span>
           </div>
+          <div className="text-gray-400 text-xs text-center">
+            <span>当前版本：{APP_VERSION_LABEL}（构建 {APP_BUILD}）</span>
+          </div>
+          <button
+            onClick={handleManualCheckUpdate}
+            disabled={checkingUpdate}
+            className="px-4 py-1.5 rounded-full bg-teal-600 text-white text-xs font-semibold active:bg-teal-700 disabled:opacity-50 cursor-pointer"
+          >
+            {checkingUpdate ? '正在检查…' : '检查更新'}
+          </button>
+          {updateCheckMsg ? <div className="text-xs text-gray-400">{updateCheckMsg}</div> : null}
           <div className="flex flex-row items-center justify-center space-x-3 text-xs text-teal-600 font-medium">
             <button 
               onClick={() => setActiveDoc('disclaimer')} 
@@ -1287,11 +1322,21 @@ export default function SettingsView({
 
       {/* Online Order Application / Qualification Modal */}
       {showOnlineAppModal && (
-        <OnlineOrderApplicationModal
+<OnlineOrderApplicationModal
           userPhone={effectivePhone}
           settings={settings}
           onClose={() => setShowOnlineAppModal(false)}
           onUpdateSettings={onUpdateSettings}
+        />
+      )}
+
+      {/* 2026-11-01 自更新：设置页手动检查更新的弹窗 */}
+      {manualUpdateInfo && (
+        <AppUpdateModal
+          info={manualUpdateInfo}
+          forced={manualUpdateInfo.force}
+          onClose={() => setManualUpdateInfo(null)}
+          onSnooze={() => setManualUpdateInfo(null)}
         />
       )}
 

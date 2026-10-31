@@ -53,6 +53,8 @@ import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { scheduleResumeTask } from './utils/resumeCoordinator';
 import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusyStatus } from './utils/powerAndLocationManager';
 import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
+import AppUpdateModal from './components/AppUpdateModal';
+import { checkAppUpdate, hasPendingForcedUpdate, isUpdateSnoozed, type AppUpdateInfo } from './lib/appUpdate';
 
 const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => {
   const norm = (cityName || '').trim();
@@ -465,6 +467,41 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   const [sysUpgradeUrl, setSysUpgradeUrl] = useState<string>('https://download.heiwan.com/max');
   const [sysXianyuUrl, setSysXianyuUrl] = useState<string>('https://www.goofish.com');
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false);
+  // 2026-11-01 App 自更新：问询结果与弹窗开关（口径见 lib/appUpdate.ts）
+  const [appUpdateInfo, setAppUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [showAppUpdateModal, setShowAppUpdateModal] = useState<boolean>(false);
+
+  // 2026-11-01 自更新问询：启动即问，之后每 60 秒一问（随机错峰在服务端灰度与
+  // 本地抖动共同承担）；下线瞬间补问一次。失败静默，绝不打扰司机。
+  useEffect(() => {
+    let alive = true;
+    const run = async () => {
+      const info = await checkAppUpdate().catch(() => null);
+      if (alive && info) setAppUpdateInfo(info);
+    };
+    const first = setTimeout(run, 3000 + Math.floor(Math.random() * 4000));
+    const timer = setInterval(run, 60000);
+    return () => { alive = false; clearTimeout(first); clearInterval(timer); };
+  }, []);
+
+  // 自更新弹窗口径：仅在【下线】时弹（上线跑单永不打扰）；强制版必弹，
+  // 可选版每天最多主动弹一次；暂缓期内不弹。上线后弹窗自动收起。
+  useEffect(() => {
+    if (!appUpdateInfo || !appUpdateInfo.hasUpdate) return;
+    if (isOnline) { setShowAppUpdateModal(false); return; }
+    if (isUpdateSnoozed()) return;
+    if (appUpdateInfo.force) {
+      setShowAppUpdateModal(true);
+    } else {
+      try {
+        const last = Number(localStorage.getItem('dd_app_update_optional_last') || 0);
+        if (Date.now() - last > 24 * 3600 * 1000) {
+          localStorage.setItem('dd_app_update_optional_last', String(Date.now()));
+          setShowAppUpdateModal(true);
+        }
+      } catch (_) {}
+    }
+  }, [appUpdateInfo, isOnline]);
 
   // Initialize Audio Context & Speech Synthesis unlock listener
   useEffect(() => {
@@ -3689,6 +3726,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   const handleToggleOnline = (online: boolean) => {
     if (online) {
+      // 2026-11-01 自更新强制门：有强制升级未升，不让上线（暂缓期内放行，防网络差锁死司机）
+      if (hasPendingForcedUpdate() && !isUpdateSnoozed()) {
+        // 顺手刷新一次问询结果，保证弹窗内容是最新配置
+        checkAppUpdate().then((info) => { if (info) setAppUpdateInfo(info); }).catch(() => {});
+        setShowAppUpdateModal(true);
+        return;
+      }
       if (isClientNeedsUpgrade(CURRENT_CLIENT_APP_VERSION, sysVersion, sysForceUpgrade)) {
         setShowUpgradeModal(true);
         return;
@@ -4506,6 +4550,26 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
               </span>
             </div>
           )}
+          {/* 2026-11-01 App 自更新弹窗（强制/可选，口径见 lib/appUpdate.ts） */}
+          {showAppUpdateModal && appUpdateInfo && appUpdateInfo.hasUpdate && (
+            <AppUpdateModal
+              info={appUpdateInfo}
+              forced={appUpdateInfo.force}
+              onClose={!appUpdateInfo.force ? () => setShowAppUpdateModal(false) : undefined}
+              onSnooze={() => setShowAppUpdateModal(false)}
+            />
+          )}
+
+          {/* 2026-11-01 App 自更新弹窗（强制/可选，口径见 lib/appUpdate.ts） */}
+          {showAppUpdateModal && appUpdateInfo && appUpdateInfo.hasUpdate && (
+            <AppUpdateModal
+              info={appUpdateInfo}
+              forced={appUpdateInfo.force}
+              onClose={!appUpdateInfo.force ? () => setShowAppUpdateModal(false) : undefined}
+              onSnooze={() => setShowAppUpdateModal(false)}
+            />
+          )}
+
         </div>
       </div>
     );

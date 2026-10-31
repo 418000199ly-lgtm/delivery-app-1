@@ -12,6 +12,8 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        // 2026-11-01 自更新：注册 App 内下载安装插件（须在 super.onCreate 前）
+        registerPlugin(HeiwanInstallerPlugin.class);
         super.onCreate(savedInstanceState);
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
 

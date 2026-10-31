@@ -5235,6 +5235,277 @@ function getClientIp(req: any): string {
     }
   }, 30000);
 
+  // ============================================================
+  // 2026-11-01 App 自更新系统（桥接版配套，用户定型口径）：
+  // - 管理后台「App 版本管理」发布新版并可开强制升级；
+  // - 司机 App 每 60 秒问询 /api/app/version（响应几百字节、配置走内存缓存，
+  //   负载约现有流量 1%）；是否弹窗、是否拦上线由 App 按「下线才弹」口径执行；
+  // - 安装包放服务端 downloads/ 目录，本接口以带时效 HMAC 签名的地址下发，
+  //   下载并发上限 6、支持断点续传（Range），防盗链、防挤占派单带宽；
+  // - 灰度：rollout 为百分比，按手机号散列决定谁先收到新版。
+  // 配置存 config/app_update 文档：{ android: {...}, ios: {...} }，每平台含
+  // build/name/notes/file/sha256/size/force/rollout/publishedAt/publishedBy。
+  // ============================================================
+  const APP_DOWNLOADS_DIR = path.resolve(process.cwd(), 'downloads');
+  let _appUpdateCfgCache: { at: number; cfg: any } = { at: 0, cfg: null };
+  async function getAppUpdateConfig(): Promise<any> {
+    if (_appUpdateCfgCache.cfg && Date.now() - _appUpdateCfgCache.at < 15000) return _appUpdateCfgCache.cfg;
+    let cfg: any = {};
+    try {
+      const doc: any = await readCanonicalDocument('config', 'app_update');
+      if (doc && typeof doc === 'object') cfg = doc;
+    } catch (_) {}
+    _appUpdateCfgCache = { at: Date.now(), cfg };
+    return cfg;
+  }
+  async function writeAppUpdateConfig(cfg: any): Promise<void> {
+    const dataStr = JSON.stringify(cfg);
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['config', 'app_update', dataStr]
+      );
+    }
+    try {
+      const dbData = readLocalJsonDb();
+      if (!dbData['config']) dbData['config'] = {};
+      dbData['config']['app_update'] = cfg;
+      writeLocalJsonDb(dbData);
+    } catch (_) {}
+    _appUpdateCfgCache = { at: Date.now(), cfg };
+  }
+  let _dlSecretCache: string = '';
+  async function getDownloadSecret(): Promise<string> {
+    if (_dlSecretCache) return _dlSecretCache;
+    try {
+      const cfgDoc: any = await readCanonicalDocument('config', '_config');
+      if (cfgDoc && cfgDoc.tokenSecret) { _dlSecretCache = String(cfgDoc.tokenSecret); return _dlSecretCache; }
+    } catch (_) {}
+    // 兜底：进程级随机密钥（重启后旧下载链接失效，App 每分钟重新问询取新链接，无感）
+    _dlSecretCache = 'dl-' + crypto.randomBytes(24).toString('hex');
+    return _dlSecretCache;
+  }
+  function appDownloadSig(secret: string, platform: string, file: string, exp: number): string {
+    return crypto.createHmac('sha256', secret).update(`${platform}.${file}.${exp}`).digest('hex');
+  }
+  function appRolloutHit(phone: string, rollout: number): boolean {
+    if (rollout >= 100) return true;
+    if (rollout <= 0) return false;
+    const h = crypto.createHash('md5').update(phone || 'anon').digest('hex');
+    return (parseInt(h.slice(0, 6), 16) % 100) < rollout;
+  }
+
+  app.get('/api/app/version', async (req: any, res: any) => {
+    try {
+      const platform = req.query.platform === 'ios' ? 'ios' : 'android';
+      const clientBuild = parseInt(String(req.query.build || '0'), 10) || 0;
+      const phone = String(req.query.phone || '').replace(/\D/g, '').trim();
+      const all = await getAppUpdateConfig();
+      const cfg = all && typeof all[platform] === 'object' ? all[platform] : null;
+      const latestBuild = cfg ? (parseInt(String(cfg.build || '0'), 10) || 0) : 0;
+      const rollout = cfg && cfg.rollout !== undefined ? Math.max(0, Math.min(100, Number(cfg.rollout))) : 100;
+      const hit = cfg ? appRolloutHit(phone, rollout) : false;
+      const hasUpdate = !!(cfg && cfg.file && latestBuild > clientBuild && hit);
+      const out: any = {
+        success: true,
+        serverTime: Date.now(),
+        platform,
+        latestBuild,
+        currentBuild: clientBuild,
+        hasUpdate,
+        force: !!(cfg && cfg.force),
+        name: cfg?.name || '',
+        notes: cfg?.notes || '',
+        size: cfg?.size || 0,
+        sha256: cfg?.sha256 || '',
+        publishedAt: cfg?.publishedAt || 0
+      };
+      if (hasUpdate) {
+        const exp = Date.now() + 3600 * 1000;
+        const secret = await getDownloadSecret();
+        out.downloadUrl = `/api/app/download?platform=${platform}&exp=${exp}&sig=${appDownloadSig(secret, platform, String(cfg.file), exp)}`;
+        out.downloadExp = exp;
+      }
+      // 版本上报（后台分布表数据源）：构建号变化或距上次上报超 6 小时才写，避免写放大
+      if (phone && (phone.length === 11 || phone.length === 12)) {
+        (async () => {
+          try {
+            const prev: any = await readCanonicalDocument('app_version_reports', phone);
+            if (!prev || Number(prev.build || 0) !== clientBuild || (Date.now() - Number(prev.updatedAt || 0)) > 6 * 3600 * 1000) {
+              const rep = { phone, build: clientBuild, platform, updatedAt: Date.now() };
+              if (isMySQLEnabled && mysqlPool) {
+                await mysqlPool.query(
+                  'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+                  'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+                  ['app_version_reports', phone, JSON.stringify(rep)]
+                ).catch(() => {});
+              }
+              try {
+                const dbData = readLocalJsonDb();
+                if (!dbData['app_version_reports']) dbData['app_version_reports'] = {};
+                dbData['app_version_reports'][phone] = rep;
+                writeLocalJsonDb(dbData);
+              } catch (_) {}
+            }
+          } catch (_) {}
+        })();
+      }
+      res.json(out);
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e?.message || 'version check failed' });
+    }
+  });
+
+  let _appDlActive = 0;
+  const APP_DL_MAX_CONCURRENT = 6;
+  app.get('/api/app/download', async (req: any, res: any) => {
+    try {
+      const platform = req.query.platform === 'ios' ? 'ios' : 'android';
+      const exp = parseInt(String(req.query.exp || '0'), 10) || 0;
+      const sig = String(req.query.sig || '');
+      if (!exp || exp < Date.now()) return res.status(403).json({ success: false, error: '下载链接已过期，请在App内重新获取' });
+      const all = await getAppUpdateConfig();
+      const cfg = all && typeof all[platform] === 'object' ? all[platform] : null;
+      if (!cfg || !cfg.file) return res.status(404).json({ success: false, error: '暂无安装包' });
+      const secret = await getDownloadSecret();
+      const expect = appDownloadSig(secret, platform, String(cfg.file), exp);
+      if (sig !== expect) return res.status(403).json({ success: false, error: '下载链接无效' });
+      const fileName = path.basename(String(cfg.file));
+      const filePath = path.join(APP_DOWNLOADS_DIR, fileName);
+      let stat: any = null;
+      try { stat = await fs.promises.stat(filePath); } catch (_) {}
+      if (!stat || !stat.isFile()) return res.status(404).json({ success: false, error: '安装包文件不存在' });
+      if (_appDlActive >= APP_DL_MAX_CONCURRENT) {
+        res.setHeader('Retry-After', '20');
+        return res.status(503).json({ success: false, error: '下载繁忙，请稍后重试' });
+      }
+      _appDlActive++;
+      let released = false;
+      const release = () => { if (!released) { released = true; _appDlActive = Math.max(0, _appDlActive - 1); } };
+      res.on('close', release);
+      const total = stat.size;
+      let start = 0; let end = total - 1; let status = 200;
+      const range = String(req.headers.range || '');
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (m) {
+        if (m[1]) start = parseInt(m[1], 10);
+        if (m[2]) end = parseInt(m[2], 10);
+        if (isNaN(start) || isNaN(end) || start > end || start >= total) {
+          release();
+          res.setHeader('Content-Range', `bytes */${total}`);
+          return res.status(416).end();
+        }
+        end = Math.min(end, total - 1);
+        status = 206;
+      }
+      res.status(status);
+      res.setHeader('Content-Type', platform === 'ios' ? 'application/octet-stream' : 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', String(end - start + 1));
+      if (status === 206) res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+      const stream = fs.createReadStream(filePath, { start, end });
+      stream.on('error', () => { release(); try { res.end(); } catch (_) {} });
+      stream.pipe(res);
+    } catch (e: any) {
+      try { res.status(500).json({ success: false, error: e?.message || 'download failed' }); } catch (_) {}
+    }
+  });
+
+  app.get('/api/admin/app-version', requireDbAuth, async (req: any, res: any) => {
+    if (!req.isAdmin) return res.status(403).json({ success: false, error: '需要管理员权限' });
+    try {
+      const cfg = await getAppUpdateConfig();
+      let files: any[] = [];
+      try {
+        const names = await fs.promises.readdir(APP_DOWNLOADS_DIR);
+        for (const n of names) {
+          try {
+            const st = await fs.promises.stat(path.join(APP_DOWNLOADS_DIR, n));
+            if (st.isFile()) files.push({ file: n, size: st.size, mtime: st.mtimeMs });
+          } catch (_) {}
+        }
+      } catch (_) {}
+      files.sort((a, b) => b.mtime - a.mtime);
+      res.json({ success: true, config: cfg || {}, files, downloadsDir: 'downloads/' });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e?.message || 'read failed' });
+    }
+  });
+
+  app.post('/api/admin/app-version', requireDbAuth, async (req: any, res: any) => {
+    if (!req.isAdmin) return res.status(403).json({ success: false, error: '需要管理员权限' });
+    try {
+      const platform = req.body?.platform === 'ios' ? 'ios' : 'android';
+      const all = await getAppUpdateConfig();
+      const cur = (all && typeof all[platform] === 'object') ? { ...all[platform] } : {};
+      const body = req.body || {};
+      if (body.file !== undefined) {
+        const fileName = path.basename(String(body.file || ''));
+        const filePath = path.join(APP_DOWNLOADS_DIR, fileName);
+        let stat: any = null;
+        try { stat = await fs.promises.stat(filePath); } catch (_) {}
+        if (!fileName || !stat || !stat.isFile()) {
+          return res.status(400).json({ success: false, error: `安装包文件不存在于 downloads/ 目录：${fileName || '(空)'}` });
+        }
+        // 服务端现算指纹与大小，不信客户端传值
+        const hash = crypto.createHash('sha256');
+        await new Promise<void>((resolve, reject) => {
+          const s = fs.createReadStream(filePath);
+          s.on('data', (c) => hash.update(c as any));
+          s.on('end', () => resolve());
+          s.on('error', reject);
+        });
+        cur.file = fileName;
+        cur.sha256 = hash.digest('hex');
+        cur.size = stat.size;
+      }
+      if (body.build !== undefined) {
+        const b = parseInt(String(body.build), 10);
+        if (!b || b <= 0) return res.status(400).json({ success: false, error: '构建号必须是正整数' });
+        cur.build = b;
+      }
+      if (body.name !== undefined) cur.name = String(body.name).slice(0, 60);
+      if (body.notes !== undefined) cur.notes = String(body.notes).slice(0, 500);
+      if (body.force !== undefined) cur.force = !!body.force;
+      if (body.rollout !== undefined) cur.rollout = Math.max(0, Math.min(100, Number(body.rollout) || 0));
+      if (!cur.file || !cur.build) return res.status(400).json({ success: false, error: '请先指定安装包文件与构建号' });
+      cur.publishedAt = Date.now();
+      cur.publishedBy = String((req as any).authPhone || '');
+      const next = { ...(all || {}), [platform]: cur };
+      await writeAppUpdateConfig(next);
+      await logAdminOperation('app_version_publish', String((req as any).authPhone || ''), '', `${platform} 发布构建 ${cur.build}（${cur.file}，强制=${cur.force ? '开' : '关'}，灰度=${cur.rollout ?? 100}%）`, req);
+      res.json({ success: true, config: next });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e?.message || 'publish failed' });
+    }
+  });
+
+  app.get('/api/admin/app-version-reports', requireDbAuth, async (req: any, res: any) => {
+    if (!req.isAdmin) return res.status(403).json({ success: false, error: '需要管理员权限' });
+    try {
+      const map = new Map<string, any>();
+      try {
+        const local = readLocalJsonDb()?.['app_version_reports'] || {};
+        Object.values(local).forEach((v: any) => { if (v && v.phone) map.set(String(v.phone), v); });
+      } catch (_) {}
+      if (isMySQLEnabled && mysqlPool) {
+        try {
+          const [rows]: any = await mysqlPool.query(
+            'SELECT `data` FROM `daijia_documents` WHERE `collection` = ?', ['app_version_reports']);
+          (rows || []).forEach((r: any) => {
+            const d = typeof r.data === 'string' ? parseStoredDoc(r.data) : r.data;
+            if (d && d.phone) map.set(String(d.phone), d);
+          });
+        } catch (_) {}
+      }
+      res.json({ success: true, list: Array.from(map.values()).sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0)) });
+    } catch (e: any) {
+      res.status(500).json({ success: false, error: e?.message || 'reports failed' });
+    }
+  });
+
   // 2026-10-24 第四十四轮：防重入——批量下线一轮可能超过 60 秒间隔，重叠执行只会重复劳动
   let _guard0559Running = false;
   setInterval(async () => {

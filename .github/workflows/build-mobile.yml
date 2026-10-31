@@ -58,6 +58,8 @@ jobs:
             ${{ runner.os }}-gradle-
 
       - name: Install Dependencies & Build Web App
+        env:
+          VITE_APP_BUILD: ${{ github.run_number }}
         run: |
           npm ci --legacy-peer-deps || npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
@@ -75,12 +77,29 @@ jobs:
           cd android
           gradle wrapper --gradle-version 8.7 --distribution-type all
 
-      - name: Build Android APK
+      # 2026-11-01 自更新桥接版：项目专用固定签名（钥匙存仓库 Secrets）。
+      # Secrets 缺失时此步直接失败，绝不允许回退到随机调试签名出包。
+      - name: Decode Release Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::ANDROID_KEYSTORE_BASE64 secret missing"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/heiwan-release.p12
+          ls -la android/app/heiwan-release.p12
+
+      - name: Build Android APK
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+          KEYSTORE_FILE: heiwan-release.p12
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: heiwan-release
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ]; then echo "::error::ANDROID_KEYSTORE_PASSWORD secret missing"; exit 1; fi
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
-          cp app/build/outputs/apk/debug/app-debug.apk ../黑湾代驾MAX-手机司机端-Android-v2.0.apk
+          ./gradlew assembleRelease --no-daemon
+          cp app/build/outputs/apk/release/app-release.apk ../黑湾代驾MAX-手机司机端-Android-v2.0.apk
 
       - name: Upload Driver APK Artifact
         uses: actions/upload-artifact@v4
@@ -116,6 +135,8 @@ jobs:
           xcode-version: '15.4'
 
       - name: Install Dependencies & Build Web App
+        env:
+          VITE_APP_BUILD: ${{ github.run_number }}
         run: |
           npm ci --legacy-peer-deps || npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
