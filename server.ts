@@ -5150,6 +5150,91 @@ function getClientIp(req: any): string {
     }
   }, 15000);
 
+  // 2026-10-31 大厅超时自动取消（用户生产实报）：选单大厅客户端按 hallAt 满 20 分钟
+  // 就不再展示，但订单文档仍是 hall 状态，商户代叫订单中心继续显示「呼叫中」，
+  // 两边口径分裂。用户口径：大厅 20 分钟下架 = 订单到点取消。服务端每 30 秒巡检，
+  // 凡进厅满 20 分钟仍无人接单的，一律按 /api/order/cancel 同口径落取消终态
+  // （status=cancelled/已取消/isCancelled/in_hall=false），订单中心随即显示已取消。
+  // 只动「在厅且未被接」的单：已接单（claimedDriverPhone 非空）、定向派单未进厅的
+  // 单一律不碰；写前走订单锁并在锁内重读复核，防与抢单/手动取消并发互踩。
+  const HALL_TIMEOUT_MS = 20 * 60 * 1000;
+  let _hallTimeoutRunning = false;
+  setInterval(async () => {
+    if (_hallTimeoutRunning) return;
+    _hallTimeoutRunning = true;
+    try {
+      const docs = await loadMerchantOrdersCanonical();
+      const nowMs = Date.now();
+      for (const [docId, o] of docs) {
+        if (!o || typeof o !== 'object') continue;
+        const st = String((o as any).status || '').trim();
+        const inHall = (o as any).in_hall === true || (o as any).in_hall === 'true';
+        if (st !== 'hall' && !inHall) continue;
+        if (String((o as any).claimedDriverPhone || '').trim()) continue;
+        const hallAtMs = Number((o as any).hallAt || (o as any).timestamp || 0);
+        if (!hallAtMs || (nowMs - hallAtMs) < HALL_TIMEOUT_MS) continue;
+        const release = await acquireOrderLock(docId);
+        try {
+          let cur: any = null;
+          if (isMySQLEnabled && mysqlPool) {
+            try {
+              const [rows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['merchant_orders', docId]
+              );
+              if (rows && rows.length > 0) cur = typeof rows[0].data === 'string' ? parseStoredDoc(rows[0].data) : rows[0].data;
+            } catch (_) {}
+          }
+          if (!cur) {
+            try {
+              const raw = readLocalJsonDb()?.['merchant_orders']?.[docId];
+              cur = raw && typeof raw === 'object' && typeof raw.data === 'string' ? parseStoredDoc(raw.data) : (raw || null);
+            } catch (_) {}
+          }
+          if (!cur || typeof cur !== 'object') continue;
+          const cst = String(cur.status || '').trim();
+          if (cst !== 'hall' && !(cur.in_hall === true || cur.in_hall === 'true')) continue;
+          if (String(cur.claimedDriverPhone || '').trim()) continue;
+          const curHallAt = Number(cur.hallAt || cur.timestamp || 0);
+          if (!curHallAt || (Date.now() - curHallAt) < HALL_TIMEOUT_MS) continue;
+          const finalData = {
+            ...cur,
+            status: 'cancelled',
+            statusCategory: '已取消',
+            isCancelled: true,
+            in_hall: false,
+            cancelledAt: Date.now(),
+            cancelledBy: 'system',
+            cancelledByRole: 'system',
+            cancelReason: '选单大厅20分钟无人接单，系统自动取消'
+          };
+          const dataStr = JSON.stringify(finalData);
+          if (isMySQLEnabled && mysqlPool) {
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['merchant_orders', docId, dataStr]
+            );
+          }
+          try {
+            const dbData = readLocalJsonDb();
+            if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+            dbData['merchant_orders'][docId] = finalData;
+            writeLocalJsonDb(dbData);
+          } catch (_) {}
+          console.log(`[HallTimeoutCancel] 大厅订单 ${docId} 进厅满20分钟无人接单，已自动取消`);
+        } catch (_) {
+          // 单单失败不影响其他大厅单的巡检
+        } finally {
+          release();
+        }
+      }
+    } catch (_) {
+    } finally {
+      _hallTimeoutRunning = false;
+    }
+  }, 30000);
+
   // 2026-10-24 第四十四轮：防重入——批量下线一轮可能超过 60 秒间隔，重叠执行只会重复劳动
   let _guard0559Running = false;
   setInterval(async () => {

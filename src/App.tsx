@@ -1129,6 +1129,18 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
                 const uData = uJson.data;
                 if (uData?.vipExpiry !== undefined && uData?.vipExpiry !== null) {
                   const freshVip = String(uData.vipExpiry).trim();
+                  // 2026-10-31 发版修复（VIP 门禁留痕冻结根治）：留痕此前只在
+                  // setSettings 的「settings 值发生变化」分支里顺带写——若订阅通道
+                  // 先把 settings 改成新值，本轮询的分支不再进入，留痕永远停在旧值，
+                  // VIP 门禁读留痕 → 充值后仍按旧有效期拦（8fb2fda4 只防新发、
+                  // 存量卡死实证）。改为独立对账：留痕与服务端值不一致即写留痕，
+                  // 不再依赖 settings 是否变化。
+                  try {
+                    if (localStorage.getItem(`dd_vip_expiry_${userPhone}`) !== freshVip) {
+                      safeSetItem(`dd_vip_expiry_${userPhone}`, freshVip);
+                      safeSetItem(`dd_vip_expiry_time_${userPhone}`, Date.now().toString());
+                    }
+                  } catch (_) {}
                   // 2026-10-24 修复：删除 10 分钟本地保护（与接单授权 2026-10-17 的先例对齐）。
                   // 旧逻辑：登录时轮询把服务端旧值（待开通）连同时间戳留痕，10 分钟内
                   // 管理后台充值的新值因「与本地留痕不同」被持续拒绝——轮询明明已拿到

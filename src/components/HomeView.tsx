@@ -1081,8 +1081,13 @@ export default function HomeView({
     syncDriverOrdersWithMerchantData(initialLocal);
 
     const handleOrdersUpdated = () => {
+      // 2026-10-31 发版修复（大厅「事件擦除」根治）：旧逻辑用本机清单整表替换大厅，
+      // 非下单人本机没有该单 → 一次本地事件就把云端快照刚填好的大厅清空，且订单
+      // 在厅期间文档不变时快照不再触发、大厅永不自愈（订单中心走独立组装故可见，
+      // 形成「订单中心有单/选单大厅看不见」分裂，生产实报+实验室复现）。
+      // 改为与快照同一口径合并：本机合格单并入现行大厅，绝不整表替换。
       const localValid = getValidHallOrdersFromLocal();
-      setHallOrders(localValid);
+      setHallOrders(prev => mergeOrders(prev, localValid));
       syncDriverOrdersWithMerchantData(localValid);
     };
 
@@ -1832,13 +1837,28 @@ export default function HomeView({
   const checkApprovalStatus = (): boolean => {
     const raw = checkApprovalStatusRaw();
     const ref = approvalStableRef.current;
+    // 2026-10-31 发版修复（资格判定横跳根治）：旧防抖双向都等连续 2 次，真机上
+    // 成员文档轮询偶发失败回退（getDoc 失败→不存在）造成的瞬时 false 会与 true
+    // 反复拉锯，大厅资格与接单授权角标随之闪烁/整厅被刷空（生产实报）。
+    // 改为不对称防抖：成员证据一旦到达（raw=true）立即生效；向下翻转要求
+    // 连续 6 次一致才认，挡住瞬时失败回退；被移出小队是服务端明确事实立即生效。
+    if ((myMembership as any)?.isRemoved === true) {
+      ref.val = false;
+      ref.count = 0;
+      return false;
+    }
     if (raw === ref.val) {
       ref.count = 0;
       return ref.val;
     }
+    if (raw === true) {
+      ref.val = true;
+      ref.count = 0;
+      return true;
+    }
     ref.count += 1;
-    if (ref.count >= 2) {
-      ref.val = raw;
+    if (ref.count >= 6) {
+      ref.val = false;
       ref.count = 0;
     }
     return ref.val;
