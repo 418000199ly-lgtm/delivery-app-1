@@ -59,6 +59,9 @@ const verificationCodes = new Map<string, { code: string; expiresAt: number }>()
 // P1(2026-10-16)：派单 orderId 级互斥锁。同一订单并发调用 /api/dispatch/nearest 时，
 // 后到的直接返回"派单处理中"，防同一订单被派给两名司机。
 const dispatchOrderLocks = new Map<string, number>();
+// 2026-10-31：服务端 orderNo 发号登记（全局唯一 + 同单复用），见 /api/dispatch/nearest 内发号段
+const _issuedOrderNos = new Set<string>();
+const _orderNoByOrderId = new Map<string, { orderNo: string; seq: number }>();
 
 // H1修复：verify 失败计数，5次失败锁定手机号30分钟
 const verifyFailures = new Map<string, { count: number; lockedUntil: number }>();
@@ -2386,9 +2389,17 @@ function getClientIp(req: any): string {
               [col, forcedDocId]
             );
           } else if (hasValidSince) {
+            // 2026-10-31 修复（选单大厅新单不可见，用户生产实报）：updated_at 是
+            // TIMESTAMP 秒精度。客户端水位=其上轮拉到的 max(updated_at)（整秒）；
+            // 与水位同秒、但在其拉取之后才落库的文档（如刚进大厅的新订单），
+            // updated_at 与水位相等，`>` 恒假，增量通道永远送不到，只能等 60 秒
+            // 全量对账——表现为「听见播报、大厅看不见单」，下单人因本地有单却
+            // 能看见。修法：since 窗口回退 5 秒重叠拉取，客户端按 id 合并、重复
+            // 文档无害；水位回传口径不变（仍取本批 max(updated_at)）。
+            const sinceOverlap = new Date((sinceDate as Date).getTime() - 5000);
             [rows] = await mysqlPool.query(
               'SELECT `doc_id`, `data`, `updated_at` FROM `daijia_documents` WHERE `collection` = ? AND `updated_at` > ? ORDER BY `updated_at` DESC LIMIT ?',
-              [col, sinceDate, limitNum]
+              [col, sinceOverlap, limitNum]
             );
           } else {
             [rows] = await mysqlPool.query(
@@ -2516,7 +2527,9 @@ function getClientIp(req: any): string {
         // 否则 driver_users/squad_members 永远全量返回、增量形同虚设）。
         if (hasValidSince) {
           const tsJ = Number(doc.updatedAt || doc.lastStatusUpdateTime || doc.locationTimestamp || doc.lastLocationTime || doc.createdAt || doc.timestamp || 0);
-          if (!(tsJ > sinceMsJ)) return false;
+          // 2026-10-31 同 MySQL 分支：since 窗口回退 5 秒重叠，防与水位同时刻
+          // 落库的文档被增量过滤永久漏掉（客户端按 id 合并，重复无害）。
+          if (!(tsJ > sinceMsJ - 5000)) return false;
         }
         // 2026-10-22 第六轮(P0-1)：身份一律以集合键为准（上方 map 已保证 doc.id=键，
         // 不再被文档内嵌 id 如 'app-<时间戳>' 覆盖）；手机号取 phone 字段、缺失才以键兜底。
@@ -5618,6 +5631,37 @@ function getClientIp(req: any): string {
       // 文档 id 只认 id/orderId，缺失时服务端生成（现行客户端恒带 MO_ id，不受影响）。
       const orderId = String(orderData.id || orderData.orderId || `ORDER_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`).trim();
 
+      // 2026-10-31：orderNo 改由服务端统一发放全局唯一号（用户实报：同分钟内
+      // 两位下单人的第 2 单同为 YC…160600002，客户端按设备本地计数必撞）。
+      // 格式不变（YC+年月日+时分+5 位序号），序号取订单毫秒时间戳后 5 位——
+      // 同一分钟内毫秒级互不相同，天然全局唯一；进程内登记防同毫秒重号且同单
+      // 重派时复用已发号（幂等）。下游所有 payload 都展开 orderData，改此一处
+      // 即全链路生效；客户端本地旧号会在下一次快照合并时被服务端号覆盖。
+      {
+        const issued = _orderNoByOrderId.get(orderId);
+        if (issued) {
+          orderData.orderNo = issued.orderNo;
+          orderData.seqNumber = issued.seq;
+        } else {
+          const tsForNo = Date.now();
+          const dNo = new Date(tsForNo);
+          const p2 = (n: number) => String(n).padStart(2, '0');
+          const noBase = `YC${dNo.getFullYear()}${p2(dNo.getMonth() + 1)}${p2(dNo.getDate())}${p2(dNo.getHours())}${p2(dNo.getMinutes())}`;
+          let seq = tsForNo % 100000;
+          let candidate = noBase + String(seq).padStart(5, '0');
+          while (_issuedOrderNos.has(candidate)) {
+            seq = (seq + 1) % 100000;
+            candidate = noBase + String(seq).padStart(5, '0');
+          }
+          _issuedOrderNos.add(candidate);
+          _orderNoByOrderId.set(orderId, { orderNo: candidate, seq });
+          if (_issuedOrderNos.size > 50000) _issuedOrderNos.clear();
+          if (_orderNoByOrderId.size > 50000) _orderNoByOrderId.clear();
+          orderData.orderNo = candidate;
+          orderData.seqNumber = seq;
+        }
+      }
+
       // 2026-10-22 第七轮：占用淘汰的事实来源——未决派单全图（带缓存，高频调用不重复扫表）
       const pendingMap = await getPendingDispatchMap();
       const activeClaimedSet = await getActiveClaimedDriverSet().catch(() => new Set<string>());
@@ -5964,7 +6008,7 @@ function getClientIp(req: any): string {
             return res.status(500).json({ success: false, error: '订单转大厅写入失败，请重试' });
           }
           console.log(`[Dispatch] 订单 ${orderId} 无授权司机，直接转入选单大厅`);
-          return res.json({ success: true, dispatched: false, toHall: true, reason: 'no_licensed_driver', ...(diagForDev ? { diag: diagForDev } : {}) });
+          return res.json({ success: true, dispatched: false, toHall: true, orderId, orderNo: orderData.orderNo, reason: 'no_licensed_driver', ...(diagForDev ? { diag: diagForDev } : {}) });
         }
 
         const distText = selected.distKm < 1.0 
@@ -6014,7 +6058,7 @@ function getClientIp(req: any): string {
               return res.status(500).json({ success: false, error: '订单转大厅写入失败，请重试' });
             }
             console.log(`[Dispatch] 订单 ${orderId} 选中司机 ${selected.phone} 已有未决派单 ${pendFresh.orderId}（并发竞态），本单转大厅(pending_conflict)，不顶旧单`);
-            return res.json({ success: true, dispatched: false, toHall: true, reason: 'pending_conflict', ...(diagForDev ? { diag: diagForDev } : {}) });
+            return res.json({ success: true, dispatched: false, toHall: true, orderId, orderNo: orderData.orderNo, reason: 'pending_conflict', ...(diagForDev ? { diag: diagForDev } : {}) });
           }
         }
         // 2026-10-23 第二十一轮(L6)：司机未在服务器传码时不得拼造收款码 URL（与报单通道 9914 的 existsSync 口径一致）；无码置空，避免乘客扫到不存在/过期码。
@@ -6121,6 +6165,7 @@ function getClientIp(req: any): string {
           success: true,
           isHall: false,
           orderId: orderId,
+          orderNo: orderData.orderNo,
           dispatchedDriverPhone: selected.phone,
           dispatchedDriverName: selected.name,
           distKm: selected.distKm,
@@ -6178,6 +6223,8 @@ function getClientIp(req: any): string {
         return res.json({
           success: true,
           isHall: true,
+          orderId: orderId,
+          orderNo: orderData.orderNo,
           passengerLat: pLat,
           passengerLng: pLng,
           serverTime: nowTs,
