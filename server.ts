@@ -2345,6 +2345,24 @@ function getClientIp(req: any): string {
         }
       };
       const listStaff = isDevList || (req as any).isAdmin === true || (req as any).isManager === true || (req as any).isDispatcher === true;
+      // 2026-10-31 订单列表瘦身（选单大厅看不见单的元凶，生产实测）：merchant_orders
+      // 列表响应此前达 4.6MB（39 单）——每单内嵌的商户收款码 base64（约 17KB）在
+      // 响应里顶层+data 双份出现、且 docs/list/data 三份数组重复序列化。司机手机
+      // 每 5 秒轮询此列表，弱网下全量拉取屡屡失败/超时；dbProxy 拉取失败即回退
+      // 本地旧缓存，且全量对账时钟不前进、此后每轮都是全量、每轮都失败，大厅
+      // 冻结在旧快照——新单永远不到（附近/成员名单等小列表正常，呈「只有大厅
+      // 看不见单」；下单人靠本机清单看单故免疫）。瘦身口径（只删不改、仅作用于
+      // 列表响应，单文档 GET 保持全量）：非开发者请求删顶层 merchantPaymentQrCode
+      // （dbProxy 消费方只读 data 内层，顶层无人读）；终态订单再删内层同字段
+      // （历史单列表不需要码，司机本地副本与单文档 GET 均保留全量）；大厅/进行中
+      // 订单保留内层码——抢单时 App 从大厅条目内嵌进行程、代叫费页依赖它。
+      const slimOrderDocForList = (doc: any) => {
+        if (!isOrdersCol || !doc || isDevList) return;
+        if (doc.merchantPaymentQrCode !== undefined) delete doc.merchantPaymentQrCode;
+        const st = String(doc.status || '');
+        const terminal = st === 'completed' || st === 'cancelled' || doc.isCompleted === true || doc.isCancelled === true;
+        if (terminal && doc.data && doc.data.merchantPaymentQrCode !== undefined) delete doc.data.merchantPaymentQrCode;
+      };
       const redactOrderPii = (doc: any) => {
         if (listStaff || !doc) return;
         const me = requesterPhone;
@@ -2472,6 +2490,7 @@ function getClientIp(req: any): string {
             return true;
           });
           docs.forEach(slimListQrFields);
+          if (isOrdersCol) docs.forEach(slimOrderDocForList);
           // 2026-10-30 修复（今日成单闪烁，用户实报）：App 里有两路定位数据——
           // /api/driver/locations（已按订单表注入权威今日成单）与 db/list 的
           // driver_locations 原始文档（司机本机上报的本地统计，商户代叫单常
@@ -2582,6 +2601,7 @@ function getClientIp(req: any): string {
         return true;
       });
       docs.forEach(slimListQrFields);
+      if (isOrdersCol) docs.forEach(slimOrderDocForList);
       // 2026-10-30 修复（今日成单闪烁，用户实报）：App 里有两路定位数据——
       // /api/driver/locations（已按订单表注入权威今日成单）与 db/list 的
       // driver_locations 原始文档（司机本机上报的本地统计，商户代叫单常
