@@ -1,26 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-
-  // 2026-11-01 自更新：设置页手动检查更新
-  const [manualUpdateInfo, setManualUpdateInfo] = useState<AppUpdateInfo | null>(null);
-  const [checkingUpdate, setCheckingUpdate] = useState<boolean>(false);
-  const [updateCheckMsg, setUpdateCheckMsg] = useState<string>('');
-  const handleManualCheckUpdate = async () => {
-    if (checkingUpdate) return;
-    setCheckingUpdate(true);
-    setUpdateCheckMsg('');
-    try {
-      const info = await checkAppUpdate();
-      if (info && info.hasUpdate) {
-        setManualUpdateInfo(info);
-      } else if (info) {
-        setUpdateCheckMsg('已是最新版本');
-      } else {
-        setUpdateCheckMsg(isNativeApp() ? '检查失败，请检查网络后重试' : '网页版无需更新');
-      }
-    } finally {
-      setCheckingUpdate(false);
-    }
-  };
 import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Download, AlertCircle } from 'lucide-react';
 import { ChauffeurSettings, checkVipActive, checkVipActiveServerSynced } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
@@ -58,6 +36,31 @@ export default function SettingsView({
   userRole
 }: SettingsViewProps) {
   const effectivePhone = (userPhone || (settings as any)?.phone || (typeof window !== 'undefined' ? localStorage.getItem('dd_user_phone') : '') || '').trim();
+
+  // 2026-11-01 自更新：设置页手动检查更新
+  // 教训（2026-11-01 白屏事故）：这段状态与处理函数必须在组件体内。此前误插到
+  // 文件顶层（import 之间），useState 在模块求值期被调用、无渲染器在场直接抛错，
+  // 整个前端包开机即死、App 白屏。tsc 无法识别这种错误，上线前必须真机/无头浏览器验启动。
+  const [manualUpdateInfo, setManualUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState<boolean>(false);
+  const [updateCheckMsg, setUpdateCheckMsg] = useState<string>('');
+  const handleManualCheckUpdate = async () => {
+    if (checkingUpdate) return;
+    setCheckingUpdate(true);
+    setUpdateCheckMsg('');
+    try {
+      const info = await checkAppUpdate();
+      if (info && info.hasUpdate) {
+        setManualUpdateInfo(info);
+      } else if (info) {
+        setUpdateCheckMsg('已是最新版本');
+      } else {
+        setUpdateCheckMsg(isNativeApp() ? '检查失败，请检查网络后重试' : '网页版无需更新');
+      }
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   // Online Orders Application Modal States & Realtime Synchronization
   const [showOnlineAppModal, setShowOnlineAppModal] = useState(false);
