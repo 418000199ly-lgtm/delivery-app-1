@@ -452,10 +452,20 @@ export default function HomeView({
   // 「Cannot access 'myMembership' before initialization」，普通司机登录必崩、
   // 开发者因提前 return 永不触达。故将声明与订阅提前到两个判定函数之前。
   const [myMembership, setMyMembership] = useState<SquadMembershipState | null>(null);
+  // 2026-10-31 根因修复（选单大厅非开发者永不显示订单）：大厅订阅 effect（deps
+  // [userPhone]）在挂载渲染时捕获当时的 checkApprovalStatus 闭包，其内
+  // myMembership 恒为初始 null——订阅数据随后到达只触发重渲染，大厅 handler 的
+  // 闭包永远读到 null → 非开发者每单一律被资格判定刷掉、整厅永空；而渲染层用
+  // 的是最新闭包（判定已通过）→ 页面显示「暂无订单」而非「未加入小队」。
+  // 开发者因 checkApprovalStatusRaw 有开发者豁免短路、永不读 myMembership 而
+  // 免疫，形成「开发者能看、所有司机看不见」的生产现象（2026-10-20 成员口径
+  // 重建引入）。改法：订阅回调同步写 ref，判定一律读 ref 的最新值，任何闭包
+  // 捕获的都是同一 ref 对象，读到的永远是当前成员状态。
+  const myMembershipRef = useRef<SquadMembershipState | null>(null);
   useEffect(() => {
     const p = getCurrentPhone();
-    if (!p) { setMyMembership(null); return; }
-    const unsub = subscribeSquadMembership(p, (st) => setMyMembership(st));
+    if (!p) { myMembershipRef.current = null; setMyMembership(null); return; }
+    const unsub = subscribeSquadMembership(p, (st) => { myMembershipRef.current = st; setMyMembership(st); });
     return () => { try { unsub(); } catch (_) {} };
   }, [userPhone]);
 
@@ -1827,7 +1837,10 @@ export default function HomeView({
     if (isReapplying) return false;
     // 2026-10-20 重建：只认服务端统一状态（squadMembership 模块订阅回读），
     // 不再读 localStorage 标记/申请人缓存自判；无服务端已通过证据一律 false。
-    return myMembership?.isMember === true;
+    // 2026-10-31 根因修复：读 myMembershipRef（订阅回调实时同步的最新值），
+    // 不读渲染期 state——大厅 effect 的旧闭包捕获的 state 恒为初始 null，
+    // 曾致非开发者大厅整会话永空（详见 myMembershipRef 声明处注释）。
+    return (myMembershipRef.current ?? myMembership)?.isMember === true;
   };
 
   // 2026-10-18修：审批状态防抖包装。Raw 版读 4 个数据源，轮询时 true/false 横跳；
@@ -1842,7 +1855,7 @@ export default function HomeView({
     // 反复拉锯，大厅资格与接单授权角标随之闪烁/整厅被刷空（生产实报）。
     // 改为不对称防抖：成员证据一旦到达（raw=true）立即生效；向下翻转要求
     // 连续 6 次一致才认，挡住瞬时失败回退；被移出小队是服务端明确事实立即生效。
-    if ((myMembership as any)?.isRemoved === true) {
+    if (((myMembershipRef.current ?? myMembership) as any)?.isRemoved === true) {
       ref.val = false;
       ref.count = 0;
       return false;
