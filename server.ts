@@ -2526,7 +2526,10 @@ function getClientIp(req: any): string {
         // 第四十二轮续修5：增量过滤置于过滤链顶部（各集合的 return true 快捷分支之前，
         // 否则 driver_users/squad_members 永远全量返回、增量形同虚设）。
         if (hasValidSince) {
-          const tsJ = Number(doc.updatedAt || doc.lastStatusUpdateTime || doc.locationTimestamp || doc.lastLocationTime || doc.createdAt || doc.timestamp || 0);
+          // 2026-10-31 大厅心跳 parity：大厅单的 hallPulse 分桶时刻视同一次更新，
+          // 使心跳能经增量通道重新送达（MySQL 分支靠 updated_at 列天然达成）。
+          const tsPulseJ = isOrdersCol && Number(doc.hallPulse || 0) > 0 ? (Number(doc.hallPulse) + 1) * 15000 : 0;
+          const tsJ = Math.max(Number(doc.updatedAt || doc.lastStatusUpdateTime || doc.locationTimestamp || doc.lastLocationTime || doc.createdAt || doc.timestamp || 0), tsPulseJ);
           // 2026-10-31 同 MySQL 分支：since 窗口回退 5 秒重叠，防与水位同时刻
           // 落库的文档被增量过滤永久漏掉（客户端按 id 合并，重复无害）。
           if (!(tsJ > sinceMsJ - 5000)) return false;
@@ -5048,6 +5051,84 @@ function getClientIp(req: any): string {
 
   // Map of driver phone -> timestamp when order ended (0 = still in order)
   const pendingOfflineDrivers = new Map<string, number>();
+
+  // 2026-10-31 大厅心跳（选单大厅「事件擦除」的服务端补偿，用户生产实报+实验室复现）：
+  // App 首页收到 'merchant_orders_updated' 事件后会用本机清单整表替换选单大厅；
+  // 非下单人本机没有该单 → 大厅被清空，且订单在厅期间文档不再变化、客户端快照
+  // 按内容比对不再触发，大厅永不自愈（下单人本机有单故免疫、订单中心走独立
+  // 拉取故可见，造成「听见播报/订单中心有单/大厅看不见」的分裂现象）。
+  // 补偿：每 15 秒给大厅中订单合并写入一个 15 秒分桶的 hallPulse 字段，使其
+  // updated_at 持续前进、增量通道周期性把该单重新送达各手机，快照处理器随之
+  // 重跑并恢复正确大厅（擦除后 ≤约20 秒自愈）。只并 hallPulse 一个字段：
+  // hallAt/timestamp/updatedAt 等业务字段原样保留，20 分钟展示口径（按 hallAt
+  // 与文档内 updatedAt 取值）不受影响，任何业务判定都不读 hallPulse。
+  // 写前走订单锁串行化并在锁内重读现行文档复核仍在厅未被接，防与抢单并发互踩。
+  let _hallPulseRunning = false;
+  setInterval(async () => {
+    if (_hallPulseRunning) return;
+    _hallPulseRunning = true;
+    try {
+      const docs = await loadMerchantOrdersCanonical();
+      const nowMs = Date.now();
+      const bucket = Math.floor(nowMs / 15000);
+      for (const [docId, o] of docs) {
+        if (!o || typeof o !== 'object') continue;
+        const st = String((o as any).status || '').trim();
+        const inHall = (o as any).in_hall === true || (o as any).in_hall === 'true';
+        if (st !== 'hall' && !inHall) continue;
+        if (String((o as any).claimedDriverPhone || '').trim()) continue;
+        const hallAtMs = Number((o as any).hallAt || (o as any).timestamp || 0);
+        if (hallAtMs > 0 && (nowMs - hallAtMs) > 24 * 3600 * 1000) continue;
+        if (Number((o as any).hallPulse || 0) === bucket) continue;
+        const release = await acquireOrderLock(docId);
+        try {
+          let cur: any = null;
+          if (isMySQLEnabled && mysqlPool) {
+            try {
+              const [rows]: any = await mysqlPool.query(
+                'SELECT `data` FROM `daijia_documents` WHERE `collection` = ? AND `doc_id` = ? LIMIT 1',
+                ['merchant_orders', docId]
+              );
+              if (rows && rows.length > 0) cur = typeof rows[0].data === 'string' ? parseStoredDoc(rows[0].data) : rows[0].data;
+            } catch (_) {}
+          }
+          if (!cur) {
+            try {
+              const raw = readLocalJsonDb()?.['merchant_orders']?.[docId];
+              cur = raw && typeof raw === 'object' && typeof raw.data === 'string' ? parseStoredDoc(raw.data) : (raw || null);
+            } catch (_) {}
+          }
+          if (!cur || typeof cur !== 'object') continue;
+          const cst = String(cur.status || '').trim();
+          if (cst !== 'hall' && !(cur.in_hall === true || cur.in_hall === 'true')) continue;
+          if (String(cur.claimedDriverPhone || '').trim()) continue;
+          if (Number(cur.hallPulse || 0) === bucket) continue;
+          const finalData = { ...cur, hallPulse: bucket };
+          const dataStr = JSON.stringify(finalData);
+          if (isMySQLEnabled && mysqlPool) {
+            await mysqlPool.query(
+              'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+              'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+              ['merchant_orders', docId, dataStr]
+            );
+          }
+          try {
+            const dbData = readLocalJsonDb();
+            if (!dbData['merchant_orders']) dbData['merchant_orders'] = {};
+            dbData['merchant_orders'][docId] = finalData;
+            writeLocalJsonDb(dbData);
+          } catch (_) {}
+        } catch (_) {
+          // 单单失败不影响其他大厅单的心跳
+        } finally {
+          release();
+        }
+      }
+    } catch (_) {
+    } finally {
+      _hallPulseRunning = false;
+    }
+  }, 15000);
 
   // 2026-10-24 第四十四轮：防重入——批量下线一轮可能超过 60 秒间隔，重叠执行只会重复劳动
   let _guard0559Running = false;
