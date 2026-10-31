@@ -771,7 +771,7 @@ export default function MobileDispatchValetOrder({
   const handleExecuteClearAllOrders = async () => {
     setShowConfirmClearOrdersModal(false);
     if (!canClearOrderList) {
-      onShowToast('⚠️ 您暂无权限清空列表，仅开发者司机、城市老板司机、城市管理司机可操作');
+      onShowToast('⚠️ 您暂无权限清空列表，仅开发者 15509601222 可操作');
       return;
     }
     const clearNow = Date.now();
@@ -1640,30 +1640,14 @@ export default function MobileDispatchValetOrder({
     ))
   );
 
-  // 仅开发者司机、城市老板司机、城市管理司机才有权限清空列表；城市派单员司机自动隐藏清空列表组件按钮
+  // 2026-11-01 用户拍板：清空列表仅开发者 15509601222 本人可用，小队内全部管理
+  // 人员（城市老板/城市管理/总指挥官/派单员等）一律隐藏清空按钮组件。此前管理层
+  // 可见可点，而该操作会物理清空服务端全部订单表（2026-11-01 07:18 实证：一次
+  // 清空使全队今日成单归零）。服务端 /api/orders/clear-all 与 clear-collection
+  // 本就只认开发者 isAdmin，此处客户端口径与服务端对齐。手机号按纯数字归一化
+  // 比较，兼容开发者在网页代叫页的 A 后缀商户形态账号（15509601222A）。
   const canClearOrderList = Boolean(
-    userPhone === '15509601222' || 
-    userRole === '开发者司机' || 
-    userRole === '开发者' || 
-    userRole === '总指挥官' || 
-    userRole === '城市老板司机' || 
-    userRole === '城市老板' || 
-    userRole === '城市管理司机' || 
-    userRole === '城市管理' ||
-    (adminProfile?.role && (
-      adminProfile.role === '开发者司机' ||
-      adminProfile.role === '开发者' ||
-      adminProfile.role === '总指挥官' ||
-      adminProfile.role === '城市老板司机' ||
-      adminProfile.role === '城市老板' ||
-      adminProfile.role === '城市管理司机' ||
-      adminProfile.role === '城市管理'
-    ))
-  ) && !(
-    userRole === '城市派单员司机' ||
-    userRole === '城市派单员' ||
-    adminProfile?.role === '城市派单员司机' ||
-    adminProfile?.role === '城市派单员'
+    String(userPhone || '').replace(/\D/g, '') === '15509601222'
   );
 
   // Permission check for reviewing applicant join requests:

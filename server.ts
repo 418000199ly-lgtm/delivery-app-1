@@ -11610,9 +11610,61 @@ function getClientIp(req: any): string {
     fs.mkdirSync(qrcodesDir, { recursive: true });
   }
   // P1-8修复(2026-10-15)：/uploads/qrcodes 不再静态裸奔，加鉴权（防猜URL下载他人收款码）
-  const qrStaticGuard = (req: any, res: any, next: any) => {
-    // 允许：查自己的码 / 开发者 / 订单关联（通过get-wechat-qr的逻辑复用简化版：只允许自己的）
-    // 订单关联的场景走 /api/get-wechat-qr 接口，这里只做基础防护
+  // 2026-11-01 代叫费收款码跨账号取图修复：旧守卫只认「码本人/管理员」，不认订单关联。
+  // 但代叫费页的业务规则是「谁下单显示谁的码」给接单司机扫码付费：查码专用接口
+  // (/api/get-wechat-qr) 按订单关联授权后返回的正是本目录的图片地址，接单司机来取图时
+  // 被旧守卫 403 挡死——报单转单订单里存的是地址形式的码、无图片本体兜底，页面永远
+  // 显示「请先上传收款码」（2026-11-01 06:27 生产实证，RT1793485615159912）。
+  // 现守卫补第三条放行：请求者与码主人之间存在真实订单关联（码主人是下单人、
+  // 请求者是该单接单/被派司机）。无任何关联者照旧 403，防枚举底线不变；
+  // 关联判定结果缓存 10 分钟，避免每次取图全表扫描订单。
+  const qrRelationCache = new Map<string, { ok: boolean; at: number }>();
+  const QR_RELATION_TTL_MS = 10 * 60 * 1000;
+  const hasQrOrderRelation = async (requesterDigits: string, filePhoneRaw: string): Promise<boolean> => {
+    const fileDigits = String(filePhoneRaw || '').replace(/\D/g, '');
+    if (!requesterDigits || !fileDigits || requesterDigits === fileDigits) return false;
+    const cacheKey = `${requesterDigits}|${fileDigits}`;
+    const hit = qrRelationCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < QR_RELATION_TTL_MS) return hit.ok;
+    let ok = false;
+    const orderLinksPair = (order: any): boolean => {
+      if (!order || typeof order !== 'object') return false;
+      // 下单人字段口径与 /api/get-wechat-qr 的 checkOrderAuth 对齐
+      const orderer = String(order.merchantPhone || order.creatorPhone || order.reporterPhone || order.dispatchedByPhone || order.adminPhone || order.dispatcherPhone || '').replace(/\D/g, '');
+      // 接单司机字段口径：dispatchedDriverPhone → claimedDriverPhone → driverPhone
+      const driver = String(order.dispatchedDriverPhone || order.claimedDriverPhone || order.driverPhone || '').replace(/\D/g, '');
+      return orderer === fileDigits && driver === requesterDigits;
+    };
+    try {
+      if (isMySQLEnabled && mysqlPool) {
+        for (const col of ['merchant_orders', 'valet_orders']) {
+          if (ok) break;
+          try {
+            const [rows]: any = await mysqlPool.query(
+              'SELECT `data` FROM `daijia_documents` WHERE `collection` = ?', [col]);
+            for (const r of rows || []) {
+              const d = typeof r.data === 'string' ? parseStoredDoc(r.data) : r.data;
+              if (orderLinksPair(d)) { ok = true; break; }
+            }
+          } catch (_) {}
+        }
+      }
+      if (!ok) {
+        const dbData = readLocalJsonDb();
+        for (const col of ['merchant_orders', 'valet_orders']) {
+          if (ok) break;
+          const docs = dbData[col] || {};
+          for (const d of Object.values(docs)) {
+            if (orderLinksPair(d)) { ok = true; break; }
+          }
+        }
+      }
+    } catch (_) {}
+    qrRelationCache.set(cacheKey, { ok, at: Date.now() });
+    return ok;
+  };
+  const qrStaticGuard = async (req: any, res: any, next: any) => {
+    // 允许：①查自己的码 ②开发者/管理员 ③与码主人有真实订单关联的接单司机（代叫费场景）
     const requester = String(req.authPhone || '').replace(/\D/g, '').trim();
     const filename = String(req.path || '').split('/').pop() || '';
     // 文件名格式: {phone}[_web|_app].png，提取手机号部分
@@ -11620,10 +11672,16 @@ function getClientIp(req: any): string {
     if (!m) return res.status(404).json({ success: false, error: 'Not found' });
     const filePhone = m[1].toUpperCase();
     const reqNorm = requester.toUpperCase();
-    if (!req.isAdmin && filePhone !== reqNorm && filePhone !== reqNorm.replace(/A$/, '')) {
-      return res.status(403).json({ success: false, error: '无权访问他人收款码' });
+    // 本人判定必须带原始 authPhone 比对：requester 已被剥成纯数字，A 后缀账号永远
+    // 等不上带 A 的文件名——旧守卫下 A 商户连自己的码图都取不到（实验室复现坐实）。
+    const reqRaw = String(req.authPhone || '').trim().toUpperCase();
+    if (req.isAdmin || filePhone === reqRaw || filePhone === reqRaw.replace(/A$/, '') || filePhone === reqNorm) {
+      return next();
     }
-    next();
+    try {
+      if (await hasQrOrderRelation(requester, filePhone)) return next();
+    } catch (_) {}
+    return res.status(403).json({ success: false, error: '无权访问他人收款码' });
   };
   app.use('/uploads/qrcodes', requireDbAuth, qrStaticGuard);
   // 2026-10-21 第三轮(P1-1)：qrs 是 qrcodes 的历史副本目录，此前只挂了 express.static 无鉴权，
@@ -11826,7 +11884,11 @@ function getClientIp(req: any): string {
       // 2026-10-23 第四十轮二修：代叫费页每 2 秒轮询本接口（30 次/分），旧上限 20/分
       // 在页面停留约 40 秒后必然触发 429，轮询在成功/被限流之间横跳。接口本身有
       // 登录+订单关联鉴权，放宽到 60/分兼顾页面轮询与防枚举。
-      if (qrLogs.length >= 60) {
+      // 2026-11-01 再放宽到 240/分：60/分是按单页面算的，但限流按 IP 计——运营商
+      // NAT/同一站点 Wi-Fi 下多名司机共用一个出口 IP 时，4 个页面同开就有一半轮询
+      // 被 429（实验室风暴实测：4 页面×40 秒，成功 40/限流 40）。本接口在限流前已
+      // 过登录+订单关联鉴权，无关联者根本走不到计数，240/分不削弱防枚举。
+      if (qrLogs.length >= 240) {
         return res.status(429).json({ success: false, error: '请求过于频繁，请稍后再试' });
       }
       qrLogs.push(now);
