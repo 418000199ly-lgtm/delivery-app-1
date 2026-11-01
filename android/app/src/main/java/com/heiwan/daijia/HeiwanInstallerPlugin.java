@@ -89,11 +89,23 @@ public class HeiwanInstallerPlugin extends Plugin {
         fileName = new File(fileName).getName();
         File target = new File(updatesDir(), fileName);
         try {
-            boolean alreadyComplete = target.exists() && expectSize > 0 && target.length() == expectSize;
-            if (!alreadyComplete) {
+            // 下载自愈（2026-11-01 真机 416 事故根治）：首次下载完成会先去系统设置
+            // 开「允许安装应用」，用户返回点「继续安装」时本地已有完整包；旧逻辑只按
+            // size 账本判完整、否则照旧按文件长度发 Range 续传请求，起点==文件大小
+            // 被服务器按 RFC 回 416 且无自愈，用户死锁在失败弹窗。新口径：
+            // ① 本地已有文件先验 SHA-256，指纹一致直接跳过下载（不看 size 账本）；
+            // ② 遇 416 或下完指纹不符：删本地残包、整包重下一次，全程不用用户清缓存。
+            boolean packageReady = false;
+            for (int attempt = 0; attempt < 2 && !packageReady; attempt++) {
+                if (target.exists() && target.length() > 0
+                        && expectSha != null && !expectSha.isEmpty()
+                        && sha256Hex(target).equalsIgnoreCase(expectSha)) {
+                    packageReady = true;
+                    break;
+                }
                 long existing = target.exists() ? target.length() : 0;
-                if (expectSize > 0 && existing > expectSize) {
-                    // 残留文件比目标还大，必是旧包残片，删掉重下
+                if (expectSize > 0 && existing >= expectSize) {
+                    // 长度已达/超期望却没过指纹关：错包或坏包，删掉整包重下
                     target.delete();
                     existing = 0;
                 }
@@ -103,6 +115,12 @@ public class HeiwanInstallerPlugin extends Plugin {
                 conn.setInstanceFollowRedirects(true);
                 if (existing > 0) conn.setRequestProperty("Range", "bytes=" + existing + "-");
                 int code = conn.getResponseCode();
+                if (code == 416 && attempt == 0) {
+                    // 续传起点不被接受（本地残包与服务器包对不上）：删掉重下
+                    try { conn.disconnect(); } catch (Exception ignore) {}
+                    target.delete();
+                    continue;
+                }
                 boolean append = false;
                 long startAt = 0;
                 if (code == HttpURLConnection.HTTP_PARTIAL) {
@@ -142,15 +160,25 @@ public class HeiwanInstallerPlugin extends Plugin {
                 ev.put("loaded", loaded);
                 ev.put("total", total > 0 ? total : loaded);
                 notifyListeners("downloadProgress", ev);
-            }
-            // 完整性校验：指纹不对直接删包拒绝安装，绝不把坏包/错包交给系统安装器
-            if (expectSha != null && !expectSha.isEmpty()) {
-                String actual = sha256Hex(target);
-                if (!actual.equalsIgnoreCase(expectSha)) {
-                    target.delete();
-                    call.reject("安装包校验失败（指纹不符），已删除，请重试");
-                    return;
+                // 完整性校验：指纹不对删包整包重下一次；再不对才报错，
+                // 绝不把坏包/错包交给系统安装器
+                if (expectSha != null && !expectSha.isEmpty()) {
+                    if (sha256Hex(target).equalsIgnoreCase(expectSha)) {
+                        packageReady = true;
+                    } else {
+                        target.delete();
+                        if (attempt == 1) {
+                            call.reject("安装包校验失败（指纹不符），已删除，请重试");
+                            return;
+                        }
+                    }
+                } else {
+                    packageReady = true;
                 }
+            }
+            if (!packageReady) {
+                call.reject("下载失败，请检查网络后重试");
+                return;
             }
             // 未授「允许安装未知应用」：先引导去系统设置，JS 侧提示后由用户点继续再调本方法
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O

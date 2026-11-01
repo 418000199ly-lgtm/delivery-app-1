@@ -481,7 +481,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     };
     const first = setTimeout(run, 3000 + Math.floor(Math.random() * 4000));
     const timer = setInterval(run, 60000);
-    return () => { alive = false; clearTimeout(first); clearInterval(timer); };
+    // 回前台补问一次：App 在后台被系统冻结时定时器会停摆，切回来立刻对齐，
+    // 不让司机干等下一轮 60 秒（2026-11-01 下线无弹窗实验室定案后补强）
+    const onVisible = () => { if (document.visibilityState === 'visible') run(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { alive = false; clearTimeout(first); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
 
   // 自更新弹窗口径：仅在【下线】时弹（上线跑单永不打扰）；强制版必弹，
@@ -494,9 +498,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       setShowAppUpdateModal(true);
     } else {
       try {
+        // 「今日已弹」标记只在用户亲手点「稍后再说」时才写（见弹窗 onClose），
+        // 弹出瞬间不再写：旧逻辑下弹窗若在息屏/后台无人看到时弹过一次，
+        // 标记即被消耗，进程被杀后重开永不再弹（2026-11-01 实验室 S2 复现定案）
         const last = Number(localStorage.getItem('dd_app_update_optional_last') || 0);
         if (Date.now() - last > 24 * 3600 * 1000) {
-          localStorage.setItem('dd_app_update_optional_last', String(Date.now()));
           setShowAppUpdateModal(true);
         }
       } catch (_) {}
@@ -4555,7 +4561,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             <AppUpdateModal
               info={appUpdateInfo}
               forced={appUpdateInfo.force}
-              onClose={!appUpdateInfo.force ? () => setShowAppUpdateModal(false) : undefined}
+              onClose={!appUpdateInfo.force ? () => { try { localStorage.setItem('dd_app_update_optional_last', String(Date.now())); } catch (_) {} setShowAppUpdateModal(false); } : undefined}
               onSnooze={() => setShowAppUpdateModal(false)}
             />
           )}
@@ -4565,7 +4571,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
             <AppUpdateModal
               info={appUpdateInfo}
               forced={appUpdateInfo.force}
-              onClose={!appUpdateInfo.force ? () => setShowAppUpdateModal(false) : undefined}
+              onClose={!appUpdateInfo.force ? () => { try { localStorage.setItem('dd_app_update_optional_last', String(Date.now())); } catch (_) {} setShowAppUpdateModal(false); } : undefined}
               onSnooze={() => setShowAppUpdateModal(false)}
             />
           )}
