@@ -14,6 +14,8 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // 2026-11-01 自更新：注册 App 内下载安装插件（须在 super.onCreate 前）
         registerPlugin(HeiwanInstallerPlugin.class);
+        // 2026-11-07 支付宝 App 支付：注册支付插件（与自更新插件并列）
+        registerPlugin(HeiwanAlipayPlugin.class);
         super.onCreate(savedInstanceState);
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
 

@@ -62,6 +62,8 @@ import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { subscribeSquadMembership, fetchSquadMembership, submitSquadApplication, withdrawSquadApplication, SquadMembershipState } from '../lib/squadMembership';
+import { fetchVipPackages, createAlipayOrder, getPayOrderStatus, DEFAULT_VIP_PACKAGES, VipPackage } from '../lib/vipShop';
+import { payWithAlipay } from '../lib/alipayPay';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
@@ -3112,6 +3114,28 @@ export default function HomeView({
   const [vipPayMethod, setVipPayMethod] = useState<'wechat' | 'alipay'>('wechat');
   const [isVipPurchasing, setIsVipPurchasing] = useState(false);
   const [vipPurchaseSuccess, setVipPurchaseSuccess] = useState(false);
+  // --- VIP 自助购买（2026-11-07）：价格读服务端配置、支付宝真实支付、到账认服务端查单 ---
+  const [vipPackages, setVipPackages] = useState<VipPackage[]>(DEFAULT_VIP_PACKAGES);
+  const [showVipPaySheet, setShowVipPaySheet] = useState(false);
+  const [vipPaidInfo, setVipPaidInfo] = useState<{ label: string; price: number; vipExpiry: string } | null>(null);
+
+  const vipPkgLabelForDays = (days: number) => days === 99999 ? '永久会员' : days === 365 ? '365 天（1 年）' : days === 180 ? '180 天（半年）' : `${days} 天`;
+  const vipPkgBadgeForDays = (days: number) => days === 99999 ? '强力推荐' : days === 365 ? '年卡特惠' : days === 180 ? '半年精选' : days === 90 ? '季卡超值' : days === 30 ? '月卡体验' : '特惠';
+  const vipPkgDailyText = (days: number, price: number) => days === 99999 ? '终身特惠' : `${parseFloat((price / days).toFixed(3))} 元 / 天`;
+  const fmtYuan = (p: number) => String(Math.round(p * 100) / 100);
+
+  // 每次打开 VIP 购买页现拉服务端价格配置：管理后台改价后司机重开页面即新价（秒级同步）
+  useEffect(() => {
+    if (!showVipPurchaseModal) return;
+    setVipPaidInfo(null);
+    let cancelled = false;
+    fetchVipPackages().then((pkgs) => {
+      if (cancelled || !pkgs || pkgs.length === 0) return;
+      setVipPackages(pkgs);
+      setSelectedVipPkgIndex((prev) => Math.min(prev, pkgs.length - 1));
+    });
+    return () => { cancelled = true; };
+  }, [showVipPurchaseModal]);
 
   const [isCityDispatchEnabled, setIsCityDispatchEnabled] = useState<boolean | null>(null);
   const [showNearbyMap, setShowNearbyMap] = useState(false);
@@ -4021,52 +4045,77 @@ export default function HomeView({
     }
   };
 
-  const handleVipPurchase = async () => {
-    setIsVipPurchasing(true);
-    // Simulate payment process delay
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+  // --- VIP 自助购买真实支付流程（2026-11-07 取代原模拟购买）---
+  // 铁律：客户端绝不直改 vipExpiry；下单价以服务端配置为准，到账只认服务端查单 paid 后返回的 vipExpiry。
 
-    const selectedPkg = [
-      { id: 'lifetime', days: 99999, price: 158.0, label: '永久会员' },
-      { id: '365days', days: 365, price: 78.0, label: '365天' },
-      { id: '180days', days: 180, price: 45.0, label: '180天' },
-      { id: '90days', days: 90, price: 25.0, label: '90天' },
-      { id: '30days', days: 30, price: 9.9, label: '30天' }
-    ][selectedVipPkgIndex || 0];
-
-    const durationDays = selectedPkg.days;
-    const isForever = durationDays === 99999;
-
-    let finalExpiryStr = '永久有效';
-    if (!isForever) {
-      let currentExpiryDate = new Date();
-      if (settings.vipExpiry && settings.vipExpiry !== '永久有效') {
-        const parsed = Date.parse(settings.vipExpiry);
-        if (!isNaN(parsed)) {
-          const prevDate = new Date(parsed);
-          if (prevDate.getTime() > currentExpiryDate.getTime()) {
-            currentExpiryDate = prevDate;
-          }
-        }
-      }
-      currentExpiryDate.setDate(currentExpiryDate.getDate() + durationDays);
-      const yyyy = currentExpiryDate.getFullYear();
-      const mm = String(currentExpiryDate.getMonth() + 1).padStart(2, '0');
-      const dd = String(currentExpiryDate.getDate()).padStart(2, '0');
-      finalExpiryStr = `${yyyy}-${mm}-${dd}`;
+  // 轮询查单：每 2 秒一次、最长约 30 秒；paid 返回服务端发放后的 vipExpiry，超时返回 null
+  const pollVipOrderPaid = async (outTradeNo: string): Promise<{ vipExpiry: string } | null> => {
+    const deadline = Date.now() + 30000;
+    for (;;) {
+      try {
+        const st = await getPayOrderStatus(outTradeNo);
+        if (st.status === 'paid') return { vipExpiry: st.vipExpiry };
+      } catch (_) { /* 单次查单失败不中断轮询，等下一次 */ }
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
+  };
 
+  const handleWechatVipPay = () => {
+    setShowVipPaySheet(false);
+    setLocalAlert({ title: '提示', message: '微信支付开发对接中，敬请期待', type: 'info' });
+  };
+
+  const handleAlipayVipPay = async () => {
+    const pkg = vipPackages[selectedVipPkgIndex] || vipPackages[0];
+    if (!pkg || isVipPurchasing) return;
+    setShowVipPaySheet(false);
+    setIsVipPurchasing(true);
     try {
-      // Update settings locally and persist to Firestore
-      onUpdateSettings({
-        ...settings,
-        vipExpiry: finalExpiryStr
-      });
-
-      setVipPurchaseSuccess(true);
-    } catch (err: any) {
-      console.error(err);
-      alert('购买同步到数据库失败: ' + err.message);
+      // 1) 服务端下单（价格以服务端配置为准，只传 packageId）
+      const order = await createAlipayOrder(pkg.id);
+      // 2) 拉起支付宝 App 支付；非原生环境在此抛明确不可用错误
+      let payRes: { resultStatus: string; memo?: string };
+      try {
+        payRes = await payWithAlipay(order.orderString);
+      } catch (e: any) {
+        setLocalAlert({ title: '支付未完成', message: e?.message || '支付宝拉起失败，请重试', type: 'warning' });
+        return;
+      }
+      // 3) SDK 同步状态只作初步判断：6001=用户取消，其余非 9000/8000 一律按失败处理、不误报成功
+      if (payRes.resultStatus === '6001') {
+        setLocalAlert({ title: '已取消支付', message: '您已取消本次支付宝支付，未扣款。', type: 'info' });
+        return;
+      }
+      if (payRes.resultStatus !== '9000' && payRes.resultStatus !== '8000') {
+        setLocalAlert({
+          title: '支付失败',
+          message: payRes.memo || `支付宝未能完成支付（状态 ${payRes.resultStatus || '未知'}），请重试。`,
+          type: 'warning',
+        });
+        return;
+      }
+      // 4) 到账确认：轮询服务端查单，paid 才算买成功
+      const paid = await pollVipOrderPaid(order.outTradeNo);
+      if (paid) {
+        if (paid.vipExpiry) {
+          onUpdateSettings({ ...settings, vipExpiry: paid.vipExpiry });
+          try {
+            const myPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '');
+            window.dispatchEvent(new CustomEvent('driver_vip_updated', { detail: { phone: myPhone, vipExpiry: paid.vipExpiry } }));
+          } catch (_) {}
+        }
+        setVipPaidInfo({ label: vipPkgLabelForDays(pkg.days), price: pkg.price, vipExpiry: paid.vipExpiry });
+        setVipPurchaseSuccess(true);
+      } else {
+        setLocalAlert({
+          title: '支付结果确认中',
+          message: '支付结果确认中，请稍后查看会员有效期。若您已完成付款，会员权益将在服务端确认到账后自动生效。',
+          type: 'info',
+        });
+      }
+    } catch (e: any) {
+      setLocalAlert({ title: '下单失败', message: e?.message || '创建支付订单失败，请检查网络后重试', type: 'warning' });
     } finally {
       setIsVipPurchasing(false);
     }
@@ -5965,6 +6014,7 @@ export default function HomeView({
               onClick={() => {
                 setShowVipPurchaseModal(false);
                 setVipPurchaseSuccess(false);
+                setShowVipPaySheet(false);
               }}
               className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white transition-all active:scale-90"
             >
@@ -6006,15 +6056,17 @@ export default function HomeView({
                   </span>
                 </div>
 
-                {/* Pricing Grid */}
+                {/* Pricing Grid：套餐与价格读服务端配置（fetchVipPackages），不再写死数组 */}
                 <div className="grid grid-cols-2 gap-3">
-                  {[
-                    { id: 'lifetime', days: 99999, price: 158, label: '永久会员', dailyPrice: '终身特惠', badge: '强力推荐', isFull: true, discountText: '日常 188元，限时特惠 158 元' },
-                    { id: '365days', days: 365, price: 78, label: '365 天（1 年）', dailyPrice: '0.214 元 / 天', badge: '年卡特惠', isFull: false, discountText: '0.214 元 / 天' },
-                    { id: '180days', days: 180, price: 45, label: '180 天（半年）', dailyPrice: '0.25 元 / 天', badge: '半年精选', isFull: false, discountText: '0.25 元 / 天' },
-                    { id: '90days', days: 90, price: 25, label: '90 天', dailyPrice: '0.278 元 / 天', badge: '季卡超值', isFull: false, discountText: '0.278 元 / 天' },
-                    { id: '30days', days: 30, price: 9.9, label: '30 天', dailyPrice: '0.33 元 / 天', badge: '月卡体验', isFull: false, discountText: '0.33 元 / 天' }
-                  ].map((pkg, idx) => {
+                  {vipPackages.map((rawPkg, idx) => {
+                    const pkg = {
+                      ...rawPkg,
+                      label: vipPkgLabelForDays(rawPkg.days),
+                      dailyPrice: vipPkgDailyText(rawPkg.days, rawPkg.price),
+                      badge: vipPkgBadgeForDays(rawPkg.days),
+                      isFull: rawPkg.days === 99999,
+                      discountText: vipPkgDailyText(rawPkg.days, rawPkg.price),
+                    };
                     const isSelected = selectedVipPkgIndex === idx;
                     if (pkg.isFull) {
                       return (
@@ -6037,12 +6089,12 @@ export default function HomeView({
                               <Crown className="w-4 h-4 text-amber-500 shrink-0" />
                               <p className="text-sm font-black text-slate-900">{pkg.label}</p>
                             </div>
-                            <p className="text-[10px] text-amber-700 font-bold mt-1">永久会员｜日常 188元，限时特惠 158 元</p>
+                            <p className="text-[10px] text-amber-700 font-bold mt-1">永久会员｜限时特惠 ¥{fmtYuan(pkg.price)}</p>
                           </div>
                           <div className="text-right">
                             <div className="flex items-baseline justify-end space-x-0.5">
                               <span className="text-xs font-bold text-slate-500">¥</span>
-                              <span className="text-2xl font-black text-slate-900 leading-none">158</span>
+                              <span className="text-2xl font-black text-slate-900 leading-none">{fmtYuan(pkg.price)}</span>
                             </div>
                             <span className="text-[9px] font-extrabold text-amber-600 block mt-1">🎉 终身尊享权益</span>
                           </div>
@@ -6144,33 +6196,16 @@ export default function HomeView({
                   </div>
                 </div>
 
-                {/* Redemption Prompt Info */}
-                <div className="bg-amber-50 border border-amber-200/65 rounded-2xl p-4 text-left space-y-3 shadow-2xs">
-                  <div className="flex items-center space-x-2 text-amber-800">
-                    <Gift className="w-4.5 h-4.5 text-amber-600 shrink-0" />
-                    <span className="text-xs font-black">请购买兑换码激活会员</span>
-                  </div>
-                  <p className="text-[10px] text-amber-700 leading-relaxed font-bold">
-                    请点击下方按钮或前往首页，点击 <span className="text-amber-600 font-black">「卡密兑换」</span> 按钮，通过官方客服或渠道代理商获取【VIP 尊享激活兑换码】。
-                  </p>
-                  <p className="text-[9.5px] text-amber-600 leading-relaxed">
-                    选择上方所需的会员天数套餐并获取相应兑换卡密后，输入并激活即可瞬间开启全部 VIP 专属品牌修改、纠偏校准与无限功能等尊享专项权限。
-                  </p>
-                </div>
-
               </div>
 
               {/* Footer Action Area */}
               <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
                 <button
-                  onClick={() => {
-                    setShowVipPurchaseModal(false);
-                    setShowRedeemModal(true);
-                  }}
-                  className="w-full py-3 rounded-xl font-bold text-xs text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md shadow-amber-500/10 flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
+                  onClick={() => setShowVipPaySheet(true)}
+                  disabled={isVipPurchasing || vipPackages.length === 0}
+                  className="w-full py-3 rounded-xl font-bold text-xs text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md shadow-amber-500/10 flex items-center justify-center space-x-2 cursor-pointer active:scale-98 disabled:opacity-60"
                 >
-                  <Gift className="w-4 h-4" />
-                  <span>立即去卡密兑换激活</span>
+                  <span>{isVipPurchasing ? '正在处理支付...' : `确认协议并支付 ¥${fmtYuan((vipPackages[selectedVipPkgIndex] || vipPackages[0])?.price ?? 0)}`}</span>
                 </button>
                 <button
                   onClick={() => setShowVipPurchaseModal(false)}
@@ -6179,6 +6214,47 @@ export default function HomeView({
                   暂不购买，返回首页
                 </button>
               </div>
+
+              {/* 支付方式选择层（参照竞品流程：账户充值 → 微信/支付宝二选一 → 跳对应 App 付款） */}
+              {showVipPaySheet && (
+                <div className="absolute inset-0 z-50 flex items-end justify-center bg-slate-900/60" onClick={() => setShowVipPaySheet(false)}>
+                  <div className="w-full bg-white rounded-t-3xl px-5 pt-4 pb-8 space-y-3.5 animate-in slide-in-from-bottom duration-200" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-black text-slate-900">账户充值</h4>
+                      <button onClick={() => setShowVipPaySheet(false)} className="p-1 rounded-full text-slate-400 hover:bg-slate-100 active:scale-90">
+                        <X className="w-4.5 h-4.5" />
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-semibold">
+                      {(vipPackages[selectedVipPkgIndex] || vipPackages[0]) ? vipPkgLabelForDays((vipPackages[selectedVipPkgIndex] || vipPackages[0]).days) : ''}
+                      {' · '}
+                      <span className="text-slate-800 font-black">¥{fmtYuan((vipPackages[selectedVipPkgIndex] || vipPackages[0])?.price ?? 0)}</span>
+                    </p>
+                    <button
+                      onClick={handleWechatVipPay}
+                      className="w-full py-3.5 rounded-xl bg-[#07C160] hover:brightness-95 text-white font-bold text-sm flex items-center justify-center space-x-2.5 cursor-pointer active:scale-98 shadow-md shadow-emerald-500/20"
+                    >
+                      <span className="w-5 h-5 rounded-md bg-white/25 flex items-center justify-center text-[11px] font-black leading-none">微</span>
+                      <span>微信支付</span>
+                    </button>
+                    <button
+                      onClick={handleAlipayVipPay}
+                      className="w-full py-3.5 rounded-xl bg-[#1677FF] hover:brightness-95 text-white font-bold text-sm flex items-center justify-center space-x-2.5 cursor-pointer active:scale-98 shadow-md shadow-blue-500/20"
+                    >
+                      <span className="w-5 h-5 rounded-md bg-white/25 flex items-center justify-center text-[11px] font-black leading-none">支</span>
+                      <span>支付宝支付</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 支付处理中遮罩（拉起支付宝/轮询查单期间） */}
+              {isVipPurchasing && (
+                <div className="absolute inset-0 z-50 bg-slate-900/50 flex flex-col items-center justify-center space-y-3">
+                  <div className="w-8 h-8 border-3 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="text-[11px] font-black text-white animate-pulse">正在处理支付，请稍候...</p>
+                </div>
+              )}
             </>
           ) : (
             /* VIP Success Celebratory Screen */
@@ -6198,20 +6274,20 @@ export default function HomeView({
                 <div className="pb-2.5 flex justify-between items-center">
                   <span className="text-xs font-bold text-slate-400">已激活套餐:</span>
                   <span className="text-xs font-black text-slate-800">
-                    {['终身使用永久尊享会员', '365天尊享年度会员', '180天尊享半年会员', '90天尊享超级会员', '30天尊享体验会员'][selectedVipPkgIndex]}
+                    {vipPaidInfo ? vipPaidInfo.label : vipPkgLabelForDays((vipPackages[selectedVipPkgIndex] || vipPackages[0])?.days ?? 0)}
                   </span>
                 </div>
                 <div className="py-2.5 flex justify-between items-center">
                   <span className="text-xs font-bold text-slate-400">支付总额:</span>
                   <span className="text-xs font-black text-emerald-600">
-                    ¥{[158.0, 78.0, 45.0, 25.0, 9.9][selectedVipPkgIndex].toFixed(2)} 元
+                    ¥{(vipPaidInfo?.price ?? (vipPackages[selectedVipPkgIndex] || vipPackages[0])?.price ?? 0).toFixed(2)} 元
                   </span>
                 </div>
                 <div className="pt-2.5 flex justify-between items-center">
                   <span className="text-xs font-bold text-slate-400">当前有效期至:</span>
                   <span className="text-xs font-black text-amber-600">
-                    {/* P0(2026-10-16)：归一化显示，2099-12-31 显示"永久有效"而非原始日期，与"服务到期时间"口径一致 */}
-                    {normalizeExpiryForDisplay(settings.vipExpiry) === '待开通' ? '即刻生效' : normalizeExpiryForDisplay(settings.vipExpiry)}
+                    {/* 有效期以服务端查单返回的 vipExpiry 为准（2026-11-07），本地 settings 兜底；归一化显示，2099-12-31 显示"永久有效" */}
+                    {(() => { const n = normalizeExpiryForDisplay(vipPaidInfo?.vipExpiry || settings.vipExpiry); return n === '待开通' ? '即刻生效' : n; })()}
                   </span>
                 </div>
               </div>

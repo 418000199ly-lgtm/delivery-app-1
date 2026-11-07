@@ -5236,6 +5236,453 @@ function getClientIp(req: any): string {
   }, 30000);
 
   // ============================================================
+  // 2026-11-07 会员自助购买（支付宝 APP 支付）：
+  // - 套餐价格存 config/vip_packages 文档，管理后台 POST /api/admin/vip-packages 改价，
+  //   App GET /api/shop/vip-packages 实时取价（内存缓存 15 秒，改价即刷新缓存）；
+  // - 下单价只认服务端配置，绝不信客户端金额；到账只认支付宝异步通知：
+  //   RSA2 验签 + app_id/seller_id/金额校验 + 幂等，成功后按「顺延」延长 vipExpiry
+  //   （base=max（今天，现有到期日）+天数），写入口径与 /api/admin/update-driver-expiry
+  //   完全一致（driver_users+squad_members 两表、existing-only、MySQL 三次重试）；
+  // - 密钥全走环境变量：ALIPAY_APP_ID（缺省正式 APPID）、ALIPAY_PRIVATE_KEY、
+  //   ALIPAY_PUBLIC_KEY、ALIPAY_NOTIFY_URL（缺省生产回调地址）、ALIPAY_SELLER_ID
+  //   （可选，配置后 notify 才校验 seller_id）。
+  // ============================================================
+  type VipPackage = { id: string; days: number; price: number; label: string };
+  const VIP_PACKAGES_SEED: VipPackage[] = [
+    { id: 'lifetime', days: 99999, price: 158, label: '永久会员' },
+    { id: '365days', days: 365, price: 78, label: '365天' },
+    { id: '180days', days: 180, price: 45, label: '180天' },
+    { id: '90days', days: 90, price: 25, label: '90天' },
+    { id: '30days', days: 30, price: 9.9, label: '30天' },
+  ];
+  let _vipPackagesCache: { at: number; packages: VipPackage[] } = { at: 0, packages: [] };
+
+  // 套餐校验/归一化（GET 读存量配置与 admin 改价共用）：1-10 条、id 唯一、
+  // days 正整数（99999=永久）、price 0.01~100000；不合规整体返回 null。
+  function sanitizeVipPackages(input: any): VipPackage[] | null {
+    if (!Array.isArray(input) || input.length < 1 || input.length > 10) return null;
+    const seen = new Set<string>();
+    const out: VipPackage[] = [];
+    for (const raw of input) {
+      if (!raw || typeof raw !== 'object') return null;
+      const id = String((raw as any).id || '').trim();
+      if (!id || id.length > 32 || seen.has(id)) return null;
+      seen.add(id);
+      const days = Number((raw as any).days);
+      if (!Number.isInteger(days) || days <= 0 || days > 99999) return null;
+      const price = Number((raw as any).price);
+      if (!Number.isFinite(price) || price < 0.01 || price > 100000) return null;
+      let label = String((raw as any).label || '').trim();
+      if (!label) label = days === 99999 ? '永久会员' : `${days}天`;
+      if (label.length > 32) label = label.slice(0, 32);
+      out.push({ id, days, price: Math.round(price * 100) / 100, label });
+    }
+    return out;
+  }
+
+  // 配置落盘：与 writeAppUpdateConfig 同模式（MySQL upsert + 本地 JSON 双写 + 刷缓存）
+  async function writeVipPackagesConfig(packages: VipPackage[]): Promise<void> {
+    const docObj = { packages, updatedAt: new Date().toISOString() };
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['config', 'vip_packages', JSON.stringify(docObj)]
+      );
+    }
+    try {
+      const dbData = readLocalJsonDb();
+      if (!dbData['config']) dbData['config'] = {};
+      dbData['config']['vip_packages'] = docObj;
+      writeLocalJsonDb(dbData);
+    } catch (_) {}
+    _vipPackagesCache = { at: Date.now(), packages };
+  }
+
+  async function getVipPackages(): Promise<VipPackage[]> {
+    if (_vipPackagesCache.packages.length && Date.now() - _vipPackagesCache.at < 15000) {
+      return _vipPackagesCache.packages;
+    }
+    let pkgs: VipPackage[] | null = null;
+    try {
+      const doc: any = await readCanonicalDocument('config', 'vip_packages');
+      if (doc) pkgs = sanitizeVipPackages(doc.packages);
+    } catch (_) {}
+    if (!pkgs) {
+      // 未设置（或存量配置损坏）：返回种子并落盘，后续读直接命中配置
+      pkgs = VIP_PACKAGES_SEED.map((p) => ({ ...p }));
+      try { await writeVipPackagesConfig(pkgs); } catch (e: any) {
+        console.error('[VipPackages] 种子配置落盘失败:', e?.message || e);
+      }
+    }
+    _vipPackagesCache = { at: Date.now(), packages: pkgs };
+    return pkgs;
+  }
+
+  // ---- 支付宝：密钥规范化（兼容标准 PEM、\n 转义、裸 base64 三种形态） ----
+  function normalizeAlipayPem(raw: any, kind: 'private' | 'public'): string {
+    let s = String(raw || '').trim();
+    if (!s) return '';
+    s = s.replace(/\\n/g, '\n').replace(/\r\n/g, '\n').trim();
+    if (s.includes('-----BEGIN')) return s;
+    const b64 = s.replace(/\s+/g, '');
+    if (!b64) return '';
+    const lines = (b64.match(/.{1,64}/g) || [b64]).join('\n');
+    return kind === 'private'
+      ? `-----BEGIN PRIVATE KEY-----\n${lines}\n-----END PRIVATE KEY-----`
+      : `-----BEGIN PUBLIC KEY-----\n${lines}\n-----END PUBLIC KEY-----`;
+  }
+
+  function loadAlipayPrivateKey(): any | null {
+    const pem = normalizeAlipayPem(process.env.ALIPAY_PRIVATE_KEY, 'private');
+    if (!pem) return null;
+    try { return crypto.createPrivateKey(pem); } catch (_) {}
+    // 裸 base64 若是 PKCS#1 DER 被套了 PKCS#8 头，换 RSA 头再试一次
+    if (pem.includes('BEGIN PRIVATE KEY')) {
+      try { return crypto.createPrivateKey(pem.replace(/PRIVATE KEY/g, 'RSA PRIVATE KEY')); } catch (_) {}
+    }
+    console.error('[Alipay] ALIPAY_PRIVATE_KEY 解析失败（既非 PEM 也非可识别的裸 base64）');
+    return null;
+  }
+
+  function loadAlipayPublicKey(): any | null {
+    const pem = normalizeAlipayPem(process.env.ALIPAY_PUBLIC_KEY, 'public');
+    if (!pem) return null;
+    try { return crypto.createPublicKey(pem); } catch (e: any) {
+      console.error('[Alipay] ALIPAY_PUBLIC_KEY 解析失败:', e?.message || e);
+      return null;
+    }
+  }
+
+  function getAlipayConfig() {
+    return {
+      appId: String(process.env.ALIPAY_APP_ID || '2021007112614985').trim(),
+      notifyUrl: String(process.env.ALIPAY_NOTIFY_URL || 'https://api.lyheiwandaijiamax.com/api/pay/alipay/notify').trim(),
+      sellerId: String(process.env.ALIPAY_SELLER_ID || '').trim(),
+      privateKey: loadAlipayPrivateKey(),
+      publicKey: loadAlipayPublicKey(),
+    };
+  }
+
+  // 拼签串（支付宝官方口径）：键升序 k=v&...，空值不参与；
+  // 请求签名只排除 sign；notify 验签排除 sign 与 sign_type。
+  function alipaySignContent(params: Record<string, string>, forNotifyVerify: boolean): string {
+    return Object.keys(params)
+      .filter((k) => k !== 'sign' && (!forNotifyVerify || k !== 'sign_type'))
+      .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
+      .sort()
+      .map((k) => `${k}=${params[k]}`)
+      .join('&');
+  }
+
+  function fmtYmd(d: Date): string {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function parseYmdStrict(s: any): Date | null {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '').trim());
+    if (!m) return null;
+    const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (dt.getFullYear() !== Number(m[1]) || dt.getMonth() !== Number(m[2]) - 1 || dt.getDate() !== Number(m[3])) return null;
+    return dt;
+  }
+
+  // 顺延口径（2026-11-07 用户确认）：已是永久有效不变；买永久（days=99999）置永久有效；
+  // 否则 base=max（今天，现有到期日）+天数。现有值非日期（待开通/已过期/空）时 base=今天。
+  function computeVipExtension(currentVip: any, days: number): string {
+    if (days === 99999) return '永久有效';
+    const cur = String(currentVip || '').trim();
+    if (cur === '永久有效' || cur === '永久') return '永久有效';
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    let base = today;
+    const curDate = parseYmdStrict(cur);
+    if (curDate && curDate.getTime() > today.getTime()) base = curDate;
+    const out = new Date(base);
+    out.setDate(out.getDate() + days);
+    return fmtYmd(out);
+  }
+
+  // 当前 vipExpiry：driver_users 优先、squad_members 兜底（与系统内 pickVip 读链一致）
+  async function readDriverVipExpiry(phone: string): Promise<string> {
+    const du: any = await Promise.resolve(readCanonicalDocument('driver_users', phone)).catch(() => null);
+    if (du && du.vipExpiry !== undefined && du.vipExpiry !== null && String(du.vipExpiry).trim() !== '') return String(du.vipExpiry).trim();
+    const sm: any = await Promise.resolve(readCanonicalDocument('squad_members', phone)).catch(() => null);
+    if (sm && sm.vipExpiry !== undefined && sm.vipExpiry !== null) return String(sm.vipExpiry).trim();
+    return '';
+  }
+
+  // 与 /api/admin/update-driver-expiry 完全一致的写入口径：driver_users+squad_members
+  // 两表 existing-only（不造壳）、MySQL upsert 三次重试（仍失败抛错）、最后整库落盘。
+  // 返回 false = 两表均无此司机文档（无处发放）。
+  async function applyVipExpiryToDriver(phone: string, vipExpiry: string): Promise<boolean> {
+    const dbData = readLocalJsonDb();
+    const targetCols = ['driver_users', 'squad_members'];
+    let wroteAny = false;
+    for (const col of targetCols) {
+      const existing = await Promise.resolve(readCanonicalDocument(col, phone));
+      if (!existing) continue;
+      wroteAny = true;
+      if (!dbData[col]) dbData[col] = {};
+      const updated = {
+        ...existing,
+        phone,
+        phoneNumber: phone,
+        vipExpiry,
+        updatedAt: new Date().toISOString()
+      };
+      dbData[col][phone] = updated;
+      if (isMySQLEnabled && mysqlPool) {
+        const upsertSql =
+          'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+          'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)';
+        const upsertArgs = [col, phone, JSON.stringify(updated)];
+        let mysqlOk = false;
+        let lastMysqlErr: any = null;
+        for (let attempt = 0; attempt < 3 && !mysqlOk; attempt++) {
+          try {
+            await mysqlPool.query(upsertSql, upsertArgs);
+            mysqlOk = true;
+          } catch (e: any) {
+            lastMysqlErr = e;
+            if (attempt < 2) await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+          }
+        }
+        if (!mysqlOk) {
+          console.error('[VipPay MySQL Write Failed]:', col, phone, lastMysqlErr?.message || lastMysqlErr);
+          throw new Error(`MySQL 写入失败(${col})：${lastMysqlErr?.message || lastMysqlErr}`);
+        }
+      }
+    }
+    if (!wroteAny) return false;
+    writeLocalJsonDb(dbData, true);
+    return true;
+  }
+
+  // 支付订单落单/更新（pay_orders 集合，docId=outTradeNo；MySQL 失败抛错，不吞）
+  async function writePayOrderDoc(order: any): Promise<void> {
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['pay_orders', order.outTradeNo, JSON.stringify(order)]
+      );
+    }
+    try {
+      const dbData = readLocalJsonDb();
+      if (!dbData['pay_orders']) dbData['pay_orders'] = {};
+      dbData['pay_orders'][order.outTradeNo] = order;
+      writeLocalJsonDb(dbData);
+    } catch (_) {}
+  }
+
+  // 套餐列表（公开读，App 配置类接口，与 /api/app/version 同定位）
+  app.get('/api/shop/vip-packages', async (req: any, res: any) => {
+    try {
+      const packages = await getVipPackages();
+      return res.json({ ok: true, packages });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '读取套餐失败' });
+    }
+  });
+
+  // 管理后台改价（与其它 /api/admin/* 同鉴权：requireDbAuth + isAdmin 开发者校验）
+  app.post('/api/admin/vip-packages', requireDbAuth, async (req: any, res: any) => {
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ ok: false, error: '需要管理员权限' });
+    }
+    try {
+      const packages = sanitizeVipPackages(req.body?.packages);
+      if (!packages) {
+        return res.status(400).json({ ok: false, error: '套餐格式无效：需 1-10 条、id 唯一、天数为正整数、价格 0.01~100000' });
+      }
+      await writeVipPackagesConfig(packages);
+      const summary = packages.map((p) => `${p.label}¥${p.price}`).join('、');
+      await logAdminOperation('update-vip-packages', String((req as any).authPhone || ''), '', `会员套餐更新：${summary}`, req).catch(() => {});
+      return res.json({ ok: true, packages });
+    } catch (e: any) {
+      console.error('[Admin VipPackages Update Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '保存套餐失败' });
+    }
+  });
+
+  // 司机下单：价格只认服务端配置；落单后组装支付宝 APP 支付参数并 RSA2 签名
+  app.post('/api/pay/alipay/create-order', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(400).json({ ok: false, error: '商户账号（A后缀）不能购买会员' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '登录手机号无效' });
+      }
+      const packageId = String(req.body?.packageId || '').trim();
+      const packages = await getVipPackages();
+      const pkg = packages.find((p) => p.id === packageId);
+      if (!pkg) {
+        return res.status(400).json({ ok: false, error: '套餐不存在' });
+      }
+      const ali = getAlipayConfig();
+      if (!ali.privateKey) {
+        return res.status(500).json({ ok: false, error: 'alipay_not_configured', message: '服务端未配置支付宝私钥（ALIPAY_PRIVATE_KEY）' });
+      }
+      const outTradeNo = `VIP${Date.now()}${phone.slice(-4)}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+      const order = {
+        id: outTradeNo,
+        outTradeNo,
+        phone,
+        packageId: pkg.id,
+        days: pkg.days,
+        amount: pkg.price,
+        status: 'pending',
+        tradeNo: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await writePayOrderDoc(order);
+      const bizContent = JSON.stringify({
+        subject: `黑湾代驾MAX会员-${pkg.label}`,
+        out_trade_no: outTradeNo,
+        total_amount: pkg.price.toFixed(2),
+        product_code: 'QUICK_MSECURITY_PAY',
+        timeout_express: '30m',
+      });
+      const ts = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const params: Record<string, string> = {
+        app_id: ali.appId,
+        method: 'alipay.trade.app.pay',
+        charset: 'utf-8',
+        sign_type: 'RSA2',
+        timestamp: `${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`,
+        version: '1.0',
+        notify_url: ali.notifyUrl,
+        biz_content: bizContent,
+      };
+      const signer = crypto.createSign('RSA-SHA256');
+      signer.update(alipaySignContent(params, false), 'utf8');
+      const sign = signer.sign(ali.privateKey, 'base64');
+      const orderString = [...Object.keys(params).sort(), 'sign']
+        .map((k) => `${k}=${encodeURIComponent(k === 'sign' ? sign : params[k])}`)
+        .join('&');
+      console.log(`[Alipay CreateOrder] phone=${phone} pkg=${pkg.id} amount=${pkg.price} outTradeNo=${outTradeNo}`);
+      return res.json({ ok: true, outTradeNo, orderString });
+    } catch (e: any) {
+      console.error('[Alipay CreateOrder Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '创建订单失败' });
+    }
+  });
+
+  // 支付宝异步通知（无登录鉴权，全局 urlencoded 已开启）：验签→校验→幂等→顺延发放→回 success
+  app.post('/api/pay/alipay/notify', async (req: any, res: any) => {
+    const fail = (why: string, extra?: any) => {
+      console.warn(`[Alipay Notify] 校验失败: ${why}`, extra !== undefined ? JSON.stringify(extra) : '');
+      return res.type('text/plain').send('failure');
+    };
+    try {
+      const params: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.body || {})) params[k] = String((v as any) ?? '');
+      const ali = getAlipayConfig();
+      if (!ali.publicKey) return fail('服务端未配置支付宝公钥 ALIPAY_PUBLIC_KEY');
+      const sign = String(params.sign || '');
+      if (!sign) return fail('缺少 sign');
+      let verified = false;
+      try {
+        const verifier = crypto.createVerify('RSA-SHA256');
+        verifier.update(alipaySignContent(params, true), 'utf8');
+        verified = verifier.verify(ali.publicKey, sign, 'base64');
+      } catch (e: any) {
+        return fail('验签异常: ' + (e?.message || e));
+      }
+      if (!verified) return fail('验签不通过', { out_trade_no: params.out_trade_no });
+      if (String(params.app_id || '') !== ali.appId) return fail('app_id 不匹配', { app_id: params.app_id });
+      if (ali.sellerId && String(params.seller_id || '') !== ali.sellerId) return fail('seller_id 不匹配', { seller_id: params.seller_id });
+      const outTradeNo = String(params.out_trade_no || '').trim();
+      if (!outTradeNo) return fail('缺少 out_trade_no');
+      const peek: any = await Promise.resolve(readCanonicalDocument('pay_orders', outTradeNo)).catch(() => null);
+      if (!peek) return fail('订单不存在', { outTradeNo });
+      // 同司机串行：防并发重复通知交错读-改-写导致双倍顺延（进程内单进程部署足够）
+      const release = await acquireOrderLock(`payvip:${peek.phone}`);
+      try {
+        const order: any = await Promise.resolve(readCanonicalDocument('pay_orders', outTradeNo)).catch(() => null);
+        if (!order) return fail('订单不存在', { outTradeNo });
+        // 幂等：已支付直接回 success，不重复发放
+        if (order.status === 'paid') return res.type('text/plain').send('success');
+        const totalAmount = Number(params.total_amount);
+        if (!Number.isFinite(totalAmount) || Math.round(totalAmount * 100) !== Math.round(Number(order.amount) * 100)) {
+          return fail('金额不一致', { notify: params.total_amount, order: order.amount });
+        }
+        const tradeStatus = String(params.trade_status || '');
+        if (tradeStatus !== 'TRADE_SUCCESS' && tradeStatus !== 'TRADE_FINISHED') {
+          return fail('trade_status 非成功终态', { tradeStatus });
+        }
+        // 顺延发放：发放写的是绝对值（目标到期日），且先把目标值记到订单上再发放——
+        // 进程在「已发放、未标记 paid」间中断时，重复通知按目标值判定已发放，不双倍顺延、
+        // 也不把后来别的订单抬高的到期日往回压。
+        const phone = String(order.phone);
+        const currentVip = await readDriverVipExpiry(phone);
+        let targetVip = String(order.vipExtendTarget || '');
+        if (!targetVip) {
+          targetVip = computeVipExtension(currentVip, Number(order.days));
+          await writePayOrderDoc({ ...order, vipExtendTarget: targetVip, updatedAt: new Date().toISOString() });
+          const applied = await applyVipExpiryToDriver(phone, targetVip);
+          if (!applied) return fail('司机文档不存在，会员发放失败', { phone });
+        } else {
+          const curDate = parseYmdStrict(currentVip);
+          const tgtDate = parseYmdStrict(targetVip);
+          const alreadyApplied =
+            currentVip === '永久有效' ||
+            currentVip === targetVip ||
+            (curDate !== null && tgtDate !== null && curDate.getTime() >= tgtDate.getTime());
+          if (!alreadyApplied) {
+            const applied = await applyVipExpiryToDriver(phone, targetVip);
+            if (!applied) return fail('司机文档不存在，会员发放失败', { phone });
+          }
+        }
+        await writePayOrderDoc({
+          ...order,
+          status: 'paid',
+          tradeNo: String(params.trade_no || ''),
+          paidAt: new Date().toISOString(),
+          vipExtendTarget: targetVip,
+          vipExpiryAfter: targetVip,
+          updatedAt: new Date().toISOString(),
+        });
+        console.log(`[Alipay Notify] 支付成功 phone=${phone} outTradeNo=${outTradeNo} tradeNo=${params.trade_no} vipExpiry->${targetVip}`);
+        return res.type('text/plain').send('success');
+      } finally {
+        release();
+      }
+    } catch (e: any) {
+      console.error('[Alipay Notify Error]:', e);
+      return res.type('text/plain').send('failure');
+    }
+  });
+
+  // 订单状态查询（司机 token，只能查本人订单）；vipExpiry 回读该司机当前值
+  app.get('/api/pay/order-status', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(403).json({ ok: false, error: '商户账号不能查询会员订单' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      const outTradeNo = String(req.query.outTradeNo || '').trim();
+      if (!outTradeNo) {
+        return res.status(400).json({ ok: false, error: '缺少 outTradeNo' });
+      }
+      const order: any = await Promise.resolve(readCanonicalDocument('pay_orders', outTradeNo)).catch(() => null);
+      if (!order || String(order.phone) !== phone) {
+        return res.status(404).json({ ok: false, error: '订单不存在' });
+      }
+      const vipExpiry = await readDriverVipExpiry(phone);
+      return res.json({ ok: true, status: String(order.status || 'pending'), vipExpiry });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '查询订单失败' });
+    }
+  });
+
+  // ============================================================
   // 2026-11-01 App 自更新系统（桥接版配套，用户定型口径）：
   // - 管理后台「App 版本管理」发布新版并可开强制升级；
   // - 司机 App 每 60 秒问询 /api/app/version（响应几百字节、配置走内存缓存，

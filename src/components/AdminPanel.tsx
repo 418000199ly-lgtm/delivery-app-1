@@ -313,6 +313,76 @@ export default function AdminPanel({
 
   // Navigation tab
   const [activeTab, setActiveTab] = useState<'overview' | 'generate' | 'codes' | 'drivers' | 'sms' | 'messages' | 'applications' | 'dispatch' | 'online_billing' | 'team' | 'master_controls' | 'seal'>('overview');
+
+  // --- 会员价格设置（2026-11-07）：服务端配置，改价保存后司机端打开购买页即显示新价 ---
+  const [vipPriceRows, setVipPriceRows] = useState<{ id: string; days: number; label: string; price: string }[]>([]);
+  const [vipPriceLoading, setVipPriceLoading] = useState(false);
+  const [vipPriceSaving, setVipPriceSaving] = useState(false);
+  const vipPriceLoadedRef = useRef(false);
+
+  const loadVipPrices = async () => {
+    setVipPriceLoading(true);
+    try {
+      const r = await fetch(`${getBaseApiUrl()}/api/shop/vip-packages`, {
+        headers: { ...getAuthHeaders() },
+        cache: 'no-store',
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.ok && Array.isArray(j.packages) && j.packages.length > 0) {
+        setVipPriceRows(j.packages.map((p: any) => ({
+          id: String(p.id),
+          days: Number(p.days),
+          label: String(p.label || ''),
+          price: String(p.price ?? ''),
+        })));
+        vipPriceLoadedRef.current = true;
+      } else {
+        triggerToast(`⚠️ 会员价格读取失败：${j?.error || '服务端未返回价格配置'}`);
+      }
+    } catch (e) {
+      triggerToast('⚠️ 会员价格读取失败：网络错误');
+    } finally {
+      setVipPriceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'drivers' && isDeveloper && !vipPriceLoadedRef.current) {
+      loadVipPrices();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, isDeveloper]);
+
+  const handleSaveVipPrices = async () => {
+    const packages: { id: string; days: number; price: number; label: string }[] = [];
+    for (const row of vipPriceRows) {
+      const price = Number(row.price);
+      if (row.price.trim() === '' || !isFinite(price) || price < 0 || price > 100000) {
+        triggerToast(`⚠️ 「${row.label || row.id}」价格无效，请输入 0-100000 的数字`);
+        return;
+      }
+      packages.push({ id: row.id, days: row.days, price: Math.round(price * 100) / 100, label: row.label });
+    }
+    if (packages.length === 0) { triggerToast('⚠️ 暂无可保存的价格档位'); return; }
+    setVipPriceSaving(true);
+    try {
+      const r = await fetch(`${getBaseApiUrl()}/api/admin/vip-packages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ packages }),
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && (j?.ok || j?.success)) {
+        triggerToast('✅ 会员价格已保存，司机端打开购买页即显示新价');
+      } else {
+        triggerToast(`❌ 会员价格保存失败：${j?.error || `服务端返回 ${r.status}`}`);
+      }
+    } catch (e) {
+      triggerToast('❌ 会员价格保存失败：网络错误');
+    } finally {
+      setVipPriceSaving(false);
+    }
+  };
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Team member state variables
@@ -4485,6 +4555,59 @@ export default function AdminPanel({
                   全小队批量充值
                 </button>
               </div>
+            </div>
+            )}
+            {/* 会员价格设置 (2026-11-07)：仅开发者可操作，价格存服务端，App 购买页实时读取 */}
+            {isDeveloper && (
+            <div className="bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/30 rounded-2xl p-4">
+              <h4 className="text-xs font-black text-amber-300 tracking-wider mb-1">💎 会员价格设置</h4>
+              <p className="text-[10px] text-slate-400 mb-3">设置各档会员的价格（元）。天数档位固定、仅可改价格；保存后司机端打开购买页即显示新价，无需重新发版。</p>
+              {vipPriceLoading ? (
+                <div className="flex items-center gap-2 text-[11px] text-slate-400 py-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                  <span>正在读取服务端价格配置...</span>
+                </div>
+              ) : vipPriceRows.length === 0 ? (
+                <div className="flex items-center gap-3 py-1">
+                  <span className="text-[11px] text-slate-500">尚未读取到价格配置。</span>
+                  <button onClick={loadVipPrices} className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-xl">重新读取</button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {vipPriceRows.map((row, idx) => (
+                    <div key={row.id} className="flex flex-wrap items-center gap-2">
+                      <span className="w-40 text-xs font-bold text-slate-300">
+                        {row.label || row.id}
+                        <span className="text-slate-500 font-mono font-normal ml-1.5">{row.days === 99999 ? '永久' : `${row.days} 天`}</span>
+                      </span>
+                      <span className="text-xs text-slate-400">¥</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100000"
+                        step="0.01"
+                        value={row.price}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setVipPriceRows(prev => prev.map((r, i) => (i === idx ? { ...r, price: v } : r)));
+                        }}
+                        className="w-28 px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-amber-500 outline-none rounded-xl text-xs text-slate-200"
+                      />
+                      <span className="text-[10px] text-slate-500">元</span>
+                    </div>
+                  ))}
+                  <div className="pt-1.5 flex items-center gap-3">
+                    <button
+                      onClick={handleSaveVipPrices}
+                      disabled={vipPriceSaving}
+                      className="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
+                    >
+                      {vipPriceSaving ? '保存中...' : '保存价格'}
+                    </button>
+                    <span className="text-[10px] text-slate-500">保存后司机端打开购买页即显示新价</span>
+                  </div>
+                </div>
+              )}
             </div>
             )}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-5 flex-1 min-h-0">
