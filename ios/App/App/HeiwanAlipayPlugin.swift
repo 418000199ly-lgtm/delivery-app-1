@@ -9,10 +9,13 @@ import AlipaySDK
 /// 回调字典同口径（9000 成功 / 8000 处理中 / 6001 取消 / 其它失败）。
 /// 注意：resolve 只代表客户端流程结束，是否到账以服务端查单/异步通知为准。
 ///
-/// 注册方式：本插件是工程内本地 Swift Package，不在 npm 依赖里，`cap sync` 生成的
-/// capacitor.config.json packageClassList 不会包含它，因此由 App 目标的
-/// BridgeViewController.capacitorDidLoad() 显式 registerPluginInstance 注册
-/// （见 ios/App/App/BridgeViewController.swift）。
+/// 注册方式：本插件类直接编进 App 目标（与安卓侧插件类编进 app 模块同构），
+/// 不在 npm 依赖里，`cap sync` 生成的 capacitor.config.json packageClassList
+/// 不会包含它，因此由 App 目标的 BridgeViewController.capacitorDidLoad()
+/// 显式 registerPluginInstance 注册（见同目录 BridgeViewController.swift）。
+/// 支付宝 SDK 以 xcframework 形式由 App 目标直接引用
+/// （ios/App/HeiwanAlipay/Vendor/AlipaySDK.xcframework），其所需的系统框架
+/// 与 c++/z 库在 App 目标的 OTHER_LDFLAGS 中显式声明（与官方 podspec 对齐）。
 @objc(HeiwanAlipayPlugin)
 public class HeiwanAlipayPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "HeiwanAlipayPlugin"

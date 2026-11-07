@@ -9,7 +9,8 @@
 /* Begin PBXBuildFile section */
 		2FAD9763203C412B000D30F8 /* config.xml in Resources */ = {isa = PBXBuildFile; fileRef = 2FAD9762203C412B000D30F8 /* config.xml */; };
 		4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */ = {isa = PBXBuildFile; productRef = 4D22ABE82AF431CB00220026 /* CapApp-SPM */; };
-		F405EE9D4AB012D1773052A5 /* HeiwanAlipayPlugin in Frameworks */ = {isa = PBXBuildFile; productRef = BD86CDBB1BDB35A21FB2E7E7 /* HeiwanAlipayPlugin */; };
+		AA1157D10000000000000002 /* HeiwanAlipayPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1157D10000000000000001 /* HeiwanAlipayPlugin.swift */; };
+		AA1157D10000000000000004 /* AlipaySDK.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA1157D10000000000000003 /* AlipaySDK.xcframework */; };
 		A695557EB67332BD4EE3D18D /* BridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E72C3B29BF9875D7C70A4EB8 /* BridgeViewController.swift */; };
 		C93A9350C0D8C5B24A4DBE41 /* AlipaySDK.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 8A4EC26A623FBFD8281F2554 /* AlipaySDK.bundle */; };
 		50379B232058CBB4000EE86E /* capacitor.config.json in Resources */ = {isa = PBXBuildFile; fileRef = 50379B222058CBB4000EE86E /* capacitor.config.json */; };
@@ -32,6 +33,8 @@
 		50B271D01FEDC1A000F3C39B /* public */ = {isa = PBXFileReference; lastKnownFileType = folder; path = public; sourceTree = "<group>"; };
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		E72C3B29BF9875D7C70A4EB8 /* BridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeViewController.swift; sourceTree = "<group>"; };
+		AA1157D10000000000000001 /* HeiwanAlipayPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeiwanAlipayPlugin.swift; sourceTree = "<group>"; };
+		AA1157D10000000000000003 /* AlipaySDK.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "HeiwanAlipay/Vendor/AlipaySDK.xcframework"; sourceTree = "<group>"; };
 		8A4EC26A623FBFD8281F2554 /* AlipaySDK.bundle */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "HeiwanAlipay/Vendor/AlipaySDK.bundle"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -41,7 +44,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
-				F405EE9D4AB012D1773052A5 /* HeiwanAlipay in Frameworks */,
+				AA1157D10000000000000004 /* AlipaySDK.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -53,6 +56,7 @@
 			children = (
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				8A4EC26A623FBFD8281F2554 /* AlipaySDK.bundle */,
+				AA1157D10000000000000003 /* AlipaySDK.xcframework */,
 				504EC3061FED79650016851F /* App */,
 				504EC3051FED79650016851F /* Products */,
 			);
@@ -72,6 +76,7 @@
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				E72C3B29BF9875D7C70A4EB8 /* BridgeViewController.swift */,
+				AA1157D10000000000000001 /* HeiwanAlipayPlugin.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -100,7 +105,6 @@
 			name = App;
 			packageProductDependencies = (
 				4D22ABE82AF431CB00220026 /* CapApp-SPM */,
-				BD86CDBB1BDB35A21FB2E7E7 /* HeiwanAlipayPlugin */,
 			);
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
@@ -133,7 +137,6 @@
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
-				DC81C82059B3A7F7005BEE4E /* XCLocalSwiftPackageReference "HeiwanAlipay" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
@@ -168,6 +171,7 @@
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				A695557EB67332BD4EE3D18D /* BridgeViewController.swift in Sources */,
+				AA1157D10000000000000002 /* HeiwanAlipayPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -322,6 +326,27 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					CFNetwork,
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreMotion,
+					"-framework",
+					CoreTelephony,
+					"-framework",
+					CoreText,
+					"-framework",
+					WebKit,
+					"-lc++",
+					"-lz",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.heiwan.daijia;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -348,6 +373,27 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 2.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					CFNetwork,
+					"-framework",
+					SystemConfiguration,
+					"-framework",
+					QuartzCore,
+					"-framework",
+					CoreGraphics,
+					"-framework",
+					CoreMotion,
+					"-framework",
+					CoreTelephony,
+					"-framework",
+					CoreText,
+					"-framework",
+					WebKit,
+					"-lc++",
+					"-lz",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.heiwan.daijia;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -384,10 +430,6 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "CapApp-SPM";
 		};
-		DC81C82059B3A7F7005BEE4E /* XCLocalSwiftPackageReference "HeiwanAlipay" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "HeiwanAlipay";
-		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -395,11 +437,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */;
 			productName = "CapApp-SPM";
-		};
-		BD86CDBB1BDB35A21FB2E7E7 /* HeiwanAlipayPlugin */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = DC81C82059B3A7F7005BEE4E /* XCLocalSwiftPackageReference "HeiwanAlipay" */;
-			productName = "HeiwanAlipayPlugin";
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
