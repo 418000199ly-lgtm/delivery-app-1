@@ -353,6 +353,110 @@ export default function AdminPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, isDeveloper]);
 
+  // --- 短信钱包管理（2026-11-12）：充值档位/短信单价配置 + 查司机余额流水 + 手动调整 ---
+  const [walletCfgAmounts, setWalletCfgAmounts] = useState('10,20,50,100');
+  const [walletCfgPrice, setWalletCfgPrice] = useState('15');
+  const [walletCfgSaving, setWalletCfgSaving] = useState(false);
+  const [walletPhone, setWalletPhone] = useState('');
+  const [walletInfo, setWalletInfo] = useState<any>(null);
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletAdjustAmt, setWalletAdjustAmt] = useState('');
+  const [walletAdjustNote, setWalletAdjustNote] = useState('');
+  const [walletAdjusting, setWalletAdjusting] = useState(false);
+  const walletCfgLoadedRef = useRef(false);
+
+  const loadWalletCfg = async () => {
+    try {
+      const r = await fetch(`${getBaseApiUrl()}/api/shop/wallet-config`, {
+        headers: { ...getAuthHeaders() },
+        cache: 'no-store',
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.ok) {
+        if (Array.isArray(j.rechargeAmounts) && j.rechargeAmounts.length) setWalletCfgAmounts(j.rechargeAmounts.join(','));
+        if (Number(j.smsPriceCents) > 0) setWalletCfgPrice(String(j.smsPriceCents));
+        walletCfgLoadedRef.current = true;
+      }
+    } catch (e) {}
+  };
+
+  useEffect(() => {
+    if (activeTab === 'drivers' && isDeveloper && !walletCfgLoadedRef.current) {
+      loadWalletCfg();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, isDeveloper]);
+
+  const handleSaveWalletCfg = async () => {
+    const amounts = walletCfgAmounts.split(/[,，\s]+/).map((s) => Number(s)).filter((n) => isFinite(n) && n > 0);
+    const price = Number(walletCfgPrice);
+    if (amounts.length === 0) { triggerToast('⚠️ 充值档位无效，请输入如 10,20,50,100'); return; }
+    if (!Number.isInteger(price) || price < 1 || price > 1000) { triggerToast('⚠️ 短信单价无效，请输入 1-1000（分/条）'); return; }
+    setWalletCfgSaving(true);
+    try {
+      const r = await fetch(`${getBaseApiUrl()}/api/admin/wallet-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ rechargeAmounts: amounts, smsPriceCents: price }),
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.ok) triggerToast('✅ 钱包配置已保存，司机端即时生效');
+      else triggerToast(`❌ 钱包配置保存失败：${j?.error || `服务端返回 ${r.status}`}`);
+    } catch (e) {
+      triggerToast('❌ 钱包配置保存失败：网络错误');
+    } finally {
+      setWalletCfgSaving(false);
+    }
+  };
+
+  const handleQueryWallet = async () => {
+    const phone = walletPhone.replace(/\D/g, '').trim();
+    if (!/^1[3-9]\d{9}$/.test(phone)) { triggerToast('⚠️ 请输入有效的 11 位手机号'); return; }
+    setWalletLoading(true);
+    try {
+      const r = await fetch(`${getBaseApiUrl()}/api/admin/wallet?phone=${phone}`, {
+        headers: { ...getAuthHeaders() },
+        cache: 'no-store',
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.ok) setWalletInfo(j);
+      else { setWalletInfo(null); triggerToast(`❌ 查询失败：${j?.error || `服务端返回 ${r.status}`}`); }
+    } catch (e) {
+      triggerToast('❌ 查询失败：网络错误');
+    } finally {
+      setWalletLoading(false);
+    }
+  };
+
+  const handleAdjustWallet = async () => {
+    const phone = walletPhone.replace(/\D/g, '').trim();
+    const amountYuan = Number(walletAdjustAmt);
+    if (!/^1[3-9]\d{9}$/.test(phone)) { triggerToast('⚠️ 请先输入并查询司机手机号'); return; }
+    if (!isFinite(amountYuan) || amountYuan === 0) { triggerToast('⚠️ 调整金额无效（单位元，可负数扣减）'); return; }
+    if (!window.confirm(`确认给 ${phone} 的短信钱包${amountYuan > 0 ? '增加' : '扣减'} ¥${Math.abs(amountYuan)}？`)) return;
+    setWalletAdjusting(true);
+    try {
+      const r = await fetch(`${getBaseApiUrl()}/api/admin/wallet/adjust`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify({ phone, amountYuan, note: walletAdjustNote.trim() }),
+      });
+      const j = await r.json().catch(() => null);
+      if (r.ok && j?.ok) {
+        triggerToast(`✅ 已调整，当前余额 ¥${(Number(j.balanceCents) / 100).toFixed(2)}`);
+        setWalletAdjustAmt('');
+        setWalletAdjustNote('');
+        void handleQueryWallet();
+      } else {
+        triggerToast(`❌ 调整失败：${j?.error || `服务端返回 ${r.status}`}`);
+      }
+    } catch (e) {
+      triggerToast('❌ 调整失败：网络错误');
+    } finally {
+      setWalletAdjusting(false);
+    }
+  };
+
   const handleSaveVipPrices = async () => {
     const packages: { id: string; days: number; price: number; label: string }[] = [];
     for (const row of vipPriceRows) {
@@ -4605,6 +4709,102 @@ export default function AdminPanel({
                       {vipPriceSaving ? '保存中...' : '保存价格'}
                     </button>
                     <span className="text-[10px] text-slate-500">保存后司机端打开购买页即显示新价</span>
+                  </div>
+                </div>
+              )}
+            </div>
+            )}
+            {/* 短信钱包管理 (2026-11-12)：仅开发者；档位/单价存服务端配置，余额流水以服务端钱包文档为准 */}
+            {isDeveloper && (
+            <div className="bg-gradient-to-r from-teal-500/10 to-emerald-500/10 border border-teal-500/30 rounded-2xl p-4">
+              <h4 className="text-xs font-black text-teal-300 tracking-wider mb-1">📩 短信钱包管理</h4>
+              <p className="text-[10px] text-slate-400 mb-3">服务短信从司机余额按条扣费。充值档位与短信单价存服务端，保存后司机端即时生效；线下收款后可在此手动给司机加余额（记操作日志）。</p>
+              <div className="flex flex-wrap items-center gap-2 mb-3">
+                <span className="text-xs text-slate-400">充值档位(元)</span>
+                <input
+                  type="text"
+                  value={walletCfgAmounts}
+                  onChange={(e) => setWalletCfgAmounts(e.target.value)}
+                  placeholder="10,20,50,100"
+                  className="w-44 px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-teal-500 outline-none rounded-xl text-xs text-slate-200 font-mono"
+                />
+                <span className="text-xs text-slate-400 ml-2">短信单价</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={walletCfgPrice}
+                  onChange={(e) => setWalletCfgPrice(e.target.value)}
+                  className="w-20 px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-teal-500 outline-none rounded-xl text-xs text-slate-200"
+                />
+                <span className="text-[10px] text-slate-500">分/条</span>
+                <button
+                  onClick={handleSaveWalletCfg}
+                  disabled={walletCfgSaving}
+                  className="px-4 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
+                >
+                  {walletCfgSaving ? '保存中...' : '保存配置'}
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  value={walletPhone}
+                  onChange={(e) => setWalletPhone(e.target.value)}
+                  placeholder="司机手机号（查余额/流水/调整）"
+                  className="w-52 px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-teal-500 outline-none rounded-xl text-xs text-slate-200 font-mono"
+                />
+                <button
+                  onClick={handleQueryWallet}
+                  disabled={walletLoading}
+                  className="px-4 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
+                >
+                  {walletLoading ? '查询中...' : '查询钱包'}
+                </button>
+                {walletInfo && (
+                  <span className="text-xs text-slate-300">余额 <span className="text-teal-300 font-mono font-bold">¥{((walletInfo.balanceCents || 0) / 100).toFixed(2)}</span></span>
+                )}
+              </div>
+              {walletInfo && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-slate-400">手动调整(元)</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={walletAdjustAmt}
+                      onChange={(e) => setWalletAdjustAmt(e.target.value)}
+                      placeholder="如 10 或 -5"
+                      className="w-28 px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-teal-500 outline-none rounded-xl text-xs text-slate-200"
+                    />
+                    <input
+                      type="text"
+                      value={walletAdjustNote}
+                      onChange={(e) => setWalletAdjustNote(e.target.value)}
+                      placeholder="备注（可选，如线下收款）"
+                      className="w-52 px-3 py-1.5 bg-slate-950 border border-slate-800 focus:border-teal-500 outline-none rounded-xl text-xs text-slate-200"
+                    />
+                    <button
+                      onClick={handleAdjustWallet}
+                      disabled={walletAdjusting}
+                      className="px-4 py-1.5 bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl"
+                    >
+                      {walletAdjusting ? '调整中...' : '调整余额'}
+                    </button>
+                  </div>
+                  <div className="max-h-56 overflow-y-auto space-y-1 pr-1">
+                    {(walletInfo.logs || []).length === 0 && <p className="text-[11px] text-slate-500 py-2">暂无流水</p>}
+                    {(walletInfo.logs || []).map((l: any) => (
+                      <div key={l.id} className="flex items-center justify-between bg-slate-950/50 border border-slate-900 rounded-lg px-3 py-1.5">
+                        <span className="text-[11px] text-slate-400 truncate">
+                          {String(l.at || '').replace('T', ' ').slice(0, 16)} · {l.note || l.type}
+                          {l.status === 'refunded' ? '（已退回）' : ''}
+                        </span>
+                        <span className={`text-[11px] font-mono font-bold shrink-0 ml-2 ${Number(l.amountCents) >= 0 ? 'text-teal-400' : 'text-slate-300'}`}>
+                          {Number(l.amountCents) >= 0 ? '+' : '−'}¥{(Math.abs(Number(l.amountCents) || 0) / 100).toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

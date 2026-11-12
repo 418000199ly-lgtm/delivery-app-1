@@ -1,8 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookmark, Save, ImagePlus, Trash2, CheckCircle, Loader2, Crown, LogOut, Download, AlertCircle } from 'lucide-react';
-import { ChauffeurSettings, checkVipActive, checkVipActiveServerSynced } from '../types';
+import { ChauffeurSettings, SmsServiceConfig, DEFAULT_SMS_SERVICE_CONFIG, checkVipActive, checkVipActiveServerSynced } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
+import { fetchWalletMe, saveSmsConfig, createRechargeOrder, getRechargeStatus, composeSmsDetailPreview, buildServiceSmsTextPreview, smsSegmentsPreview, type WalletMe } from '../lib/wallet';
+import { payWithAlipay } from '../lib/alipayPay';
 
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
@@ -11,6 +13,21 @@ import AppUpdateModal from './AppUpdateModal';
 import { checkAppUpdate, APP_BUILD, APP_VERSION_LABEL, isNativeApp, type AppUpdateInfo } from '../lib/appUpdate';
 
 export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl };
+
+// 服务短信字段开关（短信配置页用）：iOS 风格开关，无内部状态
+function SmsSwitch({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`relative w-12 h-7 rounded-full transition-colors shrink-0 ${on ? 'bg-green-500' : 'bg-gray-200'}`}
+      aria-checked={on}
+      role="switch"
+    >
+      <span className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-all ${on ? 'left-[22px]' : 'left-0.5'}`} />
+    </button>
+  );
+}
 
 interface SettingsViewProps {
   settings: ChauffeurSettings;
@@ -190,10 +207,27 @@ export default function SettingsView({
     }
   }, [displayTemplateName, settings.billingTemplateName]);
   // Local state for interactive settings overlays
-  const [activeModal, setActiveModal] = useState<'none' | 'recharge' | 'sms_edit' | 'qr_upload' | 'deviation_slider' | 'deviation_wait_slider'>('none');
+  const [activeModal, setActiveModal] = useState<'none' | 'wallet' | 'sms_config' | 'qr_upload' | 'deviation_slider' | 'deviation_wait_slider'>('none');
   const [activeDoc, setActiveDoc] = useState<'none' | 'disclaimer' | 'user_agreement' | 'legal_statement'>('none');
-  const [rechargeInput, setRechargeInput] = useState('100');
-  const [tempSmsContent, setTempSmsContent] = useState(settings.smsContent);
+  // 2026-11-12 短信钱包：余额/账单/短信配置全走服务端 /api/wallet/*，本地不存钱
+  const [walletMe, setWalletMe] = useState<WalletMe | null>(null);
+  const [walletTab, setWalletTab] = useState<'balance' | 'logs'>('balance');
+  const [smsCfgDraft, setSmsCfgDraft] = useState<SmsServiceConfig>(DEFAULT_SMS_SERVICE_CONFIG);
+  const [smsSaving, setSmsSaving] = useState(false);
+  const [rechargeSheet, setRechargeSheet] = useState(false);
+  const [selectedRechargeAmount, setSelectedRechargeAmount] = useState<number>(10);
+  const [rechargeBusy, setRechargeBusy] = useState(false);
+  const [rechargeMsg, setRechargeMsg] = useState('');
+  useEffect(() => {
+    let alive = true;
+    fetchWalletMe().then((w) => {
+      if (!alive) return;
+      setWalletMe(w);
+      setSmsCfgDraft(w.smsConfig);
+      if (w.rechargeAmounts.length) setSelectedRechargeAmount(w.rechargeAmounts[0]);
+    });
+    return () => { alive = false; };
+  }, []);
 
   const [isProcessingWechat, setIsProcessingWechat] = useState(false);
   const [isProcessingAlipay, setIsProcessingAlipay] = useState(false);
@@ -403,23 +437,63 @@ export default function SettingsView({
     }
   };
 
-  const handleRechargeSubmit = () => {
-    const amount = Number(rechargeInput) || 0;
-    if (amount <= 0) {
-      alert('请输入有效的充值金额！');
-      return;
-    }
-    onUpdateSettings({ 
-      ...settings, 
-      accountBalance: Number((settings.accountBalance + amount).toFixed(2)) 
-    });
-    setActiveModal('none');
-    alert(`成功充值 ¥${amount.toFixed(2)} 元！您的代驾账户可用余额已更新。`);
+  const refreshWallet = async () => {
+    const w = await fetchWalletMe();
+    setWalletMe(w);
+    return w;
   };
 
-  const handleSmsSave = () => {
-    onUpdateSettings({ ...settings, smsContent: tempSmsContent });
-    setActiveModal('none');
+  // 钱包充值：支付宝真支付（微信占位），到账只认服务端异步通知，轮询查单确认
+  const handleWalletRecharge = async (method: 'alipay' | 'wechat') => {
+    if (method === 'wechat') {
+      setRechargeMsg('微信支付开发对接中，敬请期待');
+      return;
+    }
+    if (rechargeBusy) return;
+    setRechargeBusy(true);
+    setRechargeMsg('');
+    try {
+      const { outTradeNo, orderString } = await createRechargeOrder(selectedRechargeAmount);
+      const payRes = await payWithAlipay(orderString);
+      if (payRes.resultStatus === '6001') {
+        setRechargeMsg('已取消支付');
+        return;
+      }
+      for (let i = 0; i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try {
+          const st = await getRechargeStatus(outTradeNo);
+          if (st.status === 'paid') {
+            await refreshWallet();
+            setRechargeSheet(false);
+            alert(`充值成功！已到账 ¥${selectedRechargeAmount} 元。`);
+            return;
+          }
+        } catch (_) {}
+      }
+      setRechargeMsg('支付结果确认中，请稍后在账单中查看到账情况');
+      void refreshWallet();
+    } catch (e: any) {
+      setRechargeMsg(e?.message || '充值失败，请重试');
+    } finally {
+      setRechargeBusy(false);
+    }
+  };
+
+  const handleSmsConfigSave = async () => {
+    if (smsSaving) return;
+    setSmsSaving(true);
+    try {
+      const saved = await saveSmsConfig(smsCfgDraft);
+      setSmsCfgDraft(saved);
+      setWalletMe((prev) => (prev ? { ...prev, smsConfig: saved } : prev));
+      setActiveModal('none');
+      alert('短信配置已保存');
+    } catch (e: any) {
+      alert(e?.message || '保存失败，请重试');
+    } finally {
+      setSmsSaving(false);
+    }
   };
 
   const cycleHomepageColor = () => {
@@ -498,19 +572,40 @@ export default function SettingsView({
 
         </div>
 
-        {/* Card 2: Account details */}
+        {/* 服务短信提示行（2026-11-12，照竞品代驾设置页） */}
+        <p className="text-xs text-orange-500 px-1 -my-1">提示：短信自动从余额扣费，余额不足时无法发送短信</p>
+
+        {/* Card: 短信钱包（账户余额 + 短信配置） */}
         <div className="bg-white rounded-2xl border border-gray-100 shadow-xs divide-y divide-gray-100 overflow-hidden">
-          
-          {/* Funds Balance */}
-          <button 
-            disabled
-            className="w-full py-4 px-4 flex items-center justify-between bg-white text-left cursor-default"
+          <button
+            type="button"
+            onClick={() => { setWalletTab('balance'); setActiveModal('wallet'); void refreshWallet(); }}
+            className="w-full py-4 px-4 flex items-center justify-between hover:bg-gray-50 bg-white transition-colors text-left"
           >
             <span className="text-sm font-semibold text-gray-700">账户余额</span>
-            <div className="flex items-center space-x-1 text-emerald-600 font-mono font-bold">
-              <span>¥0.00</span>
+            <div className="flex items-center space-x-1">
+              <span className={`text-sm font-mono font-bold ${walletMe && walletMe.balanceCents < walletMe.smsPriceCents ? 'text-red-500' : 'text-teal-600'}`}>
+                {walletMe ? `¥${(walletMe.balanceCents / 100).toFixed(2)}` : '¥--'}
+              </span>
+              <ChevronRight className="w-4 h-4 text-gray-300" />
             </div>
           </button>
+
+          <button
+            type="button"
+            onClick={() => { setSmsCfgDraft(walletMe?.smsConfig || DEFAULT_SMS_SERVICE_CONFIG); setActiveModal('sms_config'); }}
+            className="w-full py-4 px-4 flex items-center justify-between hover:bg-gray-50 bg-white transition-colors text-left"
+          >
+            <span className="text-sm font-semibold text-gray-700">短信配置</span>
+            <div className="flex items-center space-x-1 text-gray-400">
+              <span className="text-xs text-gray-500 mr-0.5">设置短信内容</span>
+              <ChevronRight className="w-4 h-4 text-gray-300" />
+            </div>
+          </button>
+        </div>
+
+        {/* Card 2: Account details */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-xs divide-y divide-gray-100 overflow-hidden">
 
           {/* VIP Membership Status */}
           <div className="py-4 px-4 flex items-center justify-between bg-white">
@@ -682,101 +777,217 @@ export default function SettingsView({
 
       </div>
 
-      {/* SUB-DIALOG: Recharge overlay (Pure interactive element) */}
-      {activeModal === 'recharge' && (
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-5 z-50">
-          <div className="bg-white rounded-3xl w-full max-w-[320px] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="bg-[#273046] text-white py-4 px-5 flex items-center justify-between">
-              <span className="font-bold text-sm">司机账户钱包充值</span>
-              <X className="w-4 h-4 cursor-pointer" onClick={() => setActiveModal('none')} />
-            </div>
-            <div className="p-5 space-y-4">
-              <p className="text-xs text-gray-400">目前模拟充值资金，充值后可供抵扣日常信息垫付费用支出。</p>
-              
-              <div className="flex items-center bg-slate-50 border border-gray-200 rounded-xl p-3 shadow-inner">
-                <span className="text-md font-bold text-[#1da39b] mr-2">¥</span>
-                <input
-                  type="number"
-                  placeholder="金额"
-                  value={rechargeInput}
-                  onChange={(e) => setRechargeInput(e.target.value)}
-                  className="w-full bg-transparent font-mono text-lg font-bold text-gray-800 focus:outline-hidden"
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                {['50', '100', '300'].map(val => (
-                  <button
-                    key={val}
-                    onClick={() => setRechargeInput(val)}
-                    className={`py-2 rounded-xl text-xs font-semibold border ${
-                      rechargeInput === val ? 'bg-teal-50 border-[#1da39b] text-teal-600' : 'bg-white border-gray-200 text-gray-600'
-                    }`}
-                  >
-                    ¥{val} 元
-                  </button>
-                ))}
-              </div>
-            </div>
-            
-            <div className="p-4 bg-slate-50 flex gap-3 border-t border-gray-100">
-              <button 
-                onClick={() => setActiveModal('none')}
-                className="flex-1 py-2.5 bg-white border border-gray-200 text-gray-500 rounded-xl text-xs font-semibold"
-              >
-                取消
-              </button>
-              <button 
-                onClick={handleRechargeSubmit}
-                className="flex-1 py-2.5 bg-[#1da39b] text-white rounded-xl text-xs font-semibold shadow-md"
-              >
-                确认充值
-              </button>
-            </div>
+      {/* PAGE: 我的账户（短信钱包，2026-11-12 照竞品 a3 布局：余额+充值+账单，无提现/佣金） */}
+      {activeModal === 'wallet' && (
+        <div className="absolute inset-0 bg-white flex flex-col z-50 animate-in fade-in slide-in-from-right duration-200">
+          <div className="bg-[#273046] header-safe-pt pb-2 min-h-14 flex items-center justify-between px-4 text-white shadow-md shrink-0">
+            <button onClick={() => setActiveModal('none')} className="p-1 px-1.5 rounded-lg hover:bg-white/10 text-white transition-colors flex items-center gap-1">
+              <ChevronLeft className="w-5 h-5 text-gray-100" />
+            </button>
+            <span className="font-semibold text-base tracking-wide text-center flex-1 text-gray-100">我的账户</span>
+            <button
+              onClick={() => { setWalletTab(walletTab === 'balance' ? 'logs' : 'balance'); if (walletTab === 'balance') void refreshWallet(); }}
+              className="text-xs text-teal-300 font-semibold hover:text-teal-400 active:scale-95 transition-all"
+            >
+              {walletTab === 'balance' ? '账单' : '余额'}
+            </button>
           </div>
+
+          {walletTab === 'balance' ? (
+            <div className="flex-1 overflow-y-auto flex flex-col items-center px-6 pt-12">
+              <div className="w-20 h-20 rounded-full bg-amber-400 flex items-center justify-center shadow-md">
+                <span className="text-white text-4xl font-bold">¥</span>
+              </div>
+              <span className="text-sm text-gray-500 mt-4">账户余额</span>
+              <div className="mt-2 flex items-baseline text-gray-800">
+                <span className="text-2xl font-semibold mr-1">¥</span>
+                <span className="text-5xl font-bold">{walletMe ? (walletMe.balanceCents / 100).toFixed(2) : '--'}</span>
+              </div>
+              {!checkVipActive(settings.vipExpiry) && (
+                <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 mt-6 leading-relaxed text-center">
+                  服务短信为 VIP 会员功能，开通会员后才能发送；余额可先充值备用。
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => { setRechargeMsg(''); setRechargeSheet(true); }}
+                className="w-full max-w-xs mt-10 py-3.5 bg-[#1da39b] text-white rounded-2xl text-base font-semibold shadow-md active:scale-[0.98] transition-all"
+              >
+                充值
+              </button>
+              <p className="text-xs text-gray-400 mt-6">
+                短信 ¥{walletMe ? (walletMe.smsPriceCents / 100).toFixed(2) : '0.15'}/条（按条计费）· 余额不足时无法发送短信
+              </p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {(walletMe?.logs || []).length === 0 && (
+                <p className="text-center text-sm text-gray-400 pt-16">暂无账单记录</p>
+              )}
+              {(walletMe?.logs || []).map((l) => (
+                <div key={l.id} className="bg-slate-50 rounded-xl px-4 py-3 flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-gray-700 truncate">
+                      {l.note || (l.type === 'recharge' ? '支付宝充值' : l.type === 'sms_refund' ? '短信发送失败退回' : l.type === 'admin_adjust' ? '管理员调整' : '服务短信')}
+                      {l.status === 'refunded' && <span className="ml-1.5 text-[10px] text-orange-500 font-bold">已退回</span>}
+                      {l.status === 'sending' && <span className="ml-1.5 text-[10px] text-gray-400 font-bold">发送中</span>}
+                    </p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">{String(l.at || '').replace('T', ' ').slice(0, 16)}</p>
+                  </div>
+                  <div className="text-right shrink-0 ml-3">
+                    <p className={`text-sm font-mono font-bold ${l.amountCents >= 0 ? 'text-teal-600' : 'text-gray-700'}`}>
+                      {l.amountCents >= 0 ? '+' : '−'}¥{(Math.abs(l.amountCents) / 100).toFixed(2)}
+                    </p>
+                    {typeof l.balanceAfterCents === 'number' && (
+                      <p className="text-[11px] text-gray-400 mt-0.5">余额 ¥{(l.balanceAfterCents / 100).toFixed(2)}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 充值弹窗（照竞品：档位 + 微信/支付宝二选一） */}
+          {rechargeSheet && (
+            <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-5 z-50">
+              <div className="bg-white rounded-3xl w-full max-w-[320px] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+                <div className="bg-[#273046] text-white py-4 px-5 flex items-center justify-between">
+                  <span className="font-bold text-sm">账户充值</span>
+                  <X className="w-4 h-4 cursor-pointer" onClick={() => !rechargeBusy && setRechargeSheet(false)} />
+                </div>
+                <div className="p-5">
+                  <div className="grid grid-cols-4 gap-2">
+                    {(walletMe?.rechargeAmounts || [10, 20, 50, 100]).map((amt) => (
+                      <button
+                        key={amt}
+                        type="button"
+                        onClick={() => setSelectedRechargeAmount(amt)}
+                        className={`py-2.5 rounded-xl border text-sm font-bold transition-colors ${selectedRechargeAmount === amt ? 'bg-teal-50 border-[#1da39b] text-teal-600' : 'bg-white border-gray-200 text-gray-600'}`}
+                      >
+                        ¥{amt}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="space-y-2.5 mt-5">
+                    <button
+                      type="button"
+                      disabled={rechargeBusy}
+                      onClick={() => void handleWalletRecharge('wechat')}
+                      className="w-full py-3 bg-[#07c160] text-white rounded-xl text-sm font-semibold disabled:opacity-60"
+                    >
+                      微信支付
+                    </button>
+                    <button
+                      type="button"
+                      disabled={rechargeBusy}
+                      onClick={() => void handleWalletRecharge('alipay')}
+                      className="w-full py-3 bg-[#1677ff] text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2"
+                    >
+                      {rechargeBusy && <Loader2 className="w-4 h-4 animate-spin" />}
+                      支付宝支付
+                    </button>
+                  </div>
+                  {rechargeMsg && <p className="text-xs text-center text-orange-500 mt-3 leading-relaxed">{rechargeMsg}</p>}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* SUB-DIALOG: SMS Text Template Editor (Pure interactive element) */}
-      {activeModal === 'sms_edit' && (
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-5 z-50 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl w-full max-w-[340px] shadow-2xl overflow-hidden">
-            <div className="bg-[#273046] text-white py-4 px-5 flex items-center justify-between">
-              <span className="font-bold text-sm flex items-center space-x-1">
-                <Bookmark className="w-4 h-4" />
-                <span>自动客服短信内容</span>
-              </span>
-              <X className="w-4 h-4 cursor-pointer" onClick={() => setActiveModal('none')} />
-            </div>
-            <div className="p-5 space-y-3">
-              <label className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block">编辑提醒短信模版</label>
-              <textarea
-                value={tempSmsContent}
-                onChange={(e) => setTempSmsContent(e.target.value)}
-                rows={5}
-                className="w-full p-3 border border-gray-200 focus:border-teal-500 text-xs rounded-xl focus:outline-hidden leading-relaxed text-gray-700 bg-slate-50 font-sans"
-              />
-              <span className="text-[10px] text-gray-400 leading-normal block">
-                自动发送场景：代驾司机点单后（开始服务）或收款后（行程结账），将配合网关秒级投递至乘客登记手机上。
-              </span>
-            </div>
-            
-            <div className="p-4 bg-slate-50 flex gap-3 border-t border-gray-100">
-              <button 
-                onClick={() => setActiveModal('none')}
-                className="flex-1 py-2.5 bg-white border border-gray-200 text-gray-500 rounded-xl text-xs font-semibold"
-              >
-                取消
+      {/* PAGE: 短信配置（2026-11-12 照竞品 a4 布局；正文为平台审核模板，仅字段开关可调；VIP 专属） */}
+      {activeModal === 'sms_config' && (
+        <div className="absolute inset-0 bg-[#F1F5F9] flex flex-col z-50 animate-in fade-in slide-in-from-right duration-200">
+          <div className="bg-[#273046] header-safe-pt pb-2 min-h-14 flex items-center justify-between px-4 text-white shadow-md shrink-0">
+            <button onClick={() => setActiveModal('none')} className="p-1 px-1.5 rounded-lg hover:bg-white/10 text-white transition-colors flex items-center gap-1">
+              <ChevronLeft className="w-5 h-5 text-gray-100" />
+            </button>
+            <span className="font-semibold text-base tracking-wide text-center flex-1 text-gray-100">短信配置</span>
+            {checkVipActive(settings.vipExpiry) ? (
+              <button onClick={() => void handleSmsConfigSave()} disabled={smsSaving} className="text-xs text-teal-300 font-semibold hover:text-teal-400 active:scale-95 transition-all disabled:opacity-50">
+                {smsSaving ? '保存中…' : '保存'}
               </button>
-              <button 
-                onClick={handleSmsSave}
-                className="flex-1 py-2.5 bg-[#1da39b] text-white rounded-xl text-xs font-semibold flex items-center justify-center space-x-1 shadow-md hover:bg-teal-600 transition-colors"
-              >
-                <Save className="w-3.5 h-3.5" />
-                <span>保存模板</span>
-              </button>
-            </div>
+            ) : (
+              <span className="w-8" />
+            )}
           </div>
+
+          {!checkVipActive(settings.vipExpiry) ? (
+            <div className="flex-1 flex flex-col items-center justify-center px-8 text-center">
+              <Crown className="w-12 h-12 text-amber-400" />
+              <p className="text-base font-bold text-gray-700 mt-4">短信配置为 VIP 会员功能</p>
+              <p className="text-xs text-gray-400 leading-relaxed mt-2">
+                开通会员后，可设置开始服务 / 完成服务自动短信，行程开始与结束时自动发送给乘客（从短信余额按条扣费）。
+              </p>
+              <button onClick={() => setActiveModal('none')} className="mt-6 px-6 py-2.5 bg-[#273046] text-white rounded-xl text-sm font-semibold">
+                我知道了
+              </button>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto pb-8">
+              <div className="bg-white px-4 py-4 flex items-center justify-between">
+                <span className="text-sm font-semibold text-gray-700">短信签名</span>
+                <span className="text-sm text-gray-600">{walletMe?.signName || '扬湾途信息'}</span>
+              </div>
+              <p className="text-[11px] text-gray-400 leading-relaxed px-4 py-3">
+                内容由平台审核模板发送，开关插入/移除动态字段；发送时自动加【{walletMe?.signName || '扬湾途信息'}】前缀并替换为真实数值。短信从账户余额按条扣费（¥{walletMe ? (walletMe.smsPriceCents / 100).toFixed(2) : '0.15'}/条），余额不足时不发送。
+              </p>
+              {walletMe && !walletMe.templatesReady && (
+                <p className="text-[11px] text-amber-600 bg-amber-50 border-y border-amber-100 px-4 py-2.5 leading-relaxed">
+                  平台短信模板审核中：配置可以先保存，模板通过后自动生效发送。
+                </p>
+              )}
+
+              {(() => {
+                const nowD = new Date();
+                const sampleTime = `${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`;
+                const startText = buildServiceSmsTextPreview('start', composeSmsDetailPreview('start', smsCfgDraft, { baseFee: 40, startTime: sampleTime }, effectivePhone || '155****2222'));
+                const finishText = buildServiceSmsTextPreview('finish', composeSmsDetailPreview('finish', smsCfgDraft, { orderNo: 'DD20261112001', amount: 55, distanceKm: 9.03, waitingMin: 5 }, effectivePhone || '155****2222'));
+                const startSeg = smsSegmentsPreview(startText);
+                const finishSeg = smsSegmentsPreview(finishText);
+                const price = walletMe ? walletMe.smsPriceCents : 15;
+                const toggleRow = (label: string, on: boolean, onToggle: () => void) => (
+                  <div key={label} className="px-4 py-3.5 flex items-center justify-between border-t border-gray-50">
+                    <span className="text-sm text-gray-700">{label}</span>
+                    <SmsSwitch on={on} onToggle={onToggle} />
+                  </div>
+                );
+                return (
+                  <>
+                    <p className="text-xs text-gray-400 px-4 pt-4 pb-2">开始服务短信内容</p>
+                    <div className="bg-white divide-y divide-gray-50">
+                      {toggleRow('发送开始服务短信', smsCfgDraft.startEnabled, () => setSmsCfgDraft({ ...smsCfgDraft, startEnabled: !smsCfgDraft.startEnabled }))}
+                      {toggleRow('起步费', smsCfgDraft.start.baseFee, () => setSmsCfgDraft({ ...smsCfgDraft, start: { ...smsCfgDraft.start, baseFee: !smsCfgDraft.start.baseFee } }))}
+                      {toggleRow('司机号码', smsCfgDraft.start.driverPhone, () => setSmsCfgDraft({ ...smsCfgDraft, start: { ...smsCfgDraft.start, driverPhone: !smsCfgDraft.start.driverPhone } }))}
+                      {toggleRow('开始时间', smsCfgDraft.start.startTime, () => setSmsCfgDraft({ ...smsCfgDraft, start: { ...smsCfgDraft.start, startTime: !smsCfgDraft.start.startTime } }))}
+                    </div>
+                    <div className="px-4 pt-3">
+                      <div className="bg-gray-200/70 rounded-2xl px-4 py-3">
+                        <p className="text-sm text-gray-700 leading-relaxed">{startText}</p>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1.5">示例计费 {startSeg} 条 · ¥{((startSeg * price) / 100).toFixed(2)}</p>
+                    </div>
+
+                    <p className="text-xs text-gray-400 px-4 pt-5 pb-2">完成服务短信内容</p>
+                    <div className="bg-white divide-y divide-gray-50">
+                      {toggleRow('发送完成服务短信', smsCfgDraft.finishEnabled, () => setSmsCfgDraft({ ...smsCfgDraft, finishEnabled: !smsCfgDraft.finishEnabled }))}
+                      {toggleRow('订单号', smsCfgDraft.finish.orderNo, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, orderNo: !smsCfgDraft.finish.orderNo } }))}
+                      {toggleRow('订单金额', smsCfgDraft.finish.amount, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, amount: !smsCfgDraft.finish.amount } }))}
+                      {toggleRow('行驶里程', smsCfgDraft.finish.distance, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, distance: !smsCfgDraft.finish.distance } }))}
+                      {toggleRow('等候时间', smsCfgDraft.finish.waiting, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, waiting: !smsCfgDraft.finish.waiting } }))}
+                      {toggleRow('手机号', smsCfgDraft.finish.phone, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, phone: !smsCfgDraft.finish.phone } }))}
+                    </div>
+                    <div className="px-4 pt-3">
+                      <div className="bg-gray-200/70 rounded-2xl px-4 py-3">
+                        <p className="text-sm text-gray-700 leading-relaxed">{finishText}</p>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1.5">示例计费 {finishSeg} 条 · ¥{((finishSeg * price) / 100).toFixed(2)}</p>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
         </div>
       )}
 

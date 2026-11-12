@@ -55,6 +55,7 @@ import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusy
 import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
 import AppUpdateModal from './components/AppUpdateModal';
 import { checkAppUpdate, hasPendingForcedUpdate, isUpdateSnoozed, type AppUpdateInfo } from './lib/appUpdate';
+import { notifyServiceSms } from './lib/wallet';
 
 const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => {
   const norm = (cityName || '').trim();
@@ -3234,6 +3235,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     setMobileActiveTab('app');
     setCurrentView('navigation');
     speakText('已开始代驾计费，祝您行程愉快！');
+    // 2026-11-12 服务短信：开始服务自动发给乘客（异步不阻塞；发不发/扣费由服务端按 VIP、字段开关与余额决定）
+    {
+      const startD = new Date(mergedTrip.startTimestamp || Date.now());
+      notifyServiceSms({
+        orderId: String((mergedTrip as any).orderId || mergedTrip.id || mergedTrip.orderNumber || ''),
+        scene: 'start',
+        passengerPhone: String(mergedTrip.passengerPhone || ''),
+        fields: {
+          baseFee: Number((mergedTrip as any).calculatedBaseFee || (mergedTrip as any).startPrice || 0),
+          startTime: `${String(startD.getHours()).padStart(2, '0')}:${String(startD.getMinutes()).padStart(2, '0')}`,
+        },
+      });
+    }
   };
 
   const handleUpdateTrip = (updated: TripState) => {
@@ -3301,13 +3315,21 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       }
     }
 
+    // 2026-11-12根治（双算事故）：起步价以 currentTrip 上锁定的 calculatedBaseFee 为准——
+    // 它由 ActiveTripView 每次计价用 cost.base 实时维护，是真实起步价（如40元）；
+    // 入参 finalBaseFee 仅在行程上缺失时兜底。绝不能让 calculatedTotalFee（总价，如55元）
+    // 写进 calculatedBaseFee，否则完单存档后订单详情会再加一次里程费（55+15=70）。
+    const lockedBaseFee = Number(currentTrip.calculatedBaseFee) > 0
+      ? Number(currentTrip.calculatedBaseFee)
+      : finalBaseFee;
+
     const endedTrip = {
       ...currentTrip,
       endLocation: finalEndLocation,
       destination: finalEndLocation,
       dropoffName: finalEndLocation,
       endCoords: tripCoords,
-      calculatedBaseFee: finalBaseFee,
+      calculatedBaseFee: lockedBaseFee,
       currentStatus: 'ended' as const
     };
     setCurrentTrip(endedTrip);
@@ -3416,6 +3438,19 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       } else {
         setMerchantValetPaymentTrip(null);
       }
+
+      // 2026-11-12 服务短信：完成服务自动发给乘客（异步不阻塞；口径同开始短信，服务端决定）
+      notifyServiceSms({
+        orderId: String((currentTrip as any).orderId || currentTrip.id || currentTrip.orderNumber || ''),
+        scene: 'finish',
+        passengerPhone: String(currentTrip.passengerPhone || ''),
+        fields: {
+          orderNo: String(currentTrip.orderNumber || ''),
+          amount: Number(amount || 0),
+          distanceKm: Number(currentTrip.currentDistance || 0),
+          waitingMin: Number(currentTrip.currentWaitingTime || 0),
+        },
+      });
 
       try {
         const ordersKey = userPhone ? `dd_driver_orders_${userPhone}` : 'dd_driver_orders';

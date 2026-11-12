@@ -5,6 +5,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.view.WindowManager;
 import android.app.KeyguardManager;
+import android.media.AudioManager;
 import android.os.Build;
 import androidx.appcompat.app.AppCompatDelegate;
 import com.getcapacitor.BridgeActivity;
@@ -16,8 +17,18 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(HeiwanInstallerPlugin.class);
         // 2026-11-07 支付宝 App 支付：注册支付插件（与自更新插件并列）
         registerPlugin(HeiwanAlipayPlugin.class);
+        // 2026-11-12 语音播报音频保障：注册音频插件（播报前抬媒体音量+抢焦点）
+        registerPlugin(HeiwanAudioPlugin.class);
         super.onCreate(savedInstanceState);
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
+
+        // 2026-11-12：App 打开时音量键默认调「媒体音量」（播报走的正是媒体通道），
+        // 避免司机按音量键调到的只是铃声音量、播报仍无声
+        try {
+            setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 
         // Ensure system navigation bar and status bar do not obscure web content on Android
         try {

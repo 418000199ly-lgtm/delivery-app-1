@@ -609,7 +609,10 @@ export default function ActiveTripView({
       setIsSliding(false);
       setSliderPos(0);
       const endCoords = lastCoordsRef.current ? { lng: lastCoordsRef.current.lng, lat: lastCoordsRef.current.lat } : undefined;
-      onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59, endCoords);
+      // 2026-11-12根治：onEndTrip 入参是起步价(baseFee)，必须传 calculatedBaseFee。
+      // 旧代码传 calculatedTotalFee（总价），App 把总价写进 calculatedBaseFee，完单存档后
+      // 订单详情再加一次里程费 → 起步价55、总计70（实收55）双算事故。
+      onEndTrip(safeTrip.calculatedBaseFee || safeTrip.calculatedTotalFee || 59, endCoords);
     }
   };
 
@@ -632,7 +635,8 @@ export default function ActiveTripView({
         setIsSliding(false);
         setSliderPos(0);
         const endCoords = lastCoordsRef.current ? { lng: lastCoordsRef.current.lng, lat: lastCoordsRef.current.lat } : undefined;
-        onEndTrip(safeTrip.calculatedTotalFee || safeTrip.calculatedBaseFee || 59, endCoords);
+        // 同上：传起步价 calculatedBaseFee，绝不能传总价 calculatedTotalFee（2026-11-12双算事故）
+        onEndTrip(safeTrip.calculatedBaseFee || safeTrip.calculatedTotalFee || 59, endCoords);
       }
     };
 
@@ -651,7 +655,7 @@ export default function ActiveTripView({
       window.removeEventListener('mousemove', handleGlobalMouseMove);
       window.removeEventListener('mouseup', handleGlobalMouseUp);
     };
-  }, [isSliding, safeTrip.calculatedTotalFee]);
+  }, [isSliding, safeTrip.calculatedBaseFee]);
 
   const stepKm = safeSettings.deviationKm ?? 1.0;
   const stepWaitSec = safeSettings.deviationWaitSec ?? 30;

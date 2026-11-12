@@ -9,7 +9,7 @@
  * 4. Multi-Endpoint MP3 Stream Redundancy with pre-unlocked Audio Context.
  */
 
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { TextToSpeech } from '@capacitor-community/text-to-speech';
 import { getBaseApiUrl } from '../lib/dbProxy';
 import { BUNDLED_AUDIO_BASE64 } from '../assets/audio/localAudioBase64';
@@ -658,6 +658,35 @@ function tryWebSpeechSynthesis(text: string, onEnd?: () => void): Promise<boolea
   });
 }
 
+// 2026-11-12 安卓音频保障插件（HeiwanAudio，懒注册，模式同 alipayPay/appUpdate）：
+// 每次播报前把媒体音量抬到可闻线并申请短时音频焦点。仅安卓原生有此插件，其他平台调用即失败、静默跳过。
+let _heiwanAudio: any = undefined;
+function getHeiwanAudioPlugin(): any {
+  if (_heiwanAudio === undefined) {
+    try {
+      _heiwanAudio = registerPlugin<any>('HeiwanAudio');
+    } catch (_) {
+      _heiwanAudio = null;
+    }
+  }
+  return _heiwanAudio;
+}
+
+// 安卓原生 TTS 是否真支持中文（本会话内只查一次）：
+// 不少国产安卓没有可用 TTS 引擎或没装中文语音数据，插件 speak() 会「假成功」无声返回，
+// 导致后面的远程 MP3 流兜底永远轮不上——导航播报、收款金额播报整段哑火（2026-11-12 司机实报）。
+let _zhTtsSupported: boolean | null = null;
+async function isAndroidZhTtsSupported(): Promise<boolean> {
+  if (_zhTtsSupported !== null) return _zhTtsSupported;
+  try {
+    const r: any = await (TextToSpeech as any).isLanguageSupported({ lang: 'zh-CN' });
+    _zhTtsSupported = !!(r && r.supported);
+  } catch (_) {
+    _zhTtsSupported = false;
+  }
+  return _zhTtsSupported;
+}
+
 /**
  * Main Chinese Voice Broadcast Entry for Mobile Apps (Android Phone, Android Emulator, iOS, Web)
  * 100% Offline Authentic Human Voice MP3 Audio stored directly inside the App package.
@@ -683,6 +712,16 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
   // Force unlock and resume AudioContext
   initAudioUnlock();
 
+  // 2026-11-12 安卓音频保障：播报走媒体通道，铃声静音/震动本不掐它，但媒体音量被关到0时全哑。
+  // 每次播报前由原生插件把媒体音量抬到60%并抢短时焦点（只抬不降），保证有声；
+  // 是否播报仍由 App 内「语音播报状态」设置在各调用处决定，本步不绕过设置。
+  if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
+    try {
+      const audioPlugin = getHeiwanAudioPlugin();
+      if (audioPlugin) await audioPlugin.ensureAudible();
+    } catch (_) {}
+  }
+
   // LEVEL 1: Bundled Authentic Human Voice MP3 Audio Asset (Base64 Memory / Packaged App Asset)
   const localAudioPath = getLocalAudioPath(cleanText);
   if (localAudioPath) {
@@ -698,19 +737,26 @@ export async function speakText(text: string, onEnd?: () => void, _playChime: bo
 
   // LEVEL 2: Native Capacitor TextToSpeech (for Android/iOS native app)
   if (Capacitor.isNativePlatform()) {
-    try {
-      await TextToSpeech.speak({
-        text: cleanText,
-        lang: 'zh-CN',
-        rate: 1.0,
-        pitch: 1.0,
-        volume: 1.0,
-        category: 'ambient',
-      });
-      if (onEnd) onEnd();
-      return;
-    } catch (e) {
-      console.warn('[AudioEngine] Capacitor TextToSpeech error:', e);
+    // 安卓先验中文支持：无引擎/无中文语音数据时插件会无声「假成功」，直接跳到 LEVEL 4 远程流兜底
+    let useNativeTts = true;
+    if (Capacitor.getPlatform() === 'android') {
+      useNativeTts = await isAndroidZhTtsSupported();
+    }
+    if (useNativeTts) {
+      try {
+        await TextToSpeech.speak({
+          text: cleanText,
+          lang: 'zh-CN',
+          rate: 1.0,
+          pitch: 1.0,
+          volume: 1.0,
+          category: 'ambient',
+        });
+        if (onEnd) onEnd();
+        return;
+      } catch (e) {
+        console.warn('[AudioEngine] Capacitor TextToSpeech error:', e);
+      }
     }
   }
 

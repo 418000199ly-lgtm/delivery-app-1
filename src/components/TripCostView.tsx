@@ -259,7 +259,9 @@ export default function TripCostView({
           <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-[11px] text-amber-700 leading-relaxed">
             <span className="font-semibold block mb-0.5">费用结算明细计费：</span>
             <span>
-              基础代驾 ¥{trip.calculatedBaseFee.toFixed(2)}
+              {/* 2026-11-12：这里展示的是含里程/等候/返程的代驾费总额，必须用 baseTotal(=calculatedTotalFee)，
+                  不能用 calculatedBaseFee（那是纯起步价，如40元），否则等式与合计对不上 */}
+              基础代驾 ¥{baseTotal.toFixed(2)}
               {bridgeFee > 0 && ` + 过路 ¥${bridgeFee.toFixed(2)}`}
               {parkingFee > 0 && ` + 停车 ¥${parkingFee.toFixed(2)}`}
               {otherFee > 0 && ` + 其他 ¥${otherFee.toFixed(2)}`}

@@ -46,6 +46,22 @@ export interface ChauffeurSettings {
   billingRules?: BillingRules;
 }
 
+// 服务短信配置（2026-11-12）：存服务端钱包文档，App 短信配置页经 /api/wallet/sms-config 读写；
+// 字段开关决定模板 detail 变量拼入哪些字段，正文骨架为阿里云审核模板、不可改。
+export interface SmsServiceConfig {
+  startEnabled: boolean;
+  finishEnabled: boolean;
+  start: { baseFee: boolean; driverPhone: boolean; startTime: boolean };
+  finish: { orderNo: boolean; amount: boolean; distance: boolean; waiting: boolean; phone: boolean };
+}
+
+export const DEFAULT_SMS_SERVICE_CONFIG: SmsServiceConfig = {
+  startEnabled: true,
+  finishEnabled: true,
+  start: { baseFee: true, driverPhone: true, startTime: true },
+  finish: { orderNo: false, amount: true, distance: true, waiting: false, phone: true },
+};
+
 export interface TripState {
   id: string;
   orderNumber: string;

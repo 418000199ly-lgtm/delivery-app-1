@@ -5616,6 +5616,37 @@ function getClientIp(req: any): string {
         if (tradeStatus !== 'TRADE_SUCCESS' && tradeStatus !== 'TRADE_FINISHED') {
           return fail('trade_status 非成功终态', { tradeStatus });
         }
+        // 2026-11-12 钱包充值订单（type=wallet）：入账钱包，幂等靠 order.walletCredited
+        // 先落盘再标记 paid——进程在两步间中断时重复通知按标记判定已入账，不重复充值。
+        if (String(order.type || '') === 'wallet') {
+          const wPhone = String(order.phone);
+          if (!order.walletCredited) {
+            const releaseW = await acquireOrderLock(`wallet:${wPhone}`);
+            try {
+              const wdoc = await readWalletDoc(wPhone);
+              const creditCents = Math.round(Number(order.amount) * 100);
+              wdoc.balanceCents += creditCents;
+              pushWalletLog(wdoc, {
+                type: 'recharge', amountCents: creditCents, balanceAfterCents: wdoc.balanceCents,
+                note: `支付宝充值 ¥${fmtMoneyShort(Number(order.amount))}`, ref: outTradeNo,
+              });
+              await saveWalletDoc(wdoc);
+            } finally {
+              releaseW();
+            }
+            await writePayOrderDoc({ ...order, walletCredited: true, updatedAt: new Date().toISOString() });
+          }
+          await writePayOrderDoc({
+            ...order,
+            walletCredited: true,
+            status: 'paid',
+            tradeNo: String(params.trade_no || ''),
+            paidAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+          console.log(`[Alipay Notify] 钱包充值成功 phone=${wPhone} outTradeNo=${outTradeNo} amount=${order.amount}`);
+          return res.type('text/plain').send('success');
+        }
         // 顺延发放：发放写的是绝对值（目标到期日），且先把目标值记到订单上再发放——
         // 进程在「已发放、未标记 paid」间中断时，重复通知按目标值判定已发放，不双倍顺延、
         // 也不把后来别的订单抬高的到期日往回压。
@@ -5676,9 +5707,570 @@ function getClientIp(req: any): string {
         return res.status(404).json({ ok: false, error: '订单不存在' });
       }
       const vipExpiry = await readDriverVipExpiry(phone);
-      return res.json({ ok: true, status: String(order.status || 'pending'), vipExpiry });
+      const out: any = { ok: true, status: String(order.status || 'pending'), vipExpiry };
+      if (String(order.type || '') === 'wallet') {
+        out.orderType = 'wallet';
+        const wdoc = await readWalletDoc(phone).catch(() => null);
+        out.walletBalanceCents = wdoc ? wdoc.balanceCents : 0;
+      }
+      return res.json(out);
     } catch (e: any) {
       return res.status(500).json({ ok: false, error: e?.message || '查询订单失败' });
+    }
+  });
+
+  // ============================================================
+  // 2026-11-12 服务短信 + 司机钱包（照代驾助手Pro模式，用户 2026-11-12 定案）：
+  // - 司机在 App「我的账户」用支付宝充值余额（档位服务端配置），开始服务/
+  //   完成服务时自动给乘客发短信，按实际分段从余额扣费（单价服务端配置，
+  //   定案 0.15 元/段）；余额只以服务端 driver_wallets[phone] 为准；
+  // - 功能 VIP 专属（非 VIP 服务端直接 skipped）；签名固定「扬湾途信息」，
+  //   正文是阿里云审核模板，司机字段开关决定 detail 变量拼入哪些字段；
+  //   模板号走环境变量 SMS_SERVICE_START_TEMPLATE_CODE /
+  //   SMS_SERVICE_FINISH_TEMPLATE_CODE（审核通过后配进服务器 .env 并重启）；
+  // - 钱包文档同存余额 + 最近 200 条账单 + 短信配置；一切余额变更走
+  //   acquireOrderLock(`wallet:${phone}`) 串行；发送链路：预扣 → SendSms →
+  //   成功确认、失败回滚；sms_service_logs 以 `${orderId}_${scene}` 幂等，
+  //   一单同场景最多成功发送一条、最多扣费一次。
+  // ============================================================
+  const SMS_SERVICE_SIGN_NAME = '扬湾途信息';
+  const SMS_START_BODY = '您的代驾服务已经开始，请系好安全带，保管好随身物品。';
+  const SMS_FINISH_PREFIX = '您的代驾服务已完成，';
+  const SMS_FINISH_SUFFIX = '感谢您的选择，期待下次再见。';
+
+  type SmsServiceConfig = {
+    startEnabled: boolean;
+    finishEnabled: boolean;
+    start: { baseFee: boolean; driverPhone: boolean; startTime: boolean };
+    finish: { orderNo: boolean; amount: boolean; distance: boolean; waiting: boolean; phone: boolean };
+  };
+  const SMS_CONFIG_DEFAULT: SmsServiceConfig = {
+    startEnabled: true,
+    finishEnabled: true,
+    start: { baseFee: true, driverPhone: true, startTime: true },
+    finish: { orderNo: false, amount: true, distance: true, waiting: false, phone: true },
+  };
+  function sanitizeSmsServiceConfig(input: any): SmsServiceConfig {
+    const src = input && typeof input === 'object' ? input : {};
+    const boolOr = (v: any, dflt: boolean) => (typeof v === 'boolean' ? v : dflt);
+    const s = src.start && typeof src.start === 'object' ? src.start : {};
+    const f = src.finish && typeof src.finish === 'object' ? src.finish : {};
+    return {
+      startEnabled: boolOr(src.startEnabled, SMS_CONFIG_DEFAULT.startEnabled),
+      finishEnabled: boolOr(src.finishEnabled, SMS_CONFIG_DEFAULT.finishEnabled),
+      start: {
+        baseFee: boolOr(s.baseFee, SMS_CONFIG_DEFAULT.start.baseFee),
+        driverPhone: boolOr(s.driverPhone, SMS_CONFIG_DEFAULT.start.driverPhone),
+        startTime: boolOr(s.startTime, SMS_CONFIG_DEFAULT.start.startTime),
+      },
+      finish: {
+        orderNo: boolOr(f.orderNo, SMS_CONFIG_DEFAULT.finish.orderNo),
+        amount: boolOr(f.amount, SMS_CONFIG_DEFAULT.finish.amount),
+        distance: boolOr(f.distance, SMS_CONFIG_DEFAULT.finish.distance),
+        waiting: boolOr(f.waiting, SMS_CONFIG_DEFAULT.finish.waiting),
+        phone: boolOr(f.phone, SMS_CONFIG_DEFAULT.finish.phone),
+      },
+    };
+  }
+
+  // ---- 钱包配置（充值档位 + 短信单价）：config/wallet_config，模式同 vip_packages ----
+  type WalletConfig = { rechargeAmounts: number[]; smsPriceCents: number };
+  const WALLET_CONFIG_SEED: WalletConfig = { rechargeAmounts: [10, 20, 50, 100], smsPriceCents: 15 };
+  let _walletCfgCache: { at: number; cfg: WalletConfig } = { at: 0, cfg: { rechargeAmounts: [], smsPriceCents: 0 } };
+  function sanitizeWalletConfig(input: any): WalletConfig | null {
+    if (!input || typeof input !== 'object') return null;
+    const rawAmounts = Array.isArray(input.rechargeAmounts) ? input.rechargeAmounts : null;
+    if (!rawAmounts || rawAmounts.length < 1 || rawAmounts.length > 8) return null;
+    const seen = new Set<number>();
+    const amounts: number[] = [];
+    for (const raw of rawAmounts) {
+      const v = Math.round(Number(raw) * 100) / 100;
+      if (!Number.isFinite(v) || v < 1 || v > 10000 || seen.has(Math.round(v * 100))) return null;
+      seen.add(Math.round(v * 100));
+      amounts.push(v);
+    }
+    const price = Number(input.smsPriceCents);
+    if (!Number.isInteger(price) || price < 1 || price > 1000) return null;
+    return { rechargeAmounts: amounts, smsPriceCents: price };
+  }
+  async function writeWalletConfig(cfg: WalletConfig): Promise<void> {
+    const docObj = { ...cfg, updatedAt: new Date().toISOString() };
+    if (isMySQLEnabled && mysqlPool) {
+      await mysqlPool.query(
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)',
+        ['config', 'wallet_config', JSON.stringify(docObj)]
+      );
+    }
+    try {
+      const dbData = readLocalJsonDb();
+      if (!dbData['config']) dbData['config'] = {};
+      dbData['config']['wallet_config'] = docObj;
+      writeLocalJsonDb(dbData);
+    } catch (_) {}
+    _walletCfgCache = { at: Date.now(), cfg };
+  }
+  async function getWalletConfig(): Promise<WalletConfig> {
+    if (_walletCfgCache.cfg.rechargeAmounts.length && Date.now() - _walletCfgCache.at < 15000) {
+      return _walletCfgCache.cfg;
+    }
+    let cfg: WalletConfig | null = null;
+    try {
+      const doc: any = await readCanonicalDocument('config', 'wallet_config');
+      if (doc) cfg = sanitizeWalletConfig(doc);
+    } catch (_) {}
+    if (!cfg) {
+      cfg = { rechargeAmounts: [...WALLET_CONFIG_SEED.rechargeAmounts], smsPriceCents: WALLET_CONFIG_SEED.smsPriceCents };
+      try { await writeWalletConfig(cfg); } catch (e: any) {
+        console.error('[WalletConfig] 种子配置落盘失败:', e?.message || e);
+      }
+    }
+    _walletCfgCache = { at: Date.now(), cfg };
+    return cfg;
+  }
+
+  // 钱相关文档严格写：MySQL upsert 三次重试（失败抛错）+ 本地 JSON 双写
+  async function upsertDocStrict(collection: string, docId: string, data: any): Promise<void> {
+    if (isMySQLEnabled && mysqlPool) {
+      const upsertSql =
+        'INSERT INTO `daijia_documents` (`collection`, `doc_id`, `data`) VALUES (?, ?, ?) ' +
+        'ON DUPLICATE KEY UPDATE `data` = VALUES(`data`)';
+      const upsertArgs = [collection, docId, JSON.stringify(data)];
+      let ok = false;
+      let lastErr: any = null;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+        try {
+          await mysqlPool.query(upsertSql, upsertArgs);
+          ok = true;
+        } catch (e: any) {
+          lastErr = e;
+          if (attempt < 2) await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+        }
+      }
+      if (!ok) throw new Error(`MySQL 写入失败(${collection}/${docId})：${lastErr?.message || lastErr}`);
+    }
+    try {
+      const dbData = readLocalJsonDb();
+      if (!dbData[collection]) dbData[collection] = {};
+      dbData[collection][docId] = data;
+      writeLocalJsonDb(dbData, true);
+    } catch (_) {}
+  }
+
+  async function readWalletDoc(phone: string): Promise<any> {
+    const raw: any = await Promise.resolve(readCanonicalDocument('driver_wallets', phone)).catch(() => null);
+    const doc: any = raw && typeof raw === 'object' ? raw : {};
+    return {
+      phone,
+      balanceCents: Math.max(0, Math.round(Number(doc.balanceCents) || 0)),
+      logs: Array.isArray(doc.logs) ? doc.logs.slice(0, 200) : [],
+      smsConfig: sanitizeSmsServiceConfig(doc.smsConfig),
+      updatedAt: doc.updatedAt || '',
+    };
+  }
+  async function saveWalletDoc(wdoc: any): Promise<void> {
+    wdoc.updatedAt = new Date().toISOString();
+    wdoc.logs = Array.isArray(wdoc.logs) ? wdoc.logs.slice(0, 200) : [];
+    await upsertDocStrict('driver_wallets', wdoc.phone, wdoc);
+  }
+  function pushWalletLog(wdoc: any, entry: any): string {
+    const id = entry.id || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    wdoc.logs = [{ id, at: new Date().toISOString(), ...entry }, ...(Array.isArray(wdoc.logs) ? wdoc.logs : [])].slice(0, 200);
+    return id;
+  }
+
+  function fmtMoneyShort(n: number): string {
+    const v = Math.round(Number(n) * 100) / 100;
+    return Number.isInteger(v) ? String(v) : String(v);
+  }
+  // 按司机字段开关拼 detail 变量（模板正文固定，detail 是唯一变量）。
+  // 硬约束：阿里云模板变量上限 35 字（2026-11-12 建模板时控制台口径），超长
+  // 发送会被拒。故拼装后若超 35 字，按优先级丢弃低优先字段：开始场景先丢
+  // 开始时间、再丢起步费；完成场景先丢等候时间、再丢订单号、再丢里程；
+  // 金额与司机电话永不丢（乘客最需要这两项）。尾标点仅在放得下时加。
+  function composeSmsDetail(scene: 'start' | 'finish', cfg: SmsServiceConfig, f: any, driverPhone: string): string {
+    const MAX = 35;
+    type Part = { key: string; text: string };
+    const render = (ps: Part[]) => ps.map((p) => p.text).join('；');
+    const fit = (parts: Part[], dropOrder: string[], punct: string, fallback: string): string => {
+      let ps = parts;
+      while (ps.length > 1) {
+        const cur = render(ps);
+        if (cur.length <= MAX - 1) return cur + punct;
+        if (cur.length <= MAX) return cur;
+        const dropKey = dropOrder.find((k) => ps.some((p) => p.key === k));
+        if (!dropKey) break;
+        ps = ps.filter((p) => p.key !== dropKey);
+      }
+      return ps.length ? render(ps).slice(0, MAX) : fallback;
+    };
+    if (scene === 'start') {
+      const all: Part[] = [];
+      if (cfg.start.baseFee && f.baseFee > 0) all.push({ key: 'baseFee', text: `起步费：${fmtMoneyShort(f.baseFee)}元` });
+      if (cfg.start.driverPhone) all.push({ key: 'driverPhone', text: `司机电话：${driverPhone}` });
+      if (cfg.start.startTime && f.startTime) all.push({ key: 'startTime', text: `开始时间：${f.startTime}` });
+      if (!all.length) return '祝您一路平安。';
+      return fit(all, ['startTime', 'baseFee'], '。', '祝您一路平安。');
+    }
+    const all: Part[] = [];
+    if (cfg.finish.orderNo && f.orderNo) all.push({ key: 'orderNo', text: `订单号：${f.orderNo}` });
+    if (cfg.finish.amount && f.amount > 0) all.push({ key: 'amount', text: `金额：${fmtMoneyShort(f.amount)}元` });
+    if (cfg.finish.distance && f.distanceKm > 0) all.push({ key: 'distance', text: `里程：${fmtMoneyShort(Math.round(f.distanceKm * 100) / 100)}公里` });
+    if (cfg.finish.waiting && f.waitingMin > 0) all.push({ key: 'waiting', text: `等候时间：${f.waitingMin}分钟` });
+    if (cfg.finish.phone) all.push({ key: 'phone', text: `司机电话：${driverPhone}` });
+    if (!all.length) return '祝您一路平安，';
+    return fit(all, ['waiting', 'orderNo', 'distance'], '；', '祝您一路平安，');
+  }
+  function buildServiceSmsText(scene: 'start' | 'finish', detail: string): string {
+    const body = scene === 'start' ? SMS_START_BODY + detail : SMS_FINISH_PREFIX + detail + SMS_FINISH_SUFFIX;
+    return `【${SMS_SERVICE_SIGN_NAME}】` + body;
+  }
+  // 短信分段：含签名 ≤70 字 1 段，超出按 67 字/段（运营商计费口径）
+  function smsSegments(text: string): number {
+    const n = text.length;
+    if (n <= 70) return 1;
+    return 1 + Math.ceil((n - 70) / 67);
+  }
+  async function sendServiceSmsDysms(phoneNumbers: string, templateCode: string, detail: string): Promise<{ ok: boolean; bizId?: string; msg?: string }> {
+    const accessKeyId = process.env.ALIBABA_CLOUD_ACCESS_KEY_ID || DEFAULT_ALI_KEY_ID;
+    const accessKeySecret = process.env.ALIBABA_CLOUD_ACCESS_KEY_SECRET || DEFAULT_ALI_KEY_SECRET;
+    if (!accessKeyId || !accessKeySecret) return { ok: false, msg: '服务端未配置阿里云 AccessKey' };
+    try {
+      const Core = await import('@alicloud/pop-core');
+      const PopClient = (Core as any).default || Core;
+      const popClient = new PopClient({
+        accessKeyId,
+        accessKeySecret,
+        endpoint: 'https://dysmsapi.aliyuncs.com',
+        apiVersion: '2017-05-25',
+      });
+      const popRes: any = await popClient.request('SendSms', {
+        PhoneNumbers: phoneNumbers,
+        SignName: SMS_SERVICE_SIGN_NAME,
+        TemplateCode: templateCode,
+        TemplateParam: JSON.stringify({ detail }),
+      }, { method: 'POST', formatType: 'json' });
+      if (popRes && (popRes.Code === 'OK' || popRes.code === 'OK')) {
+        return { ok: true, bizId: String(popRes.BizId || popRes.bizId || '') };
+      }
+      return { ok: false, msg: String(popRes?.Message || popRes?.message || popRes?.Code || '阿里云短信发送失败') };
+    } catch (e: any) {
+      return { ok: false, msg: e?.message || '短信发送异常' };
+    }
+  }
+
+  // 钱包公开配置（App 账户页取档位与单价）
+  app.get('/api/shop/wallet-config', async (req: any, res: any) => {
+    try {
+      const cfg = await getWalletConfig();
+      return res.json({ ok: true, rechargeAmounts: cfg.rechargeAmounts, smsPriceCents: cfg.smsPriceCents, signName: SMS_SERVICE_SIGN_NAME });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '读取钱包配置失败' });
+    }
+  });
+
+  // 管理后台改钱包配置（充值档位 + 短信单价）
+  app.post('/api/admin/wallet-config', requireDbAuth, async (req: any, res: any) => {
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ ok: false, error: '需要管理员权限' });
+    }
+    try {
+      const cfg = sanitizeWalletConfig(req.body);
+      if (!cfg) {
+        return res.status(400).json({ ok: false, error: '配置无效：档位需 1-8 个 1~10000 元不重复金额、单价 1~1000 分' });
+      }
+      await writeWalletConfig(cfg);
+      await logAdminOperation('update-wallet-config', String((req as any).authPhone || ''), '', `钱包配置更新：档位 ${cfg.rechargeAmounts.join('/')} 元，短信单价 ${cfg.smsPriceCents} 分/段`, req).catch(() => {});
+      return res.json({ ok: true, ...cfg });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '保存钱包配置失败' });
+    }
+  });
+
+  // 我的钱包：余额 + 近 50 条账单 + 短信配置 + 档位/单价
+  app.get('/api/wallet/me', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(403).json({ ok: false, error: '商户账号没有短信钱包' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '登录手机号无效' });
+      }
+      const wdoc = await readWalletDoc(phone);
+      const cfg = await getWalletConfig();
+      return res.json({
+        ok: true,
+        balanceCents: wdoc.balanceCents,
+        logs: (wdoc.logs || []).slice(0, 50),
+        smsConfig: wdoc.smsConfig,
+        rechargeAmounts: cfg.rechargeAmounts,
+        smsPriceCents: cfg.smsPriceCents,
+        signName: SMS_SERVICE_SIGN_NAME,
+        templatesReady: !!(String(process.env.SMS_SERVICE_START_TEMPLATE_CODE || '').trim() && String(process.env.SMS_SERVICE_FINISH_TEMPLATE_CODE || '').trim()),
+      });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '读取钱包失败' });
+    }
+  });
+
+  // 保存短信配置（字段开关）到钱包文档
+  app.post('/api/wallet/sms-config', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(403).json({ ok: false, error: '商户账号没有短信钱包' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '登录手机号无效' });
+      }
+      const release = await acquireOrderLock(`wallet:${phone}`);
+      try {
+        const wdoc = await readWalletDoc(phone);
+        wdoc.smsConfig = sanitizeSmsServiceConfig(req.body?.config);
+        await saveWalletDoc(wdoc);
+        return res.json({ ok: true, smsConfig: wdoc.smsConfig });
+      } finally {
+        release();
+      }
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '保存短信配置失败' });
+    }
+  });
+
+  // 钱包充值下单：金额只认服务端档位，落 pay_orders（type=wallet），到账只认异步通知
+  app.post('/api/pay/alipay/create-recharge-order', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(400).json({ ok: false, error: '商户账号（A后缀）不能充值短信余额' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '登录手机号无效' });
+      }
+      const cfg = await getWalletConfig();
+      const amountCents = Math.round(Number(req.body?.amount) * 100);
+      const amount = cfg.rechargeAmounts.find((a) => Math.round(a * 100) === amountCents);
+      if (!amount) {
+        return res.status(400).json({ ok: false, error: '充值金额不在可选档位内' });
+      }
+      const ali = getAlipayConfig();
+      if (!ali.privateKey) {
+        return res.status(500).json({ ok: false, error: 'alipay_not_configured', message: '服务端未配置支付宝私钥（ALIPAY_PRIVATE_KEY）' });
+      }
+      const outTradeNo = `WAL${Date.now()}${phone.slice(-4)}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+      const order = {
+        id: outTradeNo,
+        outTradeNo,
+        type: 'wallet',
+        phone,
+        amount,
+        status: 'pending',
+        tradeNo: '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await writePayOrderDoc(order);
+      const bizContent = JSON.stringify({
+        subject: `黑湾代驾MAX短信余额充值${fmtMoneyShort(amount)}元`,
+        out_trade_no: outTradeNo,
+        total_amount: amount.toFixed(2),
+        product_code: 'QUICK_MSECURITY_PAY',
+        timeout_express: '30m',
+      });
+      const ts = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const params: Record<string, string> = {
+        app_id: ali.appId,
+        method: 'alipay.trade.app.pay',
+        charset: 'utf-8',
+        sign_type: 'RSA2',
+        timestamp: `${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`,
+        version: '1.0',
+        notify_url: ali.notifyUrl,
+        biz_content: bizContent,
+      };
+      const signer = crypto.createSign('RSA-SHA256');
+      signer.update(alipaySignContent(params, false), 'utf8');
+      const sign = signer.sign(ali.privateKey, 'base64');
+      const orderString = [...Object.keys(params).sort(), 'sign']
+        .map((k) => `${k}=${encodeURIComponent(k === 'sign' ? sign : params[k])}`)
+        .join('&');
+      console.log(`[Alipay RechargeOrder] phone=${phone} amount=${amount} outTradeNo=${outTradeNo}`);
+      return res.json({ ok: true, outTradeNo, orderString });
+    } catch (e: any) {
+      console.error('[Alipay RechargeOrder Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '创建充值订单失败' });
+    }
+  });
+
+  // 服务短信发送：开始/完成行程时 App 异步调用；任何跳过都回 200+skipped，App 静默
+  app.post('/api/sms/service-notify', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(400).json({ ok: false, error: '商户账号不能发送服务短信' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '登录手机号无效' });
+      }
+      const scene = req.body?.scene === 'finish' ? 'finish' : req.body?.scene === 'start' ? 'start' : null;
+      if (!scene) {
+        return res.status(400).json({ ok: false, error: 'scene 无效' });
+      }
+      const orderId = String(req.body?.orderId || '').replace(/[^\w-]/g, '').slice(0, 64);
+      if (!orderId) {
+        return res.status(400).json({ ok: false, error: '缺少 orderId' });
+      }
+      const passengerPhone = String(req.body?.passengerPhone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(passengerPhone)) {
+        return res.json({ ok: false, skipped: 'no_passenger_phone' });
+      }
+      if (passengerPhone === phone) {
+        return res.json({ ok: false, skipped: 'self_phone' });
+      }
+      const numField = (v: any, max: number) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) return 0;
+        return Math.min(n, max);
+      };
+      const rawFields = req.body?.fields && typeof req.body.fields === 'object' ? req.body.fields : {};
+      const startTimeRaw = String(rawFields.startTime || '').trim();
+      const fields = {
+        baseFee: numField(rawFields.baseFee, 100000),
+        amount: numField(rawFields.amount, 100000),
+        distanceKm: numField(rawFields.distanceKm, 100000),
+        waitingMin: Math.round(numField(rawFields.waitingMin, 100000)),
+        startTime: /^\d{1,2}:\d{2}$/.test(startTimeRaw) ? startTimeRaw : '',
+        orderNo: String(rawFields.orderNo || '').replace(/[^\w-]/g, '').slice(0, 24),
+      };
+      // VIP 专属（用户定案，照竞品会员墙）
+      const vipExpiry = await readDriverVipExpiry(phone);
+      if (!isVipActiveServer(vipExpiry)) {
+        return res.json({ ok: false, skipped: 'not_vip' });
+      }
+      const templateCode = String((scene === 'start' ? process.env.SMS_SERVICE_START_TEMPLATE_CODE : process.env.SMS_SERVICE_FINISH_TEMPLATE_CODE) || '').trim();
+      if (!templateCode) {
+        return res.json({ ok: false, skipped: 'template_not_configured', error: 'sms_template_not_configured' });
+      }
+      const walletCfg = await getWalletConfig();
+      const logKey = `${orderId}_${scene}`;
+      const release = await acquireOrderLock(`wallet:${phone}`);
+      try {
+        const prior: any = await Promise.resolve(readCanonicalDocument('sms_service_logs', logKey)).catch(() => null);
+        if (prior && prior.status === 'sent') {
+          return res.json({ ok: true, alreadySent: true, chargedCents: Number(prior.chargedCents) || 0 });
+        }
+        const wdoc = await readWalletDoc(phone);
+        const cfg = wdoc.smsConfig as SmsServiceConfig;
+        if (scene === 'start' && !cfg.startEnabled) return res.json({ ok: false, skipped: 'scene_disabled' });
+        if (scene === 'finish' && !cfg.finishEnabled) return res.json({ ok: false, skipped: 'scene_disabled' });
+        const detail = composeSmsDetail(scene, cfg, fields, phone);
+        const fullText = buildServiceSmsText(scene, detail);
+        const segments = smsSegments(fullText);
+        const cost = segments * walletCfg.smsPriceCents;
+        if (wdoc.balanceCents < cost) {
+          return res.json({ ok: false, skipped: 'insufficient_balance', balanceCents: wdoc.balanceCents, needCents: cost });
+        }
+        // 预扣
+        wdoc.balanceCents -= cost;
+        const chargeLogId = pushWalletLog(wdoc, {
+          type: 'sms_charge', amountCents: -cost, balanceAfterCents: wdoc.balanceCents,
+          scene, orderId, segments, status: 'sending', note: scene === 'start' ? '开始服务短信' : '完成服务短信',
+        });
+        await saveWalletDoc(wdoc);
+        const sendRes = await sendServiceSmsDysms(passengerPhone, templateCode, detail);
+        if (sendRes.ok) {
+          const w2 = await readWalletDoc(phone);
+          const lg = (w2.logs || []).find((l: any) => l.id === chargeLogId);
+          if (lg) { lg.status = 'sent'; lg.bizId = sendRes.bizId || ''; }
+          await saveWalletDoc(w2).catch(() => {});
+          await upsertDocStrict('sms_service_logs', logKey, {
+            phone, orderId, scene, status: 'sent', chargedCents: cost, segments,
+            bizId: sendRes.bizId || '', passengerPhone, detail, at: new Date().toISOString(),
+          }).catch(() => {});
+          console.log(`[ServiceSms] sent phone=${phone} scene=${scene} order=${orderId} segments=${segments} cost=${cost}`);
+          return res.json({ ok: true, chargedCents: cost, segments, balanceCents: w2.balanceCents });
+        }
+        // 发送失败：回滚预扣
+        const w3 = await readWalletDoc(phone);
+        w3.balanceCents += cost;
+        const lg3 = (w3.logs || []).find((l: any) => l.id === chargeLogId);
+        if (lg3) lg3.status = 'refunded';
+        pushWalletLog(w3, {
+          type: 'sms_refund', amountCents: cost, balanceAfterCents: w3.balanceCents,
+          scene, orderId, note: '短信发送失败自动退回',
+        });
+        await saveWalletDoc(w3).catch(() => {});
+        await upsertDocStrict('sms_service_logs', logKey, {
+          phone, orderId, scene, status: 'failed', error: sendRes.msg || '', passengerPhone, at: new Date().toISOString(),
+        }).catch(() => {});
+        console.warn(`[ServiceSms] send failed phone=${phone} scene=${scene} order=${orderId}: ${sendRes.msg}`);
+        return res.json({ ok: false, error: 'sms_send_failed', message: sendRes.msg || '短信发送失败' });
+      } finally {
+        release();
+      }
+    } catch (e: any) {
+      console.error('[ServiceSms Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '服务短信处理失败' });
+    }
+  });
+
+  // 管理后台查司机钱包（余额 + 近 100 条流水 + 短信配置）
+  app.get('/api/admin/wallet', requireDbAuth, async (req: any, res: any) => {
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ ok: false, error: '需要管理员权限' });
+    }
+    try {
+      const phone = String(req.query.phone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '手机号无效' });
+      }
+      const wdoc = await readWalletDoc(phone);
+      return res.json({ ok: true, phone, balanceCents: wdoc.balanceCents, logs: (wdoc.logs || []).slice(0, 100), smsConfig: wdoc.smsConfig });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '查询钱包失败' });
+    }
+  });
+
+  // 管理后台手动调整余额（线下收款场景；可正可负，结果不得为负）
+  app.post('/api/admin/wallet/adjust', requireDbAuth, async (req: any, res: any) => {
+    if (!(req as any).isAdmin) {
+      return res.status(403).json({ ok: false, error: '需要管理员权限' });
+    }
+    try {
+      const phone = String(req.body?.phone || '').replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '手机号无效' });
+      }
+      const amountCents = Math.round(Number(req.body?.amountYuan) * 100);
+      if (!Number.isFinite(amountCents) || amountCents === 0 || Math.abs(amountCents) > 10000000) {
+        return res.status(400).json({ ok: false, error: '调整金额无效（单位元，非 0，±100000 内）' });
+      }
+      const note = String(req.body?.note || '').slice(0, 100);
+      const release = await acquireOrderLock(`wallet:${phone}`);
+      try {
+        const wdoc = await readWalletDoc(phone);
+        if (wdoc.balanceCents + amountCents < 0) {
+          return res.status(400).json({ ok: false, error: '调整后余额不能为负' });
+        }
+        wdoc.balanceCents += amountCents;
+        pushWalletLog(wdoc, {
+          type: 'admin_adjust', amountCents, balanceAfterCents: wdoc.balanceCents,
+          note: note || '管理后台手动调整',
+        });
+        await saveWalletDoc(wdoc);
+        await logAdminOperation('wallet-adjust', String((req as any).authPhone || ''), phone, `短信钱包余额调整 ${amountCents > 0 ? '+' : ''}${fmtMoneyShort(amountCents / 100)} 元，余额 ${fmtMoneyShort(wdoc.balanceCents / 100)} 元${note ? '（' + note + '）' : ''}`, req).catch(() => {});
+        return res.json({ ok: true, phone, balanceCents: wdoc.balanceCents });
+      } finally {
+        release();
+      }
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '调整余额失败' });
     }
   });
 
