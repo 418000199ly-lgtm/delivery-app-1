@@ -5741,14 +5741,14 @@ function getClientIp(req: any): string {
   type SmsServiceConfig = {
     startEnabled: boolean;
     finishEnabled: boolean;
-    start: { baseFee: boolean; driverPhone: boolean; startTime: boolean };
-    finish: { orderNo: boolean; amount: boolean; distance: boolean; waiting: boolean; phone: boolean };
+    start: { baseFee: boolean; startTime: boolean };
+    finish: { amount: boolean; distance: boolean; waiting: boolean };
   };
   const SMS_CONFIG_DEFAULT: SmsServiceConfig = {
     startEnabled: true,
     finishEnabled: true,
-    start: { baseFee: true, driverPhone: true, startTime: true },
-    finish: { orderNo: false, amount: true, distance: true, waiting: false, phone: true },
+    start: { baseFee: true, startTime: true },
+    finish: { amount: true, distance: true, waiting: false },
   };
   function sanitizeSmsServiceConfig(input: any): SmsServiceConfig {
     const src = input && typeof input === 'object' ? input : {};
@@ -5760,15 +5760,12 @@ function getClientIp(req: any): string {
       finishEnabled: boolOr(src.finishEnabled, SMS_CONFIG_DEFAULT.finishEnabled),
       start: {
         baseFee: boolOr(s.baseFee, SMS_CONFIG_DEFAULT.start.baseFee),
-        driverPhone: boolOr(s.driverPhone, SMS_CONFIG_DEFAULT.start.driverPhone),
         startTime: boolOr(s.startTime, SMS_CONFIG_DEFAULT.start.startTime),
       },
       finish: {
-        orderNo: boolOr(f.orderNo, SMS_CONFIG_DEFAULT.finish.orderNo),
         amount: boolOr(f.amount, SMS_CONFIG_DEFAULT.finish.amount),
         distance: boolOr(f.distance, SMS_CONFIG_DEFAULT.finish.distance),
         waiting: boolOr(f.waiting, SMS_CONFIG_DEFAULT.finish.waiting),
-        phone: boolOr(f.phone, SMS_CONFIG_DEFAULT.finish.phone),
       },
     };
   }
@@ -5886,9 +5883,11 @@ function getClientIp(req: any): string {
   // 按司机字段开关拼 detail 变量（模板正文固定，detail 是唯一变量）。
   // 硬约束：阿里云模板变量上限 35 字（2026-11-12 建模板时控制台口径），超长
   // 发送会被拒。故拼装后若超 35 字，按优先级丢弃低优先字段：开始场景先丢
-  // 开始时间、再丢起步费；完成场景先丢等候时间、再丢订单号、再丢里程；
-  // 金额与司机电话永不丢（乘客最需要这两项）。尾标点仅在放得下时加。
-  function composeSmsDetail(scene: 'start' | 'finish', cfg: SmsServiceConfig, f: any, driverPhone: string): string {
+  // 开始时间、再丢起步费；完成场景先丢等候时间、再丢里程；金额永不丢。
+  // 尾标点仅在放得下时加。
+  // 2026-11-12 用户定：短信不带司机电话（双场景）与订单号（完成场景）——
+  // 字段已整体下线：正文带电话易触发运营商关键字拦截，配置里也不再有开关。
+  function composeSmsDetail(scene: 'start' | 'finish', cfg: SmsServiceConfig, f: any): string {
     const MAX = 35;
     type Part = { key: string; text: string };
     const render = (ps: Part[]) => ps.map((p) => p.text).join('；');
@@ -5907,19 +5906,16 @@ function getClientIp(req: any): string {
     if (scene === 'start') {
       const all: Part[] = [];
       if (cfg.start.baseFee && f.baseFee > 0) all.push({ key: 'baseFee', text: `起步费：${fmtMoneyShort(f.baseFee)}元` });
-      if (cfg.start.driverPhone) all.push({ key: 'driverPhone', text: `司机电话：${driverPhone}` });
       if (cfg.start.startTime && f.startTime) all.push({ key: 'startTime', text: `开始时间：${f.startTime}` });
       if (!all.length) return '祝您一路平安。';
       return fit(all, ['startTime', 'baseFee'], '。', '祝您一路平安。');
     }
     const all: Part[] = [];
-    if (cfg.finish.orderNo && f.orderNo) all.push({ key: 'orderNo', text: `订单号：${f.orderNo}` });
     if (cfg.finish.amount && f.amount > 0) all.push({ key: 'amount', text: `金额：${fmtMoneyShort(f.amount)}元` });
     if (cfg.finish.distance && f.distanceKm > 0) all.push({ key: 'distance', text: `里程：${fmtMoneyShort(Math.round(f.distanceKm * 100) / 100)}公里` });
     if (cfg.finish.waiting && f.waitingMin > 0) all.push({ key: 'waiting', text: `等候时间：${f.waitingMin}分钟` });
-    if (cfg.finish.phone) all.push({ key: 'phone', text: `司机电话：${driverPhone}` });
     if (!all.length) return '祝您一路平安，';
-    return fit(all, ['waiting', 'orderNo', 'distance'], '；', '祝您一路平安，');
+    return fit(all, ['waiting', 'distance'], '；', '祝您一路平安，');
   }
   function buildServiceSmsText(scene: 'start' | 'finish', detail: string): string {
     const body = scene === 'start' ? SMS_START_BODY + detail : SMS_FINISH_PREFIX + detail + SMS_FINISH_SUFFIX;
@@ -6169,7 +6165,7 @@ function getClientIp(req: any): string {
         const cfg = wdoc.smsConfig as SmsServiceConfig;
         if (scene === 'start' && !cfg.startEnabled) return res.json({ ok: false, skipped: 'scene_disabled' });
         if (scene === 'finish' && !cfg.finishEnabled) return res.json({ ok: false, skipped: 'scene_disabled' });
-        const detail = composeSmsDetail(scene, cfg, fields, phone);
+        const detail = composeSmsDetail(scene, cfg, fields);
         const fullText = buildServiceSmsText(scene, detail);
         const segments = smsSegments(fullText);
         const cost = segments * walletCfg.smsPriceCents;

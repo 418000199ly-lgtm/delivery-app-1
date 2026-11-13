@@ -185,11 +185,17 @@ jobs:
           echo "Found app at $APP_PATH"
           cp -r "$APP_PATH" Payload/
 
+          # 支付宝 SDK 是静态框架（二进制是 .o 目标文件、已静态链接进 App 主二进制），
+          # 绝不能进 Frameworks 目录：巨魔安装时 ldid 无法给目标文件签名，会报安装错误 175
+          # （338/339 曾中招）。打包时强制剔除，横扫补拷也排除它。
+          rm -rf Payload/App.app/Frameworks/AlipaySDK.framework
+
           # Include full native frameworks and Swift standard libraries if present
-          SWIFT_DYLIBS=$(find build -name "*.dylib" -o -name "*.framework" | grep -v "App.app" || true)
+          SWIFT_DYLIBS=$(find build -name "*.dylib" -o -name "*.framework" | grep -v "App.app" | grep -v "AlipaySDK" || true)
           if [ -n "$SWIFT_DYLIBS" ]; then
             mkdir -p Payload/App.app/Frameworks
-            find build -maxdepth 4 \( -name "*.framework" -o -name "*.dylib" \) -exec cp -r {} Payload/App.app/Frameworks/ \; || true
+            find build -maxdepth 4 \( -name "*.framework" -o -name "*.dylib" \) ! -name "AlipaySDK.framework" -exec cp -r {} Payload/App.app/Frameworks/ \; || true
+            rm -rf Payload/App.app/Frameworks/AlipaySDK.framework
           fi
 
           zip -r "黑湾代驾MAX-手机司机端-iOS-v2.0.ipa" Payload

@@ -6234,14 +6234,12 @@ export default function HomeView({
                       onClick={handleWechatVipPay}
                       className="w-full py-3.5 rounded-xl bg-[#07C160] hover:brightness-95 text-white font-bold text-sm flex items-center justify-center space-x-2.5 cursor-pointer active:scale-98 shadow-md shadow-emerald-500/20"
                     >
-                      <span className="w-5 h-5 rounded-md bg-white/25 flex items-center justify-center text-[11px] font-black leading-none">微</span>
                       <span>微信支付</span>
                     </button>
                     <button
                       onClick={handleAlipayVipPay}
                       className="w-full py-3.5 rounded-xl bg-[#1677FF] hover:brightness-95 text-white font-bold text-sm flex items-center justify-center space-x-2.5 cursor-pointer active:scale-98 shadow-md shadow-blue-500/20"
                     >
-                      <span className="w-5 h-5 rounded-md bg-white/25 flex items-center justify-center text-[11px] font-black leading-none">支</span>
                       <span>支付宝支付</span>
                     </button>
                   </div>

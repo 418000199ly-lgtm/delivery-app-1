@@ -925,13 +925,6 @@ export default function SettingsView({
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto pb-8">
-              <div className="bg-white px-4 py-4 flex items-center justify-between">
-                <span className="text-sm font-semibold text-gray-700">短信签名</span>
-                <span className="text-sm text-gray-600">{walletMe?.signName || '扬湾途信息'}</span>
-              </div>
-              <p className="text-[11px] text-gray-400 leading-relaxed px-4 py-3">
-                内容由平台审核模板发送，开关插入/移除动态字段；发送时自动加【{walletMe?.signName || '扬湾途信息'}】前缀并替换为真实数值。短信从账户余额按条扣费（¥{walletMe ? (walletMe.smsPriceCents / 100).toFixed(2) : '0.15'}/条），余额不足时不发送。
-              </p>
               {walletMe && !walletMe.templatesReady && (
                 <p className="text-[11px] text-amber-600 bg-amber-50 border-y border-amber-100 px-4 py-2.5 leading-relaxed">
                   平台短信模板审核中：配置可以先保存，模板通过后自动生效发送。
@@ -941,8 +934,8 @@ export default function SettingsView({
               {(() => {
                 const nowD = new Date();
                 const sampleTime = `${String(nowD.getHours()).padStart(2, '0')}:${String(nowD.getMinutes()).padStart(2, '0')}`;
-                const startText = buildServiceSmsTextPreview('start', composeSmsDetailPreview('start', smsCfgDraft, { baseFee: 40, startTime: sampleTime }, effectivePhone || '155****2222'));
-                const finishText = buildServiceSmsTextPreview('finish', composeSmsDetailPreview('finish', smsCfgDraft, { orderNo: 'DD20261112001', amount: 55, distanceKm: 9.03, waitingMin: 5 }, effectivePhone || '155****2222'));
+                const startText = buildServiceSmsTextPreview('start', composeSmsDetailPreview('start', smsCfgDraft, { baseFee: 40, startTime: sampleTime }));
+                const finishText = buildServiceSmsTextPreview('finish', composeSmsDetailPreview('finish', smsCfgDraft, { amount: 55, distanceKm: 9.03, waitingMin: 5 }));
                 const startSeg = smsSegmentsPreview(startText);
                 const finishSeg = smsSegmentsPreview(finishText);
                 const price = walletMe ? walletMe.smsPriceCents : 15;
@@ -958,7 +951,6 @@ export default function SettingsView({
                     <div className="bg-white divide-y divide-gray-50">
                       {toggleRow('发送开始服务短信', smsCfgDraft.startEnabled, () => setSmsCfgDraft({ ...smsCfgDraft, startEnabled: !smsCfgDraft.startEnabled }))}
                       {toggleRow('起步费', smsCfgDraft.start.baseFee, () => setSmsCfgDraft({ ...smsCfgDraft, start: { ...smsCfgDraft.start, baseFee: !smsCfgDraft.start.baseFee } }))}
-                      {toggleRow('司机号码', smsCfgDraft.start.driverPhone, () => setSmsCfgDraft({ ...smsCfgDraft, start: { ...smsCfgDraft.start, driverPhone: !smsCfgDraft.start.driverPhone } }))}
                       {toggleRow('开始时间', smsCfgDraft.start.startTime, () => setSmsCfgDraft({ ...smsCfgDraft, start: { ...smsCfgDraft.start, startTime: !smsCfgDraft.start.startTime } }))}
                     </div>
                     <div className="px-4 pt-3">
@@ -971,11 +963,9 @@ export default function SettingsView({
                     <p className="text-xs text-gray-400 px-4 pt-5 pb-2">完成服务短信内容</p>
                     <div className="bg-white divide-y divide-gray-50">
                       {toggleRow('发送完成服务短信', smsCfgDraft.finishEnabled, () => setSmsCfgDraft({ ...smsCfgDraft, finishEnabled: !smsCfgDraft.finishEnabled }))}
-                      {toggleRow('订单号', smsCfgDraft.finish.orderNo, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, orderNo: !smsCfgDraft.finish.orderNo } }))}
                       {toggleRow('订单金额', smsCfgDraft.finish.amount, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, amount: !smsCfgDraft.finish.amount } }))}
                       {toggleRow('行驶里程', smsCfgDraft.finish.distance, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, distance: !smsCfgDraft.finish.distance } }))}
                       {toggleRow('等候时间', smsCfgDraft.finish.waiting, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, waiting: !smsCfgDraft.finish.waiting } }))}
-                      {toggleRow('手机号', smsCfgDraft.finish.phone, () => setSmsCfgDraft({ ...smsCfgDraft, finish: { ...smsCfgDraft.finish, phone: !smsCfgDraft.finish.phone } }))}
                     </div>
                     <div className="px-4 pt-3">
                       <div className="bg-gray-200/70 rounded-2xl px-4 py-3">

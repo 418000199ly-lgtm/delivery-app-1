@@ -55,15 +55,12 @@ startEnabled: b(raw.startEnabled, d.startEnabled),
 finishEnabled: b(raw.finishEnabled, d.finishEnabled),
 start: {
 baseFee: b(raw.start?.baseFee, d.start.baseFee),
-driverPhone: b(raw.start?.driverPhone, d.start.driverPhone),
 startTime: b(raw.start?.startTime, d.start.startTime),
 },
 finish: {
-orderNo: b(raw.finish?.orderNo, d.finish.orderNo),
 amount: b(raw.finish?.amount, d.finish.amount),
 distance: b(raw.finish?.distance, d.finish.distance),
 waiting: b(raw.finish?.waiting, d.finish.waiting),
-phone: b(raw.finish?.phone, d.finish.phone),
 },
 };
 }
@@ -196,8 +193,7 @@ return String(v);
 export function composeSmsDetailPreview(
 scene: 'start' | 'finish',
 cfg: SmsServiceConfig,
-f: { baseFee?: number; amount?: number; distanceKm?: number; waitingMin?: number; startTime?: string; orderNo?: string},
-driverPhone: string
+f: { baseFee?: number; amount?: number; distanceKm?: number; waitingMin?: number; startTime?: string }
 ): string {
 const MAX = 35;
 type Part = { key: string; text: string };
@@ -217,19 +213,16 @@ return ps.length ? render(ps).slice(0, MAX) : fallback;
 if (scene === 'start') {
 const all: Part[] = [];
 if (cfg.start.baseFee && (f.baseFee || 0) > 0) all.push({ key: 'baseFee', text: `起步费：${fmtMoneyShort(f.baseFee || 0)}元` });
-if (cfg.start.driverPhone) all.push({ key: 'driverPhone', text: `司机电话：${driverPhone}` });
 if (cfg.start.startTime && f.startTime) all.push({ key: 'startTime', text: `开始时间：${f.startTime}` });
 if (!all.length) return '祝您一路平安。';
 return fit(all, ['startTime', 'baseFee'], '。', '祝您一路平安。');
 }
 const all: Part[] = [];
-if (cfg.finish.orderNo && f.orderNo) all.push({ key: 'orderNo', text: `订单号：${f.orderNo}` });
 if (cfg.finish.amount && (f.amount || 0) > 0) all.push({ key: 'amount', text: `金额：${fmtMoneyShort(f.amount || 0)}元` });
 if (cfg.finish.distance && (f.distanceKm || 0) > 0) all.push({ key: 'distance', text: `里程：${fmtMoneyShort(Math.round((f.distanceKm || 0) * 100) / 100)}公里` });
 if (cfg.finish.waiting && (f.waitingMin || 0) > 0) all.push({ key: 'waiting', text: `等候时间：${Math.round(f.waitingMin || 0)}分钟` });
-if (cfg.finish.phone) all.push({ key: 'phone', text: `司机电话：${driverPhone}` });
 if (!all.length) return '祝您一路平安，';
-return fit(all, ['waiting', 'orderNo', 'distance'], '；', '祝您一路平安，');
+return fit(all, ['waiting', 'distance'], '；', '祝您一路平安，');
 }
 
 export function buildServiceSmsTextPreview(scene: 'start' | 'finish', detail: string): string {

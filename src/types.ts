@@ -51,15 +51,15 @@ export interface ChauffeurSettings {
 export interface SmsServiceConfig {
   startEnabled: boolean;
   finishEnabled: boolean;
-  start: { baseFee: boolean; driverPhone: boolean; startTime: boolean };
-  finish: { orderNo: boolean; amount: boolean; distance: boolean; waiting: boolean; phone: boolean };
+  start: { baseFee: boolean; startTime: boolean };
+  finish: { amount: boolean; distance: boolean; waiting: boolean };
 }
 
 export const DEFAULT_SMS_SERVICE_CONFIG: SmsServiceConfig = {
   startEnabled: true,
   finishEnabled: true,
-  start: { baseFee: true, driverPhone: true, startTime: true },
-  finish: { orderNo: false, amount: true, distance: true, waiting: false, phone: true },
+  start: { baseFee: true, startTime: true },
+  finish: { amount: true, distance: true, waiting: false },
 };
 
 export interface TripState {
