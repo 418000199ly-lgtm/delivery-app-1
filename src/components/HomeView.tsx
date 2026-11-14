@@ -3109,7 +3109,6 @@ export default function HomeView({
 
   // --- VIP Purchase Modal States ---
   const [showVipPurchaseModal, setShowVipPurchaseModal] = useState(false);
-  const [showBuyPage, setShowBuyPage] = useState(false);
   const [selectedVipPkgIndex, setSelectedVipPkgIndex] = useState(0); // default to index 0 (lifetime)
   const [vipPayMethod, setVipPayMethod] = useState<'wechat' | 'alipay'>('wechat');
   const [isVipPurchasing, setIsVipPurchasing] = useState(false);
@@ -4687,7 +4686,7 @@ export default function HomeView({
       <div className="px-4 -translate-y-6 z-10" id="top-menu-grid-container">
         <div className="bg-white rounded-2xl shadow-md border border-[#ededed] p-3 grid grid-cols-6 gap-1 text-center">
           <button 
-            onClick={() => setShowBuyPage(true)} 
+            onClick={() => setShowVipPurchaseModal(true)} 
             className="flex flex-col items-center justify-center group"
             id="menu-btn-buy"
           >
@@ -6308,122 +6307,6 @@ export default function HomeView({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* 8.3 Xianyu VIP Purchase Overlay Screen Page */}
-      {showBuyPage && (
-        <div className="absolute inset-0 bg-slate-50 z-50 flex flex-col overflow-hidden animate-in slide-in-from-bottom duration-300">
-          {/* Header */}
-          <div className="bg-slate-900 text-white header-safe-pt pb-3.5 px-4 flex items-center justify-between shrink-0 border-b border-slate-800">
-            <div className="flex items-center space-x-2">
-              <div className="w-8 h-8 rounded-full bg-amber-500/10 flex items-center justify-center border border-amber-500/20 text-amber-400">
-                <Crown className="w-4 h-4 animate-pulse" />
-              </div>
-              <div className="text-left">
-                <h3 className="font-extrabold text-xs text-white">上咸鱼购买 VIP 兑换码</h3>
-                <span className="text-[9px] text-slate-400 font-normal">担保交易 · 秒级卡密自动兑换</span>
-              </div>
-            </div>
-            <button 
-              onClick={() => setShowBuyPage(false)}
-              className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white transition-all active:scale-90"
-            >
-              <X className="w-4.5 h-4.5" />
-            </button>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto px-4 py-5 space-y-5 text-center bg-slate-50">
-            {/* Guide Card */}
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-left space-y-2.5 shadow-xs">
-              <div className="flex items-center space-x-2 text-amber-800 font-bold">
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                <span className="text-xs">官方闲鱼担保交易流程</span>
-              </div>
-              <p className="text-[11px] text-amber-700 leading-relaxed font-bold">
-                为确保交易资金安全，本应用已全面接入「闲鱼」官方平台担保交易。复制网址后在浏览器或闲鱼App中访问，下单后可立即获得【VIP尊享激活兑换码】。
-              </p>
-              <p className="text-[10px] text-slate-500 leading-relaxed">
-                下单后卡密将自动或由客服发送给您。收到卡密后，在首页点击 <span className="text-amber-600 font-bold">「兑换码」</span> 输入即可一秒自助激活，全功能无限特权立即生效。
-              </p>
-            </div>
-
-            {/* URL Display and Action Section */}
-            <div className="bg-white border border-slate-150 rounded-2xl p-4 shadow-sm text-left space-y-3.5">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">
-                🛒 闲鱼购买官方直达网址
-              </span>
-
-              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 break-all select-all text-[11px] font-mono text-slate-600 leading-relaxed">
-                {xianyuUrl}
-              </div>
-
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(xianyuUrl);
-                  setLocalAlert({
-                    title: '一键复制成功！',
-                    message: '咸鱼购买网址已复制到剪贴板，请在浏览器或闲鱼App中打开，下单购买兑换码。',
-                    type: 'success'
-                  });
-                }}
-                className="w-full py-2.5 rounded-xl font-bold text-xs text-white bg-amber-500 hover:bg-amber-600 active:scale-98 transition-all flex items-center justify-center space-x-2 shadow-md shadow-amber-500/10 cursor-pointer"
-              >
-                <ClipboardCheck className="w-4 h-4" />
-                <span>一键复制咸鱼购买网址</span>
-              </button>
-            </div>
-
-            {/* VIP Rights Checklist */}
-            <div className="space-y-2.5 text-left">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider block">
-                💎 VIP 尊享五大专属特权
-              </span>
-              
-              <div className="space-y-2">
-                {[
-                  { title: '1. 自主修改首页标题名称', desc: '随心定义展示，支持自定义您的专属代驾品牌，不再受软件名称限制。' },
-                  { title: '2. 轨迹无限制高精校准纠偏', desc: '一键自动纠偏校正轨迹，避免地图偏移导致的计费产生严重差错。' },
-                  { title: '3. 无限使用呼客二维码创单', desc: '轻松生成报单呼叫二维码，提供乘客呼叫下单的完美流畅闭环。' },
-                  { title: '4. 实时计费中无限调用导航', desc: '支持在代驾计费过程中拉起高德地图高精路线规划与智能语音。' },
-                  { title: '5. 支持添加多笔额外垫付费用', desc: '不设上限，计费结算单支持灵活添加过桥费、高速费等垫资。' }
-                ].map((item, index) => (
-                  <div key={index} className="flex items-start space-x-3 p-3 bg-white border border-slate-150 rounded-xl">
-                    <div className="w-5 h-5 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-600 shrink-0 mt-0.5">
-                      <Crown className="w-3 h-3 text-amber-500" />
-                    </div>
-                    <div>
-                      <h4 className="text-[11px] font-bold text-slate-800">{item.title}</h4>
-                      <p className="text-[9.5px] text-slate-500 mt-0.5 leading-relaxed">{item.desc}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Footer Action */}
-          <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
-            <button
-              onClick={() => {
-                setShowBuyPage(false);
-                setShowRedeemModal(true);
-                setRedeemCode('');
-                setModalMessage(null);
-              }}
-              className="w-full py-3 rounded-xl font-bold text-xs text-white bg-slate-900 hover:bg-slate-800 transition-all flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
-            >
-              <Gift className="w-4 h-4 text-white" />
-              <span>已购买？立即去兑换卡密</span>
-            </button>
-            <button
-              onClick={() => setShowBuyPage(false)}
-              className="w-full py-2 rounded-xl font-bold text-[10px] text-slate-400 hover:bg-slate-100 transition-all cursor-pointer"
-            >
-              暂不购买，返回首页
-            </button>
-          </div>
         </div>
       )}
 
