@@ -10,6 +10,7 @@ import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
 import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
 import AppUpdateModal from './AppUpdateModal';
+import PrivacyPolicyContent from './PrivacyPolicyContent';
 import { checkAppUpdate, APP_BUILD, APP_VERSION_LABEL, isNativeApp, type AppUpdateInfo } from '../lib/appUpdate';
 
 export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl };
@@ -208,7 +209,7 @@ export default function SettingsView({
   }, [displayTemplateName, settings.billingTemplateName]);
   // Local state for interactive settings overlays
   const [activeModal, setActiveModal] = useState<'none' | 'wallet' | 'sms_config' | 'qr_upload' | 'deviation_slider' | 'deviation_wait_slider'>('none');
-  const [activeDoc, setActiveDoc] = useState<'none' | 'disclaimer' | 'user_agreement' | 'legal_statement'>('none');
+  const [activeDoc, setActiveDoc] = useState<'none' | 'disclaimer' | 'user_agreement' | 'legal_statement' | 'privacy_policy'>('none');
   // 2026-11-12 短信钱包：余额/账单/短信配置全走服务端 /api/wallet/*，本地不存钱
   const [walletMe, setWalletMe] = useState<WalletMe | null>(null);
   const [walletTab, setWalletTab] = useState<'balance' | 'logs'>('balance');
@@ -771,6 +772,13 @@ export default function SettingsView({
               className="hover:underline active:opacity-70 transition-all cursor-pointer"
             >
               法律声明
+            </button>
+            <span className="text-gray-200">|</span>
+            <button 
+              onClick={() => setActiveDoc('privacy_policy')} 
+              className="hover:underline active:opacity-70 transition-all cursor-pointer"
+            >
+              隐私政策
             </button>
           </div>
         </div>
@@ -1419,7 +1427,7 @@ export default function SettingsView({
               <span className="text-sm font-medium">返回</span>
             </button>
             <span className="font-semibold text-base tracking-wide text-center flex-1 pr-12 text-gray-100">
-              {activeDoc === 'disclaimer' ? '免责声明' : activeDoc === 'user_agreement' ? '用户服务协议' : '法律声明'}
+              {activeDoc === 'disclaimer' ? '免责声明' : activeDoc === 'user_agreement' ? '用户服务协议' : activeDoc === 'privacy_policy' ? '隐私政策' : '法律声明'}
             </span>
           </div>
 
@@ -1518,6 +1526,13 @@ export default function SettingsView({
                     <strong className="text-gray-800">4、违约处理</strong>：用户违反相关协议规则时，本公司有权冻结账号，采取封号措施。且无须承担任何责任。
                   </p>
                 </div>
+              </div>
+            )}
+
+            {activeDoc === 'privacy_policy' && (
+              <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-xs space-y-4">
+                <h3 className="font-bold text-gray-800 text-base border-b border-gray-100 pb-2">隐私政策</h3>
+                <PrivacyPolicyContent />
               </div>
             )}
           </div>

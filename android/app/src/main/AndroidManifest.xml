@@ -60,16 +60,8 @@
     <!-- 相机权限 (Camera) -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- 麦克风权限 (Microphone) -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- 通讯录权限 (Contacts) -->
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
-    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
-
-    <!-- 日历权限 (Calendar) -->
-    <uses-permission android:name="android.permission.READ_CALENDAR" />
-    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <!-- 2026-11-17 上架合规：删除从未调用的麦克风/通讯录/日历权限声明（App 无录音、不读通讯录与日历，
+         拨打乘客电话走系统拨号盘 tel: 不需要通讯录权限），避免商店隐私扫描追问 -->
 
     <!-- 悬浮窗与后台强弹/全屏意图权限 (System Alert Window / Full Screen Intent) -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />

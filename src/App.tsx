@@ -34,6 +34,7 @@ import {
 import { Sparkles, CheckCircle, Database, Smartphone, Users, ShieldAlert, FileCode, Download, Store, CreditCard } from 'lucide-react';
 import AdminPanel from './components/AdminPanel';
 import LoginView from './components/LoginView';
+import PrivacyConsentGate from './components/PrivacyConsentGate';
 import MobileDispatchValetOrder from './components/MobileDispatchValetOrder';
 import { db, doc, onSnapshot, setDoc, deleteDoc, collection, getDoc, getBaseApiUrl, getAuthHeaders } from './lib/dbProxy';
 import { subscribeSquadMembership, SquadMembershipState } from './lib/squadMembership';
@@ -370,6 +371,14 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   });
 
   const [countdown559Sec, setCountdown559Sec] = useState<number | null>(null);
+  // 首启隐私同意（2026-11-17 上架合规）：未同意前全屏拦截，同意状态存本地
+  const [privacyAgreed, setPrivacyAgreed] = useState<boolean>(() => {
+    try { return localStorage.getItem('dd_privacy_agreed_v1') === '1'; } catch (_) { return false; }
+  });
+  const handlePrivacyAgree = () => {
+    try { localStorage.setItem('dd_privacy_agreed_v1', '1'); } catch (_) {}
+    setPrivacyAgreed(true);
+  };
   const [isPending559Offline, setIsPending559Offline] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem('dd_pending_559_offline') === 'true';
@@ -4879,6 +4888,11 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           建议宽屏设备下并排操作：左侧模拟接单，右侧调试审核 ⚡
         </span>
       </div>
+
+      {/* 首启隐私同意弹窗（2026-11-17）：未同意前拦截司机端，未登录/未上线不产生任何定位采集 */}
+      {!privacyAgreed && mobileActiveTab === 'app' && (
+        <PrivacyConsentGate onAgree={handlePrivacyAgree} />
+      )}
 
     </div>
   );
