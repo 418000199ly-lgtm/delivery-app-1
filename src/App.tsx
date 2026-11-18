@@ -4665,6 +4665,12 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           <AppErrorBoundary onReset={() => setCurrentView('home')}>
             {renderView()}
           </AppErrorBoundary>
+
+          {/* 首启隐私同意弹窗（2026-11-18 补）：真机走此渲染分支，必须在此也挂拦截门，
+              否则原生 App 永不弹（342 首版只挂在了桌面预览分支上，真机实测不弹） */}
+          {!privacyAgreed && mobileActiveTab === 'app' && (
+            <PrivacyConsentGate onAgree={handlePrivacyAgree} />
+          )}
           
           {/* Floating toasts for nice user experience */}
           {showToast && (
