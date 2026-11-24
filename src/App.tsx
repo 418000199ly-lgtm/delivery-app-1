@@ -57,6 +57,9 @@ import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
 import AppUpdateModal from './components/AppUpdateModal';
 import { checkAppUpdate, hasPendingForcedUpdate, isUpdateSnoozed, type AppUpdateInfo } from './lib/appUpdate';
 import { notifyServiceSms } from './lib/wallet';
+import { IS_STORE_BUILD } from './lib/channel';
+import StorePermissionPurpose from './components/StorePermissionPurpose';
+import { ensurePermissionPurposeConsent } from './utils/storePermissionGate';
 
 const getCityCenterCoords = (cityName: string): { lat: number; lng: number } => {
   const norm = (cityName || '').trim();
@@ -496,6 +499,31 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     const onVisible = () => { if (document.visibilityState === 'visible') run(); };
     document.addEventListener('visibilitychange', onVisible);
     return () => { alive = false; clearTimeout(first); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+
+  // 商店版（华为审核版）返回键处理（第 3 条：登录页按系统返回键无响应）：
+  // 未登录（登录页）按返回退出 App，已登录按返回最小化到后台；
+  // 司机版不注册、行为零变化。
+  useEffect(() => {
+    if (!IS_STORE_BUILD) return;
+    let handle: { remove: () => Promise<void> } | null = null;
+    let disposed = false;
+    (async () => {
+      try {
+        const { App: CapApp } = await import('@capacitor/app');
+        const h = await CapApp.addListener('backButton', () => {
+          let logged = false;
+          try { logged = !!localStorage.getItem('dd_auth_token'); } catch (_) {}
+          if (!logged) {
+            CapApp.exitApp().catch(() => {});
+          } else {
+            CapApp.minimizeApp().catch(() => {});
+          }
+        });
+        if (disposed) { h.remove().catch(() => {}); } else { handle = h; }
+      } catch (_) {}
+    })();
+    return () => { disposed = true; try { handle?.remove(); } catch (_) {} };
   }, []);
 
   // 自更新弹窗口径：仅在【下线】时弹（上线跑单永不打扰）；强制版必弹，
@@ -2386,8 +2414,16 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
 
   // Initialize native background notification system and register app resume listeners
   useEffect(() => {
-    initNotificationSystem();
-    const powerCleanup = initGlobalPowerManager();
+    // 商店版（华为审核版）：首次触发定位/通知权限申请前，先弹用途说明框
+    // 同步告知（审核指南 7.18），用户确认后才继续初始化；司机版直接放行。
+    let powerCleanup: () => void = () => {};
+    let initCancelled = false;
+    (async () => {
+      const ok = await ensurePermissionPurposeConsent();
+      if (!ok || initCancelled) return;
+      initNotificationSystem();
+      powerCleanup = initGlobalPowerManager();
+    })();
 
     const cleanup = registerBackgroundOrderListeners(async (order) => {
       if (order) {
@@ -2434,6 +2470,7 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     window.addEventListener('trigger_incoming_order', handleCustomTrigger);
 
     return () => {
+      initCancelled = true;
       cleanup();
       powerCleanup();
       window.removeEventListener('trigger_incoming_order', handleCustomTrigger);
@@ -4671,6 +4708,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
           {!privacyAgreed && mobileActiveTab === 'app' && (
             <PrivacyConsentGate onAgree={handlePrivacyAgree} />
           )}
+
+          {/* 商店版权限用途说明弹窗（仅商店版渲染，司机版为 null） */}
+          <StorePermissionPurpose />
           
           {/* Floating toasts for nice user experience */}
           {showToast && (
@@ -4899,6 +4939,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       {!privacyAgreed && mobileActiveTab === 'app' && (
         <PrivacyConsentGate onAgree={handlePrivacyAgree} />
       )}
+
+      {/* 商店版权限用途说明弹窗（仅商店版渲染，司机版为 null） */}
+      <StorePermissionPurpose />
 
     </div>
   );

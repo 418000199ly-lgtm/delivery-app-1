@@ -11,6 +11,14 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/AppTheme">
 
+        <!-- 渠道分流（2026-11-24）：driver=司机版（默认，锁屏亮屏提醒全开）；
+             store=商店版（华为审核版，CI 构建时把 value 改为 store 并把下方
+             activity 的 showWhenLocked/turnScreenOn 改为 false，去掉锁屏覆盖，
+             对应华为审核第 2 条）。MainActivity 启动时读此值决定是否开锁屏开关。 -->
+        <meta-data
+            android:name="heiwan_channel"
+            android:value="driver" />
+
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation|density"
             android:name=".MainActivity"

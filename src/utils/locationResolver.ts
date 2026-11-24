@@ -472,6 +472,59 @@ export async function resolveCurrentGpsLocationName(
 /**
  * Automatically update the order's destination in all storage layers if it was unset.
  */
+/**
+ * Obtain a fresh GPS fix as GCJ-02 coordinates (2026-11-23: 入队申请城市闸门用).
+ * Returns null when no fix can be obtained (permission denied / no signal / timeout).
+ */
+export async function resolveCurrentGpsCoords(timeoutMs = 7000): Promise<{ lng: number; lat: number; mocked?: boolean } | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v: any) => { if (!done) { done = true; resolve(v); } };
+    const timer = setTimeout(() => finish(null), timeoutMs + 2000);
+    const ok = (lng: number, lat: number, mocked?: boolean) => {
+      clearTimeout(timer);
+      if (typeof lng === 'number' && typeof lat === 'number' && lng > 70 && lat > 15) finish({ lng, lat, mocked });
+      else finish(null);
+    };
+    const AMap = typeof window !== 'undefined' ? (window as any).AMap : undefined;
+    const navFallback = () => {
+      if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const converted = wgs84ToGcj02(pos.coords.longitude, pos.coords.latitude);
+            ok(converted.lng, converted.lat, (pos as any)?.mocked === true ? true : undefined);
+          },
+          () => finish(null),
+          { enableHighAccuracy: true, timeout: timeoutMs }
+        );
+      } else finish(null);
+    };
+    if (AMap && AMap.plugin) {
+      AMap.plugin('AMap.Geolocation', () => {
+        try {
+          const geolocation = new AMap.Geolocation({
+            enableHighAccuracy: true,
+            timeout: timeoutMs,
+            noIpLocate: 0,
+            noGeoLocation: 0,
+          });
+          geolocation.getCurrentPosition((status: string, result: any) => {
+            if (status === 'complete' && result && result.position) {
+              ok(result.position.lng, result.position.lat, result.isMock === true ? true : undefined);
+            } else {
+              navFallback();
+            }
+          });
+        } catch (_) {
+          navFallback();
+        }
+      });
+    } else {
+      navFallback();
+    }
+  });
+}
+
 export async function autoUpdateOrderDestinationIfUnset(
   trip: TripState,
   userPhone?: string,

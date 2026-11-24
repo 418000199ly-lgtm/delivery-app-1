@@ -66,12 +66,13 @@ import { fetchVipPackages, createAlipayOrder, getPayOrderStatus, DEFAULT_VIP_PAC
 import { payWithAlipay } from '../lib/alipayPay';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
-import { formatHighPrecisionDestinationName } from '../utils/locationResolver';
+import { formatHighPrecisionDestinationName, resolveCurrentGpsCoords } from '../utils/locationResolver';
 import { speakText, initAudioUnlock } from '../utils/speech';
 import vipPaymentMockupImg from '../assets/images/vip_payment_mockup_1782906470780.jpg';
 import wechatPayQrImg from '../assets/images/wechat_pay_qr_1782906451645.jpg';
 import { READY_DRIVER_BASE64, READY_DRIVER_PATH, VALET_CAR_BANNER_BASE64, VALET_CAR_BANNER_PATH } from '../assets/images/driverImageConstants';
 import { DEVELOPER_PHONE } from '../utils/constants';
+import { IS_STORE_BUILD, SUPPORT_EMAIL } from '../lib/channel';
 
 interface HomeViewProps {
   settings: ChauffeurSettings;
@@ -1790,7 +1791,16 @@ export default function HomeView({
       let serverOk = false;
       let hardError = '';
       try {
-        const applyJson = await submitSquadApplication({ phone: currentPhone, name: freshName, note: noteText, city: effectiveCity || '银川市' });
+        // 2026-11-23 城市闸门：提交前现场取一次 GPS 坐标随申请上送，服务端反查城市判定；
+        // 取不到定位则明确标记 unavailable（服务端会提示到室外重试），不拿设置里的城市冒充定位
+        let geoPayload: { lat?: number; lng?: number; mocked?: boolean; unavailable?: boolean };
+        try {
+          const coords = await resolveCurrentGpsCoords();
+          geoPayload = coords
+            ? { lat: coords.lat, lng: coords.lng, ...(coords.mocked ? { mocked: true } : {}) }
+            : { unavailable: true };
+        } catch (_) { geoPayload = { unavailable: true }; }
+        const applyJson = await submitSquadApplication({ phone: currentPhone, name: freshName, note: noteText, city: effectiveCity || '银川市', geo: geoPayload });
         serverOk = !!applyJson?.success;
       } catch (e: any) {
         serverOk = false;
@@ -6199,13 +6209,22 @@ export default function HomeView({
 
               {/* Footer Action Area */}
               <div className="p-4 bg-white border-t border-slate-100 shrink-0 flex flex-col space-y-2 android-nav-safe-pb">
-                <button
-                  onClick={() => setShowVipPaySheet(true)}
-                  disabled={isVipPurchasing || vipPackages.length === 0}
-                  className="w-full py-3 rounded-xl font-bold text-xs text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md shadow-amber-500/10 flex items-center justify-center space-x-2 cursor-pointer active:scale-98 disabled:opacity-60"
-                >
-                  <span>{isVipPurchasing ? '正在处理支付...' : `确认协议并支付 ¥${fmtYuan((vipPackages[selectedVipPkgIndex] || vipPackages[0])?.price ?? 0)}`}</span>
-                </button>
+                {IS_STORE_BUILD ? (
+                  /* 商店版（华为审核版）：不提供在线支付（第 8 条），只留客服邮箱（第 7 条） */
+                  <div className="w-full py-3 px-3 rounded-xl bg-slate-50 border border-slate-200 text-center">
+                    <p className="text-[11px] font-bold text-slate-600 leading-relaxed">
+                      本版本暂不支持在线支付<br />开通会员或有任何问题，请联系客服邮箱：{SUPPORT_EMAIL}
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setShowVipPaySheet(true)}
+                    disabled={isVipPurchasing || vipPackages.length === 0}
+                    className="w-full py-3 rounded-xl font-bold text-xs text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 shadow-md shadow-amber-500/10 flex items-center justify-center space-x-2 cursor-pointer active:scale-98 disabled:opacity-60"
+                  >
+                    <span>{isVipPurchasing ? '正在处理支付...' : `确认协议并支付 ¥${fmtYuan((vipPackages[selectedVipPkgIndex] || vipPackages[0])?.price ?? 0)}`}</span>
+                  </button>
+                )}
                 <button
                   onClick={() => setShowVipPurchaseModal(false)}
                   className="w-full py-2.5 rounded-xl font-bold text-[10px] text-slate-500 bg-slate-100 hover:bg-slate-200 transition-all flex items-center justify-center cursor-pointer active:scale-98"
@@ -6214,8 +6233,8 @@ export default function HomeView({
                 </button>
               </div>
 
-              {/* 支付方式选择层（参照竞品流程：账户充值 → 微信/支付宝二选一 → 跳对应 App 付款） */}
-              {showVipPaySheet && (
+              {/* 支付方式选择层（参照竞品流程：账户充值 → 微信/支付宝二选一 → 跳对应 App 付款）；商店版不渲染（无支付发起入口） */}
+              {showVipPaySheet && !IS_STORE_BUILD && (
                 <div className="absolute inset-0 z-50 flex items-end justify-center bg-slate-900/60" onClick={() => setShowVipPaySheet(false)}>
                   <div className="w-full bg-white rounded-t-3xl px-5 pt-4 pb-8 space-y-3.5 animate-in slide-in-from-bottom duration-200" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-between">

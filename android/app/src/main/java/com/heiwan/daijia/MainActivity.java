@@ -43,6 +43,29 @@ public class MainActivity extends BridgeActivity {
         }
 
         // Turn on screen and show over lock screen / other apps when new orders arrive
+        // 渠道分流（2026-11-24 华为审核第 2 条）：商店版（heiwan_channel=store）
+        // 不得在锁屏未解锁时把应用内容盖在锁屏界面之上，显式关掉两个开关且不
+        // 请求解除锁屏；司机版（driver）保持原行为，新单亮屏提醒不受影响。
+        boolean isStoreChannel = false;
+        try {
+            android.content.pm.ApplicationInfo ai = getPackageManager()
+                    .getApplicationInfo(getPackageName(), android.content.pm.PackageManager.GET_META_DATA);
+            if (ai.metaData != null) {
+                isStoreChannel = "store".equals(ai.metaData.getString("heiwan_channel"));
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        if (isStoreChannel) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    setShowWhenLocked(false);
+                    setTurnScreenOn(false);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        } else {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
                 setShowWhenLocked(true);
@@ -61,6 +84,7 @@ public class MainActivity extends BridgeActivity {
             }
         } catch (Exception e) {
             e.printStackTrace();
+        }
         }
 
         try {

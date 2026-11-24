@@ -12,6 +12,7 @@ import OnlineOrderApplicationModal from './OnlineOrderApplicationModal';
 import AppUpdateModal from './AppUpdateModal';
 import PrivacyPolicyContent from './PrivacyPolicyContent';
 import { checkAppUpdate, APP_BUILD, APP_VERSION_LABEL, isNativeApp, type AppUpdateInfo } from '../lib/appUpdate';
+import { IS_STORE_BUILD, SUPPORT_EMAIL } from '../lib/channel';
 
 export { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl };
 
@@ -816,13 +817,20 @@ export default function SettingsView({
                   服务短信为 VIP 会员功能，开通会员后才能发送；余额可先充值备用。
                 </p>
               )}
-              <button
-                type="button"
-                onClick={() => { setRechargeMsg(''); setRechargeSheet(true); }}
-                className="w-full max-w-xs mt-10 py-3.5 bg-[#1da39b] text-white rounded-2xl text-base font-semibold shadow-md active:scale-[0.98] transition-all"
-              >
-                充值
-              </button>
+              {IS_STORE_BUILD ? (
+                /* 商店版（华为审核版）：不提供在线充值（第 8 条），只留客服邮箱（第 7 条） */
+                <p className="text-xs text-gray-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 mt-10 leading-relaxed text-center max-w-xs">
+                  本版本暂不支持在线充值<br />充值或有任何问题，请联系客服邮箱：{SUPPORT_EMAIL}
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { setRechargeMsg(''); setRechargeSheet(true); }}
+                  className="w-full max-w-xs mt-10 py-3.5 bg-[#1da39b] text-white rounded-2xl text-base font-semibold shadow-md active:scale-[0.98] transition-all"
+                >
+                  充值
+                </button>
+              )}
               <p className="text-xs text-gray-400 mt-6">
                 短信 ¥{walletMe ? (walletMe.smsPriceCents / 100).toFixed(2) : '0.15'}/条（按条计费）· 余额不足时无法发送短信
               </p>
@@ -855,8 +863,8 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* 充值弹窗（照竞品：档位 + 微信/支付宝二选一） */}
-          {rechargeSheet && (
+          {/* 充值弹窗（照竞品：档位 + 微信/支付宝二选一）；商店版不渲染（无支付发起入口） */}
+          {rechargeSheet && !IS_STORE_BUILD && (
             <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-5 z-50">
               <div className="bg-white rounded-3xl w-full max-w-[320px] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
                 <div className="bg-[#273046] text-white py-4 px-5 flex items-center justify-between">

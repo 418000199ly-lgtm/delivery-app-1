@@ -136,7 +136,8 @@ async function postSquadJson(path: string, body: any): Promise<any> {
 }
 
 // 提交入队申请（只走服务端专用接口，本地不预写任何状态）
-export function submitSquadApplication(payload: { phone: string; name: string; note?: string; city?: string }) {
+// 2026-11-23：geo 为申请时现场 GPS（服务端城市闸门反查用）；取不到定位时传 { unavailable: true }
+export function submitSquadApplication(payload: { phone: string; name: string; note?: string; city?: string; geo?: { lat?: number; lng?: number; mocked?: boolean; unavailable?: boolean } }) {
   return postSquadJson('/api/squad-apply', payload);
 }
 

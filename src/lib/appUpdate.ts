@@ -9,6 +9,7 @@
 // 本地构建号由 CI 注入（VITE_APP_BUILD=GitHub 构建序号）；无注入时为 0。
 // ============================================================
 import { Capacitor, registerPlugin} from '@capacitor/core';
+import { IS_STORE_BUILD } from './channel';
 
 export const APP_BUILD: number = (() => {
 try {
@@ -78,6 +79,8 @@ return _lastInfo;
 
 // 问询服务器。失败返回 null（静默，绝不打扰司机）。
 export async function checkAppUpdate(): Promise<AppUpdateInfo | null> {
+// 商店版（华为审核版）：走应用市场更新，App 内自更新全关（2026-11-24 分流）
+if (IS_STORE_BUILD) return null;
 if (!isNativeApp()) return null;
 try {
 const phone = (localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '');

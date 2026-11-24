@@ -9930,6 +9930,18 @@ function getClientIp(req: any): string {
     const SMS_UNLIMITED_PHONES_VERIFY = new Set(['15509601222', '15121904440', '18695119126']);
     const isSmsUnlimitedVerify = SMS_UNLIMITED_PHONES_VERIFY.has(cleanPhone);
 
+    // ===== 华为应用市场提审临时通道（2026-11-23 用户拍板，上架通过后立即删除本段及下方两处 isReviewTestLogin 判断）=====
+    // 专用测试号 15121904440（用户本人号码）+ 固定码 7319，仅供华为审核员登录测试报单/二维码创单；
+    // 2026-11-24 整改：首轮提审被驳第 1 条——App 登录页写死只收 4 位验证码（真实短信码
+    // 本就是 4 位），原固定码 731946 是 6 位、审核员在 App 里根本提交不了；改回 4 位。
+    // 不适用于管理后台与商户代叫登录，其他任何号码一律不受影响、照常走短信校验。
+    const REVIEW_TEST_PHONE = '15121904440';
+    const REVIEW_TEST_CODE = '7319';
+    const isReviewTestLogin =
+      cleanPhone === REVIEW_TEST_PHONE &&
+      String(code).trim() === REVIEW_TEST_CODE &&
+      !isAdminLogin && scope !== 'admin_panel' && scope !== 'dispatch_valet';
+
     // H1修复：检查是否被锁定（5次失败锁定30分钟）
     if (!isSmsUnlimitedVerify) {
       const failInfo = verifyFailures.get(cleanPhone);
@@ -10024,11 +10036,11 @@ function getClientIp(req: any): string {
     }
 
     const record = verificationCodes.get(phone);
-    if (!record) {
+    if (!record && !isReviewTestLogin) {
       return res.status(400).json({ success: false, error: '请先获取验证码' });
     }
 
-    if (Date.now() > record.expiresAt) {
+    if (record && Date.now() > record.expiresAt && !isReviewTestLogin) {
       verificationCodes.delete(phone);
       return res.status(400).json({ success: false, error: '验证码已过期，请重新获取' });
     }
@@ -10154,6 +10166,12 @@ function getClientIp(req: any): string {
 
       return res.json({ success: true, message: '验证码校验成功', token: authToken });
     };
+
+    // 华为提审测试号：固定码直接登录成功（不走短信校验，上架后随上方常量一并删除）
+    if (isReviewTestLogin) {
+      console.log(`[SMS] 华为提审测试号固定码登录成功: ${cleanPhone}`);
+      return handleLoginSuccess();
+    }
 
     // If simulated or code matches what was returned from send
     if (isSimulated || (record.code && record.code !== 'ALIYUN_EXTERNAL' && record.code === String(code).trim())) {
@@ -12506,6 +12524,42 @@ function getClientIp(req: any): string {
     }
   });
 
+  // ===== 入队申请城市闸门（2026-11-23，用户拍板）=====
+  // 口径：优先用申请时 GPS 坐标经高德逆地理编码反查的真实城市判定；无坐标（老版本 App）
+  // 或反查失败时，按申报城市判定（临时档）。非银川市一律拦下、不落库，银川管理看不见。
+  // 新版 App 明确报告无定位（geo.unavailable）时提示到室外重试；IP 城市仅作标记不拦截。
+  const SQUAD_GATE_CITY_CORE = '银川';
+  function squadGateCityCore(s: any): string {
+    return String(s || '').trim().replace(/市$/, '');
+  }
+  async function amapRegeoCity(lng: number, lat: number): Promise<string> {
+    try {
+      const url = `https://restapi.amap.com/v3/geocode/regeo?location=${lng},${lat}&key=${AMAP_KEY_SERVER}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(4000) });
+      const data: any = await resp.json();
+      if (data && data.status === '1' && data.regeocode && data.regeocode.addressComponent) {
+        const ac = data.regeocode.addressComponent;
+        const city = typeof ac.city === 'string' && ac.city ? ac.city : (typeof ac.province === 'string' ? ac.province : '');
+        return String(city || '');
+      }
+    } catch (_) {}
+    return '';
+  }
+  async function amapIpCity(ip: string): Promise<string> {
+    try {
+      if (!ip || ip === '127.0.0.1' || ip === '::1') return '';
+      const url = `https://restapi.amap.com/v3/ip?ip=${encodeURIComponent(ip)}&key=${AMAP_KEY_SERVER}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      const data: any = await resp.json();
+      if (data && data.status === '1') return String(data.city || '');
+    } catch (_) {}
+    return '';
+  }
+  function squadGateClientIp(req: any): string {
+    const xff = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+    return xff || String(req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  }
+
   // 2026-10-12 小队申请专用提交通道：司机提交自己的申请，不走 /api/db/set 的严格权限
   // P1-3修复(2026-10-15)：加鉴权，申请人手机号必须等于token身份，防冒名申请
   app.post('/api/squad-apply', requireDbAuth, async (req, res) => {
@@ -12547,6 +12601,31 @@ function getClientIp(req: any): string {
       if (membershipState.applicationDoc && isApprovedMemberStatus(membershipState.applicationStatus)) {
         return res.status(409).json({ success: false, error: '申请状态异常，请联系管理人员处理' });
       }
+      // ===== 城市闸门（2026-11-23）：非银川申请不落库，银川管理看不见 =====
+      const geo = (req.body && typeof req.body.geo === 'object' && req.body.geo) ? req.body.geo : null;
+      const gLat = Number(geo?.lat), gLng = Number(geo?.lng);
+      const hasCoords = !!geo && isFinite(gLat) && isFinite(gLng) && gLng >= 70 && gLng <= 140 && gLat >= 15 && gLat <= 55 && geo.mocked !== true;
+      let geoCity = '', geoVerified = false;
+      if (hasCoords) {
+        geoCity = await amapRegeoCity(gLng, gLat);
+        if (geoCity) geoVerified = true;
+      }
+      let ipCity = '';
+      try { ipCity = await amapIpCity(squadGateClientIp(req)); } catch (_) {}
+      const ipMismatch = !!(geoVerified && ipCity && squadGateCityCore(ipCity) !== squadGateCityCore(geoCity));
+      if (geoVerified) {
+        if (squadGateCityCore(geoCity) !== SQUAD_GATE_CITY_CORE) {
+          return res.status(400).json({ success: false, error: `你当前所在城市为${geoCity}，该城市暂未开通小队，无法提交申请` });
+        }
+      } else if (geo && geo.unavailable === true && !hasCoords) {
+        // 新版 App 明确报告无定位（老版本不带 geo 字段，走下面的申报城市档）
+        return res.status(400).json({ success: false, error: '未获取到你的定位，请开启定位权限并到室外空旷处后重试' });
+      } else {
+        const declaredCore = squadGateCityCore(String(city || '银川市'));
+        if (declaredCore !== SQUAD_GATE_CITY_CORE) {
+          return res.status(400).json({ success: false, error: `你填写的城市为${String(city || '').slice(0, 20)}，银川小队仅接收银川市的入队申请` });
+        }
+      }
       const appPayload = {
         id: cleanPhone, // 2026-10-22 第六轮(P0-1)：内嵌 id 必须等于文档键手机号（旧 'app-<时间戳>' 会被 db/list 过滤器误当身份，导致新申请在所有列表不可见）
         name: cleanName,
@@ -12554,6 +12633,13 @@ function getClientIp(req: any): string {
         status: '待审核',
         note: String(note || '').slice(0, 200),
         city: String(city || '银川市').slice(0, 20),
+        // 城市闸门留痕（2026-11-23）：反查城市/是否坐标核验/IP城市与不一致标记，供管理核对
+        geoCity,
+        geoVerified,
+        ipCity,
+        ipMismatch,
+        applyLat: hasCoords ? Math.round(gLat * 1e5) / 1e5 : null,
+        applyLng: hasCoords ? Math.round(gLng * 1e5) / 1e5 : null,
         createdAt: new Date().toLocaleString(),
         timestamp: Date.now(),
         approvedBy: '',
