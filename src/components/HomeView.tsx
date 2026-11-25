@@ -73,6 +73,7 @@ import wechatPayQrImg from '../assets/images/wechat_pay_qr_1782906451645.jpg';
 import { READY_DRIVER_BASE64, READY_DRIVER_PATH, VALET_CAR_BANNER_BASE64, VALET_CAR_BANNER_PATH } from '../assets/images/driverImageConstants';
 import { DEVELOPER_PHONE } from '../utils/constants';
 import { IS_STORE_BUILD, SUPPORT_EMAIL } from '../lib/channel';
+import { registerBackHandler } from '../lib/backNavigation';
 
 interface HomeViewProps {
   settings: ChauffeurSettings;
@@ -4549,6 +4550,39 @@ export default function HomeView({
   };
 
   const vipInfo = getVipCountdown();
+
+  // 安卓返回键（2026-11-25）：本页任一弹窗/覆盖层打开时登记关闭函数，
+  // 按从上到下的顺序关最上层一个；都没开时返回 false 交 App 层兜底。
+  const homeBackStateRef = useRef<any>({});
+  useEffect(() => {
+    homeBackStateRef.current = {
+      localAlert, selectedDetailOrder, showVipPaySheet, showDeleteOrderModal,
+      showDispatchCityDropdown, showCitySelector, showNearbyMap, showAdminDispatchView,
+      showVipPurchaseModal, showRedeemModal, showDispatchModal, showMerchantDispatchModal,
+      showApplySquadModal, showOnlineAppModal, showMessagesModal, showUserModal, showOrderHistory,
+    };
+  });
+  useEffect(() => registerBackHandler(() => {
+    const s = homeBackStateRef.current;
+    if (s.localAlert) { setLocalAlert(null); return true; }
+    if (s.selectedDetailOrder) { setSelectedDetailOrder(null); return true; }
+    if (s.showVipPaySheet) { setShowVipPaySheet(false); return true; }
+    if (s.showDeleteOrderModal) { setShowDeleteOrderModal(false); return true; }
+    if (s.showDispatchCityDropdown) { setShowDispatchCityDropdown(false); return true; }
+    if (s.showCitySelector) { setShowCitySelector(false); return true; }
+    if (s.showNearbyMap) { setShowNearbyMap(false); return true; }
+    if (s.showAdminDispatchView) { setShowAdminDispatchView(false); return true; }
+    if (s.showVipPurchaseModal) { setShowVipPurchaseModal(false); return true; }
+    if (s.showRedeemModal) { setShowRedeemModal(false); setModalMessage(null); return true; }
+    if (s.showDispatchModal) { setShowDispatchModal(false); return true; }
+    if (s.showMerchantDispatchModal) { setShowMerchantDispatchModal(false); return true; }
+    if (s.showApplySquadModal) { setShowApplySquadModal(false); return true; }
+    if (s.showOnlineAppModal) { setShowOnlineAppModal(false); return true; }
+    if (s.showMessagesModal) { setShowMessagesModal(false); return true; }
+    if (s.showUserModal) { setShowUserModal(false); return true; }
+    if (s.showOrderHistory) { setShowOrderHistory(false); return true; }
+    return false;
+  }), []);
 
   return (
     <div className="flex-1 flex flex-col justify-between h-full select-none bg-slate-100 relative overflow-hidden">

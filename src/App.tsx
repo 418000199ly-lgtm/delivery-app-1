@@ -58,6 +58,7 @@ import AppUpdateModal from './components/AppUpdateModal';
 import { checkAppUpdate, hasPendingForcedUpdate, isUpdateSnoozed, type AppUpdateInfo } from './lib/appUpdate';
 import { notifyServiceSms } from './lib/wallet';
 import { IS_STORE_BUILD } from './lib/channel';
+import { dispatchBackPress } from './lib/backNavigation';
 import StorePermissionPurpose from './components/StorePermissionPurpose';
 import { ensurePermissionPurposeConsent } from './utils/storePermissionGate';
 
@@ -501,30 +502,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     return () => { alive = false; clearTimeout(first); clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
 
-  // 商店版（华为审核版）返回键处理（第 3 条：登录页按系统返回键无响应）：
-  // 未登录（登录页）按返回退出 App，已登录按返回最小化到后台；
-  // 司机版不注册、行为零变化。
-  useEffect(() => {
-    if (!IS_STORE_BUILD) return;
-    let handle: { remove: () => Promise<void> } | null = null;
-    let disposed = false;
-    (async () => {
-      try {
-        const { App: CapApp } = await import('@capacitor/app');
-        const h = await CapApp.addListener('backButton', () => {
-          let logged = false;
-          try { logged = !!localStorage.getItem('dd_auth_token'); } catch (_) {}
-          if (!logged) {
-            CapApp.exitApp().catch(() => {});
-          } else {
-            CapApp.minimizeApp().catch(() => {});
-          }
-        });
-        if (disposed) { h.remove().catch(() => {}); } else { handle = h; }
-      } catch (_) {}
-    })();
-    return () => { disposed = true; try { handle?.remove(); } catch (_) {} };
-  }, []);
+  // 安卓系统返回键统一处理（2026-11-25，双版本一致，取代原商店版专用逻辑）：
+  // 分层消费，顺序见本文件后部 backButton 监听（弹窗注册表 → 页面级兜底）。
 
   // 自更新弹窗口径：仅在【下线】时弹（上线跑单永不打扰）；强制版必弹，
   // 可选版每天最多主动弹一次；暂缓期内不弹。上线后弹窗自动收起。
@@ -2338,6 +2317,62 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   useEffect(() => { currentTripRef.current = currentTrip; }, [currentTrip]);
   const currentViewRef = useRef<string>(currentView);
   useEffect(() => { currentViewRef.current = currentView; }, [currentView]);
+  const showAppUpdateModalRef = useRef<boolean>(false);
+  useEffect(() => { showAppUpdateModalRef.current = showAppUpdateModal; }, [showAppUpdateModal]);
+  const appUpdateForceRef = useRef<boolean>(false);
+  useEffect(() => { appUpdateForceRef.current = !!(appUpdateInfo && appUpdateInfo.force); }, [appUpdateInfo]);
+  const showUpgradeModalRef = useRef<boolean>(false);
+  useEffect(() => { showUpgradeModalRef.current = showUpgradeModal; }, [showUpgradeModal]);
+  const sysForceUpgradeRef = useRef<boolean>(false);
+  useEffect(() => { sysForceUpgradeRef.current = sysForceUpgrade; }, [sysForceUpgrade]);
+
+  // 安卓系统返回键（2026-11-25 双版本统一，司机版此前未注册、按了没反应）：
+  // 分层消费——① 各弹窗/覆盖层登记的关闭函数先行（lib/backNavigation 注册表）；
+  // ② 更新类弹窗开着先关（强制更新不许关、返回无动作）；③ 新单弹窗在场只最小化，
+  // 不丢单不关窗；④ 设置/报单页回首页；⑤ 行程相关页（导航/计费/收款码/里程）
+  // 只最小化不打断行程；⑥ 登录页退出 App；⑦ 首页最小化到后台保持听单。
+  useEffect(() => {
+    let handle: { remove: () => Promise<void> } | null = null;
+    let disposed = false;
+    (async () => {
+      try {
+        const { App: CapApp } = await import('@capacitor/app');
+        const h = await CapApp.addListener('backButton', () => {
+          if (dispatchBackPress()) return;
+          if (showUpgradeModalRef.current) {
+            if (!sysForceUpgradeRef.current) setShowUpgradeModal(false);
+            return;
+          }
+          if (showAppUpdateModalRef.current) {
+            if (!appUpdateForceRef.current) setShowAppUpdateModal(false);
+            return;
+          }
+          if (incomingOrderRef.current) {
+            CapApp.minimizeApp().catch(() => {});
+            return;
+          }
+          const v = currentViewRef.current;
+          if (v === 'settings' || v === 'create_order') {
+            setCurrentView('home');
+            return;
+          }
+          if (v === 'navigation' || v === 'cost' || v === 'payment_qr' || v === 'mileage') {
+            CapApp.minimizeApp().catch(() => {});
+            return;
+          }
+          let logged = false;
+          try { logged = !!localStorage.getItem('dd_auth_token'); } catch (_) {}
+          if (!logged || v === 'login') {
+            CapApp.exitApp().catch(() => {});
+            return;
+          }
+          CapApp.minimizeApp().catch(() => {});
+        });
+        if (disposed) { h.remove().catch(() => {}); } else { handle = h; }
+      } catch (_) {}
+    })();
+    return () => { disposed = true; try { handle?.remove(); } catch (_) {} };
+  }, []);
   // 2026-10-22 第七轮收尾：被占用/视图/行程拦下的来单没有重投路径（订阅只在文档变化时回调，
   // 文档不动就永不重送，二维码自助单会被静默吞掉）。gate 拦截时置此标志，弹窗关闭或回到
   // 首页时由下方重查 effect 单次重读 passenger_links 并重走全套判定（含新鲜度，过期单自灭）。

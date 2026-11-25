@@ -5,6 +5,7 @@ import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { fetchWalletMe, saveSmsConfig, createRechargeOrder, getRechargeStatus, composeSmsDetailPreview, buildServiceSmsTextPreview, smsSegmentsPreview, type WalletMe } from '../lib/wallet';
 import { payWithAlipay } from '../lib/alipayPay';
+import { registerBackHandler } from '../lib/backNavigation';
 
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
 import { regenerateQRCode, cropQRCodeFromImage, processImageFileToCleanQR, formatQrUrl } from '../utils/qrCodeHelper';
@@ -211,6 +212,18 @@ export default function SettingsView({
   // Local state for interactive settings overlays
   const [activeModal, setActiveModal] = useState<'none' | 'wallet' | 'sms_config' | 'qr_upload' | 'deviation_slider' | 'deviation_wait_slider'>('none');
   const [activeDoc, setActiveDoc] = useState<'none' | 'disclaimer' | 'user_agreement' | 'legal_statement' | 'privacy_policy'>('none');
+
+  // 安卓返回键（2026-11-25）：先关文档页、再关子弹窗，都没开时交 App 层兜底（回首页）
+  const settingsBackStateRef = useRef<any>({});
+  useEffect(() => {
+    settingsBackStateRef.current = { activeModal, activeDoc };
+  });
+  useEffect(() => registerBackHandler(() => {
+    const s = settingsBackStateRef.current;
+    if (s.activeDoc && s.activeDoc !== 'none') { setActiveDoc('none'); return true; }
+    if (s.activeModal && s.activeModal !== 'none') { setActiveModal('none'); return true; }
+    return false;
+  }), []);
   // 2026-11-12 短信钱包：余额/账单/短信配置全走服务端 /api/wallet/*，本地不存钱
   const [walletMe, setWalletMe] = useState<WalletMe | null>(null);
   const [walletTab, setWalletTab] = useState<'balance' | 'logs'>('balance');

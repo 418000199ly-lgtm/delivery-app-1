@@ -6,6 +6,7 @@ import { db, doc, onSnapshot, deleteDoc, setDoc, getDoc, getBaseApiUrl, getAuthH
 import { subscribeSquadMembership } from '../lib/squadMembership';
 import { speakText } from '../utils/speech';
 import { reportDriverBusyStatus } from '../utils/powerAndLocationManager';
+import { registerBackHandler } from '../lib/backNavigation';
 import PassengerOrderView from './PassengerOrderView';
 import ReportTransferOrderModal from './ReportTransferOrderModal';
 import QRCode from 'qrcode';
@@ -1599,6 +1600,26 @@ export default function CreateOrderView({
   const [showMultiplierPicker, setShowMultiplierPicker] = useState(false);
   const [tempMultiplier, setTempMultiplier] = useState(1.0);
   const multiplierScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // 安卓返回键（2026-11-25）：先关本页最上层弹窗，都没开时交 App 层兜底（回首页）
+  const createBackStateRef = useRef<any>({});
+  useEffect(() => {
+    createBackStateRef.current = {
+      showCancelConfirmModal, showPermissionPrompt, showSimulatedScanner,
+      showQrModal, showReportTransferModal, showDestinationSearch, showMultiplierPicker,
+    };
+  });
+  useEffect(() => registerBackHandler(() => {
+    const s = createBackStateRef.current;
+    if (s.showCancelConfirmModal) { setShowCancelConfirmModal(false); return true; }
+    if (s.showPermissionPrompt) { setShowPermissionPrompt(false); return true; }
+    if (s.showSimulatedScanner) { setShowSimulatedScanner(false); return true; }
+    if (s.showQrModal) { setShowQrModal(false); return true; }
+    if (s.showReportTransferModal) { setShowReportTransferModal(false); return true; }
+    if (s.showDestinationSearch) { setShowDestinationSearch(false); return true; }
+    if (s.showMultiplierPicker) { setShowMultiplierPicker(false); return true; }
+    return false;
+  }), []);
 
   useEffect(() => {
     if (showMultiplierPicker) {

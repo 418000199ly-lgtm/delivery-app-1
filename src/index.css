@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 老安卓 WebView 兼容（2026-11-25，OPPO R15 实证）：
+   R15 等老机型的系统 WebView 内核太旧，原生 <button> 的系统默认灰底压不住——
+   凡是没有显式写背景色的按钮（首页功能图标、关闭 X、上传收款码、底部声明链接、
+   地图缩放键等）都会透出一块灰底；写了 bg-* 类的按钮和 <div> 不受影响，华为等
+   新内核机型也不受影响。这里在全局关掉按钮的原生外观并强制透明底：
+   元素选择器优先级低于 bg-* 工具类，带背景色的按钮不受任何影响。 */
+button,
+input[type="button"],
+input[type="submit"],
+input[type="reset"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: transparent;
+  background-image: none;
+}
+
 :root {
   color-scheme: light;
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Arial", sans-serif;
