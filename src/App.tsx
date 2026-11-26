@@ -53,6 +53,7 @@ import { downloadDeployZip } from './utils/downloadHelper';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { scheduleResumeTask } from './utils/resumeCoordinator';
 import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusyStatus } from './utils/powerAndLocationManager';
+import { updateNativeLocationState } from './utils/nativeLocationService';
 import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
 import AppUpdateModal from './components/AppUpdateModal';
 import { checkAppUpdate, hasPendingForcedUpdate, isUpdateSnoozed, type AppUpdateInfo } from './lib/appUpdate';
@@ -1475,6 +1476,8 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
       driverName: settings?.driverName,
       currentView: incomingOrder ? 'incoming_overlay' : currentView
     });
+    // 2026-11-26：忙闲同步给安卓原生听单定位服务（它上报时带 isBusy）
+    updateNativeLocationState({ isBusy });
   }, [userPhone, currentTrip, currentView, incomingOrder, activeOnlineOrder, settings?.driverName]);
 
   // 2026-10-22 第七轮：自助报单占用上报（isReporting 心跳，App 层统一处理）。

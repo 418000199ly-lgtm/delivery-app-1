@@ -19,6 +19,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(HeiwanAlipayPlugin.class);
         // 2026-11-12 语音播报音频保障：注册音频插件（播报前抬媒体音量+抢焦点）
         registerPlugin(HeiwanAudioPlugin.class);
+        // 2026-11-26 原生听单定位：注册定位插件（原生前台服务直发上报，根治切后台/锁屏冻结断报）
+        registerPlugin(HeiwanLocationPlugin.class);
         super.onCreate(savedInstanceState);
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
 

@@ -21,6 +21,7 @@ import type { BackgroundGeolocationPlugin } from '@capacitor-community/backgroun
 // 该版本不导出现成实例，按其官方用法用 registerPlugin 注册。
 const BackgroundGeolocation = registerPlugin<BackgroundGeolocationPlugin>('BackgroundGeolocation');
 import { resolveDriverRealName } from './nameResolver';
+import { startNativeLocationService, stopNativeLocationService, requestBatteryExemptionOnce } from './nativeLocationService';
 import { wgs84ToGcj02, getDistanceMeters } from './coordinateTransform';
 import { scheduleResumeTask } from './resumeCoordinator';
 // 2026-10-11: @capacitor/geolocation 7.x SPM 构建失败（no such module 'IONGeolocationLib'），暂时回退到 JS 定位
@@ -245,6 +246,30 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
 
   // 1. 开启后台保活通道
   startBackgroundKeepAlive();
+
+  // 1b. 2026-11-26：安卓原生听单定位服务。上线即把配置交给原生前台
+  // 服务，由它独立完成定位+上报（不经 WebView），根治切后台/锁屏后
+  // JS 冻结断报、被看门狗误踢下线。网页层原有上报链保留作前台补充，
+  // 两路写同一接口、服务端合并，口径一致不冲突。
+  try {
+    const nameForNative = resolveDriverRealName(userPhone, settings?.driverName, settings);
+    const genericForNative = !nameForNative ||
+      nameForNative === '代驾司机' ||
+      nameForNative === '在线代驾司机' ||
+      nameForNative === '司机' ||
+      nameForNative === '代驾师傅' ||
+      /^司机\d{4}$/.test(nameForNative) ||
+      nameForNative === `司机${userPhone.slice(-4)}`;
+    startNativeLocationService({
+      phone: userPhone,
+      token: (() => { try { return localStorage.getItem('dd_auth_token') || ''; } catch (_) { return ''; } })(),
+      ...(genericForNative ? {} : { driverName: nameForNative }),
+      city,
+      isBusy: (() => { try { return localStorage.getItem('dd_driver_status_is_busy') === 'true'; } catch (_) { return false; } })(),
+      todayOrders: Number(stats?.todayOrders || 0)
+    });
+    requestBatteryExemptionOnce();
+  } catch (_) {}
 
   let isDisposed = false;
   let timerId: any = null;
@@ -524,13 +549,12 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
     } catch (_) {}
   }
 
-  // 4. 原生后台定位（2026-10-24 新增）：iOS 系统级后台定位 + Android 前台服务。
-  // 纯 JS watchPosition 在 App 切后台后会被系统冻结（2026-10-23 晚真机被 GPS 看门狗
-  // 6 次强制下线实证：切后台/停留派单台期间 JS 上报停摆超 120 秒）。原生 watcher 由
-  // 系统定位引擎驱动，切后台/锁屏仍持续回调；回调与 JS 上报共用同一节流口径
-  // （位移≥10m 或距上次上报≥15s 才发），两路共用 lastReportTime 状态、不会重复上报。
+  // 4. 原生后台定位（2026-10-24 新增）：iOS 系统级后台定位。
+  // 2026-11-26：安卓改走 HeiwanLocationService 原生前台服务（见 1b），
+  // 不再挂社区插件 watcher——它回调终结在 JS、后台冻结即哑火，且与
+  // 原生服务同开会出现两条前台服务通知。iOS 保持社区插件原链路。
   try {
-    if (Capacitor.isNativePlatform()) {
+    if (Capacitor.isNativePlatform() && Capacitor.getPlatform() !== 'android') {
       BackgroundGeolocation.addWatcher(
         {
           backgroundMessage: '正在听单中：为接收附近派单，后台持续上报你的位置',
@@ -599,6 +623,7 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
 
   return () => {
     isDisposed = true;
+    stopNativeLocationService();
     if (timerId) clearTimeout(timerId);
     if (guardianId) clearInterval(guardianId);
     if (watchPositionId !== null && navigator.geolocation) {
