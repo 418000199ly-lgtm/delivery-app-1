@@ -95,6 +95,25 @@ export async function createAlipayOrder(packageId: string): Promise<{ outTradeNo
   return { outTradeNo: String(j.outTradeNo || ''), orderString: String(j.orderString) };
 }
 
+/** 换网页购买/充值入口（2026-11-26）：服务端凭登录 token 签发 30 分钟有效的带令牌地址，
+ * 网页凭令牌下单、付款自动到账本人登录账号，页面全程不显示手机号。 */
+export async function fetchWapEntryUrl(kind: 'vip' | 'wallet'): Promise<string> {
+  const res = await fetchWithTimeout(
+    `${getBaseApiUrl()}/api/pay/wap-entry`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+      body: JSON.stringify({ kind }),
+    },
+    15000
+  );
+  const j = await res.json().catch(() => null);
+  if (!res.ok || !j?.ok || !j.url) {
+    throw new Error(j?.error || `打开页面失败（服务端返回 ${res.status}）`);
+  }
+  return String(j.url);
+}
+
 /** 查询订单支付状态；paid 时 vipExpiry 为服务端发放后的最新会员有效期。 */
 export async function getPayOrderStatus(outTradeNo: string): Promise<{ status: 'pending' | 'paid'; vipExpiry: string }> {
   const res = await fetchWithTimeout(

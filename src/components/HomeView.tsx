@@ -62,8 +62,7 @@ import OrderDetailModal from './OrderDetailModal';
 import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { subscribeSquadMembership, fetchSquadMembership, submitSquadApplication, withdrawSquadApplication, SquadMembershipState } from '../lib/squadMembership';
-import { fetchVipPackages, createAlipayOrder, getPayOrderStatus, DEFAULT_VIP_PACKAGES, VipPackage } from '../lib/vipShop';
-import { payWithAlipay } from '../lib/alipayPay';
+import { fetchVipPackages, fetchWapEntryUrl, DEFAULT_VIP_PACKAGES, VipPackage } from '../lib/vipShop';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName, resolveCurrentGpsCoords } from '../utils/locationResolver';
@@ -4058,74 +4057,49 @@ export default function HomeView({
   // --- VIP 自助购买真实支付流程（2026-11-07 取代原模拟购买）---
   // 铁律：客户端绝不直改 vipExpiry；下单价以服务端配置为准，到账只认服务端查单 paid 后返回的 vipExpiry。
 
-  // 轮询查单：每 2 秒一次、最长约 30 秒；paid 返回服务端发放后的 vipExpiry，超时返回 null
-  const pollVipOrderPaid = async (outTradeNo: string): Promise<{ vipExpiry: string } | null> => {
-    const deadline = Date.now() + 30000;
-    for (;;) {
-      try {
-        const st = await getPayOrderStatus(outTradeNo);
-        if (st.status === 'paid') return { vipExpiry: st.vipExpiry };
-      } catch (_) { /* 单次查单失败不中断轮询，等下一次 */ }
-      if (Date.now() >= deadline) return null;
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    }
-  };
-
-  const handleWechatVipPay = () => {
-    setShowVipPaySheet(false);
-    setLocalAlert({ title: '提示', message: '微信支付开发对接中，敬请期待', type: 'info' });
-  };
-
+  // 2026-11-26 改走支付宝手机网站支付（用户定：网页不显示手机号）：
+  // App 向服务端换带签名令牌的购买页地址 → 系统浏览器打开购买页选套餐付款，
+  // 付款自动到账本人登录账号；App 后台盯本人档案 vipExpiry 变化确认到账。
+  // 客户端绝不直改 vipExpiry，到账只认服务端档案里的新有效期。
   const handleAlipayVipPay = async () => {
-    const pkg = vipPackages[selectedVipPkgIndex] || vipPackages[0];
-    if (!pkg || isVipPurchasing) return;
+    if (isVipPurchasing) return;
     setShowVipPaySheet(false);
     setIsVipPurchasing(true);
     try {
-      // 1) 服务端下单（价格以服务端配置为准，只传 packageId）
-      const order = await createAlipayOrder(pkg.id);
-      // 2) 拉起支付宝 App 支付；非原生环境在此抛明确不可用错误
-      let payRes: { resultStatus: string; memo?: string };
-      try {
-        payRes = await payWithAlipay(order.orderString);
-      } catch (e: any) {
-        setLocalAlert({ title: '支付未完成', message: e?.message || '支付宝拉起失败，请重试', type: 'warning' });
+      const myPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '');
+      if (!/^1[3-9]\d{9}$/.test(myPhone)) {
+        setLocalAlert({ title: '打开失败', message: '登录手机号无效，请重新登录后再购买', type: 'warning' });
         return;
       }
-      // 3) SDK 同步状态只作初步判断：6001=用户取消，其余非 9000/8000 一律按失败处理、不误报成功
-      if (payRes.resultStatus === '6001') {
-        setLocalAlert({ title: '已取消支付', message: '您已取消本次支付宝支付，未扣款。', type: 'info' });
-        return;
-      }
-      if (payRes.resultStatus !== '9000' && payRes.resultStatus !== '8000') {
-        setLocalAlert({
-          title: '支付失败',
-          message: payRes.memo || `支付宝未能完成支付（状态 ${payRes.resultStatus || '未知'}），请重试。`,
-          type: 'warning',
-        });
-        return;
-      }
-      // 4) 到账确认：轮询服务端查单，paid 才算买成功
-      const paid = await pollVipOrderPaid(order.outTradeNo);
-      if (paid) {
-        if (paid.vipExpiry) {
-          onUpdateSettings({ ...settings, vipExpiry: paid.vipExpiry });
+      const beforeExpiry = String(settings.vipExpiry || '');
+      const url = await fetchWapEntryUrl('vip');
+      window.open(url, '_system');
+      setLocalAlert({
+        title: '已打开购买页面',
+        message: '请在浏览器中选择套餐并完成支付宝付款。付款成功后会员自动开通到您的登录账号，回到 App 即可使用。',
+        type: 'info',
+      });
+      // 后台盯到账：本人档案 vipExpiry 变化即为服务端已发放（最长约 5 分钟）
+      void (async () => {
+        for (let i = 0; i < 100; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
           try {
-            const myPhone = String(userPhone || localStorage.getItem('dd_user_phone') || '').replace(/\D/g, '');
-            window.dispatchEvent(new CustomEvent('driver_vip_updated', { detail: { phone: myPhone, vipExpiry: paid.vipExpiry } }));
-          } catch (_) {}
+            const snap = await getDoc(doc(db, 'driver_users', myPhone));
+            const data: any = snap && typeof (snap as any).data === 'function' ? (snap as any).data() : null;
+            const exp = String(data?.vipExpiry || '');
+            if (exp && exp !== beforeExpiry) {
+              onUpdateSettings({ ...settings, vipExpiry: exp });
+              try {
+                window.dispatchEvent(new CustomEvent('driver_vip_updated', { detail: { phone: myPhone, vipExpiry: exp } }));
+              } catch (_) {}
+              setLocalAlert({ title: '购买成功', message: `会员已开通，最新有效期至 ${exp}。`, type: 'success' });
+              return;
+            }
+          } catch (_) { /* 单次读取失败不中断，继续等下一次 */ }
         }
-        setVipPaidInfo({ label: vipPkgLabelForDays(pkg.days), price: pkg.price, vipExpiry: paid.vipExpiry });
-        setVipPurchaseSuccess(true);
-      } else {
-        setLocalAlert({
-          title: '支付结果确认中',
-          message: '支付结果确认中，请稍后查看会员有效期。若您已完成付款，会员权益将在服务端确认到账后自动生效。',
-          type: 'info',
-        });
-      }
+      })();
     } catch (e: any) {
-      setLocalAlert({ title: '下单失败', message: e?.message || '创建支付订单失败，请检查网络后重试', type: 'warning' });
+      setLocalAlert({ title: '打开失败', message: e?.message || '打开购买页失败，请检查网络后重试', type: 'warning' });
     } finally {
       setIsVipPurchasing(false);
     }
@@ -6267,7 +6241,7 @@ export default function HomeView({
                 </button>
               </div>
 
-              {/* 支付方式选择层（参照竞品流程：账户充值 → 微信/支付宝二选一 → 跳对应 App 付款）；商店版不渲染（无支付发起入口） */}
+              {/* 支付方式选择层（2026-11-26 用户定：只保留支付宝，微信支付入口取消显示）；商店版不渲染（无支付发起入口） */}
               {showVipPaySheet && !IS_STORE_BUILD && (
                 <div className="absolute inset-0 z-50 flex items-end justify-center bg-slate-900/60" onClick={() => setShowVipPaySheet(false)}>
                   <div className="w-full bg-white rounded-t-3xl px-5 pt-4 pb-8 space-y-3.5 animate-in slide-in-from-bottom duration-200" onClick={(e) => e.stopPropagation()}>
@@ -6282,12 +6256,6 @@ export default function HomeView({
                       {' · '}
                       <span className="text-slate-800 font-black">¥{fmtYuan((vipPackages[selectedVipPkgIndex] || vipPackages[0])?.price ?? 0)}</span>
                     </p>
-                    <button
-                      onClick={handleWechatVipPay}
-                      className="w-full py-3.5 rounded-xl bg-[#07C160] hover:brightness-95 text-white font-bold text-sm flex items-center justify-center space-x-2.5 cursor-pointer active:scale-98 shadow-md shadow-emerald-500/20"
-                    >
-                      <span>微信支付</span>
-                    </button>
                     <button
                       onClick={handleAlipayVipPay}
                       className="w-full py-3.5 rounded-xl bg-[#1677FF] hover:brightness-95 text-white font-bold text-sm flex items-center justify-center space-x-2.5 cursor-pointer active:scale-98 shadow-md shadow-blue-500/20"

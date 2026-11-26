@@ -3,8 +3,8 @@ import { X, ChevronRight, ChevronLeft, HelpCircle, RotateCcw, PlusSquare, Bookma
 import { ChauffeurSettings, SmsServiceConfig, DEFAULT_SMS_SERVICE_CONFIG, checkVipActive, checkVipActiveServerSynced } from '../types';
 import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
-import { fetchWalletMe, saveSmsConfig, createRechargeOrder, getRechargeStatus, composeSmsDetailPreview, buildServiceSmsTextPreview, smsSegmentsPreview, type WalletMe } from '../lib/wallet';
-import { payWithAlipay } from '../lib/alipayPay';
+import { fetchWalletMe, saveSmsConfig, composeSmsDetailPreview, buildServiceSmsTextPreview, smsSegmentsPreview, type WalletMe } from '../lib/wallet';
+import { fetchWapEntryUrl } from '../lib/vipShop';
 import { registerBackHandler } from '../lib/backNavigation';
 
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
@@ -230,7 +230,6 @@ export default function SettingsView({
   const [smsCfgDraft, setSmsCfgDraft] = useState<SmsServiceConfig>(DEFAULT_SMS_SERVICE_CONFIG);
   const [smsSaving, setSmsSaving] = useState(false);
   const [rechargeSheet, setRechargeSheet] = useState(false);
-  const [selectedRechargeAmount, setSelectedRechargeAmount] = useState<number>(10);
   const [rechargeBusy, setRechargeBusy] = useState(false);
   const [rechargeMsg, setRechargeMsg] = useState('');
   useEffect(() => {
@@ -239,7 +238,6 @@ export default function SettingsView({
       if (!alive) return;
       setWalletMe(w);
       setSmsCfgDraft(w.smsConfig);
-      if (w.rechargeAmounts.length) setSelectedRechargeAmount(w.rechargeAmounts[0]);
     });
     return () => { alive = false; };
   }, []);
@@ -458,39 +456,35 @@ export default function SettingsView({
     return w;
   };
 
-  // 钱包充值：支付宝真支付（微信占位），到账只认服务端异步通知，轮询查单确认
-  const handleWalletRecharge = async (method: 'alipay' | 'wechat') => {
-    if (method === 'wechat') {
-      setRechargeMsg('微信支付开发对接中，敬请期待');
-      return;
-    }
+  // 钱包充值：2026-11-26 改走支付宝手机网站支付（用户定：网页不显示手机号）。
+  // App 向服务端换带签名令牌的充值页地址 → 系统浏览器打开充值页选金额付款，
+  // 付款自动到账本人登录账号；App 后台盯钱包余额变化确认到账。
+  const handleWalletRecharge = async () => {
     if (rechargeBusy) return;
     setRechargeBusy(true);
     setRechargeMsg('');
     try {
-      const { outTradeNo, orderString } = await createRechargeOrder(selectedRechargeAmount);
-      const payRes = await payWithAlipay(orderString);
-      if (payRes.resultStatus === '6001') {
-        setRechargeMsg('已取消支付');
-        return;
-      }
-      for (let i = 0; i < 15; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        try {
-          const st = await getRechargeStatus(outTradeNo);
-          if (st.status === 'paid') {
-            await refreshWallet();
-            setRechargeSheet(false);
-            alert(`充值成功！已到账 ¥${selectedRechargeAmount} 元。`);
-            return;
-          }
-        } catch (_) {}
-      }
-      setRechargeMsg('支付结果确认中，请稍后在账单中查看到账情况');
-      void refreshWallet();
+      const beforeCents = Math.round(Number(walletMe?.balanceCents) || 0);
+      const url = await fetchWapEntryUrl('wallet');
+      window.open(url, '_system');
+      setRechargeBusy(false);
+      setRechargeMsg('已打开充值页，请在页面选择金额并完成付款；付款成功后余额自动到账。');
+      void (async () => {
+        for (let i = 0; i < 100; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          try {
+            const w = await fetchWalletMe();
+            if (Math.round(Number(w?.balanceCents) || 0) > beforeCents) {
+              setWalletMe(w);
+              setRechargeSheet(false);
+              alert('充值成功！余额已到账。');
+              return;
+            }
+          } catch (_) {}
+        }
+      })();
     } catch (e: any) {
-      setRechargeMsg(e?.message || '充值失败，请重试');
-    } finally {
+      setRechargeMsg(e?.message || '打开充值页失败，请重试');
       setRechargeBusy(false);
     }
   };
@@ -876,7 +870,7 @@ export default function SettingsView({
             </div>
           )}
 
-          {/* 充值弹窗（照竞品：档位 + 微信/支付宝二选一）；商店版不渲染（无支付发起入口） */}
+          {/* 充值弹窗（2026-11-26 用户定：只保留支付宝，微信支付入口取消显示）；商店版不渲染（无支付发起入口） */}
           {rechargeSheet && !IS_STORE_BUILD && (
             <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-5 z-50">
               <div className="bg-white rounded-3xl w-full max-w-[320px] shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -885,31 +879,12 @@ export default function SettingsView({
                   <X className="w-4 h-4 cursor-pointer" onClick={() => !rechargeBusy && setRechargeSheet(false)} />
                 </div>
                 <div className="p-5">
-                  <div className="grid grid-cols-4 gap-2">
-                    {(walletMe?.rechargeAmounts || [10, 20, 50, 100]).map((amt) => (
-                      <button
-                        key={amt}
-                        type="button"
-                        onClick={() => setSelectedRechargeAmount(amt)}
-                        className={`py-2.5 rounded-xl border text-sm font-bold transition-colors ${selectedRechargeAmount === amt ? 'bg-teal-50 border-[#1da39b] text-teal-600' : 'bg-white border-gray-200 text-gray-600'}`}
-                      >
-                        ¥{amt}
-                      </button>
-                    ))}
-                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed">点击下方支付宝支付将打开充值页，在页面选择金额（10 / 20 / 50 / 100 元）完成付款，余额自动到账本账号。</p>
                   <div className="space-y-2.5 mt-5">
                     <button
                       type="button"
                       disabled={rechargeBusy}
-                      onClick={() => void handleWalletRecharge('wechat')}
-                      className="w-full py-3 bg-[#07c160] text-white rounded-xl text-sm font-semibold disabled:opacity-60"
-                    >
-                      微信支付
-                    </button>
-                    <button
-                      type="button"
-                      disabled={rechargeBusy}
-                      onClick={() => void handleWalletRecharge('alipay')}
+                      onClick={() => void handleWalletRecharge()}
                       className="w-full py-3 bg-[#1677ff] text-white rounded-xl text-sm font-semibold disabled:opacity-60 flex items-center justify-center gap-2"
                     >
                       {rechargeBusy && <Loader2 className="w-4 h-4 animate-spin" />}

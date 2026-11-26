@@ -53,7 +53,7 @@ include_files = [
     'server.js', 'server.js.map', 'server.ts', 'local_db.json', 'package.json', 'package-lock.json', 
     '.env.example', 'ecosystem.config.js', 'README_BAOTA.md',
     'tsconfig.json', 'vite.config.ts', 'tailwind.config.js', 'metadata.json',
-    'passenger_order.html', 'capacitor.config.json', 'capacitor.config.ts'
+    'passenger_order.html', 'vip_buy.html', 'vip_pay.html', 'wallet_recharge.html', 'capacitor.config.json', 'capacitor.config.ts'
 ]
 
 with zipfile.ZipFile('daijia_deploy.zip', 'w', zipfile.ZIP_DEFLATED) as zipf:

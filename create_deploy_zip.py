@@ -43,7 +43,7 @@ except Exception as _e:
     print(f"版本号注入跳过: {_e}")
 
 # 3. Ensure passenger_order.html and other standalone HTMLs are in dist root
-standalone_htmls = ['passenger_order.html', 'aliyun_passenger_deploy.html']
+standalone_htmls = ['passenger_order.html', 'aliyun_passenger_deploy.html', 'vip_buy.html', 'vip_pay.html', 'wallet_recharge.html']
 for html in standalone_htmls:
     if os.path.exists(html):
         shutil.copy(html, os.path.join("dist", html))
@@ -163,6 +163,9 @@ include_items = [
     'ALIYUN_DEPLOY_GUIDE.md',
     'aliyun_passenger_deploy.html',
     'passenger_order.html',
+    'vip_buy.html',
+    'vip_pay.html',
+    'wallet_recharge.html',
     'hwdjtb.png',
     'vip_banner.jpg',
     'welcome_bg.jpg',

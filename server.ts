@@ -5720,6 +5720,271 @@ function getClientIp(req: any): string {
   });
 
   // ============================================================
+  // 2026-11-26 支付宝手机网站支付（WAP，用户 2026-11-26 拍板）：
+  // - 购买页 /vip（vip_buy.html）+ 支付页 /pay（vip_pay.html）挂主域名，老页不动；
+  // - 网页下单不走登录鉴权：凭手机号下单，服务端校验司机档案存在才落单，
+  //   价格只认服务端套餐配置；到账发放完全复用 /api/pay/alipay/notify
+  //   （pay_orders 同集合、顺延同口径），本节只负责下单与组装 wap 跳转链接；
+  // - 同司机同套餐 25 分钟内已有 pending 的 WAP 单直接复用，防重复点/重复下单。
+  // ============================================================
+  const WAP_SITE_BASE = 'https://lyheiwandaijiamax.com';
+
+  // ===== 网页购买入口令牌（2026-11-26 用户定：购买/充值页不显示手机号）=====
+  // App 登录后向服务端换一张 30 分钟有效的签名令牌，网页凭令牌下单，
+  // 服务端从令牌解析手机号——页面全程不出现、不经手手机号，付款自动到账登录账号。
+  function wapEntrySign(secret: string, payload: string): string {
+    return crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  }
+  async function createWapEntryToken(phone: string, kind: 'vip' | 'wallet'): Promise<string> {
+    const secret = await getDownloadSecret();
+    const exp = Date.now() + 30 * 60 * 1000;
+    const payload = `${phone}.${kind}.${exp}`;
+    return `${Buffer.from(payload, 'utf8').toString('base64url')}.${wapEntrySign(secret, payload)}`;
+  }
+  async function resolveWapEntryToken(token: string, kind: 'vip' | 'wallet'): Promise<string | null> {
+    try {
+      const parts = String(token || '').split('.');
+      if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+      const payload = Buffer.from(parts[0], 'base64url').toString('utf8');
+      const secret = await getDownloadSecret();
+      const expect = wapEntrySign(secret, payload);
+      const a = Buffer.from(parts[1]);
+      const b = Buffer.from(expect);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+      const segs = payload.split('.');
+      if (segs.length !== 3 || segs[1] !== kind) return null;
+      if (!/^1[3-9]\d{9}$/.test(segs[0])) return null;
+      if (!(Number(segs[2]) > Date.now())) return null;
+      return segs[0];
+    } catch (_) { return null; }
+  }
+
+  // App 换网页购买/充值入口（须司机登录 token）：返回带签名令牌的页面地址
+  app.post('/api/pay/wap-entry', requireDbAuth, async (req: any, res: any) => {
+    try {
+      const authPhone = String((req as any).authPhone || '');
+      if (hasMerchantASuffix(authPhone)) {
+        return res.status(400).json({ ok: false, error: '商户账号（A后缀）不能购买/充值' });
+      }
+      const phone = authPhone.replace(/\D/g, '').trim();
+      if (!/^1[3-9]\d{9}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: '登录手机号无效' });
+      }
+      const kind = req.body?.kind === 'wallet' ? 'wallet' : 'vip';
+      const token = await createWapEntryToken(phone, kind);
+      const page = kind === 'wallet' ? 'topup' : 'vip';
+      return res.json({ ok: true, url: `${WAP_SITE_BASE}/${page}?t=${encodeURIComponent(token)}` });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '生成购买入口失败' });
+    }
+  });
+
+  app.post('/api/pay/alipay/create-wap-order', async (req: any, res: any) => {
+    try {
+      const phone = await resolveWapEntryToken(String(req.body?.token || ''), 'vip');
+      if (!phone) {
+        return res.status(400).json({ ok: false, error: '购买链接已失效，请回 App 重新打开购买页' });
+      }
+      const packageId = String(req.body?.packageId || '').trim();
+      const packages = await getVipPackages();
+      const pkg = packages.find((p) => p.id === packageId);
+      if (!pkg) {
+        return res.status(400).json({ ok: false, error: '套餐不存在' });
+      }
+      // 司机档案必须存在（发放只写 existing 文档，无档案的单到账也发不出去，先拦）
+      const du: any = await Promise.resolve(readCanonicalDocument('driver_users', phone)).catch(() => null);
+      const sm: any = du ? null : await Promise.resolve(readCanonicalDocument('squad_members', phone)).catch(() => null);
+      if (!du && !sm) {
+        return res.status(400).json({ ok: false, error: '该手机号尚未注册黑湾代驾MAX，请先在 App 内注册后再购买' });
+      }
+      const ali = getAlipayConfig();
+      if (!ali.privateKey) {
+        return res.status(500).json({ ok: false, error: 'alipay_not_configured', message: '服务端未配置支付宝私钥（ALIPAY_PRIVATE_KEY）' });
+      }
+      // 复用 25 分钟内的同款 pending 单（本地镜像扫描，与 writePayOrderDoc 双写一致）
+      try {
+        const dbData = readLocalJsonDb();
+        const orders = dbData['pay_orders'] || {};
+        const now = Date.now();
+        for (const o of Object.values(orders) as any[]) {
+          if (o && o.channel === 'wap' && String(o.phone) === phone && String(o.packageId) === pkg.id && o.status === 'pending') {
+            const age = now - new Date(o.createdAt || 0).getTime();
+            if (age >= 0 && age < 25 * 60 * 1000) {
+              return res.json({ ok: true, outTradeNo: o.outTradeNo, reused: true });
+            }
+          }
+        }
+      } catch (_) {}
+      const outTradeNo = `WAP${Date.now()}${phone.slice(-4)}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+      const order = {
+        id: outTradeNo,
+        outTradeNo,
+        phone,
+        packageId: pkg.id,
+        days: pkg.days,
+        amount: pkg.price,
+        status: 'pending',
+        tradeNo: '',
+        channel: 'wap',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await writePayOrderDoc(order);
+      console.log(`[Alipay WapCreateOrder] phone=${phone} pkg=${pkg.id} amount=${pkg.price} outTradeNo=${outTradeNo}`);
+      return res.json({ ok: true, outTradeNo });
+    } catch (e: any) {
+      console.error('[Alipay WapCreateOrder Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '创建订单失败' });
+    }
+  });
+
+  // 钱包充值网页下单（2026-11-26 与会员 WAP 同步切换）：凭手机号下单，
+  // 金额只认服务端钱包档位；落 pay_orders（type=wallet、channel=wap），
+  // 到账入账完全复用 notify 的 wallet 分支（walletCredited 幂等）。
+  app.post('/api/pay/alipay/create-wap-recharge-order', async (req: any, res: any) => {
+    try {
+      const phone = await resolveWapEntryToken(String(req.body?.token || ''), 'wallet');
+      if (!phone) {
+        return res.status(400).json({ ok: false, error: '充值链接已失效，请回 App 重新打开充值页' });
+      }
+      const cfg = await getWalletConfig();
+      const amountCents = Math.round(Number(req.body?.amount) * 100);
+      const amount = cfg.rechargeAmounts.find((a) => Math.round(a * 100) === amountCents);
+      if (!amount) {
+        return res.status(400).json({ ok: false, error: '充值金额不在可选档位内' });
+      }
+      const du: any = await Promise.resolve(readCanonicalDocument('driver_users', phone)).catch(() => null);
+      const sm: any = du ? null : await Promise.resolve(readCanonicalDocument('squad_members', phone)).catch(() => null);
+      if (!du && !sm) {
+        return res.status(400).json({ ok: false, error: '该手机号尚未注册黑湾代驾MAX，请先在 App 内注册后再充值' });
+      }
+      const ali = getAlipayConfig();
+      if (!ali.privateKey) {
+        return res.status(500).json({ ok: false, error: 'alipay_not_configured', message: '服务端未配置支付宝私钥（ALIPAY_PRIVATE_KEY）' });
+      }
+      // 复用 25 分钟内的同款 pending 充值单
+      try {
+        const dbData = readLocalJsonDb();
+        const orders = dbData['pay_orders'] || {};
+        const now = Date.now();
+        for (const o of Object.values(orders) as any[]) {
+          if (o && o.channel === 'wap' && String(o.type || '') === 'wallet' && String(o.phone) === phone && Math.round(Number(o.amount) * 100) === amountCents && o.status === 'pending') {
+            const age = now - new Date(o.createdAt || 0).getTime();
+            if (age >= 0 && age < 25 * 60 * 1000) {
+              return res.json({ ok: true, outTradeNo: o.outTradeNo, reused: true });
+            }
+          }
+        }
+      } catch (_) {}
+      const outTradeNo = `WAL${Date.now()}${phone.slice(-4)}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+      const order = {
+        id: outTradeNo,
+        outTradeNo,
+        type: 'wallet',
+        phone,
+        amount,
+        status: 'pending',
+        tradeNo: '',
+        channel: 'wap',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await writePayOrderDoc(order);
+      console.log(`[Alipay WapRechargeOrder] phone=${phone} amount=${amount} outTradeNo=${outTradeNo}`);
+      return res.json({ ok: true, outTradeNo });
+    } catch (e: any) {
+      console.error('[Alipay WapRechargeOrder Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '创建充值订单失败' });
+    }
+  });
+
+  // 支付页数据（凭订单号访问，订单号含随机串不可枚举；手机号只回打码）
+  app.get('/api/pay/wap-order', async (req: any, res: any) => {
+    try {
+      const outTradeNo = String(req.query.o || '').trim();
+      if (!outTradeNo) return res.status(400).json({ ok: false, error: '缺少订单号' });
+      const order: any = await Promise.resolve(readCanonicalDocument('pay_orders', outTradeNo)).catch(() => null);
+      if (!order || String(order.channel || '') !== 'wap') {
+        return res.status(404).json({ ok: false, error: '订单不存在' });
+      }
+      const packages = await getVipPackages();
+      const pkg = packages.find((p) => p.id === String(order.packageId));
+      const phone = String(order.phone || '');
+      const isWallet = String(order.type || '') === 'wallet';
+      return res.json({
+        ok: true,
+        outTradeNo,
+        orderType: isWallet ? 'wallet' : 'vip',
+        packageLabel: isWallet ? '短信余额充值' : (pkg ? pkg.label : `${order.days}天`),
+        days: isWallet ? 0 : Number(order.days),
+        amount: Number(order.amount),
+        phoneMasked: phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(7)}` : phone,
+        status: String(order.status || 'pending'),
+        vipExpiryAfter: String(order.vipExpiryAfter || ''),
+      });
+    } catch (e: any) {
+      return res.status(500).json({ ok: false, error: e?.message || '查询订单失败' });
+    }
+  });
+
+  // 组装 alipay.trade.wap.pay 跳转链接（RSA2 签名，notify 复用现有异步通知）
+  app.post('/api/pay/alipay/wap-pay', async (req: any, res: any) => {
+    try {
+      const outTradeNo = String(req.body?.outTradeNo || '').trim();
+      if (!outTradeNo) return res.status(400).json({ ok: false, error: '缺少订单号' });
+      const order: any = await Promise.resolve(readCanonicalDocument('pay_orders', outTradeNo)).catch(() => null);
+      if (!order || String(order.channel || '') !== 'wap') {
+        return res.status(404).json({ ok: false, error: '订单不存在' });
+      }
+      if (String(order.status) === 'paid') {
+        return res.json({ ok: true, status: 'paid' });
+      }
+      const ali = getAlipayConfig();
+      if (!ali.privateKey) {
+        return res.status(500).json({ ok: false, error: 'alipay_not_configured', message: '服务端未配置支付宝私钥（ALIPAY_PRIVATE_KEY）' });
+      }
+      const packages = await getVipPackages();
+      const pkg = packages.find((p) => p.id === String(order.packageId));
+      const isWallet = String(order.type || '') === 'wallet';
+      const subject = isWallet
+        ? `黑湾代驾MAX短信余额充值${fmtMoneyShort(Number(order.amount))}元`
+        : `黑湾代驾MAX会员-${pkg ? pkg.label : `${order.days}天`}`;
+      const bizContent = JSON.stringify({
+        subject,
+        out_trade_no: outTradeNo,
+        total_amount: Number(order.amount).toFixed(2),
+        product_code: 'QUICK_WAP_WAY',
+        quit_url: `${WAP_SITE_BASE}${isWallet ? '/topup' : '/vip'}`,
+        timeout_express: '30m',
+      });
+      const ts = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const params: Record<string, string> = {
+        app_id: ali.appId,
+        method: 'alipay.trade.wap.pay',
+        charset: 'utf-8',
+        sign_type: 'RSA2',
+        timestamp: `${ts.getFullYear()}-${pad(ts.getMonth() + 1)}-${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`,
+        version: '1.0',
+        notify_url: ali.notifyUrl,
+        return_url: `${WAP_SITE_BASE}/pay?o=${encodeURIComponent(outTradeNo)}`,
+        biz_content: bizContent,
+      };
+      const signer = crypto.createSign('RSA-SHA256');
+      signer.update(alipaySignContent(params, false), 'utf8');
+      const sign = signer.sign(ali.privateKey, 'base64');
+      const query = [...Object.keys(params).sort(), 'sign']
+        .map((k) => `${k}=${encodeURIComponent(k === 'sign' ? sign : params[k])}`)
+        .join('&');
+      console.log(`[Alipay WapPay] outTradeNo=${outTradeNo} amount=${order.amount}`);
+      return res.json({ ok: true, payUrl: `https://openapi.alipay.com/gateway.do?${query}` });
+    } catch (e: any) {
+      console.error('[Alipay WapPay Error]:', e);
+      return res.status(500).json({ ok: false, error: e?.message || '组装支付链接失败' });
+    }
+  });
+
+  // ============================================================
   // 2026-11-12 服务短信 + 司机钱包（照代驾助手Pro模式，用户 2026-11-12 定案）：
   // - 司机在 App「我的账户」用支付宝充值余额（档位服务端配置），开始服务/
   //   完成服务时自动给乘客发短信，按实际分段从余额扣费（单价服务端配置，
@@ -13322,6 +13587,17 @@ function getClientIp(req: any): string {
   // Explicit routes for passenger order HTML pages
   app.get('/passenger_order.html', (req, res) => {
     res.sendFile(path.join(process.cwd(), 'passenger_order.html'));
+  });
+  // 2026-11-26 会员购买页/支付页（支付宝手机网站支付）：独立页面挂主域名，根路径老页不动
+  app.get('/vip', (req, res) => {
+    res.sendFile(path.join(process.cwd(), 'vip_buy.html'));
+  });
+  app.get('/pay', (req, res) => {
+    res.sendFile(path.join(process.cwd(), 'vip_pay.html'));
+  });
+  // 2026-11-26 短信钱包充值页（支付宝手机网站支付，与 /vip 同批切换）
+  app.get('/topup', (req, res) => {
+    res.sendFile(path.join(process.cwd(), 'wallet_recharge.html'));
   });
   app.get('/aliyun_passenger_deploy.html', (req, res) => {
     // 2026-10-24 第四十八轮：旧版乘客页下线跳转。旧页仍调已下线的 /api/submit（410）

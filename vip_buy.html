@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>黑湾代驾MAX · 会员购买</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; background:#f4f6f9; color:#1a1c1c; max-width:430px; margin:0 auto; }
+  .banner { background:linear-gradient(135deg,#ff8a3d 0%,#f4633a 60%,#e0483e 100%); color:#fff; text-align:center; padding:28px 20px 24px; }
+  .crown { width:54px; height:54px; margin:0 auto 9px; background:rgba(255,255,255,.18); border:1.5px solid rgba(255,255,255,.55); border-radius:50%; display:flex; align-items:center; justify-content:center; }
+  .banner h1 { font-size:20px; letter-spacing:2px; font-weight:800; text-shadow:0 1px 3px rgba(0,0,0,.18); }
+  .banner p { margin-top:7px; font-size:12.5px; letter-spacing:1px; opacity:.92; }
+  .main { padding:18px 16px 4px; }
+  .intro { text-align:center; font-size:13px; color:#584235; font-weight:500; line-height:1.65; }
+  .intro b { color:#e0483e; }
+  h2 { font-size:15.5px; font-weight:800; margin:18px 2px 10px; }
+  h2 span { color:#f4633a; }
+  .acct-note { background:#fff7f3; border:1px solid #ffd9c7; color:#9a3412; border-radius:13px; padding:11px 14px; font-size:13px; line-height:1.6; text-align:center; box-shadow:0 1px 3px rgba(16,24,40,.05); }
+  .acct-note b { color:#e0483e; }
+  #pkgList { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .pkg { background:#fff; border:1.5px solid #e5e7eb; border-radius:13px; padding:16px 10px 14px; text-align:center; position:relative; box-shadow:0 1px 3px rgba(16,24,40,.05); cursor:pointer; }
+  .pkg.wide { grid-column:1 / -1; }
+  .pkg.sel { border-color:#f4633a; background:#fff7f3; }
+  .pkg .tag { position:absolute; top:-9px; right:12px; background:#e0483e; color:#fff; font-size:10.5px; font-weight:700; padding:2px 9px; border-radius:9px; letter-spacing:.5px; }
+  .pkg .price { font-size:23px; font-weight:800; color:#e0483e; line-height:1.15; }
+  .pkg .price small { font-size:12.5px; color:#8a94a6; font-weight:400; }
+  .pkg .name { font-size:14px; font-weight:700; color:#1e293b; margin-top:3px; }
+  .pkg .desc { font-size:11.5px; color:#8a94a6; margin-top:3px; }
+  .buybtn { display:block; width:100%; margin-top:16px; background:linear-gradient(135deg,#ff8a3d,#f4633a); color:#fff; border:none; border-radius:24px; padding:13px 0; font-size:16px; font-weight:800; letter-spacing:1px; cursor:pointer; }
+  .buybtn:disabled { opacity:.55; }
+  .tag { position:absolute; top:-8px; right:12px; background:#e0483e; color:#fff; font-size:10px; padding:1px 8px; border-radius:8px; }
+  .box { background:#fff; border:1px solid #e5e7eb; border-radius:13px; padding:12px 14px; box-shadow:0 1px 3px rgba(16,24,40,.05); }
+  .box li { list-style:none; font-size:13px; padding:5.5px 0; color:#374151; border-bottom:1px dashed #e5e7eb; }
+  .box li:last-child { border-bottom:none; }
+  .box li::before { content:"✓"; color:#f4633a; font-weight:800; margin-right:8px; }
+  .steps { font-size:12.5px; color:#4b5563; line-height:1.95; }
+  .steps b { color:#f4633a; }
+  .pay-note { display:flex; align-items:center; gap:8px; margin-top:14px; background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; border-radius:11px; padding:9px 12px; font-size:12px; line-height:1.55; }
+  .pay-note .ali { background:#1677ff; color:#fff; font-weight:800; border-radius:5px; padding:1px 7px; font-size:12px; white-space:nowrap; flex:none; }
+  .err { display:none; margin-top:12px; background:#fef2f2; border:1px solid #fecaca; color:#b91c1c; border-radius:11px; padding:9px 12px; font-size:12.5px; line-height:1.6; }
+  .loading { text-align:center; color:#8a94a6; font-size:13px; padding:16px 0; }
+  footer { text-align:center; color:#9ca3af; font-size:11px; line-height:1.9; padding:18px 10px 24px; }
+</style>
+</head>
+<body>
+  <div class="banner">
+    <div class="crown">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-1.6 10H4.6L3 8z" fill="#fff" opacity="0.95"/><rect x="4.6" y="19" width="14.8" height="1.8" rx="0.9" fill="#fff" opacity="0.95"/></svg>
+    </div>
+    <h1>黑湾代驾MAX · 会员购买</h1>
+    <p>代驾司机接单与计费助手</p>
+  </div>
+
+  <div class="main">
+    <p class="intro">开通会员，解锁全部接单功能<br>购买后<b>自动开通、实时生效</b>，有效期在现有基础上顺延</p>
+
+    <div class="acct-note">购买后自动开通到您 <b>App 登录的账号</b>，无需填写手机号</div>
+
+    <h2>选择 <span>会员套餐</span></h2>
+    <div id="pkgList"><p class="loading">套餐加载中…</p></div>
+    <button class="buybtn" id="buyBtn" type="button">立即购买</button>
+
+    <div class="err" id="errBox"></div>
+
+    <h2>会员 <span>专享权益</span></h2>
+    <ul class="box">
+      <li>报单功能不限次数（非会员每天 2 次）</li>
+      <li>二维码扫码创单</li>
+      <li>行程纠偏功能</li>
+      <li>服务短信：开始/完成自动通知乘客</li>
+    </ul>
+
+    <h2>购买 <span>流程</span></h2>
+    <div class="box steps">
+      <b>1.</b> 在 App 内点「购买」进入本页<br>
+      <b>2.</b> 选择套餐，点「立即购买」<br>
+      <b>3.</b> 跳转支付宝完成付款<br>
+      <b>4.</b> 回到 App，会员自动开通生效
+    </div>
+
+    <div class="pay-note"><span class="ali">支付宝</span> 本页面通过支付宝安全支付，付款成功后系统自动开通，无需联系客服。</div>
+  </div>
+
+
+<script>
+  var errBox = document.getElementById('errBox');
+  var qs = new URLSearchParams(location.search);
+  var entryToken = qs.get('t') || '';
+
+  function showErr(msg) {
+    errBox.textContent = msg;
+    errBox.style.display = 'block';
+    errBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  function hideErr() { errBox.style.display = 'none'; }
+
+  function fmtPrice(p) {
+    return (Math.round(p * 100) / 100).toString().replace(/\.0+$/, '').replace(/(\.\d)0$/, '$1');
+  }
+
+  var selectedPkg = null;
+  var buyBtn = document.getElementById('buyBtn');
+  function refreshBuyBtn() {
+    buyBtn.textContent = selectedPkg ? ('立即购买 ¥' + fmtPrice(selectedPkg.price)) : '立即购买';
+  }
+  buyBtn.addEventListener('click', function () {
+    if (selectedPkg) buy(selectedPkg.id, buyBtn);
+  });
+
+  function renderPackages(pkgs) {
+    var list = document.getElementById('pkgList');
+    list.innerHTML = '';
+    var sorted = pkgs.slice().sort(function (a, b) { return b.days - a.days; });
+    var maxPaidDays = 0;
+    sorted.forEach(function (p) { if (p.days !== 99999 && p.days > maxPaidDays) maxPaidDays = p.days; });
+    sorted.forEach(function (p, idx) {
+      var isPerm = p.days === 99999;
+      var name = isPerm ? '永久会员' : (p.days + ' 天会员');
+      var desc;
+      if (isPerm) desc = '一次付费，终身有效';
+      else if (p.days <= 30) desc = '适合先体验';
+      else desc = '平均每天约 ' + (p.price / p.days).toFixed(2) + ' 元';
+      var tag = isPerm ? '<div class="tag">一次买断</div>' : (p.days === maxPaidDays ? '<div class="tag">热门推荐</div>' : '');
+      var div = document.createElement('div');
+      div.className = 'pkg' + (isPerm ? ' wide' : '');
+      div.innerHTML = tag +
+        '<div class="price"><small>¥</small>' + fmtPrice(p.price) + '</div>' +
+        '<div class="name"></div><div class="desc"></div>';
+      div.querySelector('.name').textContent = name;
+      div.querySelector('.desc').textContent = desc;
+      div.addEventListener('click', function () {
+        selectedPkg = p;
+        list.querySelectorAll('.pkg').forEach(function (el) { el.classList.remove('sel'); });
+        div.classList.add('sel');
+        refreshBuyBtn();
+      });
+      if (idx === 0) { selectedPkg = p; div.classList.add('sel'); }
+      list.appendChild(div);
+    });
+    refreshBuyBtn();
+  }
+
+  function buy(packageId, btn) {
+    hideErr();
+    if (!entryToken) {
+      showErr('请在 App 内登录后，从 App 打开本页购买；购买后自动开通到您登录的账号。');
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = '处理中…';
+    fetch('/api/pay/alipay/create-wap-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: entryToken, packageId: packageId })
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.ok && j.outTradeNo) {
+        location.href = '/pay?o=' + encodeURIComponent(j.outTradeNo);
+      } else {
+        showErr((j && j.error) || '下单失败，请稍后重试');
+        btn.disabled = false;
+        refreshBuyBtn();
+      }
+    }).catch(function () {
+      showErr('网络异常，请稍后重试');
+      btn.disabled = false;
+      refreshBuyBtn();
+    });
+  }
+
+  fetch('/api/shop/vip-packages').then(function (r) { return r.json(); }).then(function (j) {
+    if (j && j.ok && Array.isArray(j.packages) && j.packages.length) renderPackages(j.packages);
+    else document.getElementById('pkgList').innerHTML = '<p class="loading">套餐加载失败，请刷新重试</p>';
+  }).catch(function () {
+    document.getElementById('pkgList').innerHTML = '<p class="loading">套餐加载失败，请刷新重试</p>';
+  });
+</script>
+</body>
+</html>
