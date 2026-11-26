@@ -54,6 +54,12 @@ export default function NavigationView({
   const intersectionMarkerRef = useRef<any>(null);
   const lastRerouteTimestampRef = useRef<number>(0);
   const headingAngleRef = useRef<number>(0);
+  // 车头朝上模式：地图当前旋转角（高德口径=顺时针，0 为北朝上）、旋转动画句柄、
+  // 最近一次 GPS 行进方向的时间（罗盘在此窗口内不抢箭头）、全览模式镜像（供回调读取）
+  const mapRotationRef = useRef<number>(0);
+  const rotationAnimRef = useRef<number | null>(null);
+  const lastGpsCourseAtRef = useRef<number>(0);
+  const isOverviewModeRef = useRef<boolean>(false);
   // BUG-1+2修复：保存完整steps用于指令推进和剩余距离实时计算
   const routeStepsRef = useRef<any[]>([]);
   const currentStepIndexRef = useRef<number>(0);
@@ -174,8 +180,10 @@ export default function NavigationView({
   const toggleOverviewMode = () => {
     if (!mapInstanceRef.current) return;
     if (!isOverviewMode) {
-      // Switch to Route Overview
+      // Switch to Route Overview: back to north-up so the whole route reads naturally
       setIsOverviewMode(true);
+      isOverviewModeRef.current = true;
+      animateMapRotationTo(0);
       if (activeRoutePathRef.current && activeRoutePathRef.current.length > 0) {
         mapInstanceRef.current.setFitView(null, false, [140, 40, 160, 40]);
       } else if (currentDriverPosRef.current && destinationCoordsRef.current) {
@@ -196,14 +204,16 @@ export default function NavigationView({
       }
       showToast('🗺️ 已切换至路线全览');
     } else {
-      // Restore to Default 25m Scale Navigation View
+      // Restore to Default 25m Scale Navigation View (course-up resumes)
       setIsOverviewMode(false);
+      isOverviewModeRef.current = false;
       if (currentDriverPosRef.current) {
         mapInstanceRef.current.setZoomAndCenter(18, [
           currentDriverPosRef.current.lng,
           currentDriverPosRef.current.lat
         ]);
       }
+      animateMapRotationTo((360 - headingAngleRef.current) % 360);
       showToast('🚗 已恢复默认比例尺25m导航');
     }
   };
@@ -218,6 +228,8 @@ export default function NavigationView({
         heading = (360 - e.alpha) % 360;
       }
       if (heading !== null && !isNaN(heading)) {
+        // 行驶中 GPS 行进方向更准：刚有 GPS 方向时罗盘不抢箭头，避免车内磁干扰乱指
+        if (Date.now() - lastGpsCourseAtRef.current < 8000) return;
         headingAngleRef.current = heading;
         updateVehicleMarkerHeading(heading);
       }
@@ -235,11 +247,55 @@ export default function NavigationView({
     };
   }, []);
 
+  // 箭头屏幕角 = 行进方向 + 地图旋转角（地图顺时针转 R 度，方位 B 在屏幕上出现在 B+R 处）
   const updateVehicleMarkerHeading = (heading: number) => {
     const arrowElem = document.getElementById('driver-vehicle-arrow-icon');
     if (arrowElem) {
-      arrowElem.style.transform = `rotate(${heading - 45}deg)`;
+      arrowElem.style.transform = `rotate(${heading + mapRotationRef.current - 45}deg)`;
     }
+  };
+
+  // 应用一帧地图旋转：地图、车标箭头、方位盘三者同步（方位字绕中心公转但字身保持正向）
+  const applyMapRotation = (rot: number) => {
+    const normalized = ((rot % 360) + 360) % 360;
+    mapRotationRef.current = normalized;
+    if (mapInstanceRef.current) {
+      try {
+        mapInstanceRef.current.setRotation(normalized, true);
+      } catch (_) {}
+    }
+    updateVehicleMarkerHeading(headingAngleRef.current);
+    const dial = document.getElementById('driver-compass-dial');
+    if (dial) {
+      dial.style.transform = `rotate(${normalized}deg)`;
+      dial.querySelectorAll('[data-dial-label]').forEach((el) => {
+        (el as HTMLElement).style.transform = `translate(-50%, -50%) rotate(${-normalized}deg)`;
+      });
+    }
+  };
+
+  // 平滑把地图转到目标角度（走最短路径，缓出动画，避免一跳一跳）
+  const animateMapRotationTo = (target: number) => {
+    const start = mapRotationRef.current;
+    const delta = ((target - start + 540) % 360) - 180;
+    if (Math.abs(delta) < 0.5) {
+      applyMapRotation(target);
+      return;
+    }
+    if (rotationAnimRef.current) cancelAnimationFrame(rotationAnimRef.current);
+    const duration = Math.min(900, Math.max(250, Math.abs(delta) * 6));
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - t0) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      applyMapRotation(start + delta * eased);
+      if (t < 1) {
+        rotationAnimRef.current = requestAnimationFrame(step);
+      } else {
+        rotationAnimRef.current = null;
+      }
+    };
+    rotationAnimRef.current = requestAnimationFrame(step);
   };
 
   useEffect(() => {
@@ -262,7 +318,9 @@ export default function NavigationView({
 
     currentDriverPosRef.current = { lng: initialLng, lat: initialLat };
 
-    // Create AMap instance in 2D top-down view with default 25m scale (zoom 18)
+    // Create AMap instance with default 25m scale (zoom 18); navigation follows course-up
+    // (map rotates with heading). rotateEnable must stay true: with it false, AMap ignores
+    // programmatic setRotation calls entirely (per official JS API reference).
     const map = new AMap.Map(mapContainerRef.current, {
       zoom: 18,
       center: [initialLng, initialLat],
@@ -270,7 +328,7 @@ export default function NavigationView({
       viewMode: '2D',
       mapStyle: 'amap://styles/normal',
       resizeEnable: true,
-      rotateEnable: false,
+      rotateEnable: true,
       pitchEnable: false,
       zoomEnable: true,
       dragEnable: true,
@@ -302,17 +360,20 @@ export default function NavigationView({
     map.on('mapmove', updateScaleDisplay);
     map.on('resize', updateScaleDisplay);
 
-    // Create Driver blue navigation arrow marker with compass indicators (2D North-Up view matching q7.png)
+    // Vehicle marker: compass dial （北/东/南/西） rotates with the map so labels always
+    // point at their true bearings; the arrow compensates heading + map rotation.
     const driverMarker = new AMap.Marker({
       position: [initialLng, initialLat],
       offset: new AMap.Pixel(-36, -36),
       content: `
         <div class="relative flex items-center justify-center w-20 h-20 select-none pointer-events-none">
-          <!-- Compass points around blue puck (北, 东, 南, 西 matching real orientation) -->
-          <span class="absolute top-0 left-1/2 -translate-x-1/2 text-[11px] font-black text-red-600 bg-white/90 px-1 rounded shadow-sm">北</span>
-          <span class="absolute right-0 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-800 bg-white/80 px-0.5 rounded">东</span>
-          <span class="absolute bottom-0 left-1/2 -translate-x-1/2 text-[11px] font-bold text-slate-800 bg-white/80 px-0.5 rounded">南</span>
-          <span class="absolute left-0 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-800 bg-white/80 px-0.5 rounded">西</span>
+          <!-- Compass dial around blue puck: JS rotates this dial with the map; each label counter-rotates to stay upright -->
+          <div id="driver-compass-dial" class="absolute inset-0" style="will-change: transform;">
+            <span data-dial-label class="absolute text-[11px] font-black text-red-600 bg-white/90 px-1 rounded shadow-sm" style="left: 50%; top: 5%; transform: translate(-50%, -50%);">北</span>
+            <span data-dial-label class="absolute text-[11px] font-bold text-slate-800 bg-white/80 px-0.5 rounded" style="left: 95%; top: 50%; transform: translate(-50%, -50%);">东</span>
+            <span data-dial-label class="absolute text-[11px] font-bold text-slate-800 bg-white/80 px-0.5 rounded" style="left: 50%; top: 95%; transform: translate(-50%, -50%);">南</span>
+            <span data-dial-label class="absolute text-[11px] font-bold text-slate-800 bg-white/80 px-0.5 rounded" style="left: 5%; top: 50%; transform: translate(-50%, -50%);">西</span>
+          </div>
 
           <!-- Vehicle location blue puck -->
           <div class="relative w-9 h-9 bg-blue-500/20 rounded-full flex items-center justify-center animate-pulse">
@@ -511,6 +572,10 @@ export default function NavigationView({
 
     return () => {
       stopSpeaking();
+      if (rotationAnimRef.current) {
+        cancelAnimationFrame(rotationAnimRef.current);
+        rotationAnimRef.current = null;
+      }
       if (mapInstanceRef.current) {
         mapInstanceRef.current.destroy();
       }
@@ -656,11 +721,16 @@ export default function NavigationView({
       if (distMeters < 1.5) return;
       if (distMeters > 400) return;
 
-      // Update bearing angle if moved noticeably (> 2m)
+      // Update bearing angle if moved noticeably (> 2m); in follow mode the map
+      // rotates course-up so the travel direction always points to the top
       if (distMeters >= 2) {
         const b = calculateBearing(prev.lat, prev.lng, lat, lng);
         headingAngleRef.current = b;
+        lastGpsCourseAtRef.current = Date.now();
         updateVehicleMarkerHeading(b);
+        if (!isOverviewModeRef.current) {
+          animateMapRotationTo((360 - b) % 360);
+        }
       }
 
       currentDriverPosRef.current = { lng, lat };
