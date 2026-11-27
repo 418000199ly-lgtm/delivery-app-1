@@ -199,501 +199,388 @@
       background-repeat: repeat-x !important;
     }
   </style>
-</head>
+<style>
+/* ==== redesign layer w ==== */
+
+  
+  
+  .w1-badge { align-self:center; display:inline-flex; align-items:center; gap:7px; background:#fff; border-radius:999px; padding:8px 15px; font-size:12.5px; color:#666; font-weight:500; box-shadow:0 4px 14px rgba(25,25,25,.06); }
+  .w1-badge .w1-dot { width:7px; height:7px; border-radius:50%; background:#00B578; }
+  .w1-hero { margin-top:20px; border-radius:20px; overflow:hidden; height:236px; flex:none; box-shadow:0 10px 26px rgba(25,25,25,.13); }
+  .w1-hero img { width:100%; height:100%; object-fit:cover; object-position:62% 42%; display:block; }
+  .w1-brand { margin-top:26px; text-align:center; }
+  .w1-brand h1 { font-size:26px; font-weight:800; letter-spacing:.5px; }
+  .w1-brand h1 em { font-style:normal; color:#FF5F2E; }
+  .w1-brand p { margin-top:8px; font-size:13.5px; color:#999; letter-spacing:2px; }
+  .w1-ringzone { margin-top:34px; display:flex; flex-direction:column; align-items:center; }
+  .w1-ringwrap { position:relative; width:118px; height:118px; }
+  .w1-ringwrap svg { transform:rotate(-90deg); }
+  .w1-ringwrap .w1-num { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:42px; font-weight:800; }
+  .w1-status { margin-top:16px; font-size:16px; font-weight:600; }
+  .w1-status-sub { margin-top:5px; font-size:12.5px; color:#999; }
+  .w1-secure { margin-top:38px; text-align:center; font-size:12px; color:#999; display:flex; align-items:center; justify-content:center; gap:5px; }
+
+/* ==== redesign layer f ==== */
+
+  
+  
+  .fm-hero { position:relative; border-radius:20px; overflow:hidden; height:196px; box-shadow:0 10px 26px rgba(25,25,25,.13); }
+  .fm-hero img { width:100%; height:100%; object-fit:cover; object-position:62% 40%; display:block; }
+  .fm-hero .fm-shade { position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,0,0,.10) 0%, rgba(0,0,0,0) 40%, rgba(0,0,0,.48) 100%); }
+  .fm-hero .fm-ok { position:absolute; top:14px; left:50%; transform:translateX(-50%); display:inline-flex; align-items:center; gap:5px; background:rgba(255,255,255,.92); border-radius:999px; padding:7px 12px; font-size:12px; color:#00A870; font-weight:600; }
+  .fm-hero .fm-tt { position:absolute; left:0; right:0; bottom:16px; color:#fff; text-align:center; }
+  .fm-hero .fm-tt h1 { font-size:23px; font-weight:800; letter-spacing:.5px; text-shadow:0 2px 10px rgba(0,0,0,.4); }
+  .fm-hero .fm-tt h1 em { font-style:normal; color:#FFB25E; }
+  .fm-hero .fm-tt p { margin-top:5px; font-size:12.5px; color:rgba(255,255,255,.88); text-shadow:0 1px 6px rgba(0,0,0,.4); }
+  .fm-card { background:#fff; border-radius:20px; box-shadow:0 6px 24px rgba(25,25,25,.055); }
+  .fm-main { margin-top:16px; padding:24px 22px 22px; }
+  .fm-dlink { display:flex; align-items:center; justify-content:center; gap:12px; }
+  .fm-dlink .fm-ava { width:46px; height:46px; border-radius:50%; background:#FFF1E6; display:flex; align-items:center; justify-content:center; flex:none; }
+  .fm-dlink .fm-who { font-size:16.5px; font-weight:700; }
+  .fm-dlink .fm-who .fm-no { font-variant-numeric:tabular-nums; }
+  .fm-dlink .fm-sub { margin-top:3px; font-size:12.5px; color:#999; text-align:center; line-height:1.6; }
+  .fm-dlink .fm-sub .fm-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:#00B578; margin-right:5px; vertical-align:2px; }
+  .fm-dlink .fm-qr { width:40px; height:40px; border-radius:12px; background:#F7F7F7; display:flex; align-items:center; justify-content:center; flex:none; }
+  .fm-steps { display:flex; align-items:flex-start; margin-top:24px; padding:16px 6px 4px; border-top:1px solid #F4F4F4; }
+  .fm-step { flex:1; text-align:center; position:relative; }
+  .fm-step .fm-ic { width:34px; height:34px; margin:0 auto; border-radius:50%; background:#FFF1E6; display:flex; align-items:center; justify-content:center; position:relative; z-index:1; }
+  .fm-step.fm-off .fm-ic { background:#F5F5F5; }
+  .fm-step .fm-lb { margin-top:8px; font-size:12px; color:#333; font-weight:500; }
+  .fm-step.fm-off .fm-lb { color:#999; }
+  .fm-step::before { content:""; position:absolute; top:17px; left:-50%; width:100%; border-top:1.5px dashed #E8E8E8; }
+  .fm-step:first-child::before { display:none; }
+  .fm-tip { margin-top:20px; font-size:13.5px; color:#666; line-height:1.8; text-align:center; }
+  .fm-field { margin-top:22px; }
+  .fm-field label { display:block; font-size:13.5px; font-weight:600; color:#333; margin-bottom:10px; text-align:center; }
+  .fm-field label i { font-style:normal; color:#FF5F2E; }
+  .fm-field .fm-in { display:flex; align-items:center; gap:11px; background:#F7F7F8; border-radius:14px; padding:0 16px; height:56px; }
+  .fm-field .fm-in input { border:none; outline:none; background:transparent; font-family:inherit; font-size:16.5px; font-weight:600; color:#191919; width:100%; text-align:center; }
+  .fm-field .fm-in input::placeholder { color:#BFBFBF; font-weight:500; }
+  .fm-agree { display:flex; align-items:flex-start; justify-content:center; gap:9px; margin-top:22px; }
+  .fm-agree .fm-cb { width:19px; height:19px; border-radius:6px; background:#FF5F2E; display:flex; align-items:center; justify-content:center; flex:none; margin-top:1px; }
+  .fm-agree span { font-size:12.5px; color:#666; line-height:1.6; }
+  .fm-cta { margin-top:24px; width:100%; height:54px; border:none; border-radius:999px; background:linear-gradient(92deg,#FF8A3D,#FF5F2E); color:#fff; font-size:17px; font-weight:700; font-family:inherit; box-shadow:0 10px 22px rgba(255,95,46,.28); display:flex; align-items:center; justify-content:center; gap:8px; }
+  .fm-trust { margin-top:18px; padding:16px 10px; display:flex; }
+  .fm-trust div { flex:1; text-align:center; font-size:12px; color:#666; }
+  .fm-trust div + div { border-left:1px solid #F0F0F0; }
+  .fm-trust svg { display:block; margin:0 auto 6px; }
+  .fm-foot { margin-top:18px; text-align:center; font-size:11.5px; color:#C4C4C4; }
+
+/* ==== redesign layer s ==== */
+
+  
+  
+  .sc-hero { position:relative; border-radius:20px; overflow:hidden; height:196px; box-shadow:0 10px 26px rgba(25,25,25,.13); }
+  .sc-hero img { width:100%; height:100%; object-fit:cover; object-position:62% 40%; display:block; }
+  .sc-hero .sc-shade { position:absolute; inset:0; background:linear-gradient(180deg, rgba(0,0,0,.10) 0%, rgba(0,0,0,0) 40%, rgba(0,0,0,.52) 100%); }
+  .sc-hero .sc-ok { position:absolute; top:14px; left:50%; transform:translateX(-50%); display:inline-flex; align-items:center; gap:6px; background:rgba(255,255,255,.92); border-radius:999px; padding:7px 13px; font-size:12px; color:#00A870; font-weight:600; white-space:nowrap; }
+  .sc-hero .sc-ok .sc-ck { width:15px; height:15px; border-radius:50%; background:#07C160; display:inline-flex; align-items:center; justify-content:center; }
+  .sc-hero .sc-tt { position:absolute; left:0; right:0; bottom:16px; color:#fff; text-align:center; }
+  .sc-hero .sc-tt h1 { font-size:22.5px; font-weight:800; letter-spacing:.5px; text-shadow:0 2px 10px rgba(0,0,0,.4); }
+  .sc-hero .sc-tt p { margin-top:5px; font-size:12.5px; color:rgba(255,255,255,.88); text-shadow:0 1px 6px rgba(0,0,0,.4); }
+  .sc-hero .sc-tt p em { font-style:normal; color:#FFB25E; font-weight:600; }
+  .sc-card { background:#fff; border-radius:20px; box-shadow:0 6px 24px rgba(25,25,25,.055); }
+  .sc-main { margin-top:16px; padding:24px 22px 22px; text-align:center; }
+  .sc-chip { display:inline-block; background:#FFF1E6; color:#FF5F2E; font-size:12.5px; font-weight:700; padding:6px 14px; border-radius:999px; }
+  .sc-wait { margin-top:9px; font-size:12.5px; color:#999; }
+  .sc-ava { width:58px; height:58px; margin:20px auto 0; border-radius:50%; background:#0D9488; display:flex; align-items:center; justify-content:center; }
+  .sc-nm { margin-top:11px; font-size:18.5px; font-weight:800; }
+  .sc-badges { margin-top:16px; display:flex; justify-content:center; flex-wrap:wrap; gap:6px 15px; font-size:12.5px; color:#444; }
+  .sc-badges span { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+  .sc-badges .sc-st { color:#FFB800; letter-spacing:1.5px; font-size:12px; }
+  .sc-rel { margin-top:10px; font-size:13px; color:#666; }
+  .sc-rel b { color:#191919; font-variant-numeric:tabular-nums; }
+  .sc-steps { display:flex; align-items:flex-start; margin-top:24px; padding:18px 6px 4px; border-top:1px solid #F4F4F4; }
+  .sc-step { flex:1; text-align:center; position:relative; }
+  .sc-step .sc-ic { width:34px; height:34px; margin:0 auto; border-radius:50%; background:#FFF1E6; display:flex; align-items:center; justify-content:center; position:relative; z-index:1; }
+  .sc-step.sc-now .sc-ic { background:linear-gradient(92deg,#FF8A3D,#FF5F2E); }
+  .sc-step.sc-off .sc-ic { background:#F5F5F5; }
+  .sc-step .sc-lb { margin-top:8px; font-size:12px; color:#333; font-weight:500; }
+  .sc-step.sc-off .sc-lb { color:#999; }
+  .sc-step::before { content:""; position:absolute; top:17px; left:-50%; width:100%; border-top:1.5px dashed #E8E8E8; }
+  .sc-step:first-child::before { display:none; }
+  .sc-kv { margin-top:20px; background:#F7F7F8; border-radius:14px; padding:15px 16px; }
+  .sc-kv .sc-row { display:flex; align-items:center; justify-content:center; gap:9px; font-size:14px; }
+  .sc-kv .sc-row + .sc-row { margin-top:11px; }
+  .sc-kv .sc-dot { width:17px; height:17px; border-radius:50%; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; flex:none; }
+  .sc-kv .sc-k { color:#999; font-size:12.5px; }
+  .sc-kv .sc-v { font-weight:600; }
+  .sc-cta { margin-top:24px; width:100%; height:54px; border:none; border-radius:999px; background:#07C160; color:#fff; font-size:16.5px; font-weight:700; font-family:inherit; box-shadow:0 10px 22px rgba(7,193,96,.25); }
+  .sc-acts { margin-top:18px; padding:16px 10px 14px; display:flex; }
+  .sc-acts div { flex:1; text-align:center; font-size:12.5px; color:#333; }
+  .sc-acts div + div { border-left:1px solid #F0F0F0; }
+  .sc-acts svg { display:block; margin:0 auto 6px; }
+  .sc-foot { margin-top:18px; text-align:center; font-size:11.5px; color:#C4C4C4; }
+
+
+  .sc-phead { text-align:center; padding:14px 0 4px; }
+  .sc-phead .sc-ok { display:inline-flex; align-items:center; gap:6px; background:#fff; border-radius:999px; padding:7px 13px; font-size:12px; color:#00A870; font-weight:600; box-shadow:0 4px 14px rgba(25,25,25,.06); }
+  .sc-phead .sc-ok .sc-ck { width:15px; height:15px; border-radius:50%; background:#07C160; display:inline-flex; align-items:center; justify-content:center; }
+  .sc-phead h1 { margin-top:16px; font-size:24px; font-weight:800; letter-spacing:.5px; }
+  .sc-phead p { margin-top:7px; font-size:13.5px; color:#FF5F2E; font-weight:500; }
+  .sc-phead p em { font-style:normal; font-weight:700; }
+
+
+  .sc-ava3d { width:92px; height:92px; margin:22px auto 0; border-radius:50%; overflow:hidden; box-shadow:0 10px 24px rgba(255,95,46,.28), 0 0 0 4px #fff, 0 0 0 5.5px #FFE3D1; }
+  .sc-ava3d img { width:100%; height:100%; object-fit:cover; object-position:50% 12%; display:block; }
+
+/* ==== redesign layer e ==== */
+
+  
+  
+  .ex-phead { text-align:center; padding:14px 0 4px; }
+  .ex-phead .ex-tag { display:inline-flex; align-items:center; gap:6px; background:#fff; border-radius:999px; padding:7px 13px; font-size:12px; color:#E5484D; font-weight:600; box-shadow:0 4px 14px rgba(25,25,25,.06); }
+  .ex-phead .ex-tag .ex-ck { width:15px; height:15px; border-radius:50%; background:#E5484D; display:inline-flex; align-items:center; justify-content:center; }
+  .ex-phead h1 { margin-top:16px; font-size:24px; font-weight:800; letter-spacing:.5px; }
+  .ex-phead p { margin-top:7px; font-size:13.5px; color:#888; }
+  .ex-phead p em { font-style:normal; color:#FF5F2E; font-weight:600; }
+  .ex-card { background:#fff; border-radius:20px; box-shadow:0 6px 24px rgba(25,25,25,.055); }
+  .ex-main { margin-top:18px; padding:26px 22px 22px; text-align:center; }
+  .ex-qrwrap { position:relative; width:168px; height:168px; margin:2px auto 0; }
+  .ex-qrbox { width:168px; height:168px; border-radius:18px; background:#F0FAF4; border:1.5px solid #C9ECD9; display:flex; align-items:center; justify-content:center; }
+  .ex-clockbdg { position:absolute; right:-10px; bottom:-10px; width:46px; height:46px; border-radius:50%; background:linear-gradient(135deg,#FF8A3D,#FF5F2E); display:flex; align-items:center; justify-content:center; box-shadow:0 8px 18px rgba(255,95,46,.35); border:3px solid #fff; }
+  .ex-stamp { margin-top:20px; display:inline-block; border:1.5px solid #E5484D; color:#E5484D; font-size:13px; font-weight:700; letter-spacing:2px; padding:5px 14px; border-radius:8px; transform:rotate(-3deg); background:rgba(229,72,77,.05); }
+  .ex-kv { margin-top:20px; background:#F7F7F8; border-radius:14px; padding:15px 16px; }
+  .ex-kv .ex-row { display:flex; align-items:center; justify-content:center; gap:9px; font-size:14px; }
+  .ex-kv .ex-row + .ex-row { margin-top:11px; }
+  .ex-kv .ex-dot { width:17px; height:17px; border-radius:50%; color:#fff; font-size:10px; font-weight:700; display:flex; align-items:center; justify-content:center; flex:none; }
+  .ex-kv .ex-k { color:#999; font-size:12.5px; }
+  .ex-kv .ex-v { font-weight:600; }
+  .ex-cta { margin-top:24px; width:100%; height:54px; border:none; border-radius:999px; background:linear-gradient(92deg,#FF8A3D,#FF5F2E); color:#fff; font-size:16.5px; font-weight:700; font-family:inherit; box-shadow:0 10px 22px rgba(255,95,46,.28); }
+  .ex-tip { margin-top:14px; font-size:12px; color:#BBB; }
+  .ex-foot { margin-top:18px; text-align:center; font-size:11.5px; color:#C4C4C4; }
+
+
+/* ==== redesign wrappers & functional bits ==== */
+.w1-wrap { font-family:-apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif; color:#191919; height:100%; width:100%; max-width:430px; margin:0 auto; display:flex; flex-direction:column; justify-content:center; padding:24px 8px 30px; box-sizing:border-box; }
+.fm-page { background:#F7F7F7; font-family:-apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif; color:#191919; min-height:100vh; width:100%; max-width:430px; margin:0 auto; padding:16px 16px 30px; box-sizing:border-box; }
+#success-container { font-family:-apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif; color:#191919; }
+.ex-wrap { font-family:-apple-system,"PingFang SC","Helvetica Neue","Microsoft YaHei",sans-serif; color:#191919; width:100%; max-width:430px; margin:0 auto; box-sizing:border-box; }
+#submit-btn { width:100%; height:54px; border:none; border-radius:999px; background:linear-gradient(92deg,#FF8A3D,#FF5F2E); color:#fff; font-size:17px; font-weight:700; font-family:inherit; box-shadow:0 10px 22px rgba(255,95,46,.28); display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer; }
+.fm-agree input { appearance:none; -webkit-appearance:none; width:19px; height:19px; border-radius:6px; border:2px solid #D9D9D9; background:#fff; flex:none; margin-top:1px; position:relative; cursor:pointer; padding:0; }
+.fm-agree input:checked { background:#FF5F2E; border-color:#FF5F2E; }
+.fm-agree input:checked::after { content:"✓"; color:#fff; font-size:12px; font-weight:800; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+
+</style>
+  </head>
 <body class="text-slate-850 min-h-screen flex flex-col justify-between antialiased pb-safe">
 
   <!-- 3秒欢迎开单全屏倒计时叠加层（全彩 Image x3 页面，默认隐藏，安全校验通过后开启） -->
   <div id="welcome-overlay" style="display: none; opacity: 1;" class="fixed inset-0 w-full h-full flex flex-col justify-between p-6 select-none z-[10000] overflow-hidden bg-[#f9f9f9]">
-    
-    <!-- 背景图（豪华座舱夜景） -->
-    <div class="absolute inset-0 z-0 opacity-25 pointer-events-none">
-      <img src="welcome_bg.jpg" class="w-full h-full object-cover" alt="Welcome Background" onerror="handleWelcomeBgError(this)" />
+    <div class="w1-wrap">
+  <div class="w1-badge"><span class="w1-dot"></span>二维码开单</div>
+  <div class="w1-hero"><img src="hero_drive.jpg" alt=""></div>
+  <div class="w1-brand"><h1>欢迎使用 <em id="welcome-brand-name">XX代驾</em></h1><p>在乎你的车 · 更在乎你的人</p></div>
+  <div class="w1-ringzone">
+    <div class="w1-ringwrap">
+      <svg width="118" height="118" viewBox="0 0 118 118"><defs><linearGradient id="og" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF8A3D"/><stop offset="100%" stop-color="#FF5F2E"/></linearGradient></defs><circle cx="59" cy="59" r="52" fill="none" stroke="#EFEFEF" stroke-width="6"/><circle cx="59" cy="59" r="52" fill="none" id="welcome-circle-progress" stroke="url(#og)" stroke-width="6" stroke-linecap="round" stroke-dasharray="327" stroke-dashoffset="109"/></svg>
+      <div class="w1-num" id="welcome-countdown">3</div>
     </div>
-
-    <!-- 顶部状态栏 -->
-    <div class="relative z-10 flex items-center justify-center mt-2">
-      <div class="flex items-center gap-2 bg-amber-100/90 backdrop-blur-md px-4 py-1.5 rounded-full border border-amber-300 shadow-xs">
-        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
-        <span class="text-xs text-amber-900 font-extrabold tracking-wider uppercase">
-          SECURE CONNECTION • 专享自助端
-        </span>
-      </div>
-    </div>
-
-    <!-- Central Countdown Circle -->
-    <div class="relative z-10 flex-grow flex flex-col items-center justify-center py-10 text-center">
-      <div class="relative w-48 h-48 flex items-center justify-center">
-        <!-- SVG Progress Ring -->
-        <svg class="absolute inset-0 w-full h-full -rotate-90" viewBox="0 0 100 100">
-          <circle class="text-[#eeeeee]" cx="50" cy="50" fill="transparent" r="45" stroke="currentColor" stroke-width="4"></circle>
-          <circle 
-            class="transition-all duration-1000" 
-            cx="50" 
-            cy="50" 
-            fill="transparent" 
-            r="45" 
-            stroke="#ff7d00" 
-            stroke-width="6"
-            id="welcome-circle-progress"
-            stroke-dasharray="282.74"
-            stroke-dashoffset="0"
-          ></circle>
-        </svg>
-        <!-- Number Display -->
-        <div id="welcome-countdown" class="text-[64px] font-black text-[#ff7d00] animate-pulse drop-shadow-xs">
-          3
-        </div>
-      </div>
-      
-      <!-- Status Text -->
-      <div class="mt-8 flex flex-col items-center gap-2 h-16">
-        <span id="welcome-status-text" class="text-[#1a1c1c] font-bold text-base text-center transition-all duration-300">
-          正在开启订单...
-        </span>
-        <div class="flex gap-1.5" id="welcome-dots">
-          <div class="w-1.5 h-1.5 bg-[#ff7d00] rounded-full animate-bounce" style="animation-delay: 0s"></div>
-          <div class="w-1.5 h-1.5 bg-[#ff7d00] rounded-full animate-bounce" style="animation-delay: 0.2s"></div>
-          <div class="w-1.5 h-1.5 bg-[#ff7d00] rounded-full animate-bounce" style="animation-delay: 0.4s"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Footer / Action Area -->
-    <div class="relative z-10 text-center mb-8 mt-4">
-      <div class="flex items-center justify-center gap-2.5 mb-2">
-        <div class="w-11 h-11 bg-gradient-to-br from-amber-500 to-orange-500 rounded-xl flex items-center justify-center shadow-md shadow-amber-500/30">
-          <!-- Car icon SVG -->
-          <svg class="text-white w-6 h-6" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.129-.504 1.09-1.124l-.81-12.96A1.875 1.875 0 0020.007 3.75H14.25m4.5 15H14.25m0 0v-4.5m0 4.5h-4.5m0-4.5V9h-4.5V14.25M12 9V3.75m0 0H7.5m4.5 0H18"></path>
-          </svg>
-        </div>
-        <h1 class="text-xl font-extrabold tracking-tight text-[#1a1c1c]">
-          欢迎使用<span id="welcome-brand-name" class="text-[#ff7d00] font-black px-1.5 text-2xl">XX代驾</span>
-        </h1>
-      </div>
-      <p class="text-amber-900/80 text-sm font-semibold">在乎你的车，更在乎你的人</p>
-    </div>
-
-    <div class="relative z-10 w-full text-center pb-4">
-      <div class="px-4 py-2 bg-amber-100/90 backdrop-blur-md rounded-2xl border border-amber-300 inline-block mx-auto shadow-xs">
-        <div class="flex items-center gap-2.5">
-          <!-- Shield icon SVG -->
-          <svg class="text-[#ff7d00] w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
-          </svg>
-          <span class="text-amber-900 text-xs font-bold">
-            欢迎使用自助开单，您的行程已安全加密
-          </span>
-        </div>
-      </div>
-    </div>
+    <div class="w1-status" id="welcome-status-text">正在开启订单…</div>
+    <div class="w1-status-sub">安全校验中，请稍候</div>
+  </div>
+  <div class="w1-secure"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4m5.6-4A11.9 11.9 0 0112 2.9 11.9 11.9 0 013.4 6 12 12 0 003 9c0 5.6 3.8 10.3 9 11.6 5.2-1.3 9-6 9-11.6 0-1-.1-2-.4-3z"/></svg>欢迎使用自助开单，您的行程已安全加密</div>
+</div>
   </div>
 
-  <!-- 专享自助开单主应用页面容器 -->
   <div id="app-container" class="w-full h-full min-h-screen flex flex-col justify-between">
-    <!-- TopAppBar -->
-    <header class="w-full bg-[#f9f9f9] border-b border-amber-200 flex items-center justify-between px-5 h-16 shrink-0 z-10">
-    <div class="flex items-center gap-3">
-      <h1 class="text-lg font-black tracking-tight text-amber-900 select-none">
-        专享自助开单系统
-      </h1>
-    </div>
-    <div class="text-xs text-amber-950 font-extrabold font-mono bg-gradient-to-r from-amber-300 to-orange-400 border border-amber-400/80 px-3 py-1 rounded-full select-none shadow-xs">
-      安全校验通过 ⚡
-    </div>
-  </header>
-
-  <!-- Scrollable Main area -->
-  <main class="pb-24 px-5 flex-1 overflow-y-auto max-w-md mx-auto w-full z-10">
-    
-    <!-- Header Illustration Banner (Matches React precisely) -->
-    <div class="relative h-40 mt-4 rounded-2xl overflow-hidden mb-6 bg-gradient-to-br from-slate-900 via-slate-800 to-amber-900 border-2 border-amber-500/40 shadow-md shadow-amber-500/10">
-      <div class="absolute inset-0 z-0">
-        <img 
-          class="w-full h-full object-cover opacity-50 mix-blend-overlay" 
-          src="welcome_bg.jpg" 
-          onerror="handleWelcomeBgError(this)"
-          alt="City driving background"
-        />
-      </div>
-      <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-transparent flex flex-col justify-end p-5 text-left z-10">
-        <h2 class="text-xl font-extrabold text-white tracking-tight drop-shadow-md">
-          欢迎使用 <span id="header-brand-name" class="text-amber-400 font-black">DD代驾</span> 自助下单
-        </h2>
-        <p class="text-xs text-amber-200 mt-1 font-extrabold drop-shadow-xs">在乎你的车，更在乎你的人</p>
-      </div>
-    </div>
-
-    <!-- Driver Status Card (Matches React precisely) -->
-    <div class="bg-gradient-to-br from-amber-50/90 via-orange-50/40 to-white border-2 border-amber-300 p-4 rounded-2xl shadow-xs mb-6 flex items-center gap-4 relative overflow-hidden">
-      <div class="absolute top-0 left-0 w-1.5 h-full bg-gradient-to-b from-amber-400 to-orange-500"></div>
-      <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-500 text-white flex items-center justify-center shrink-0 shadow-md shadow-amber-500/25">
-        <!-- Headphones icon SVG -->
-        <svg class="text-white w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.5a6.5 6.5 0 01-6.5-6.5V11A6.5 6.5 0 0112 4.5 6.5 6.5 0 0118.5 11v1a6.5 6.5 0 01-6.5 6.5zm-5.5-2.25H6a1.75 1.75 0 01-1.75-1.75V12.5A1.75 1.75 0 016 10.75h.5c.966 0 1.75.784 1.75 1.75v2c0 .966-.784 1.75-1.75 1.75zm11 0h-.5c-.966 0-1.75-.784-1.75-1.75v-2c0-.966.784-1.75 1.75-1.75h.5c.966 0 1.75.784 1.75 1.75v1.75a1.75 1.75 0 01-1.75 1.75z"></path>
-        </svg>
-      </div>
-      <div class="flex-grow text-left">
-        <p class="text-[10px] font-extrabold text-amber-800 uppercase tracking-wider mb-0.5">司机 二维码报单 安全通道</p>
-        <p class="text-sm font-bold text-[#1a1c1c] leading-tight">
-          正在链接至司机 <span id="driver-display" class="text-[#ff7d00] font-black font-mono text-base">...</span>
-        </p>
-        <div class="flex items-center mt-1 text-amber-800 gap-1.5">
-          <span class="relative flex h-2 w-2">
-            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#ff7d00] opacity-75"></span>
-            <span class="relative inline-flex rounded-full h-2 w-2 bg-[#ff7d00]"></span>
-          </span>
-          <span class="text-[10px] font-extrabold text-amber-800">开单信息为您实时加密</span>
-        </div>
-      </div>
-      <div class="bg-amber-100/90 border border-amber-300 p-3 rounded-xl flex items-center justify-center shrink-0 select-none">
-        <!-- QrCode SVG -->
-        <svg class="text-amber-800 w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5zM13.5 13.5h2.25v2.25H13.5V13.5zM15.75 15.75h2.25v2.25h-2.25v-2.25zM18 13.5h2.25v2.25H18V13.5zM13.5 18h2.25v2.25H13.5V18zM18 18h2.25v2.25H18V18z"></path>
-        </svg>
-      </div>
-    </div>
-
-    <!-- 状态 1: 乘客数据填写卡片 -->
-    <div id="form-container" class="space-y-5">
-      
-      <!-- Instruction Section -->
-      <div class="mb-6 space-y-1 text-left">
-        <p class="text-sm text-[#5f5e5e] leading-relaxed px-1">
-          请输入您呼叫代驾司机的手机号码。输入完成后立即通知司机，并一键开启本次代驾服务。
-        </p>
-      </div>
-
-      <!-- Form Fields (Bento style form) -->
-      <form id="order-form" class="space-y-5 text-left">
-        <!-- Phone Input -->
-        <div class="space-y-1.5">
-          <label class="text-xs font-bold text-slate-700 flex items-center gap-1">
-            您的手机号码 <span class="text-amber-500 font-bold">*</span>
-          </label>
-          <div class="relative">
-            <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <!-- Smartphone SVG -->
-              <svg class="text-amber-500 w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 1.5H8.25A2.25 2.25 0 006 3.75v16.5a2.25 2.25 0 002.25 2.25h7.5A2.25 2.25 0 0018 20.25V3.75a2.25 2.25 0 00-2.25-2.25H13.5m-3 0V3h3V1.5m-3 0h3m-6 15h9"></path>
-              </svg>
-            </div>
-            <input
-              type="tel"
-              id="passenger-phone"
-              required
-              maxlength="11"
-              placeholder="请输入您的手机号"
-              style="pointer-events: auto !important; user-select: text !important; -webkit-user-select: text !important; position: relative; z-index: 20;"
-              class="w-full pl-12 pr-4 py-4 bg-white border-2 border-amber-200 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base transition-all font-semibold"
-            />
-          </div>
-        </div>
-
-        <!-- Origin Input -->
-        <div class="space-y-1.5">
-          <label class="text-xs font-bold text-slate-700 flex items-center gap-1">
-            您的出发地 <span class="text-amber-500 font-bold">*</span>
-          </label>
-          <div class="relative">
-            <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-              <!-- MapPin SVG -->
-              <svg class="text-amber-500 w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25s-7.5-4.108-7.5-11.25a7.5 7.5 0 1115 0z"></path>
-              </svg>
-            </div>
-            <input
-              type="text"
-              id="start-location"
-              required
-              value="万达广场写字楼A座"
-              placeholder="填写当前上车位置"
-              style="pointer-events: auto !important; user-select: text !important; -webkit-user-select: text !important; position: relative; z-index: 20;"
-              class="w-full pl-12 pr-4 py-4 bg-white border-2 border-amber-200 rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none text-base transition-all font-semibold"
-            />
-          </div>
-        </div>
-
-
-
-        <!-- Authorization Checkbox -->
-        <label class="flex items-center gap-3 py-2 cursor-pointer group select-none" for="agreement">
-          <div class="relative flex items-center shrink-0">
-            <input
-              type="checkbox"
-              required
-              checked
-              id="agreement"
-              onchange="var icon=document.getElementById('agreement-check-icon'); if(icon) icon.style.opacity = this.checked ? '1' : '0';"
-              class="h-6 w-6 border-2 border-amber-400 rounded-lg appearance-none cursor-pointer focus:outline-none transition-all"
-            />
-            <!-- Check icon SVG overlay -->
-            <svg id="agreement-check-icon" class="absolute text-white pointer-events-none left-1 top-1 w-4 h-4 stroke-[3] transition-opacity" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" style="opacity: 1;">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path>
-            </svg>
-          </div>
-          <span class="text-xs text-slate-600 group-active:text-[#1a1c1c] transition-colors leading-snug font-medium">
-            我授权自动上传位置信息并同意接受司机代驾服务
-          </span>
-        </label>
-
-        <!-- Main CTA -->
-        <button
-          type="submit"
-          id="submit-btn"
-          class="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:brightness-105 text-white font-black py-4 rounded-xl active:scale-95 duration-150 transition-all flex items-center justify-center gap-2 mt-6 shadow-lg shadow-amber-500/30 text-base cursor-pointer"
-        >
-          <!-- Bell icon SVG -->
-          <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a3 3 0 11-5.714 0m5.714 0a3 3 0 11-5.714 0"></path>
-          </svg>
-          <span>点击立即下单</span>
-        </button>
-      </form>
-    </div>
-
-    <!-- 状态 2: 授权成功与行程票据卡片 (Matches React precisely) -->
-    <div id="success-container" class="hidden space-y-5 py-2 text-center">
-      
-      <!-- Success Hero Section -->
-      <div class="relative mb-8 mt-6 flex justify-center">
-        <div class="absolute w-24 h-24 bg-emerald-500/20 rounded-full animate-ping scale-125"></div>
-        <div class="w-24 h-24 bg-emerald-500 rounded-full flex items-center justify-center shadow-md relative z-10" style="background-color: #10b981 !important;">
-          <svg class="text-white w-14 h-14 stroke-[3]" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" style="color: #ffffff !important;">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"></path>
-          </svg>
-        </div>
-      </div>
-
-      <h2 class="text-2xl font-bold text-[#1a1c1c] mb-1">手机号已发送给司机</h2>
-      <p class="text-lg text-[#584235] mb-8"><span id="success-brand-name">小鸟代驾</span> · 司机将为您创建订单</p>
-
-      <!-- Dynamic Order Card (Bento Style Card) -->
-      <div class="w-full bg-white border border-[#dfc0af] rounded-xl p-6 text-left shadow-sm mb-6">
-        <div class="flex items-center justify-between mb-4">
-          <span class="bg-[#ff7d00]/10 text-[#ff7d00] px-3 py-1 rounded-full font-semibold text-xs">
-            等待司机开单
-          </span>
-          <span class="font-semibold text-xs text-[#5f5e5e]">请稍候，司机正在接单</span>
-        </div>
-
-        <div class="flex items-center gap-4 p-4 bg-[#f3f3f3] rounded-lg mb-4">
-          <div class="w-12 h-12 rounded-full overflow-hidden bg-[#dfc0af] flex-shrink-0">
-            <img 
-              class="w-full h-full object-cover" 
-              alt="Professional driver portrait" 
-              src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230d9488'/><circle cx='50' cy='38' r='20' fill='%23ffffff'/><path d='M20,90 Q50,55 80,90 Z' fill='%23ffffff'/></svg>"
-            />
-          </div>
-          <div class="flex-1">
-            <h3 class="text-sm font-semibold text-[#1a1c1c]">
-              五星司机 (5.0<span style="color: rgb(255, 215, 0)">★★★★★</span>)
-            </h3>
-            <p class="font-semibold text-xs text-[#584235] mt-0.5">
-              乘客手机：<span id="summary-phone">187****9593</span>
-            </p>
-          </div>
-          <div class="w-10 h-10 rounded-full bg-[#ff7d00] text-white flex items-center justify-center cursor-default shrink-0">
-            <!-- Phone SVG -->
-            <svg class="w-5 h-5 fill-current text-white" viewBox="0 0 24 24">
-              <path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56a.977.977 0 00-1.01.24l-2.2 2.2a15.045 15.045 0 01-6.59-6.59l2.2-2.21a.96.96 0 00.25-1A11.56 11.56 0 018.82 4c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1 0 9.39 7.61 17 17 17 .55 0 1-.45 1-1v-3.58c0-.56-.45-1.04-1-1.04z" />
-            </svg>
-          </div>
-        </div>
-
-        <div class="space-y-2">
-          <div class="flex items-start gap-2">
-            <!-- Green/Orange dot for start -->
-            <span class="w-4 h-4 rounded-full bg-[#ff7d00] shrink-0 mt-1 flex items-center justify-center text-[10px] text-white font-bold">起</span>
-            <div class="text-left">
-              <p class="font-semibold text-xs text-[#584235]">上车地点：</p>
-              <p class="text-sm text-[#1a1c1c] font-semibold" id="summary-start">万达广场写字楼A座</p>
-            </div>
-          </div>
-          <div class="h-4 border-l border-dashed border-[#dfc0af] ml-[7px]"></div>
-          <div class="flex items-start gap-2" id="summary-dest-wrapper">
-            <!-- Red dot for dest -->
-            <span class="w-4 h-4 rounded-full bg-[#ba1a1a] shrink-0 mt-1 flex items-center justify-center text-[10px] text-white font-bold">终</span>
-            <div class="text-left">
-              <p class="font-semibold text-xs text-[#584235]">下车终点：</p>
-              <p class="text-sm text-[#1a1c1c] font-semibold" id="summary-dest">未知</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Extra Ticket Style Dash info -->
-        <div class="mt-4 pt-3 border-t ticket-dashed-line text-xs text-[#5f5e5e] flex justify-between">
-          <span class="font-medium text-[#584235]">关联司机：</span>
-          <span id="summary-driver" class="font-mono font-bold text-slate-900">...</span>
-        </div>
-      </div>
-
-      <!-- Close hint button -->
-      <div class="w-full space-y-4">
-        <button 
-          onclick="closeCurrentPage()"
-          class="w-full text-white h-14 rounded-xl font-semibold text-base shadow-sm hover:brightness-105 active:scale-[0.98] transition-all cursor-pointer"
-          style="background-color: #10b981 !important; color: #ffffff !important; display: flex !important; align-items: center !important; justify-content: center !important; font-weight: bold !important; font-size: 16px !important; border: none !important; width: 100% !important; height: 56px !important; border-radius: 12px !important;"
-        >
-          下单成功，请关闭本页面
-        </button>
-      </div>
-    </div>
-
-  </main>
-
-  <!-- 精美简练的官方安全底栏 -->
-  <footer class="p-5 text-center text-xs font-bold text-[#5f5e5e]/60 shrink-0 font-sans z-10">
-    <span id="footer-brand-name">小鸟代驾</span> · 极速响应
-  </footer>
+    <div class="fm-page"><div id="form-container">
+  <div class="fm-hero">
+    <img src="hero_drive.jpg" alt="">
+    <div class="fm-shade"></div>
+    <span class="fm-ok"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#00A870" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4m5.6-4A11.9 11.9 0 0112 2.9 11.9 11.9 0 013.4 6 12 12 0 003 9c0 5.6 3.8 10.3 9 11.6 5.2-1.3 9-6 9-11.6 0-1-.1-2-.4-3z"/></svg>安全检测通过</span>
+    <div class="fm-tt"><h1>欢迎使用 <em id="header-brand-name">XX代驾</em> 自助下单</h1><p>在乎你的车，更在乎你的人</p></div>
   </div>
-
-  <!-- 乘客自助开单 3分钟二维码超时/已失效 页面 (100% 独立全屏 overlay) -->
-  <div id="qr-expired-overlay" class="hidden fixed inset-0 w-full h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans flex flex-col justify-between p-6 select-none z-[30000] overflow-y-auto">
-    <!-- Top Header Status -->
-    <div class="w-full max-w-sm mx-auto flex items-center justify-between pt-2">
-      <div class="flex items-center gap-1.5 bg-rose-50 px-3 py-1 rounded-full border border-rose-200 shadow-xs">
-        <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping"></span>
-        <span class="text-xs text-rose-700 font-extrabold tracking-wider uppercase">
-          LINK EXPIRED • 链接已失效
-        </span>
-      </div>
-      <span class="text-xs text-slate-600 font-mono font-bold bg-slate-200/70 px-2.5 py-0.5 rounded">
-        防伪防刷保护 🛡️
-      </span>
-    </div>
-
-    <!-- Expired Main Card -->
-    <div class="my-auto w-full max-w-sm mx-auto bg-white border-2 border-rose-200 rounded-2xl p-6 flex flex-col items-center text-center shadow-lg">
-      <div class="w-20 h-20 rounded-full bg-rose-100 border-4 border-rose-50 flex items-center justify-center mb-4 text-rose-600 shadow-inner">
-        <!-- Shield Alert SVG -->
-        <svg class="w-10 h-10 stroke-[2.2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m0 3.75h.008v.008H12v-.008zM12 3a9 9 0 100 18 9 9 0 000-18z" />
-        </svg>
-      </div>
-      
-      <h2 class="text-xl font-black text-slate-900 mb-2">二维码开单链接已失效</h2>
-      <p class="text-xs text-slate-600 leading-relaxed mb-6">
-        基于代驾安全防伪机制，自助报单二维码有效期为 <span class="text-rose-600 font-bold">3分钟</span>。当前链接已超时关闭，已禁止提交。
-      </p>
-
-      <div class="w-full bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-left space-y-2 mb-6">
-        <div class="flex items-center justify-between text-xs text-slate-600">
-          <span>状态信息：</span>
-          <span class="font-bold text-rose-600">3分钟扫码倒计时结束</span>
-        </div>
-        <div class="flex items-center justify-between text-xs text-slate-600">
-          <span>操作建议：</span>
-          <span class="font-bold text-slate-800">请联系司机重新出示二维码</span>
-        </div>
-      </div>
-
-      <button 
-        onclick="window.location.reload();"
-        class="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 hover:brightness-105 text-white font-bold text-sm py-3.5 rounded-xl shadow-md active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
-      >
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-        </svg>
-        <span>重新扫码 / 刷新页面</span>
-      </button>
-    </div>
-
-    <!-- Footer -->
-    <footer class="text-center text-xs text-slate-400 space-y-1 pb-4">
-      <p class="font-semibold">（<span id="qr-expired-brand-name">XX代驾</span>）安全防伪系统 • 3分钟限时动态二维码保护</p>
-      <p>© 2026 All Rights Reserved</p>
-    </footer>
-  </div>
-
-  <!-- 乘客自助端代开单阻拦页面叠加层 (尊享会员开通拦截页 - 100% 本地离线无谷歌依赖) -->
-  <div id="blocked-overlay" class="hidden fixed inset-0 w-full h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans overflow-y-auto select-none z-[20000] pb-32">
-    <main class="w-full max-w-md mx-auto bg-[#f9f9f9] min-h-screen relative flex flex-col justify-between">
+  <div class="fm-card fm-main">
+    <div class="fm-dlink">
+      <span class="fm-ava"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14v-2a9 9 0 0118 0v2M3 14h3a1 1 0 011 1v3a1 1 0 01-1 1H5a2 2 0 01-2-2v-3zm18 0h-3a1 1 0 00-1 1v3a1 1 0 001 1h1a2 2 0 002-2v-3zM12 18.5a6.5 6.5 0 01-6.5-6.5"/></svg></span>
       <div>
-        <!-- Hero Banner Section (100% 本地图片 vip_banner.jpg) -->
-        <section class="relative w-full overflow-hidden rounded-b-2xl shadow-sm bg-[#1a0f0a]" style="background: linear-gradient(135deg, #1a0f0a 0%, #3d2212 50%, #180d07 100%); min-height: 180px;">
-          <img 
-            alt="专业代驾 安全到家" 
-            class="w-full h-auto object-cover block relative z-10" 
-            src="vip_banner.jpg" 
-            onerror="handleVipBannerError(this)"
-          />
+        <div class="fm-who">正在链接至司机 <span class="fm-no" id="driver-display">186****8888</span></div>
+        <div class="fm-sub"><span class="fm-dot"></span>司机 · 二维码报单安全通道，开单信息为您实时加密</div>
+      </div>
+      <span class="fm-qr"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#666" stroke-width="1.9" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><path d="M13.5 13.5h3v3h-3zM17.5 17.5h3v3h-3zM20.5 13.5h.01M13.5 20.5h.01"/></svg></span>
+    </div>
+    <div class="fm-steps">
+      <div class="fm-step"><span class="fm-ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="2" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.8 18.8h2.4"/></svg></span><div class="fm-lb">填写手机号</div></div>
+      <div class="fm-step"><span class="fm-ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 16l1.4-5.2A2 2 0 018.3 9.4h7.4a2 2 0 011.9 1.4L19 16M5 16h14M5 16v3.2a.8.8 0 00.8.8h.9a.8.8 0 00.8-.8V17m9 0v2.2a.8.8 0 00.8.8h.9a.8.8 0 00.8-.8V16"/></svg></span><div class="fm-lb">司机确认接单</div></div>
+      <div class="fm-step"><span class="fm-ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.5-7-11a7 7 0 1114 0c0 5.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg></span><div class="fm-lb">到达上车点</div></div>
+    </div>
+    <p class="fm-tip">请输入您呼叫代驾司机的手机号码。<br>输入完成后立即通知司机，并一键开启本次代驾服务。</p>
+    <form id="order-form"><div class="fm-field">
+      <label>您的手机号码 <i>*</i></label>
+      <div class="fm-in"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="1.9" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.8 18.8h2.4"/></svg><input id="passenger-phone" type="tel" required maxlength="11" placeholder="请输入您的手机号"></div>
+    </div>
+    <div class="fm-field">
+      <label>您的出发地 <i>*</i></label>
+      <div class="fm-in"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.5-7-11a7 7 0 1114 0c0 5.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg><input id="start-location" type="text" required readonly value="万达广场写字楼A座" style="color:#00B578;"></div>
+    </div>
+    <label class="fm-agree"><input type="checkbox" id="agreement" required checked><span>我授权自动上传位置信息并同意接受司机代驾服务</span></label><button class="fm-cta" id="submit-btn" type="submit" type="button"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8M10.3 21a2 2 0 003.4 0"/></svg>点击立即下单</button></form>
+  </div>
+  <div class="fm-card fm-trust">
+    <div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4m5.6-4A11.9 11.9 0 0112 2.9 11.9 11.9 0 013.4 6 12 12 0 003 9c0 5.6 3.8 10.3 9 11.6 5.2-1.3 9-6 9-11.6 0-1-.1-2-.4-3z"/></svg>司机实名认证</div>
+    <div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="1.9" stroke-linecap="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 118 0v2.5"/></svg>号码加密传输</div>
+    <div><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>行程全程记录</div>
+  </div>
+  <footer class="fm-foot">XX代驾 · 极速响应</footer>
+</div>
+    <div id="success-container" class="hidden">
+  <div class="sc-phead">
+    <span class="sc-ok"><span class="sc-ck"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg></span>发送成功</span>
+    <p><em id="success-brand-name">XX代驾</em> · 司机将为您创建订单</p>
+  </div>
+  <div class="sc-card sc-main">
+    <span class="sc-chip" style="background:#E5F7EE;color:#00A870;">开单成功</span>
+    <div class="sc-wait">司机已为您接单</div>
+    <div class="sc-ava3d"><img src="driver_avatar_cartoon.jpg" alt="司机头像"></div>
+    <div class="sc-badges">
+      <span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg>评分 5.0</span>
+      <span class="sc-st">★★★★★</span>
+      <span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg>金牌司机</span>
+      <span><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg>实时接单</span>
+    </div>
+    <div class="sc-rel">关联司机：<b id="summary-driver">186****8888</b></div>
+    <div class="sc-steps">
+      <div class="sc-step"><span class="sc-ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="2" stroke-linecap="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><path d="M13.5 13.5h3v3h-3zM17.5 17.5h3v3h-3zM20.5 13.5h.01M13.5 20.5h.01"/></svg></span><div class="sc-lb">扫二维码开单</div></div>
+      <div class="sc-step sc-now"><span class="sc-ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 16l1.4-5.2A2 2 0 018.3 9.4h7.4a2 2 0 011.9 1.4L19 16M5 16h14M5 16v3.2a.8.8 0 00.8.8h.9a.8.8 0 00.8-.8V17m9 0v2.2a.8.8 0 00.8.8h.9a.8.8 0 00.8-.8V16"/></svg></span><div class="sc-lb">司机确认开单</div></div>
+      <div class="sc-step"><span class="sc-ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#FF5F2E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-5.5-7-11a7 7 0 1114 0c0 5.5-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg></span><div class="sc-lb">到达上车点</div></div>
+    </div>
+    <div class="sc-kv">
+      <div class="sc-row"><span class="sc-dot" style="background:#FF5F2E">起</span><span class="sc-k">上车地点</span><span class="sc-v" id="summary-start" style="color:#00B578;">万达广场写字楼A座</span></div>
+      <div class="sc-row"><span class="sc-dot" style="background:#00B578">客</span><span class="sc-k">乘客手机</span><span class="sc-v" id="summary-phone">187****9593</span></div>
+    <div class="sc-row" id="summary-dest-wrapper" style="display:none;"><span class="sc-dot" style="background:#FF5F2E">终</span><span class="sc-k">目的地</span><span class="sc-v" id="summary-dest"></span></div></div>
+    <button class="sc-cta" type="button" onclick="closeCurrentPage()">下单成功，请关闭本页面</button>
+  </div>
+  <footer class="sc-foot"><span id="footer-brand-name">XX代驾</span> · 极速响应</footer>
+</div></div>
+  </div>
+
+  <div id="qr-expired-overlay" class="hidden fixed inset-0 w-full h-full bg-[#f9f9f9] text-[#1a1c1c] font-sans flex flex-col justify-between p-6 select-none z-[30000] overflow-y-auto">
+    <div class="ex-wrap">
+  <div class="ex-phead">
+    <span class="ex-tag"><span class="ex-ck"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg></span>二维码已过期</span>
+    <h1>二维码已超时</h1>
+    <p>请联系司机 <em>重新出示二维码</em> 后再次扫码</p>
+  </div>
+  <div class="ex-card ex-main">
+    <div class="ex-qrwrap">
+      <div class="ex-qrbox">
+        <svg width="118" height="118" viewBox="0 0 118 118">
+          <g fill="#2BAE66">
+            <rect x="4" y="4" width="30" height="30" rx="5" fill="none" stroke="#0E8A4D" stroke-width="5"/>
+            <rect x="84" y="4" width="30" height="30" rx="5" fill="none" stroke="#0E8A4D" stroke-width="5"/>
+            <rect x="4" y="84" width="30" height="30" rx="5" fill="none" stroke="#0E8A4D" stroke-width="5"/>
+            <rect x="46" y="6" width="9" height="9"/><rect x="63" y="6" width="9" height="9"/><rect x="46" y="23" width="9" height="9"/>
+            <rect x="6" y="46" width="9" height="9"/><rect x="23" y="46" width="9" height="9"/><rect x="46" y="46" width="12" height="12"/>
+            <rect x="68" y="46" width="9" height="9"/><rect x="85" y="46" width="9" height="9"/><rect x="102" y="46" width="9" height="9"/>
+            <rect x="6" y="63" width="9" height="9"/><rect x="29" y="63" width="9" height="9"/><rect x="63" y="63" width="9" height="9"/>
+            <rect x="85" y="63" width="9" height="9"/><rect x="46" y="80" width="9" height="9"/><rect x="68" y="80" width="9" height="9"/>
+            <rect x="85" y="85" width="12" height="12"/><rect x="102" y="102" width="9" height="9"/><rect x="85" y="102" width="9" height="9"/><rect x="46" y="102" width="9" height="9"/>
+          </g>
+        </svg>
+      </div>
+      <span class="ex-clockbdg" style="width:52px;height:52px;background:linear-gradient(135deg,#FF5F2E,#E5484D);"><span style="color:#fff;font-size:30px;font-weight:800;line-height:1;font-family:inherit;">!</span></span>
+    </div>
+    <div><span class="ex-stamp">已超时，请重新扫码开单</span></div>
+    <div class="ex-kv">
+      <div class="ex-row"><span class="ex-dot" style="background:#FF5F2E">时</span><span class="ex-k">二维码有效期</span><span class="ex-v">3 分钟</span></div>
+      <div class="ex-row"><span class="ex-dot" style="background:#E5484D">停</span><span class="ex-k">当前状态</span><span class="ex-v" style="color:#E5484D;">已超时</span></div>
+    </div>
+    <button class="ex-cta" type="button" onclick="window.location.reload();">刷新页面</button>
+    <div class="ex-tip">刷新后仍超时，请让司机重新打开二维码</div>
+  </div>
+  <footer class="ex-foot"><span id="qr-expired-brand-name">XX代驾</span> · 安全守护每一次出行</footer>
+</div>
+  </div>
+
+  <div id="blocked-overlay" class="hidden fixed inset-0 w-full h-full font-sans overflow-y-auto select-none z-[20000] pb-32" style="background: radial-gradient(90% 34% at 88% -4%, rgba(255,122,26,.28) 0%, rgba(255,122,26,0) 60%), radial-gradient(80% 30% at 4% 30%, rgba(124,58,237,.22) 0%, rgba(124,58,237,0) 60%), radial-gradient(70% 26% at 96% 62%, rgba(217,70,239,.14) 0%, rgba(217,70,239,0) 60%), #050507; color: #ffffff;">
+    <main class="w-full max-w-md mx-auto min-h-screen relative flex flex-col justify-between" style="background: transparent;">
+      <div>
+        <!-- Site Header Nav -->
+        <header style="background: rgba(16,16,20,.66); backdrop-filter: blur(22px) saturate(180%); -webkit-backdrop-filter: blur(22px) saturate(180%); border-bottom: 0.5px solid rgba(255,255,255,.09);">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 20px;">
+            <a href="/" style="font-size: 16.5px; font-weight: 800; letter-spacing: -0.3px; text-decoration: none; background: linear-gradient(92deg,#ffb340,#ff6a3d 60%,#ff4d6d); -webkit-background-clip: text; background-clip: text; color: transparent;">黑湾代驾MAX</a>
+            <nav>
+              <a href="/" style="margin-left: 13px; font-size: 12.5px; color: #ff9f0a !important; font-weight: 700; text-decoration: none;">首页</a><a href="/services.html" style="margin-left: 13px; font-size: 12.5px; color: rgba(235,235,245,.55) !important; font-weight: 500; text-decoration: none;">服务项目</a><a href="/about.html" style="margin-left: 13px; font-size: 12.5px; color: rgba(235,235,245,.55) !important; font-weight: 500; text-decoration: none;">关于我们</a><a href="/contact.html" style="margin-left: 13px; font-size: 12.5px; color: rgba(235,235,245,.55) !important; font-weight: 500; text-decoration: none;">联系我们</a>
+            </nav>
+          </div>
+        </header>
+
+        <!-- Hero Banner Section -->
+        <div style="padding: 16px 16px 0;">
+        <section style="position: relative; overflow: hidden; border-radius: 30px; padding: 36px 20px 32px; text-align: center; color: #ffffff; background: radial-gradient(130% 95% at 88% -12%, rgba(255,214,120,.85) 0%, rgba(255,214,120,0) 52%), radial-gradient(120% 110% at 4% 112%, rgba(94,92,230,.75) 0%, rgba(94,92,230,0) 55%), radial-gradient(90% 80% at 96% 88%, rgba(255,55,95,.5) 0%, rgba(255,55,95,0) 55%), linear-gradient(138deg,#ff9f0a 0%,#ff5f3d 42%,#e8387a 78%,#a24fe0 115%); box-shadow: 0 24px 48px rgba(232,56,122,.38), 0 6px 18px rgba(255,95,61,.30), inset 0 1px 0 rgba(255,255,255,.4);">
+          <div style="width: 64px; height: 64px; margin: 0 auto 13px; background: rgba(255,255,255,.20); border: 1px solid rgba(255,255,255,.55); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 24px rgba(160,40,90,.35), inset 0 1px 0 rgba(255,255,255,.55);">
+            <svg width="33" height="33" viewBox="0 0 24 24" fill="none"><path d="M3 8l4.5 4L12 5l4.5 7L21 8l-1.6 10H4.6L3 8z" fill="#fff" opacity="0.97"/><rect x="4.6" y="19" width="14.8" height="1.8" rx="0.9" fill="#fff" opacity="0.97"/></svg>
+          </div>
+          <h1 style="font-size: 22px; letter-spacing: 2.5px; font-weight: 800; text-shadow: 0 2px 14px rgba(150,20,80,.45); color: #ffffff;">开通尊享会员 • 享无限开单</h1>
+          <p style="margin-top: 9px; font-size: 12.5px; letter-spacing: 3px; font-weight: 500; opacity: .96; color: #ffffff;">专业代驾 • 安全到家 • 优先匹配</p>
         </section>
+        </div>
 
         <!-- Headline & Subtext -->
         <section class="px-5 mt-4 relative z-10 space-y-1.5 mb-6">
-          <h2 class="text-2xl font-bold text-[#1a1c1c] drop-shadow-xs">开通尊享会员，享受更多权益</h2>
-          <p class="text-sm text-[#584235] font-medium">请使用正规渠道开通会员</p>
+          <h2 class="text-2xl font-bold drop-shadow-xs" style="color: #ffffff !important;">开通尊享会员，享受更多权益</h2>
+          <p class="text-sm font-medium" style="color: rgba(235,235,245,.55) !important;">请使用正规渠道开通会员</p>
         </section>
 
         <!-- Benefits Grid -->
         <section class="px-5 mb-6">
-          <div class="grid grid-cols-2 gap-3">
-            <!-- Benefit 1: 无忧开单 (Emerald/Teal Theme) -->
-            <div class="bg-gradient-to-br from-emerald-50/90 via-white to-teal-50/40 p-4 rounded-xl border border-emerald-200/80 flex flex-col items-center text-center shadow-xs transition-all active:scale-95 hover:shadow-md">
-              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center mb-2 shrink-0 shadow-sm shadow-emerald-500/30">
-                <!-- price_check icon -->
-                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                </svg>
-              </div>
-              <span class="font-bold text-xs text-slate-800 block mb-1">无忧开单</span>
-              <span class="text-[10px] text-emerald-800/80 font-medium leading-tight">开单不限次数</span>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div style="background: rgba(255,255,255,.055); border: 0.5px solid rgba(255,255,255,.09); border-radius: 22px; padding: 16px 14px 14px; text-align: left; box-shadow: 0 10px 26px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.07);">
+              <div style="width: 39px; height: 39px; border-radius: 11.5px; background: linear-gradient(150deg,#4be38a,#0bbf6e); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; box-shadow: 0 6px 16px rgba(11,191,110,.45), inset 0 1px 0 rgba(255,255,255,.4);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M6 2h9l5 5v15H6z" fill="none"/><path d="M9 12h8M9 16h8M9 8h4"/></svg></div>
+              <b style="display: block; font-size: 13.5px; font-weight: 700; color: #ffffff; margin-bottom: 3px;">无忧开单</b>
+              <span style="font-size: 11.5px; font-weight: 500; line-height: 1.5; display: block; color: rgba(235,235,245,.55);">开单不限次数</span>
             </div>
-
-            <!-- Benefit 2: 扫码报单 (Blue/Indigo Theme) -->
-            <div class="bg-gradient-to-br from-blue-50/90 via-white to-indigo-50/40 p-4 rounded-xl border border-blue-200/80 flex flex-col items-center text-center shadow-xs transition-all active:scale-95 hover:shadow-md">
-              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center mb-2 shrink-0 shadow-sm shadow-blue-500/30">
-                <!-- qr_code icon -->
-                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5zM13.5 13.5h2.25v2.25H13.5V13.5zM15.75 15.75h2.25v2.25h-2.25v-2.25zM18 13.5h2.25v2.25H18V13.5zM13.5 18h2.25v2.25H13.5V18zM18 18h2.25v2.25H18V18z"></path>
-                </svg>
-              </div>
-              <span class="font-bold text-xs text-slate-800 block mb-1">扫码报单</span>
-              <span class="text-[10px] text-blue-800/80 font-medium leading-tight">高峰期订单优先匹配</span>
+            <div style="background: rgba(255,255,255,.055); border: 0.5px solid rgba(255,255,255,.09); border-radius: 22px; padding: 16px 14px 14px; text-align: left; box-shadow: 0 10px 26px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.07);">
+              <div style="width: 39px; height: 39px; border-radius: 11.5px; background: linear-gradient(150deg,#59b0ff,#0a64e0); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; box-shadow: 0 6px 16px rgba(10,100,224,.5), inset 0 1px 0 rgba(255,255,255,.4);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M3 12h18"/></svg></div>
+              <b style="display: block; font-size: 13.5px; font-weight: 700; color: #ffffff; margin-bottom: 3px;">扫码报单</b>
+              <span style="font-size: 11.5px; font-weight: 500; line-height: 1.5; display: block; color: rgba(235,235,245,.55);">高峰期订单优先匹配</span>
             </div>
-
-            <!-- Benefit 3: 行程自动纠偏 (Amber/Orange Theme) -->
-            <div class="bg-gradient-to-br from-amber-50/90 via-white to-orange-50/40 p-4 rounded-xl border border-amber-200/80 flex flex-col items-center text-center shadow-xs transition-all active:scale-95 hover:shadow-md">
-              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center mb-2 shrink-0 shadow-sm shadow-amber-500/30">
-                <!-- route / compass icon -->
-                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m0 0l-3-3m3 3l3-3m-3 3H15c1.5 0 3-1.5 3-3V6.75m0 0l-3 3m3-3l3 3"></path>
-                </svg>
-              </div>
-              <span class="font-bold text-xs text-slate-800 block mb-1">行程自动纠偏</span>
-              <span class="text-[10px] text-amber-800/80 font-medium leading-tight">智能纠正轨迹，确保计费精准</span>
+            <div style="background: rgba(255,255,255,.055); border: 0.5px solid rgba(255,255,255,.09); border-radius: 22px; padding: 16px 14px 14px; text-align: left; box-shadow: 0 10px 26px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.07);">
+              <div style="width: 39px; height: 39px; border-radius: 11.5px; background: linear-gradient(150deg,#ffc44d,#f28c00); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; box-shadow: 0 6px 16px rgba(242,140,0,.5), inset 0 1px 0 rgba(255,255,255,.4);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 19c4-1 5-12 9-12 3 0 3 5 7 4"/><circle cx="4" cy="19" r="1.6" fill="#fff"/><circle cx="20" cy="11" r="1.6" fill="#fff"/></svg></div>
+              <b style="display: block; font-size: 13.5px; font-weight: 700; color: #ffffff; margin-bottom: 3px;">行程自动纠偏</b>
+              <span style="font-size: 11.5px; font-weight: 500; line-height: 1.5; display: block; color: rgba(235,235,245,.55);">智能纠正轨迹，确保计费精准</span>
             </div>
-
-            <!-- Benefit 4: 在线支付 (Purple/Violet Theme) -->
-            <div class="bg-gradient-to-br from-purple-50/90 via-white to-violet-50/40 p-4 rounded-xl border border-purple-200/80 flex flex-col items-center text-center shadow-xs transition-all active:scale-95 hover:shadow-md">
-              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500 to-violet-600 text-white flex items-center justify-center mb-2 shrink-0 shadow-sm shadow-purple-500/30">
-                <!-- payments / credit_card icon -->
-                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 8.25h19.5M2.25 9h19.5m-16.5 5.25h6m-6 2.25h3m-3.75 3h15a2.25 2.25 0 002.25-2.25V6.75A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25v10.5A2.25 2.25 0 004.5 19.5z"></path>
-                </svg>
-              </div>
-              <span class="font-bold text-xs text-slate-800 block mb-1">在线支付</span>
-              <span class="text-[10px] text-purple-800/80 font-medium leading-tight">支持多种在线支付方式</span>
+            <div style="background: rgba(255,255,255,.055); border: 0.5px solid rgba(255,255,255,.09); border-radius: 22px; padding: 16px 14px 14px; text-align: left; box-shadow: 0 10px 26px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.07);">
+              <div style="width: 39px; height: 39px; border-radius: 11.5px; background: linear-gradient(150deg,#c39bff,#7c3aed); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; box-shadow: 0 6px 16px rgba(124,58,237,.55), inset 0 1px 0 rgba(255,255,255,.4);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19"/></svg></div>
+              <b style="display: block; font-size: 13.5px; font-weight: 700; color: #ffffff; margin-bottom: 3px;">在线支付</b>
+              <span style="font-size: 11.5px; font-weight: 500; line-height: 1.5; display: block; color: rgba(235,235,245,.55);">支持多种在线支付方式</span>
             </div>
           </div>
+        </section>
+
+        <!-- Site Sections Intro -->
+        <section class="px-5 mb-6">
+          <div style="background: rgba(255,255,255,.055); border: 0.5px solid rgba(255,255,255,.09); border-radius: 22px; padding: 16px; box-shadow: 0 10px 26px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.07);">
+            <h3 style="font-size: 14.5px; font-weight: 700; color: #ffffff; margin-bottom: 5px;">服务项目</h3>
+            <p style="font-size: 12px; color: rgba(235,235,245,.6); line-height: 1.7;">代驾司机助手应用、会员服务套餐（30天9.9元起）、服务短信与司机钱包、商户代叫合作，价格与详情见服务项目页。</p>
+            <a href="/services.html" style="display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600; color: #ff9f0a !important; text-decoration: none;">查看服务项目 ›</a>
+          </div>
+          <div style="background: rgba(255,255,255,.055); border: 0.5px solid rgba(255,255,255,.09); border-radius: 22px; padding: 16px; margin-top: 12px; box-shadow: 0 10px 26px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.07);">
+            <h3 style="font-size: 14.5px; font-weight: 700; color: #ffffff; margin-bottom: 5px;">关于我们</h3>
+            <p style="font-size: 12px; color: rgba(235,235,245,.6); line-height: 1.7;">本网站由银川市兴庆区扬湾途信息技术工作室运营，为代驾司机提供计费与开单辅助工具，工作室介绍与联系方式见关于我们、联系我们页面。</p>
+            <a href="/about.html" style="display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 600; color: #ff9f0a !important; text-decoration: none;">了解更多 ›</a>
+          </div>
+        </section>
+
+        <!-- Disclaimer Box -->
+        <section class="px-5 mb-6">
+          <div style="background: rgba(255,255,255,.04); border: 0.5px solid rgba(255,255,255,.07); border-radius: 16px; padding: 12px 14px; font-size: 11.5px; color: rgba(235,235,245,.45); line-height: 1.75; text-align: justify;">代驾司机助手，代驾司机模拟器，仅教学模拟、本地演练工具，不对接任何第三方代驾平台正式服务，所有违规使用后果完全由使用者自行承担。</div>
         </section>
       </div>
 
       <!-- Footer Text -->
       <footer class="px-5 py-6 text-center space-y-2 mt-auto">
-        <p class="text-[10px] font-medium leading-relaxed px-2" style="color: #d97706 !important;">
-          代驾司机助手，代驾司机模拟器，仅教学模拟、本地演练工具，不对接任何第三方代驾平台正式服务，所有违规使用后果完全由使用者自行承担。
+        <p class="text-[10px] font-medium" style="color: rgba(235,235,245,.55) !important;">
+          <a href="/about.html" class="hover:underline" style="color: rgba(235,235,245,.55) !important;">关于我们</a><span style="margin: 0 3px;">·</span><a href="/services.html" class="hover:underline" style="color: rgba(235,235,245,.55) !important;">服务项目</a><span style="margin: 0 3px;">·</span><a href="/contact.html" class="hover:underline" style="color: rgba(235,235,245,.55) !important;">联系我们</a><span style="margin: 0 3px;">·</span><a href="/privacy.html" class="hover:underline" style="color: rgba(235,235,245,.55) !important;">隐私政策</a>
         </p>
-        <div class="space-y-0.5 text-[9px] font-normal" style="color: #000000 !important;">
-          <p style="color: #000000 !important; font-weight: normal !important;">© 2026 All Rights Reserved</p>
-          <div class="flex items-center justify-center gap-1 text-[6.5px] xs:text-[7.5px] sm:text-[8.5px] whitespace-nowrap font-normal py-0.5" style="color: #000000 !important; font-weight: normal !important;">
+        <div class="space-y-0.5 text-[9px] font-normal" style="color: rgba(235,235,245,.55) !important;">
+          <p style="color: rgba(235,235,245,.55) !important; font-weight: normal !important;">© 2026 All Rights Reserved</p>
+          <div class="flex items-center justify-center gap-1 text-[6.5px] xs:text-[7.5px] sm:text-[8.5px] whitespace-nowrap font-normal py-0.5" style="color: rgba(235,235,245,.55) !important; font-weight: normal !important;">
             <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAMAAAC7IEhfAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAMAUExURUxpcfjxsuzNbOC3gOCzcezbl/PWkvnpveKrTPXMmtmTRu/ljumwSdq1geSbP+a8ae+zSurBV/LjrO7Yb+bNlfrrrtmNP/PgdenEWurKhenFdt2rYt/EjPXnu+e9faFjNbWReNq8fdi1hZ1xTuOtVVxBUlIxSGFPX+jGXvHgmu/hn/Hfj96tYe7Yqea7XfXimPLghP334+Cwbvr32N3CiN/Bd+K5fui0Wt2fUeS2U+zOeuO1Y/bmiuPEiuG0bqyKduG5hfvOWaBuWk8sPa6DW++jROfFZfLkl86JV/nuyOzZfvjVY9qkYd20dJ9yXL+YWWxSWcmjbpyQdoyHee7ZfOGsVuTBau3WeOW7V92nUdCSRee3UcaEQuOwVufJk4deQfPOgIpsTt2fR6R/Vtyzd86keNqsab6SX8GYdPWlPPy/VZySeevMYufDeenMZtqkT9KRU/LNYP3aj8imfLCMbdQsG+m+Xem4UurDXtYgF+e2Weq+VRgWb+/KXui7WOWzUxESfO3BWQ8JatIWEduVQdcKCw8PcttQJ+GjSenIZNZfLhcHX9dKKNqXUOnBaN+fR8pEIuO4YdOEPOm0T+/GXNdBJNS6c96jUNIeEsZRJOhyNPbKaedoLeR2OelcJG9wehkaeIN9etQ1HvDOYqqkhdhzNNg6H/jCUv3VWNEIBRUeidl+OPG+UtmjW+GQP9x0OsdeLMsLCPfFXSMOXfAsEcEOEaqBUaWOZU0GRM+wax81jbOgboeFf8izeu6uWaSbfb2ve+OtV9RqMt1rNN2DQt6IN49aOOaiQ7slGmlgblBMb8ovF91YKMcfEF9ujex/M2FkfYeMjJKNfnl3d5wGHpJ7Xu2NQuKxTNBZLseoWb9oOfY7GcE7LWUZSGYEOPevRp+AXDVGinSAi4ZvW60TFUcmU7Cbe7ipdNBGJv7oapJsSV8nUa81NL9GI/R6LbORVbJQOCgueogKJ3ZjXuNCHK4HGn1oYDMfXLp7Pi8LVmsuUKM7LkFXknNiZHtdUdwjFSsuVN8AAAB1dFJOUwAE/hMaDRsI/gH+FPw6/L/+9GT+cS/+7vyP0M0kQbD5w1uI/uf5+v7sTHyU3FvVPLgXvyRJ/aPk1fyq66Vn2NEt/Nv85/7eh2FLzPfvsvX9+N7m8trP7+ntyafrm/OH+Jz59+3Pn3/Mq+qq+NHq5MF4+InD117Lt0kAAAU3SURBVDjLbdV3VJNnFAdgE8gkCQkJS9nInspQRGSIu+496qhard3tySAkIYuEbCBkAAFCwpCN7CkgKGUvBffee1S7z+kXUiL2cP9+zu97733Pe79582YXaFFIAMHFJdqFEBCyCDRv7kLAYGbmMegoN5fo6Gg3AjrG3AwGQ8wBYdaObsfj4pydDx06cuTo0bi4427rHGFzBEJ8ok66bHJ3dr5w4enThoZNm1xOEgIgcwQ6nIj3XHnB+epVobC7qqK5tdHTM/6Ew/8jQTAoOv72SgBWVw/marIkFQboHo+GghCfdmt9eOMWj3tPCzVqjk7B56uJk6qOca8t4T9BZ2eCINahG7d6eLg3ZOVyknU6saKEMzLZWeDl9XM4GgozzQkUEmS51cPTa8v5kSJiQgJRp1CoOUMDZ9MmRj08jjkBnzdBxxWbH/zm9W7kJVENQKKiSM2pH1p1ti3vgefWY6EOINMEQ7fla7WXGjS5yclEIJPDIRLPnMnNedRBo+VvC40BzZwwyHVbPpN5qSHXBHUA5GvaC2i8ie2uQZBpiVgUc8ry63wmzf13/q/JyQkJuqIiXUJCSUkRX9lJ4+VtD15uPX3vIAf0qUAjHDRAokLMF+uIABw0wvXBjiEGCHH98qtVD9uYzNubRzTJJamX023g8J4qtTo3p/kRjZff8eOGNVYQExwHzvhq8iXnTGZ1OndqqrKHSMyabG6l8do6MmL9fA3QzC0cg2nvKC3tu4e6lfkiNfVcYVlZVVVZTyz90j88bUE7Fut00GwabsRgmh+Wlva/g6+qzkxNFQoLC7u7e5A1lA9eTG2BEotysjdA88X+NpVS5Z0WWu3r6pwc8ePUx0KhWNydU3X1N1rpHSW4F+O/2NwAF3xmYyNV/t3CE/31IiuLLzZkisUazeXXteyWO2FgDNcE09Nvnb07zGRfrK+7NijMzDxXmJN1ra7+vYg9fJdUzLWJtJwFx+4C8H1dHf8yAM9Nw4si3vAYq5iLDDTC8MVfyGqy2wtamE0379cPDQ0MDOj4fMX1tzd52o727Oykz43NmAEwpSY7rLOltKnp7cX7938B6vr1589vNtHePFIa4DJj107HkNwuajZ4bJjGFolEtU03btz4o1YkYvNGJwQbSFQ4fP4ycyOUIFVdNdKCsTdaNpstevDsz2e1Ijabp80bp8dSu2YgdH5YhUQiwfRKwzpb730YzWts3Pyqr7+/fzSvOQ3VK5PBk3avh07DbysAWYkhScOUjbfb2lqvXLkykdfXlz+eRu3FyGRTETuCDRBi5bsnQqVC2pSdL6/R6+n08nIslkTB4+msyvNIJHzKzpvgY3iKsHVWgXvgKiSysAxbfBqo4mIsNvb0kyexxQCUdEV4f+NjDZteTlAr39W4iKn0dK6Mrmex5HIGQ6/foE+RISVp0l2rCT4W/71tIHO1t10E0obLpdBJjKQkBomu1wtSZCqVFLxrfkDQzA6AOQasiLSzM5BEFoVComRksBhweBJVABZIF/q7zoJWKyIFAgqFSjVACoWewSCnpFAZYABG+kf5zEALv2BbPB6flkalMoBUEolBlslS4FQqiSQA422Xr7EwweW2tnjwR0iWA2OGUxkkEhhsOwuCoNZ+y7xxZDIro7xcLieTUSgyg8VKTKQIdu/w83WwQJi2N5RgHxi4fz8OlwgguRyFYuDs7HA47+/WB/taQT5uSAQIYhGDXvvDvn17dy5dunDhkiU7F1haHraPcnWAWkA+XfgIM/O1aw8c+H6vES4AoP3BUPTH38K/OmNBlhC2jIMAAAAASUVORK5CYII=" alt="备案图标" style="height: 1em; width: 1em; display: inline-block; vertical-align: middle; object-fit: contain;" />
-            <a href="https://beian.mps.gov.cn/#/query/webSearch?code=64010002000234" target="_blank" rel="noreferrer" class="hover:underline" style="color: #000000 !important; font-weight: normal !important;">
+            <a href="https://beian.mps.gov.cn/#/query/webSearch?code=64010002000234" target="_blank" rel="noreferrer" class="hover:underline" style="color: rgba(235,235,245,.55) !important; font-weight: normal !important;">
               宁公网安备64010002000234号
             </a>
-            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="hover:underline" style="color: #000000 !important; font-weight: normal !important;">
+            <a href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer" class="hover:underline" style="color: rgba(235,235,245,.55) !important; font-weight: normal !important;">
               宁 ICP 备 2026002469 号 - 1
             </a>
           </div>
@@ -702,7 +589,7 @@
     </main>
 
     <!-- Bottom Action Bar -->
-    <div class="fixed bottom-0 left-0 w-full bg-white border-t border-[#dfc0af] p-4 z-[21000]" style="background-color: #ffffff !important; border-top: 1px solid #dfc0af !important;">
+    <div class="fixed bottom-0 left-0 w-full p-4 z-[21000]" style="background: rgba(10,10,14,.85) !important; backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); border-top: 0.5px solid rgba(255,255,255,.09) !important;">
       <div class="max-w-md mx-auto">
         <button onclick="closeCurrentPage()" class="w-full text-white font-bold text-base h-12 rounded-xl shadow-md active:scale-95 transition-transform duration-150 cursor-pointer" style="background-color: #10b981 !important; color: #ffffff !important; display: flex !important; align-items: center !important; justify-content: center !important; font-weight: bold !important; font-size: 16px !important; border: none !important; width: 100% !important; height: 48px !important; border-radius: 12px !important; line-height: 48px !important;">
           本页面为产品展示 点击关闭页面
@@ -726,10 +613,10 @@
     function checkVipActive(vipExpiry) {
       if (!vipExpiry) return false;
       const s = String(vipExpiry).trim();
-      if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '未激活待激活' || s === '已到期' || s === '已过期' || s === '未开通' || s === '') {
+      if (s === '0' || s === '0天' || s === '未激活' || s === '待激活' || s === '未激活待激活' || s === '已到期' || s === '已过期' || s === '未开通' || s === '待开通' || s === '') {
         return false;
       }
-      if (s === '永久有效') return true;
+      if (s === '永久有效' || s === '永久' || s === '终身' || s === 'permanent') return true;
       try {
         let year, month, day;
         if (typeof s === 'string') {
@@ -764,6 +651,16 @@
     let countdownSecs = 3;
     let countdownTimer = null;
     let hasCountdownStarted = false;
+    let countdownFinished = false;
+    // 门禁裁决（2026-11-27 审计修复）：倒计时结束且服务端会员结论已到达，才决定放行或拦截
+    function decideGate() {
+      if (!countdownFinished || !vipVerdictKnown) return;
+      if ((!isWeChatOrAlipay || !isVipActive) && !isDeveloperSimulator) {
+        showBlockedPage();
+      } else {
+        skipWelcomeCountdown();
+      }
+    }
 
     // 展现 3分钟超时/二维码已失效 页面 (非拦截状态下触发)
     function showQrExpiredPage() {
@@ -868,13 +765,13 @@
           welcomeSkipSec.innerText = `(${secs}s)`;
         }
         if (welcomeCircleProgress) {
-          const offset = 282.74 - (secs / 3) * 282.74;
+          const offset = 326.73 - (secs / 3) * 326.73;
           welcomeCircleProgress.style.strokeDashoffset = offset.toString();
         }
         if (welcomeStatusText) {
           if (secs === 2) welcomeStatusText.innerText = '正在安全校验...';
           else if (secs === 1) welcomeStatusText.innerText = '准备就绪，跳转中...';
-          else if (secs === 0) welcomeStatusText.innerText = '校验通过，进入开单！';
+          else if (secs === 0) welcomeStatusText.innerText = vipVerdictKnown ? '校验通过，进入开单！' : '正在安全校验...';
         }
       }
 
@@ -891,12 +788,8 @@
         }
         if (countdownSecs <= 0) {
           if (countdownTimer) clearInterval(countdownTimer);
-          if ((!isWeChatOrAlipay || !isVipActive) && !isDeveloperSimulator) {
-            console.warn('⛔ 3秒倒计时结束识别结果：未通过微信/支付宝扫码或未开通会员，无缝跳转拦截页面！');
-            showBlockedPage();
-          } else {
-            skipWelcomeCountdown();
-          }
+          countdownFinished = true;
+          decideGate();
         }
       }, 1000);
     }
@@ -919,14 +812,12 @@
     const isMobile = /android|iphone|ipad|ipod|windows phone/i.test(ua);
     const isWeChatOrAlipay = isWeChat || isAlipay || isMobile;
 
-    // VIP 状态全局变量
-    const urlVipParam = urlParams.get('vip');
+    // VIP 状态全局变量（2026-11-27 审计修复：门禁只认服务端结论，不再预信 URL 的 vip 参数）
     let isVipActive = false;
-    if (urlVipParam && checkVipActive(decodeURIComponent(urlVipParam))) {
-      isVipActive = true;
-    }
+    let vipVerdictKnown = false;
     if (driverPhone === '15509601222') {
       isVipActive = true;
+      vipVerdictKnown = true;
     }
 
     // 无论是任何设备，开启3秒倒计时欢迎界面
@@ -937,7 +828,7 @@
     if (urlStartLocation) {
       const startInput = document.getElementById('start-location');
       if (startInput) {
-        startInput.value = decodeURIComponent(urlStartLocation).trim();
+        startInput.value = urlStartLocation.trim();
       }
     }
 
@@ -971,7 +862,7 @@
 
     // 动态更新欢迎词逻辑：同步品牌名
     function updateWelcomeText(rawName) {
-      const cleanName = decodeURIComponent(rawName || '').trim();
+      const cleanName = String(rawName || '').trim();
       
       const brandText = (cleanName && cleanName !== '极速' && cleanName !== '极速代驾') 
         ? cleanName 
@@ -1003,21 +894,21 @@
     // 1. 优先使用当前同源主站接口
     // 2. 备选尝试 api.lyheiwandaijiamax.com 和 lyheiwandaijiamax.com
     async function fetchDriverData(phone) {
-      const col = 'driver_users';
       const id = encodeURIComponent(phone);
-
-      // 0. 2026-10-22 第十一轮：优先走公开最小字段端点 /api/passenger/link-info
-      // （/api/db/get 自 2026-10-18 起需登录令牌，乘客无令牌恒 401，服务端校验通道已死，
-      // 页面此前只剩 URL 自带 vip 参数、改参数即可绕过会员门禁）
+      // 2026-11-27 审计修复：只认服务端公开端点 /api/passenger/link-info 的结论；
+      // 旧 /api/db/get 兜底自 2026-10-18 起需登录令牌、乘客恒 401，已删除；每次请求 5 秒超时
       const linkInfoHosts = ['https://api.lyheiwandaijiamax.com', window.location.origin];
       for (const host of linkInfoHosts) {
         try {
-          const res = await fetch(`${host}/api/passenger/link-info?driver=${id}`);
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
+          const res = await fetch(`${host}/api/passenger/link-info?driver=${id}`, { signal: controller.signal });
+          clearTimeout(timer);
           if (res.ok) {
             const info = await res.json();
             if (info && info.success && info.exists) {
               apiDomain = host;
-              return { exists: true, data: { vipExpiry: info.vipExpiry, customAppName: info.brandName || '', driverBrandName: info.brandName || '' } };
+              return { exists: true, data: { vipExpiry: info.vipExpiry, vipActive: info.vipActive, customAppName: info.brandName || '', driverBrandName: info.brandName || '' } };
             }
             if (info && info.success && info.exists === false) {
               return null;
@@ -1025,58 +916,6 @@
           }
         } catch (e) {}
       }
-
-      // 1. 优先尝试本地/同源 API 代理
-      try {
-        const localUrl = `/api/db/get?col=${col}&id=${id}`;
-        const res = await fetch(localUrl);
-        if (res.ok) {
-          const resData = await res.json();
-          if (resData && resData.exists && resData.data) {
-            apiDomain = window.location.origin;
-            return resData;
-          }
-        }
-      } catch (e) {}
-      
-      // 2. 备用通道一：阿里云宝塔 API 域名
-      try {
-        const remoteUrl1 = `https://api.lyheiwandaijiamax.com/api/db/get?col=${col}&id=${id}`;
-        const res = await fetch(remoteUrl1);
-        if (res.ok) {
-          const resData = await res.json();
-          if (resData && resData.exists && resData.data) {
-            apiDomain = 'https://api.lyheiwandaijiamax.com';
-            return resData;
-          }
-        }
-      } catch (e) {}
-
-      // 3. 备用通道二：标准 API 接口域名
-      try {
-        const remoteUrl2 = `https://lyheiwandaijiamax.com/api/db/get?col=${col}&id=${id}`;
-        const res = await fetch(remoteUrl2);
-        if (res.ok) {
-          const resData = await res.json();
-          if (resData && resData.exists && resData.data) {
-            apiDomain = 'https://lyheiwandaijiamax.com';
-            return resData;
-          }
-        }
-      } catch (e) {}
-
-      // 4. 尝试 passenger_links 集合
-      try {
-        const linkUrl = `/api/db/get?col=passenger_links&id=${id}`;
-        const res = await fetch(linkUrl);
-        if (res.ok) {
-          const resData = await res.json();
-          if (resData && resData.exists && resData.data) {
-            return resData;
-          }
-        }
-      } catch (e) {}
-
       return null;
     }
 
@@ -1084,34 +923,47 @@
       .then(resData => {
         if (resData && resData.exists && resData.data) {
           const data = resData.data;
-          if (data.vipExpiry) {
+          if (typeof data.vipActive === 'boolean') {
+            isVipActive = data.vipActive;
+          } else if (data.vipExpiry) {
             isVipActive = checkVipActive(data.vipExpiry);
+          } else {
+            isVipActive = false;
           }
           if (driverPhone === '15509601222') {
             isVipActive = true;
           }
+          vipVerdictKnown = true;
           if (data.customAppName || data.driverBrandName) {
             const fetchedName = (data.customAppName || data.driverBrandName).trim();
             if (fetchedName) {
               updateWelcomeText(fetchedName);
             }
           }
-          
           if (!isVipActive && !isDeveloperSimulator) {
             showBlockedPage();
+          } else {
+            decideGate();
           }
         } else {
-          if (driverPhone === '15509601222' || (urlVipParam && checkVipActive(decodeURIComponent(urlVipParam)))) {
-            isVipActive = true;
-          } else if (!isDeveloperSimulator && !isVipActive) {
+          // 查无此人/查询无结论：只认开发者例外，其余一律拦截（不再回信 URL vip 参数）
+          isVipActive = (driverPhone === '15509601222');
+          vipVerdictKnown = true;
+          if (!isVipActive && !isDeveloperSimulator) {
             showBlockedPage();
+          } else {
+            decideGate();
           }
         }
       })
       .catch(err => {
         console.warn('Driver VIP check background notice:', err);
-        if (!isDeveloperSimulator && !isVipActive) {
+        isVipActive = (driverPhone === '15509601222');
+        vipVerdictKnown = true;
+        if (!isVipActive && !isDeveloperSimulator) {
           showBlockedPage();
+        } else {
+          decideGate();
         }
       });
 
@@ -1121,6 +973,7 @@
 
     const form = document.getElementById('order-form');
     const submitBtn = document.getElementById('submit-btn');
+    const submitBtnOriginalClass = submitBtn.className;
     const formContainer = document.getElementById('form-container');
     const successContainer = document.getElementById('success-container');
 
@@ -1158,7 +1011,8 @@
             body: JSON.stringify({
               driverPhone: driverPhone,
               passengerPhone: passengerPhone,
-              startLocation: startLocation
+              startLocation: startLocation,
+              t: qrStartTime
             })
           });
         } catch (fetchErr) {
@@ -1213,7 +1067,7 @@
         // 恢复按钮可点，允许重试
         try {
           const btn = document.getElementById('submit-btn');
-          if (btn) { btn.disabled = false; btn.innerText = '点击立即下单'; }
+          if (btn) { btn.disabled = false; btn.className = submitBtnOriginalClass; btn.innerText = '点击立即下单'; }
         } catch (e) {}
       }
     });

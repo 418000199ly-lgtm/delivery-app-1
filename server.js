@@ -1572,7 +1572,7 @@ async function startServer() {
   };
   seedSuperAdminAccount();
   console.log("[Membership] startup consolidation disabled (unified state machine)");
-  const SERVER_VERSION = "d3026eee";
+  const SERVER_VERSION = "ba8e4e90";
   app.get("/api/health", (req, res) => {
     res.json({ status: "healthy", timestamp: Date.now(), version: SERVER_VERSION.startsWith("__") ? "dev" : SERVER_VERSION, hmac: true });
   });
@@ -3536,6 +3536,9 @@ async function startServer() {
       pending0559Offline: false,
       lastOfflineReason: reason,
       lastOfflineTime: (/* @__PURE__ */ new Date()).toISOString(),
+      // 2026-11-26 下线残绿根治：记下线毫秒时间戳，供 /api/driver/location
+      // 的 15 秒防翻转兜底判断（下线后迟到的周期性上报不得复活在线）。
+      lastOfflineAt: Date.now(),
       lastUpdatedTime: (/* @__PURE__ */ new Date()).toISOString()
     };
     if (isMySQLEnabled && mysqlPool) {
@@ -3735,6 +3738,13 @@ async function startServer() {
       }
       const collectionsToUpdate = ["driver_users", "driver_locations"];
       const prevLocSnapshot = { ...dbData.driver_locations?.[phone] || {} };
+      const lastOfflineAt = Number(prevLocSnapshot.lastOfflineAt || 0);
+      const isStaleOnlineFlip = isOnline === true && typeof req.body.lastUpdatedBy === "string" && lastOfflineAt > 0 && Date.now() - lastOfflineAt < 15e3;
+      if (isStaleOnlineFlip) {
+        delete patch.isOnline;
+        delete patch.kickedOfflineAt;
+        delete patch.kickReason;
+      }
       collectionsToUpdate.forEach((col) => {
         if (!dbData[col]) dbData[col] = {};
         const prev = dbData[col][phone] || {};
@@ -3769,7 +3779,7 @@ async function startServer() {
           });
         }
       }
-      return res.json({ success: true, isOnline: patch.isOnline, serverTime: Date.now(), ...coordsIgnored ? { coordsIgnored: true } : {} });
+      return res.json({ success: true, isOnline: patch.isOnline !== void 0 ? patch.isOnline : Boolean(prevLocSnapshot.isOnline), serverTime: Date.now(), ...coordsIgnored ? { coordsIgnored: true } : {} });
     } catch (err) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -4817,6 +4827,23 @@ ${lines}
       return res.json({ ok: true, url: `${WAP_SITE_BASE}/${page}?t=${encodeURIComponent(token)}` });
     } catch (e) {
       return res.status(500).json({ ok: false, error: e?.message || "\u751F\u6210\u8D2D\u4E70\u5165\u53E3\u5931\u8D25" });
+    }
+  });
+  app.get("/api/pay/review-entry", async (req, res) => {
+    try {
+      const cfg = await Promise.resolve(readCanonicalDocument("config", "review_entry")).catch(() => null);
+      const key = String(cfg?.key || "");
+      if (!key || cfg?.enabled === false) return res.status(404).send("not found");
+      const given = Buffer.from(String(req.query?.k || ""));
+      const expect = Buffer.from(key);
+      if (given.length !== expect.length || !import_crypto.default.timingSafeEqual(given, expect)) {
+        return res.status(404).send("not found");
+      }
+      const REVIEW_PHONE = "15121904440";
+      const token = await createWapEntryToken(REVIEW_PHONE, "vip");
+      return res.redirect(302, `${WAP_SITE_BASE}/vip?t=${encodeURIComponent(token)}`);
+    } catch (_) {
+      return res.status(500).send("error");
     }
   });
   app.post("/api/pay/alipay/create-wap-order", async (req, res) => {
@@ -8905,13 +8932,24 @@ ${lines}
       if (!/^1[3-9]\d{9}$/.test(driver)) {
         return res.status(400).json({ success: false, error: "\u53F8\u673A\u624B\u673A\u53F7\u683C\u5F0F\u9519\u8BEF" });
       }
+      const liIp = getClientIp(req);
+      const liNow = Date.now();
+      if (!global.__linkInfoLogs) global.__linkInfoLogs = /* @__PURE__ */ new Map();
+      const liLogs = global.__linkInfoLogs;
+      const liArr = (liLogs.get(liIp) || []).filter((t) => liNow - t < 6e4);
+      if (liArr.length >= 60) {
+        return res.status(429).json({ success: false, error: "\u64CD\u4F5C\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
+      }
+      liArr.push(liNow);
+      liLogs.set(liIp, liArr);
       const doc = await readStatusDocument("driver_users", driver) || await readStatusDocument("squad_members", driver);
       if (!doc) {
         return res.json({ success: true, exists: false });
       }
       const { vipExpiry } = await readDriverExpiryUnified(driver);
       const brandName = String(doc.customAppName || doc.driverBrandName || "").trim();
-      return res.json({ success: true, exists: true, vipExpiry: vipExpiry || doc.vipExpiry || "\u5F85\u5F00\u901A", brandName });
+      const effectiveVipExpiry = vipExpiry || doc.vipExpiry || "\u5F85\u5F00\u901A";
+      return res.json({ success: true, exists: true, vipExpiry: effectiveVipExpiry, vipActive: isVipActiveServer(effectiveVipExpiry), brandName });
     } catch (err) {
       return res.status(500).json({ success: false, error: "\u67E5\u8BE2\u5931\u8D25" });
     }
@@ -8940,6 +8978,13 @@ ${lines}
       const cleanPassengerPhone = String(passengerPhone).replace(/\D/g, "").trim();
       if (!/^1[3-9]\d{9}$/.test(cleanDriverPhone) || !/^1[3-9]\d{9}$/.test(cleanPassengerPhone)) {
         return res.status(400).json({ success: false, error: "\u624B\u673A\u53F7\u683C\u5F0F\u9519\u8BEF" });
+      }
+      const qrT = Number(req.body?.t || 0);
+      if (qrT > 0) {
+        const nowTs = Date.now();
+        if (nowTs - qrT > 24e4 || qrT - nowTs > 6e4) {
+          return res.status(410).json({ success: false, error: "\u4E8C\u7EF4\u7801\u5DF2\u8D85\u65F6\uFF0C\u8BF7\u8054\u7CFB\u53F8\u673A\u91CD\u65B0\u51FA\u793A\u4E8C\u7EF4\u7801" });
+        }
       }
       const clientIp = getClientIp(req);
       const now = Date.now();

@@ -1,15 +1,11 @@
 import React from 'react';
 import { IS_STORE_BUILD, SUPPORT_EMAIL } from '../lib/channel';
 
-// 隐私政策全文（2026-11-17 定稿）：设置页常驻入口与首启同意弹窗共用同一份内容，
-// 与提交应用商店的隐私政策文本保持一致。
+// 隐私政策全文（2026-11-17 定稿）：设置页常驻入口与首启同意弹窗共用同一份内容。
+// 2026-11-26 用户决定：开头的主体介绍段取消显示（不再上架应用商城，无需该段）。
 export default function PrivacyPolicyContent() {
   return (
     <div className="space-y-4 text-gray-600 leading-relaxed text-sm">
-      <p>
-        本应用「黑湾代驾MAX」（包名 com.heiwan.daijia）由银川市兴庆区扬湾途信息技术工作室（个体工商户）开发与运营。我们非常重视您的个人信息保护，请您在使用本应用前仔细阅读本政策。
-      </p>
-
       {IS_STORE_BUILD && (
         <p>
           特别说明：本应用会收集您的个人信息，具体类别见本政策第一节；除本政策第六节列明的情形外，我们不会与任何第三方共享您的个人信息，也不会出售您的个人信息。如您对个人信息处理有疑问，可通过邮箱 {SUPPORT_EMAIL} 联系我们。

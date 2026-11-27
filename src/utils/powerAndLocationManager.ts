@@ -241,6 +241,11 @@ export function startAdaptiveLocationReporter(config: LocationReporterConfig): (
 
   if (!userPhone || !isOnline || !isSquadApprovedOrManagement) {
     stopBackgroundKeepAlive();
+    // 2026-11-26 下线残绿根治：走到这里说明司机已下线/被踢/未入队/未登录，
+    // 原生服务必须立刻真停，不能走 3 秒防抖——防抖窗口内原生上报仍会发
+    // isOnline=true 把下线翻回在线。依赖变化引起的重建走下方 dispose 的
+    // 防抖停（紧随其后的 start 会取消待停），不受影响。
+    stopNativeLocationService(true);
     return () => {};
   }
 

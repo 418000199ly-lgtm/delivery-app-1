@@ -43,7 +43,7 @@ except Exception as _e:
     print(f"版本号注入跳过: {_e}")
 
 # 3. Ensure passenger_order.html and other standalone HTMLs are in dist root
-standalone_htmls = ['passenger_order.html', 'aliyun_passenger_deploy.html', 'vip_buy.html', 'vip_pay.html', 'wallet_recharge.html']
+standalone_htmls = ['passenger_order.html', 'aliyun_passenger_deploy.html', 'vip_buy.html', 'vip_pay.html', 'wallet_recharge.html', 'about.html', 'services.html', 'contact.html']
 for html in standalone_htmls:
     if os.path.exists(html):
         shutil.copy(html, os.path.join("dist", html))
@@ -63,6 +63,8 @@ image_files_to_sync = [
     'vip_banner.jpg',
     'wechat_card_banner.jpg',
     'welcome_bg.jpg',
+    'hero_drive.jpg',
+    'driver_avatar_cartoon.jpg',
     'beian.png',
     'beian.svg',
     'beiantubiao.png',
@@ -166,6 +168,9 @@ include_items = [
     'vip_buy.html',
     'vip_pay.html',
     'wallet_recharge.html',
+    'about.html',
+    'services.html',
+    'contact.html',
     'hwdjtb.png',
     'vip_banner.jpg',
     'welcome_bg.jpg',

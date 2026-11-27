@@ -53,7 +53,7 @@ import { downloadDeployZip } from './utils/downloadHelper';
 import { safeSetItem, safeGetItem, safeRemoveItem } from './utils/safeStorage';
 import { scheduleResumeTask } from './utils/resumeCoordinator';
 import { startAdaptiveLocationReporter, initGlobalPowerManager, reportDriverBusyStatus } from './utils/powerAndLocationManager';
-import { updateNativeLocationState } from './utils/nativeLocationService';
+import { updateNativeLocationState, stopNativeLocationService } from './utils/nativeLocationService';
 import { DEVELOPER_PHONE, CURRENT_CLIENT_APP_VERSION } from './utils/constants';
 import AppUpdateModal from './components/AppUpdateModal';
 import { checkAppUpdate, hasPendingForcedUpdate, isUpdateSnoozed, type AppUpdateInfo } from './lib/appUpdate';
@@ -1668,6 +1668,9 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
   }, [userPhone]);
 
   const handleLogout = () => {
+    // 2026-11-26 下线残绿根治：登出即立刻停原生定位服务，防 3 秒防抖窗口内
+    // 原生上报把 isOnline=true 发出去复活在线（同 handleToggleOnline 下线路径）。
+    stopNativeLocationService(true);
     // P1-2修复(2026-10-14)：登出时通知服务端拉黑 token，防止泄露后登出无法止损
     try {
       const token = localStorage.getItem('dd_auth_token');
@@ -3872,6 +3875,13 @@ const checkIsOnlineSessionValid = (now = new Date()): boolean => {
     }
     setIsOnline(online);
     localStorage.setItem('dd_is_online', online ? 'true' : 'false');
+
+    // 2026-11-26 下线残绿根治：手动下线先立刻停原生定位服务、再发下线写库——
+    // 否则 3 秒防抖窗口内原生服务仍会发 isOnline=true 的上报，把刚写下的下线
+    // 翻回在线（生产实证：下线 2 秒后一笔原生上报复活，附近页持续绿约 5 分钟）。
+    if (!online) {
+      stopNativeLocationService(true);
+    }
 
     // 滑动上线/下线即时上报阿里云（2026-10-11）
     try {

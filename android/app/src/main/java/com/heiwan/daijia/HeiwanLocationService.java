@@ -51,6 +51,12 @@ import java.nio.charset.StandardCharsets;
  *
  * 配置由 HeiwanLocationPlugin 写入 SharedPreferences（heiwan_loc），
  * 本服务每次上报现读现用，忙闲/今日单数等状态变更无需重启服务。
+ *
+ * 2026-11-26 下线残绿补丁：手动下线后 2 秒一笔原生上报把 isOnline 翻回
+ * true（JS 侧 stop 有 3 秒防抖，服务在窗口内仍在上报），附近页持续绿约
+ * 5 分钟才被看门狗踢下。修复：JS 侧下线/登出/自动下线一律立即真停
+ * （stopNativeLocationService(true)，不走防抖）；本服务发包前再验一次
+ * listening；服务端 /api/driver/location 另有 15 秒防翻转兜底。
  */
 public class HeiwanLocationService extends Service {
 
@@ -301,6 +307,11 @@ public class HeiwanLocationService extends Service {
                 body.put("appVersion", "V2.0");
                 body.put("lastUpdatedBy", "Native ForegroundService");
                 body.put("timestamp", System.currentTimeMillis());
+
+                // 2026-11-26 下线残绿根治：发包前再验一次 listening——stop() 与已排队/
+                // 已在组包的上报可能在工作线程上交错，入队时还在线的上报不得在下线
+                // 写入之后还把 isOnline=true 发出去（彻底兜底靠服务端 15 秒防翻转）。
+                if (!prefs.getBoolean(KEY_LISTENING, false)) return;
 
                 conn = (HttpURLConnection) new URL(API_URL).openConnection();
                 conn.setRequestMethod("POST");

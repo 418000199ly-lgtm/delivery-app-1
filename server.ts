@@ -4227,6 +4227,9 @@ function getClientIp(req: any): string {
       pending0559Offline: false,
       lastOfflineReason: reason,
       lastOfflineTime: new Date().toISOString(),
+      // 2026-11-26 下线残绿根治：记下线毫秒时间戳，供 /api/driver/location
+      // 的 15 秒防翻转兜底判断（下线后迟到的周期性上报不得复活在线）。
+      lastOfflineAt: Date.now(),
       lastUpdatedTime: new Date().toISOString()
     };
 
@@ -4511,6 +4514,21 @@ function getClientIp(req: any): string {
       // 而派单以 MySQL 位置为准，司机移动在生产上永远不被派单看见。
       const prevLocSnapshot = { ...(dbData.driver_locations?.[phone] || {}) };
 
+      // 2026-11-26 下线残绿根治（服务端兜底）：下线写入后 15 秒内，带 lastUpdatedBy
+      // 的周期性位置上报不得把 isOnline 翻回 true——原生服务停服与在途请求可能晚于
+      // 下线写入到达（生产实证：下线 2 秒后一笔原生上报复活在线，附近页持续绿约
+      // 5 分钟才被看门狗踢下）。滑动开关自己的同步上报不带 lastUpdatedBy，不受此限，
+      // 15 秒内反复上下线仍可正常上线；只丢翻转、坐标等其他字段照常落库。
+      const lastOfflineAt = Number((prevLocSnapshot as any).lastOfflineAt || 0);
+      const isStaleOnlineFlip = isOnline === true &&
+        typeof req.body.lastUpdatedBy === 'string' &&
+        lastOfflineAt > 0 && Date.now() - lastOfflineAt < 15000;
+      if (isStaleOnlineFlip) {
+        delete patch.isOnline;
+        delete (patch as any).kickedOfflineAt;
+        delete (patch as any).kickReason;
+      }
+
       collectionsToUpdate.forEach((col) => {
         if (!dbData[col]) dbData[col] = {};
         const prev = dbData[col][phone] || {};
@@ -4570,7 +4588,7 @@ function getClientIp(req: any): string {
         }
       }
 
-      return res.json({ success: true, isOnline: patch.isOnline, serverTime: Date.now(), ...(coordsIgnored ? { coordsIgnored: true } : {}) });
+      return res.json({ success: true, isOnline: patch.isOnline !== undefined ? patch.isOnline : Boolean((prevLocSnapshot as any).isOnline), serverTime: Date.now(), ...(coordsIgnored ? { coordsIgnored: true } : {}) });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -5776,6 +5794,28 @@ function getClientIp(req: any): string {
       return res.json({ ok: true, url: `${WAP_SITE_BASE}/${page}?t=${encodeURIComponent(token)}` });
     } catch (e: any) {
       return res.status(500).json({ ok: false, error: e?.message || '生成购买入口失败' });
+    }
+  });
+
+  // 支付宝提额审核专用入口（2026-11-26）：审核员没有 App 账号，凭 config/review_entry
+  // 里预置的 key 打开本接口，服务端为提审测试号现签一张 30 分钟令牌并 302 到购买页，
+  // 审核员可完整走到支付宝付款页。删除该 config 文档或置 enabled=false 即刻失效；
+  // 只绑定提审测试号，不涉及任何真实用户账号。
+  app.get('/api/pay/review-entry', async (req: any, res: any) => {
+    try {
+      const cfg: any = await Promise.resolve(readCanonicalDocument('config', 'review_entry')).catch(() => null);
+      const key = String(cfg?.key || '');
+      if (!key || cfg?.enabled === false) return res.status(404).send('not found');
+      const given = Buffer.from(String(req.query?.k || ''));
+      const expect = Buffer.from(key);
+      if (given.length !== expect.length || !crypto.timingSafeEqual(given, expect)) {
+        return res.status(404).send('not found');
+      }
+      const REVIEW_PHONE = '15121904440';
+      const token = await createWapEntryToken(REVIEW_PHONE, 'vip');
+      return res.redirect(302, `${WAP_SITE_BASE}/vip?t=${encodeURIComponent(token)}`);
+    } catch (_) {
+      return res.status(500).send('error');
     }
   });
 
@@ -10552,13 +10592,26 @@ function getClientIp(req: any): string {
       if (!/^1[3-9]\d{9}$/.test(driver)) {
         return res.status(400).json({ success: false, error: '司机手机号格式错误' });
       }
+      // 2026-11-27 审计修复：公开端点加 IP 限流，防批量枚举司机/会员信息
+      const liIp = getClientIp(req);
+      const liNow = Date.now();
+      if (!(global as any).__linkInfoLogs) (global as any).__linkInfoLogs = new Map();
+      const liLogs: Map<string, number[]> = (global as any).__linkInfoLogs;
+      const liArr = (liLogs.get(liIp) || []).filter(t => liNow - t < 60000);
+      if (liArr.length >= 60) {
+        return res.status(429).json({ success: false, error: '操作过于频繁，请稍后再试' });
+      }
+      liArr.push(liNow);
+      liLogs.set(liIp, liArr);
       const doc = (await readStatusDocument('driver_users', driver)) || (await readStatusDocument('squad_members', driver));
       if (!doc) {
         return res.json({ success: true, exists: false });
       }
       const { vipExpiry } = await readDriverExpiryUnified(driver);
       const brandName = String(doc.customAppName || doc.driverBrandName || '').trim();
-      return res.json({ success: true, exists: true, vipExpiry: vipExpiry || doc.vipExpiry || '待开通', brandName });
+      const effectiveVipExpiry = vipExpiry || doc.vipExpiry || '待开通';
+      // 2026-11-27 审计修复：直接返回服务端会员判定，页面不再自己解析日期（根治前后端口径不一致）
+      return res.json({ success: true, exists: true, vipExpiry: effectiveVipExpiry, vipActive: isVipActiveServer(effectiveVipExpiry), brandName });
     } catch (err) {
       return res.status(500).json({ success: false, error: '查询失败' });
     }
@@ -10594,6 +10647,15 @@ function getClientIp(req: any): string {
       const cleanPassengerPhone = String(passengerPhone).replace(/\D/g, '').trim();
       if (!/^1[3-9]\d{9}$/.test(cleanDriverPhone) || !/^1[3-9]\d{9}$/.test(cleanPassengerPhone)) {
         return res.status(400).json({ success: false, error: '手机号格式错误' });
+      }
+      // 2026-11-27 审计修复：服务端复验二维码 3 分钟时效（旧版只靠乘客端前端计时，可改参数/被时钟偏差绕过）。
+      // body.t 为司机出码时刻（毫秒）；容忍 60 秒双端时钟偏差；无 t 的旧页面请求兼容放行。
+      const qrT = Number((req.body as any)?.t || 0);
+      if (qrT > 0) {
+        const nowTs = Date.now();
+        if (nowTs - qrT > 240000 || qrT - nowTs > 60000) {
+          return res.status(410).json({ success: false, error: '二维码已超时，请联系司机重新出示二维码' });
+        }
       }
       // IP限流：与 /api/submit 同级，防批量骚扰。
       // 2026-10-21 第四轮：记账后移到参数校验之后——旧顺序下无效请求也消耗 3 次/分钟配额。

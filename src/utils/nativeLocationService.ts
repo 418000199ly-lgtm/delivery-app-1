@@ -55,12 +55,23 @@ export async function updateNativeLocationState(patch: Partial<HeiwanLocationCon
   } catch (_) {}
 }
 
-export async function stopNativeLocationService(): Promise<void> {
+export async function stopNativeLocationService(immediate = false): Promise<void> {
   if (!isNativeLocationServiceAvailable()) return;
   // 延迟 3 秒真停：上报器因依赖变化（切页/单数变化）会频繁销毁重建，
-  // 立即停会与紧随其后的 start 竞态把服务误杀；真下线/退出时 3 秒后
-  // 照常停（看门狗阈值 300 秒，3 秒无感）。新的 start 会取消待停。
-  if (_stopTimer) clearTimeout(_stopTimer);
+  // 立即停会与紧随其后的 start 竞态把服务误杀；新的 start 会取消待停。
+  // 但真下线/退出/被踢时必须 immediate=true 立刻停——2026-11-26 生产实证：
+  // 下线 2 秒后一笔原生上报（isOnline 写死 true）把刚写下的下线翻回在线，
+  // 附近页持续绿约 5 分钟才被看门狗踢下；3 秒防抖窗口就是这个洞。
+  if (_stopTimer) {
+    clearTimeout(_stopTimer);
+    _stopTimer = null;
+  }
+  if (immediate) {
+    try {
+      await HeiwanLocation.stop();
+    } catch (_) {}
+    return;
+  }
   _stopTimer = setTimeout(() => {
     _stopTimer = null;
     try {
