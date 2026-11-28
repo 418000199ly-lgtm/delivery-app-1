@@ -10,6 +10,7 @@
 // ============================================================
 import { Capacitor, registerPlugin} from '@capacitor/core';
 import { IS_STORE_BUILD } from './channel';
+import { openExternalUrl } from './openExternal';
 
 export const APP_BUILD: number = (() => {
 try {
@@ -134,8 +135,11 @@ if (!info.downloadUrl) return { result: 'failed', error: '下载地址为空，�
 if (nativePlatform()!== 'android') {
 // iOS：系统不允许 App 内安装，只能打开下载页走 TrollStore
 try {
-window.open(info.downloadUrl, '_system');
-} catch (_) {}
+const opened = await openExternalUrl(info.downloadUrl);
+if (!opened) return { result: 'failed', error: '未能打开下载页，请稍后重试'};
+} catch (_) {
+return { result: 'failed', error: '未能打开下载页，请稍后重试'};
+}
 return { result: 'opened_browser'};
 }
 let handle: { remove: () => Promise<void>} | null = null;

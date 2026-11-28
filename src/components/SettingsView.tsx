@@ -5,6 +5,7 @@ import { calculateDaysFromExpiry } from '../utils/nameResolver';
 import { db, doc, getDoc, updateDoc, onSnapshot, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { fetchWalletMe, saveSmsConfig, composeSmsDetailPreview, buildServiceSmsTextPreview, smsSegmentsPreview, type WalletMe } from '../lib/wallet';
 import { fetchWapEntryUrl } from '../lib/vipShop';
+import { openExternalUrl, friendlyNetworkError } from '../lib/openExternal';
 import { registerBackHandler } from '../lib/backNavigation';
 
 import { speakText, stopSpeaking, initAudioUnlock } from '../utils/speech';
@@ -466,7 +467,12 @@ export default function SettingsView({
     try {
       const beforeCents = Math.round(Number(walletMe?.balanceCents) || 0);
       const url = await fetchWapEntryUrl('wallet');
-      window.open(url, '_system');
+      const opened = await openExternalUrl(url);
+      if (!opened) {
+        setRechargeMsg('未能打开充值页，请稍后重试');
+        setRechargeBusy(false);
+        return;
+      }
       setRechargeBusy(false);
       setRechargeMsg('已打开充值页，请在页面选择金额并完成付款；付款成功后余额自动到账。');
       void (async () => {
@@ -484,7 +490,7 @@ export default function SettingsView({
         }
       })();
     } catch (e: any) {
-      setRechargeMsg(e?.message || '打开充值页失败，请重试');
+      setRechargeMsg(friendlyNetworkError(e, '打开充值页失败，请重试'));
       setRechargeBusy(false);
     }
   };

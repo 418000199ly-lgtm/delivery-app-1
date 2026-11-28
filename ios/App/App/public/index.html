@@ -11,7 +11,17 @@
     <link rel="icon" type="image/png" href="./hwdjtb.png" />
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <link rel="manifest" href="./manifest.json" />
-    <title>黑湾代驾 MAX</title>
+    <title>黑湾代驾MAX</title>
+    <meta name="description" content="专为代驾司机设计的高效在线行程、动态计费及收款管理系统。支持里程计费自定义、多时段价格配比、行程路费垫付及自动结算生成收款码等功能。" />
+    <meta property="og:title" content="黑湾代驾MAX" />
+    <meta property="og:description" content="专为代驾司机设计的高效在线行程、动态计费及收款管理系统。支持里程计费自定义、多时段价格配比、行程路费垫付及自动结算生成收款码等功能。" />
+    <!-- Gaode AMap JS API v2.0 Pre-configuration (Must precede AMap scripts) -->
+    <script type="text/javascript">
+      window._AMapSecurityConfig = {
+        securityJsCode: '0aa3912e6a88fe59f9e5f0275524feba'
+      };
+    </script>
+    <script id="amap-js-api-v2" type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=4143e567d55bbc1855231f9637efd6b0&plugin=AMap.Geocoder,AMap.Geolocation,AMap.Driving,AMap.AutoComplete,AMap.PlaceSearch,AMap.CitySearch,AMap.GeometryUtil"></script>
     <script>
       // Android System Font Size & Display Zoom Immunity Engine (Neutralizes system font/display scaling)
       (function() {
@@ -41,17 +51,24 @@
             dummy.style.cssText = 'font-size:16px!important;width:1rem!important;height:1px!important;position:absolute!important;left:-9999px!important;top:-9999px!important;visibility:hidden!important;pointer-events:none!important;';
             (document.body || docEl).appendChild(dummy);
             var computedSize = parseFloat(window.getComputedStyle(dummy).fontSize || '16');
-            (document.body || docEl).removeChild(dummy);
+            if (dummy.parentNode) dummy.parentNode.removeChild(dummy);
 
-            if (computedSize && Math.abs(computedSize - 16) > 0.05) {
+            if (computedSize && !isNaN(computedSize) && isFinite(computedSize) && computedSize > 5 && computedSize < 40 && Math.abs(computedSize - 16) > 0.05) {
               var scaleFactor = 16 / computedSize;
-              docEl.style.setProperty('font-size', (16 * scaleFactor) + 'px', 'important');
-              docEl.style.setProperty('--system-font-scale', scaleFactor, 'important');
-            } else {
-              docEl.style.setProperty('font-size', '16px', 'important');
-              docEl.style.setProperty('--system-font-scale', '1', 'important');
+              if (isFinite(scaleFactor) && scaleFactor >= 0.5 && scaleFactor <= 2.0) {
+                docEl.style.setProperty('font-size', (16 * scaleFactor) + 'px', 'important');
+                docEl.style.setProperty('--system-font-scale', scaleFactor, 'important');
+                return;
+              }
             }
-          } catch (e) {}
+            docEl.style.setProperty('font-size', '16px', 'important');
+            docEl.style.setProperty('--system-font-scale', '1', 'important');
+          } catch (e) {
+            try {
+              document.documentElement.style.setProperty('font-size', '16px', 'important');
+              document.documentElement.style.setProperty('--system-font-scale', '1', 'important');
+            } catch (_) {}
+          }
         }
 
         if (document.readyState === 'loading') {
@@ -62,22 +79,52 @@
         window.addEventListener('resize', normalizeSystemFontScale);
         window.addEventListener('pageshow', normalizeSystemFontScale);
 
-        // 3. Disable multi-touch gesture zoom & double-tap zoom
+        // 3. Android System Navigation Bar & Status Bar Auto-Adapter Engine (Clean 0px default, let env(safe-area-inset-*) handle native notches)
+        function updateAndroidNavInsets() {
+          try {
+            var docEl = document.documentElement;
+            docEl.style.setProperty('--android-nav-bar-height', '0px');
+          } catch (e) {}
+        }
+
+        function updateAndroidStatusBarInsets() {
+          try {
+            var docEl = document.documentElement;
+            docEl.style.setProperty('--android-status-bar-height', '0px');
+            docEl.style.setProperty('--status-bar-height', '0px');
+          } catch (e) {}
+        }
+
+        function updateAllInsets() {
+          updateAndroidNavInsets();
+          updateAndroidStatusBarInsets();
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', updateAllInsets);
+        } else {
+          updateAllInsets();
+        }
+        window.addEventListener('resize', updateAllInsets);
+        window.addEventListener('pageshow', updateAllInsets);
+        window.addEventListener('orientationchange', updateAllInsets);
+
+        // 4. Disable multi-touch gesture zoom & double-tap zoom
         document.addEventListener('gesturestart', function(e) { e.preventDefault(); }, { passive: false });
         document.addEventListener('gesturechange', function(e) { e.preventDefault(); }, { passive: false });
         document.addEventListener('gestureend', function(e) { e.preventDefault(); }, { passive: false });
       })();
     </script>
-    <script type="module"  src="./assets/index-DJFbWFe-.js"></script>
-    <link rel="stylesheet"  href="./assets/index-BaTCOeb8.css">
+    <script type="module"  src="./assets/index-CAx0IYbX.js"></script>
+    <link rel="stylesheet"  href="./assets/index-D_9BTuBi.css">
     <script type="module">import.meta.url;import("_").catch(()=>1);(async function*(){})().next();if(location.protocol!="file:"){window.__vite_is_modern_browser=true}</script>
     <script type="module">!function(){if(window.__vite_is_modern_browser)return;console.warn("vite: loading legacy chunks, syntax error above and the same error below should be ignored");var e=document.getElementById("vite-legacy-polyfill"),n=document.createElement("script");n.src=e.src,n.onload=function(){System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))},document.body.appendChild(n)}();</script>
   </head>
   <body>
     <div id="root"></div>
     <script nomodule>!function(){var e=document,t=e.createElement("script");if(!("noModule"in t)&&"onbeforeload"in t){var n=!1;e.addEventListener("beforeload",(function(e){if(e.target===t)n=!0;else if(!e.target.hasAttribute("nomodule")||!n)return;e.preventDefault()}),!0),t.type="module",t.src=".",e.head.appendChild(t),t.remove()}}();</script>
-    <script nomodule  id="vite-legacy-polyfill" src="./assets/polyfills-legacy-5RKHD2A6.js"></script>
-    <script nomodule  id="vite-legacy-entry" data-src="./assets/index-legacy-TTIeIb-f.js">System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))</script>
+    <script nomodule  id="vite-legacy-polyfill" src="./assets/polyfills-legacy-BHg7K-RQ.js"></script>
+    <script nomodule  id="vite-legacy-entry" data-src="./assets/index-legacy-FF_qXwhS.js">System.import(document.getElementById('vite-legacy-entry').getAttribute('data-src'))</script>
   </body>
 </html>
 

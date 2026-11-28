@@ -63,6 +63,7 @@ import NearbyMapView from './NearbyMapView';
 import { db, doc, getDoc, updateDoc, collection, onSnapshot, setDoc, getDocs, deleteDoc, getBaseApiUrl, getAuthHeaders } from '../lib/dbProxy';
 import { subscribeSquadMembership, fetchSquadMembership, submitSquadApplication, withdrawSquadApplication, SquadMembershipState } from '../lib/squadMembership';
 import { fetchVipPackages, fetchWapEntryUrl, DEFAULT_VIP_PACKAGES, VipPackage } from '../lib/vipShop';
+import { openExternalUrl, friendlyNetworkError } from '../lib/openExternal';
 import { CITY_GROUPS, ALL_CITIES_FLAT } from '../constants/cities';
 import { resolveDriverRealName, isGenericDriverName, AUTHORITATIVE_REAL_DRIVER_NAMES, updateDriverGlobalName, registerDriverCustomName, clearDriverCachedName, calculateDaysFromExpiry, normalizeExpiryForDisplay, isOfficialSquadMember, isSquadAppPending, hasValidLicense } from '../utils/nameResolver';
 import { formatHighPrecisionDestinationName, resolveCurrentGpsCoords } from '../utils/locationResolver';
@@ -4073,7 +4074,11 @@ export default function HomeView({
       }
       const beforeExpiry = String(settings.vipExpiry || '');
       const url = await fetchWapEntryUrl('vip');
-      window.open(url, '_system');
+      const opened = await openExternalUrl(url);
+      if (!opened) {
+        setLocalAlert({ title: '打开失败', message: '未能打开购买页面，请稍后重试', type: 'warning' });
+        return;
+      }
       setLocalAlert({
         title: '已打开购买页面',
         message: '请在浏览器中选择套餐并完成支付宝付款。付款成功后会员自动开通到您的登录账号，回到 App 即可使用。',
@@ -4099,7 +4104,7 @@ export default function HomeView({
         }
       })();
     } catch (e: any) {
-      setLocalAlert({ title: '打开失败', message: e?.message || '打开购买页失败，请检查网络后重试', type: 'warning' });
+      setLocalAlert({ title: '打开失败', message: friendlyNetworkError(e, '打开购买页失败，请检查网络后重试'), type: 'warning' });
     } finally {
       setIsVipPurchasing(false);
     }
